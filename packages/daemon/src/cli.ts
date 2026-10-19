@@ -15,6 +15,7 @@ import { parseArgs } from "node:util";
 import { createSampler, readSessions, type History, type Lease, type Status } from "@headroom/core";
 import { connect, isNetworkError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
+import { sessionFromEnv } from "./holder.ts";
 import { parseMemory, parseTime } from "./parse.ts";
 import * as service from "./service.ts";
 
@@ -32,14 +33,17 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom resume-plan
 `;
 
-/** This function finds the Claude Code session that started this process, by its process tree. */
+/** This function finds the Claude Code session that started this process: by the variables of Claude Code, then by the process tree. */
 async function holderOf(): Promise<string> {
   const fromEnv = process.env["HEADROOM_HOLDER"];
   if (fromEnv) return fromEnv;
   try {
+    const known = readSessions();
+    const named = sessionFromEnv(process.env, known);
+    if (named) return named;
     const sampler = await createSampler();
     const byPid = new Map(sampler.processes().map((info) => [info.pid, info]));
-    const sessions = new Map(readSessions().map((session) => [session.pid, session.name]));
+    const sessions = new Map(known.map((session) => [session.pid, session.name]));
     const seen = new Set<number>();
     for (let pid = process.ppid; pid > 0 && !seen.has(pid); pid = byPid.get(pid)?.ppid ?? 0) {
       seen.add(pid);
