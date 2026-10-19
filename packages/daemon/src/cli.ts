@@ -3,6 +3,7 @@
  * The `headroom` command.
  *
  * - `headroom serve`: run the daemon.
+ * - `headroom service install`: start the daemon at login, and again when it stops.
  * - `headroom status`: show the memory, the free amounts, the leases and the owners.
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
@@ -12,13 +13,16 @@ import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
 import { createSampler, readSessions, type History, type Lease, type Status } from "@headroom/core";
-import { connect, type Connection } from "./client.ts";
-import { DEFAULT_PORT, serve } from "./daemon.ts";
+import { connect, isNetworkError, type Connection } from "./client.ts";
+import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { parseMemory, parseTime } from "./parse.ts";
+import * as service from "./service.ts";
 
 const HELP = `headroom: the memory and job broker of this computer
 
-  headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background]
+  headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
+  headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
+  headroom service uninstall | status
   headroom status [--json]
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] -- <command> [args...]
@@ -134,13 +138,20 @@ async function run(argv: string[]): Promise<number> {
     return runCommand(positionals);
   }
   const holder = values.holder ?? (await holderOf());
-  const first = await connection.call<Lease>(["resources", "lease"], {
-    holder,
-    job,
-    amounts,
-    pid: process.pid,
-    ...(values.priority ? { priority: Number(values.priority) } : {}),
-  });
+  let first: Lease;
+  try {
+    first = await connection.call<Lease>(["resources", "lease"], {
+      holder,
+      job,
+      amounts,
+      pid: process.pid,
+      ...(values.priority ? { priority: Number(values.priority) } : {}),
+    });
+  } catch (error) {
+    if (!isNetworkError(error)) throw error;
+    console.error("headroom: the daemon does not answer, so the job runs without a lease.");
+    return runCommand(positionals);
+  }
   const lease = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
   if (lease.state === "waiting") {
     await connection.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
@@ -173,12 +184,27 @@ async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   switch (command) {
     case "serve": {
-      const { values } = parseArgs({ args: rest, options: { port: { type: "string" }, reserve: { type: "string" }, background: { type: "boolean" } } });
+      const { values } = parseArgs({
+        args: rest,
+        options: { port: { type: "string" }, reserve: { type: "string" }, background: { type: "boolean" }, log: { type: "string" } },
+      });
       return serve({
         port: values.port ? Number(values.port) : undefined,
         reserveMb: values.reserve ? parseMemory(values.reserve) : undefined,
         mode: values.background ? "background" : "foreground",
+        log: values.log ? fileLog(values.log) : undefined,
       });
+    }
+    case "service": {
+      const [action, ...args] = rest;
+      if (action === "install") {
+        const { values } = parseArgs({ args, options: { port: { type: "string" }, reserve: { type: "string" } } });
+        return service.install([...(values.port ? ["--port", values.port] : []), ...(values.reserve ? ["--reserve", values.reserve] : [])]);
+      }
+      if (action === "uninstall") return service.uninstall();
+      if (action === "status") return service.status();
+      console.error("Usage: headroom service install | uninstall | status");
+      return 2;
     }
     case "status": {
       const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
@@ -226,4 +252,7 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-process.exitCode = await main(process.argv.slice(2));
+process.exitCode = await main(process.argv.slice(2)).catch((error: unknown) => {
+  console.error(`headroom: ${isNetworkError(error) ? "the daemon does not answer" : error instanceof Error ? error.message : String(error)}`);
+  return 1;
+});
