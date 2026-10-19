@@ -11,8 +11,9 @@ import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@p
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
+import { McpGateway } from "./gateway.ts";
 import { databasePath, headroomHome, readDiscovery, removeDiscovery, writeDiscovery } from "./paths.ts";
-import { resourceProcedures } from "./procedures.ts";
+import { gatewayProcedures, resourceProcedures } from "./procedures.ts";
 
 /** The default port of the daemon. */
 export const DEFAULT_PORT = 4730;
@@ -40,20 +41,28 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     return options.mode === "background" ? 0 : 1;
   }
 
-  const engine = new Engine({ sampler: await createSampler(), store: new Store(databasePath()), reserveMb: options.reserveMb });
+  const store = new Store(databasePath());
+  const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
+  const engine = new Engine({ sampler: await createSampler(), store, reserveMb: options.reserveMb, servers: () => gateway.pids() });
   const registry = new ProcedureRegistry();
-  registerModules(registry, [defineModule("@headroom/daemon", resourceProcedures(engine))]);
+  registerModules(registry, [defineModule("@headroom/daemon", [...resourceProcedures(engine), ...gatewayProcedures(engine, gateway)])]);
 
   const port = options.port ?? DEFAULT_PORT;
   const host = "127.0.0.1";
   const token = randomBytes(32).toString("hex");
+  const base = peerHostOptions(
+    { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
+    "headroom",
+  );
+  // The MCP gateway is a face on the same listener as the procedures: /mcp/<name> next to /api.
   const started = await runProcedureHost({
     name: "headroom",
     mode: options.mode ?? "foreground",
-    host: peerHostOptions(
-      { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
-      "headroom",
-    ),
+    host: {
+      ...base,
+      faces: { ...base.faces, mcp: gateway.face() },
+      listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), "mcp"] })),
+    },
     log,
   });
   if (started.life.state !== "running") {

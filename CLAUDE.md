@@ -10,6 +10,7 @@
 - Do not write a listener, a signal handler, a health route or an RPC endpoint. Use `runProcedureHost`.
 - Keep the daemon small. Its target is less than 60 MB of memory. Add no dependency without a reason.
 - This repository has no `.mcp.json`. Each MCP server costs memory in each session.
+- The scheduled task `headroom` starts the daemon from the folder `~/git/headroom`. Keep that folder on `main`. Make each branch in a `git worktree`.
 
 ## Writing style
 

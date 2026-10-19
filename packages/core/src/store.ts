@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
-import type { Amounts, OwnerKind, OwnerUsage, SystemMemory } from "./types.ts";
+import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
 export interface MemoryRow extends SystemMemory {
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS leases (
 );
 CREATE INDEX IF NOT EXISTS leases_state ON leases (state);
 CREATE TABLE IF NOT EXISTS pools (name TEXT PRIMARY KEY, capacity REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS mcp_servers (name TEXT PRIMARY KEY, spec TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS memory (
   at INTEGER PRIMARY KEY, total_mb INTEGER, available_mb INTEGER, commit_mb INTEGER,
   commit_limit_mb INTEGER, kernel_paged_mb INTEGER, kernel_nonpaged_mb INTEGER
@@ -85,6 +86,19 @@ export class Store {
   setPool(name: string, capacity: number): void {
     if (capacity < 0) this.#db.prepare("DELETE FROM pools WHERE name = ?").run(name);
     else this.#db.prepare("INSERT INTO pools VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET capacity = excluded.capacity").run(name, capacity);
+  }
+
+  /** This function reads the servers of the MCP gateway, by name. */
+  mcpServers(): Record<string, McpServerSpec> {
+    const servers: Record<string, McpServerSpec> = {};
+    for (const row of this.#db.prepare("SELECT name, spec FROM mcp_servers").all()) servers[String(row["name"])] = JSON.parse(String(row["spec"])) as McpServerSpec;
+    return servers;
+  }
+
+  /** This function adds or changes a server of the MCP gateway. `null` removes it. */
+  setMcpServer(name: string, spec: McpServerSpec | null): void {
+    if (spec === null) this.#db.prepare("DELETE FROM mcp_servers WHERE name = ?").run(name);
+    else this.#db.prepare("INSERT INTO mcp_servers VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET spec = excluded.spec").run(name, JSON.stringify(spec));
   }
 
   /** This function writes one memory sample and the memory of each owner at the same time. */

@@ -34,6 +34,13 @@ describe("attribute", () => {
     expect(owners.find((owner) => owner.owner === "session:graph")).toMatchObject({ privateMb: 990, processes: 3 });
   });
 
+  it("gives the process tree of a gateway server to mcp:<name>", () => {
+    const { owners, ownerOf } = attribute(processes, [], undefined, undefined, new Map([[40, "vex"]]));
+    expect(ownerOf.get(40)).toBe("mcp:vex");
+    expect(ownerOf.get(10)).toBe("editor");
+    expect(owners.find((owner) => owner.owner === "mcp:vex")).toMatchObject({ kind: "mcp", privateMb: 60, processes: 1 });
+  });
+
   it("survives a cycle in the parents", () => {
     const { ownerOf } = attribute([p(1, 2, "a.exe", 1), p(2, 1, "b.exe", 1)], []);
     expect(ownerOf.get(1)).toBe("other");
