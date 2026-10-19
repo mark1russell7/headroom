@@ -6,3 +6,8 @@ packages:
 allowBuilds:
   "@mark1russell7/cue@git+https://github.com/mark1russell7/cue.git": true
   esbuild: true
+  # koffi takes its native library from an optional package of its platform. Its install script only checks it.
+  koffi: true
+
+minimumReleaseAgeExclude:
+  - "@mark1russell7/template-cli@0.1.0"

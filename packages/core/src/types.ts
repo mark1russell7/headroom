@@ -1,0 +1,62 @@
+/**
+ * The data types of headroom: the amounts, the memory of the computer, the processes and the owners.
+ */
+
+/** The amounts of a request or of a capacity, by resource name. `memory` is in MB, `cpu` in processors. */
+export type Amounts = Readonly<Record<string, number>>;
+
+/** The resource name of the memory. Its capacity is measured, not configured. */
+export const MEMORY = "memory";
+
+/** The memory of the computer, in MB. */
+export interface SystemMemory {
+  readonly totalMb: number;
+  readonly availableMb: number;
+  /** The commit charge: the memory that the processes and the kernel reserved. */
+  readonly commitMb: number;
+  /** The limit of the commit charge: the physical memory plus the page file. */
+  readonly commitLimitMb: number;
+  readonly kernelPagedMb: number;
+  readonly kernelNonpagedMb: number;
+}
+
+/** One process, with its parent and its memory in MB. */
+export interface ProcessInfo {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly name: string;
+  /** The private memory of the process: the part that no other process shares. */
+  readonly privateMb: number;
+  /** The working set of the process: the part in physical memory now. */
+  readonly workingMb: number;
+}
+
+/** One sample of the computer. The process list is empty when the sample did not read the processes. */
+export interface Sample {
+  /** The time of the sample, in milliseconds since the epoch. */
+  readonly at: number;
+  readonly memory: SystemMemory;
+  readonly processes: readonly ProcessInfo[];
+}
+
+/** The kind of an owner of memory. */
+export type OwnerKind = "session" | "docker" | "browser" | "editor" | "kernel" | "system" | "other";
+
+/** The memory of one owner: the sum over the processes that it owns. */
+export interface OwnerUsage {
+  /** The name of the owner, for example `session:graph` or `docker`. */
+  readonly owner: string;
+  readonly kind: OwnerKind;
+  readonly privateMb: number;
+  readonly workingMb: number;
+  readonly processes: number;
+}
+
+/** One live Claude Code session, from its file in `~/.claude/sessions`. */
+export interface SessionInfo {
+  readonly pid: number;
+  readonly name: string;
+  readonly sessionId: string;
+  readonly status: string | null;
+  readonly cwd: string | null;
+}
