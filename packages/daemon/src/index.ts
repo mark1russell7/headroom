@@ -2,7 +2,7 @@
  * The daemon of headroom: the `resources.*` procedures, the host and the client.
  */
 
-export { answers, connect, connectTo, isNetworkError } from "./client.ts";
+export { answers, connect, connectTo, isNetworkError, isRestartError } from "./client.ts";
 export type { Connection } from "./client.ts";
 export { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 export type { ServeOptions } from "./daemon.ts";

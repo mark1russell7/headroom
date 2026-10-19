@@ -60,3 +60,13 @@ export async function answers(discovery: Discovery, timeoutMs: number = 3000): P
 export function isNetworkError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "NETWORK_ERROR";
 }
+
+const RESTART_CODES = new Set(["NETWORK_ERROR", "UNAUTHORIZED", "UNAVAILABLE", "SERVICE_UNAVAILABLE"]);
+
+/**
+ * This function tells if an error comes from a restart of the daemon: no answer, the token of the old
+ * process, or a daemon that stops.
+ */
+export function isRestartError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && RESTART_CODES.has(String((error as { code?: unknown }).code));
+}
