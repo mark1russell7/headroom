@@ -21,6 +21,11 @@ export function discoveryPath(): string {
   return join(headroomHome(), "daemon.json");
 }
 
+/** The log file of the daemon when it runs as a service. */
+export function logPath(): string {
+  return join(headroomHome(), "daemon.log");
+}
+
 /** The data that a client uses to reach the daemon. */
 export interface Discovery {
   readonly pid: number;

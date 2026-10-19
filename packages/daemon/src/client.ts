@@ -4,7 +4,7 @@
 
 import { processIsAlive } from "@headroom/core";
 import { Client, HttpTransport } from "@procedures/client";
-import { readDiscovery } from "./paths.ts";
+import { readDiscovery, type Discovery } from "./paths.ts";
 
 /** A connection to the running daemon. */
 export interface Connection {
@@ -13,10 +13,8 @@ export interface Connection {
   call<T>(path: readonly string[], input: unknown): Promise<T>;
 }
 
-/** This function connects to the running daemon, or gives `null` when none runs. */
-export function connect(): Connection | null {
-  const discovery = readDiscovery();
-  if (!discovery || !processIsAlive(discovery.pid)) return null;
+/** This function connects to the daemon that a discovery file names. */
+export function connectTo(discovery: Discovery): Connection {
   const transport = new HttpTransport({ baseUrl: discovery.endpoint, defaultHeaders: { Authorization: `Bearer ${discovery.token}` } });
   const client = new Client({ transport });
   return {
@@ -29,4 +27,36 @@ export function connect(): Connection | null {
       return last.value as T;
     },
   };
+}
+
+/** This function connects to the running daemon, or gives `null` when none runs. */
+export function connect(): Connection | null {
+  const discovery = readDiscovery();
+  if (!discovery || !processIsAlive(discovery.pid)) return null;
+  return connectTo(discovery);
+}
+
+/**
+ * This function tells if the daemon of a discovery file answers. After a restart of the computer, a new
+ * process can have the process ID of the old daemon. Thus a live process ID is not sufficient.
+ */
+export async function answers(discovery: Discovery, timeoutMs: number = 3000): Promise<boolean> {
+  if (!processIsAlive(discovery.pid)) return false;
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const call = connectTo(discovery)
+    .call(["resources", "status"], {})
+    .then(() => true, () => false);
+  try {
+    return await Promise.race([call, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** This function tells if an error comes from a daemon that does not answer, not from the procedure. */
+export function isNetworkError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "NETWORK_ERROR";
 }

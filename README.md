@@ -14,15 +14,18 @@ headroom does three jobs:
 
 ## Status
 
-Version 0 works: the sampler, the leases, the daemon and the CLI. Its leases are advisory. `docs/ROADMAP.md` gives the plan and the status of each item.
+Version 0 works: the sampler, the leases, the daemon, the CLI and the service. Its leases are advisory. `docs/ROADMAP.md` gives the plan and the status of each item.
 
 ## Use
 
-Start the daemon in a terminal. It listens on `127.0.0.1:4730` and writes its address and token to `~/.headroom/daemon.json`.
+Register the daemon as a service of your user. It starts at login, and it starts again when it stops. It listens on `127.0.0.1:4730` and writes its address and token to `~/.headroom/daemon.json`.
 
 ```sh
-headroom serve
+headroom service install
+headroom service status
 ```
+
+On Windows, a scheduled task starts the daemon at logon and every 2 minutes when it stopped. The log is `~/.headroom/daemon.log`. On Linux, a systemd user unit starts it. `headroom service uninstall` stops the daemon and removes the service. To start the daemon in a terminal, use `headroom serve`.
 
 Run a heavy job under a lease. The job waits until the memory is free. When the daemon does not run, the job runs at once with a warning.
 

@@ -1,4 +1,4 @@
-# The roadmap of headroodondone (done (done (done (in progress0)0)0)0)
+# The roadmap of headroom
 
 Mark approved the plan on 2026-10-19. The plan follows the design rule of Mark: choose the most general option for the long term.
 
@@ -49,7 +49,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | later |
 | H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | later |
 | H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress |
-| H12 | Start the daemon at login, and start it again after a crash | later |
+| H12 | Start the daemon at login, and start it again after a crash: `headroom service install` | done |
 | H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
 
 ## The MCP gateway (H11)

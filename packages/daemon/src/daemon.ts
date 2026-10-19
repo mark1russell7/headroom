@@ -5,11 +5,12 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { createSampler, Engine, processIsAlive, Store } from "@headroom/core";
+import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { createSampler, Engine, Store } from "@headroom/core";
 import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
+import { answers } from "./client.ts";
 import { databasePath, headroomHome, readDiscovery, removeDiscovery, writeDiscovery } from "./paths.ts";
 import { resourceProcedures } from "./procedures.ts";
 
@@ -33,9 +34,10 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const log = options.log ?? ((line: string) => console.log(line));
   mkdirSync(headroomHome(), { recursive: true });
   const running = readDiscovery();
-  if (running && running.pid !== process.pid && processIsAlive(running.pid)) {
+  if (running && running.pid !== process.pid && (await answers(running))) {
     log(`headroom already runs as process ${running.pid} at ${running.endpoint}`);
-    return 1;
+    // This is not a failure of a service, so the service manager does not start it again.
+    return options.mode === "background" ? 0 : 1;
   }
 
   const engine = new Engine({ sampler: await createSampler(), store: new Store(databasePath()), reserveMb: options.reserveMb });
@@ -77,4 +79,30 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   engine.close();
   removeDiscovery();
   return started.life.errors.length > 0 ? 1 : 0;
+}
+
+/** The size at which the log file moves to `<file>.1`. */
+const LOG_LIMIT = 1024 * 1024;
+
+/** This function gives a log that adds each line to a file, with the time. */
+export function fileLog(path: string): (line: string) => void {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    // The file does not exist yet.
+  }
+  return (line) => {
+    const text = `${new Date().toISOString()} ${line}\n`;
+    try {
+      if (size + text.length > LOG_LIMIT) {
+        renameSync(path, `${path}.1`);
+        size = 0;
+      }
+      appendFileSync(path, text);
+      size += text.length;
+    } catch {
+      // A log that cannot write does not stop the daemon.
+    }
+  };
 }
