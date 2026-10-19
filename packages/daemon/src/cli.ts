@@ -6,6 +6,7 @@
  * - `headroom service install`: start the daemon at login, and again when it stops.
  * - `headroom status`: show the memory, the free amounts, the leases and the owners.
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
+ * - `headroom mcp list | add | remove | restart | config`: the servers of the MCP gateway.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -15,6 +16,7 @@ import { parseArgs } from "node:util";
 import { createSampler, readSessions, type History, type Lease, type Status } from "@headroom/core";
 import { connect, isNetworkError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
+import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
 import { parseMemory, parseTime } from "./parse.ts";
 import * as service from "./service.ts";
@@ -24,6 +26,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
   headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
   headroom service uninstall | status
+  headroom mcp list | add | remove | restart | config   (the MCP gateway)
   headroom status [--json]
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] -- <command> [args...]
@@ -247,6 +250,8 @@ async function main(argv: string[]): Promise<number> {
       console.log(`${lease.id}: ${lease.state}`);
       return 0;
     }
+    case "mcp":
+      return mcpCommand(rest, connect());
     case "resume-plan":
       resumePlan();
       return 0;

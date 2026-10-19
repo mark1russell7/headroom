@@ -40,7 +40,20 @@ export interface Sample {
 }
 
 /** The kind of an owner of memory. */
-export type OwnerKind = "session" | "docker" | "browser" | "editor" | "kernel" | "system" | "other";
+export type OwnerKind = "session" | "mcp" | "docker" | "browser" | "editor" | "kernel" | "system" | "other";
+
+/**
+ * A local MCP server that the gateway starts one time for all sessions. The fields have the meaning
+ * of a stdio server of a Claude Code `.mcp.json` file.
+ */
+export interface McpServerSpec {
+  readonly command: string;
+  readonly args?: readonly string[] | undefined;
+  readonly cwd?: string | undefined;
+  readonly env?: Readonly<Record<string, string>> | undefined;
+  /** The gateway stops the server after this time with no request. The default is 30 minutes. 0 keeps it. */
+  readonly idleMinutes?: number | undefined;
+}
 
 /** The memory of one owner: the sum over the processes that it owns. */
 export interface OwnerUsage {

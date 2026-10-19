@@ -74,14 +74,16 @@ export interface Attribution {
 
 /**
  * This function gives each process to an owner. A process that has a session as an ancestor
- * belongs to that session. Otherwise the first rule that matches the process or an ancestor wins.
- * The kernel pools become the owner `kernel`.
+ * belongs to that session. A process under a server of the MCP gateway belongs to `mcp:<name>`.
+ * Otherwise the first rule that matches the process or an ancestor wins. The kernel pools become
+ * the owner `kernel`.
  */
 export function attribute(
   processes: readonly ProcessInfo[],
   sessions: readonly SessionInfo[],
   memory?: SystemMemory,
   rules: readonly OwnerRule[] = DEFAULT_RULES,
+  servers: ReadonlyMap<number, string> = new Map(),
 ): Attribution {
   const byPid = new Map(processes.map((info) => [info.pid, info]));
   const sessionOf = new Map(sessions.map((session) => [session.pid, session.name]));
@@ -99,6 +101,11 @@ export function attribute(
       const session = sessionOf.get(at.pid);
       if (session !== undefined) {
         owner = { name: `session:${session}`, kind: "session" };
+        break;
+      }
+      const server = servers.get(at.pid);
+      if (server !== undefined) {
+        owner = { name: `mcp:${server}`, kind: "mcp" };
         break;
       }
       rule ??= ruleOf.get(programName(at.name)) ?? null;

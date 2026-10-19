@@ -1,0 +1,100 @@
+import { createServer, type Server as HttpServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { HostFaceContext } from "@procedures/peer";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { killTree, McpGateway } from "./gateway.ts";
+
+const fixture = join(import.meta.dirname, "fixtures", "counter-server.mjs");
+const specs = { counter: { command: process.execPath, args: [fixture] } };
+
+interface Counted {
+  readonly count: number;
+  readonly pid: number;
+}
+
+function counted(result: unknown): Counted {
+  const content = (result as { content: { type: string; text: string }[] }).content;
+  return JSON.parse(content[0]?.text ?? "{}") as Counted;
+}
+
+describe("McpGateway", () => {
+  let http: HttpServer;
+  let gateway: McpGateway;
+  let base = "";
+  const clients: Client[] = [];
+
+  const connect = async (): Promise<Client> => {
+    const client = new Client({ name: "test", version: "1.0.0" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp/counter`), { requestInit: { headers: { Authorization: "Bearer secret" } } });
+    await client.connect(transport as unknown as Parameters<Client["connect"]>[0]);
+    clients.push(client);
+    return client;
+  };
+
+  beforeAll(async () => {
+    gateway = new McpGateway({ specs: () => specs });
+    const face = gateway.face()({ policy: { token: "secret" } } as unknown as HostFaceContext);
+    http = createServer((req, res) => {
+      if (!face.handler?.(req, res)) {
+        res.statusCode = 404;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${(http.address() as AddressInfo).port}`;
+  });
+
+  afterAll(async () => {
+    await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
+    await gateway.close();
+    http.closeAllConnections();
+    await new Promise((resolve) => http.close(resolve));
+  });
+
+  it("serves one copy of a server to two sessions", async () => {
+    const a = await connect();
+    const b = await connect();
+    expect((await a.listTools()).tools.map((tool) => tool.name)).toEqual(["count"]);
+    expect(a.getInstructions()).toBe("Counts the calls.");
+    const first = counted(await a.callTool({ name: "count", arguments: {} }));
+    const second = counted(await b.callTool({ name: "count", arguments: {} }));
+    expect(second.pid).toBe(first.pid);
+    expect(second.count).toBe(first.count + 1);
+    expect([...gateway.pids()]).toEqual([[first.pid, "counter"]]);
+    expect(gateway.list()[0]).toMatchObject({ name: "counter", state: "running", sessions: 2, pid: first.pid });
+  });
+
+  it("sends the progress of a call to its session", async () => {
+    const client = await connect();
+    const seen: number[] = [];
+    await client.callTool({ name: "count", arguments: { steps: 3 } }, undefined, { onprogress: (progress) => seen.push(progress.progress) });
+    expect(seen).toEqual([1, 2, 3]);
+  });
+
+  it("refuses a request without the token, and a web page", async () => {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+    const headers = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+    expect((await fetch(`${base}/mcp/counter`, { method: "POST", headers, body })).status).toBe(401);
+    const page = { ...headers, Authorization: "Bearer secret", Origin: "https://example.com" };
+    expect((await fetch(`${base}/mcp/counter`, { method: "POST", headers: page, body })).status).toBe(403);
+  });
+
+  it("answers 404 for a server that is not configured", async () => {
+    const headers = { "content-type": "application/json", Authorization: "Bearer secret" };
+    const res = await fetch(`${base}/mcp/nothing`, { method: "POST", headers, body: "{}" });
+    expect(res.status).toBe(404);
+  });
+
+  it("starts the server again after it stops", async () => {
+    const client = await connect();
+    const before = counted(await client.callTool({ name: "count", arguments: {} }));
+    killTree(before.pid);
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    const after = counted(await client.callTool({ name: "count", arguments: {} }));
+    expect(after.pid).not.toBe(before.pid);
+    expect(after.count).toBe(1);
+  });
+});

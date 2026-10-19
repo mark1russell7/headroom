@@ -7,7 +7,7 @@ import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import type { Sampler } from "./sampler.ts";
 import type { MemoryRow, OwnerRow, Store } from "./store.ts";
-import type { OwnerUsage, ProcessInfo, SessionInfo, SystemMemory } from "./types.ts";
+import type { McpServerSpec, OwnerUsage, ProcessInfo, SessionInfo, SystemMemory } from "./types.ts";
 
 /** The options of an engine. */
 export interface EngineOptions {
@@ -24,6 +24,8 @@ export interface EngineOptions {
   readonly retentionMs?: number | undefined;
   /** The folder of the Claude Code session files. */
   readonly sessionsDir?: string | undefined;
+  /** This function gives the process of each server of the MCP gateway, with the name of the server. */
+  readonly servers?: (() => ReadonlyMap<number, string>) | undefined;
 }
 
 /** The state of the engine at one time. */
@@ -57,6 +59,7 @@ export class Engine {
   readonly #recordEveryMs: number;
   readonly #retentionMs: number;
   readonly #sessionsDir: string;
+  readonly #servers: () => ReadonlyMap<number, string>;
   readonly #listeners = new Set<(changed: readonly Lease[]) => void>();
   #memory: SystemMemory;
   #processes: readonly ProcessInfo[] = [];
@@ -75,6 +78,7 @@ export class Engine {
     this.#recordEveryMs = options.recordEveryMs ?? 60_000;
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
+    this.#servers = options.servers ?? (() => new Map());
     this.#broker = new Broker({
       now: this.#now,
       reserveMb: this.#reserveMb,
@@ -100,7 +104,7 @@ export class Engine {
       this.#processesAt = now;
       this.#processes = this.#sampler.processes();
       this.#sessions = readSessions(this.#sessionsDir);
-      this.#owners = attribute(this.#processes, this.#sessions, this.#memory).owners;
+      this.#owners = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers()).owners;
     }
     const changed = this.#broker.tick(this.capacity());
     this.#persist(changed);
@@ -148,6 +152,21 @@ export class Engine {
   setPool(name: string, capacity: number): void {
     this.#store.setPool(name, capacity);
     this.#persist(this.#broker.tick(this.capacity()));
+  }
+
+  /** This function reads the servers of the MCP gateway, by name. */
+  mcpServers(): Record<string, McpServerSpec> {
+    return this.#store.mcpServers();
+  }
+
+  /** This function adds or changes a server of the MCP gateway. `null` removes it. */
+  setMcpServer(name: string, spec: McpServerSpec | null): void {
+    this.#store.setMcpServer(name, spec);
+  }
+
+  /** This function gives the memory of one process and its descendants, in MB, from the last read of the processes. */
+  treeMb(pid: number): number {
+    return treeMb(pid, this.#processes);
   }
 
   /** This function gives the state at this time. */

@@ -48,7 +48,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H8 | A Claude Code hook that sends each heavy command through `headroom run` | later |
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | later |
 | H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | later |
-| H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress |
+| H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress: the gateway works, the rollout waits for the owners |
 | H12 | Start the daemon at login, and start it again after a crash: `headroom service install` | done |
 | H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
 
@@ -61,6 +61,12 @@ A stdio MCP server has one pipe to one client. Claude Code starts each stdio ser
 - The sessions use that URL as an `http` server. A token in a header protects it.
 - headroom starts a server again after a crash. It reports the memory of each server as the owner `mcp:<name>`.
 - A server that keeps state for each session stays a stdio server: for example playwright, with one browser for each session.
+
+The state on 2026-10-19:
+
+- The gateway works: `headroom mcp add`, `list`, `remove`, `restart` and `config`. The gateway is a face of the host on the listener of the daemon. Each session gets an MCP session of its own. The gateway sends each request, its cancel and its progress to the one copy.
+- A test sent two sessions to the MCP server of Vex. One process of 51 MB answered both. Before, each session started its own chain of 4 processes, approximately 260 MB.
+- The rollout waits for the owner of each server. The plugin of Vex has the largest gain: 60 processes and 2.1 GB on 2026-10-19. The `loom` server of jarvis has 15 processes and 710 MB.
 
 ## Version 0
 

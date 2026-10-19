@@ -1,8 +1,9 @@
 /**
- * The procedures of headroom: `resources.*`. Each procedure uses one engine.
+ * The procedures of headroom: `resources.*` and `mcp.*`. Each procedure uses one engine.
  */
 
 import type { Engine, History, Lease, Status } from "@headroom/core";
+import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
 
@@ -158,4 +159,95 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .build() as AnyProcedure;
 
   return [status, lease, wait, release, renew, history, pool];
+}
+
+const ServerName = z.string().regex(SERVER_NAME, "Use letters, digits, - and _").describe("The name of the server, for example vex");
+
+const McpAddInput = z.object({
+  name: ServerName,
+  command: z.string().min(1).max(1000).describe("The program of the server, for example node"),
+  args: z.array(z.string().max(4000)).max(100).optional().describe("The arguments of the program"),
+  cwd: z.string().max(1000).optional().describe("The folder where the server starts"),
+  env: z.record(z.string().max(200), z.string().max(4000)).optional().describe("More environment variables of the server"),
+  idleMinutes: z.number().int().min(0).max(10_080).optional().describe("Stop the server after this idle time (default: 30). 0 keeps it."),
+});
+type McpAddInput = z.infer<typeof McpAddInput>;
+
+const McpNameInput = z.object({ name: ServerName });
+type McpNameInput = z.infer<typeof McpNameInput>;
+
+/** The state of a server of the gateway, with the memory of its processes. */
+export interface McpServerRow extends McpServerState {
+  readonly memoryMb: number;
+}
+
+/** This function gives the procedures of the MCP gateway: `mcp.*`. */
+export function gatewayProcedures(engine: Engine, gateway: McpGateway): AnyProcedure[] {
+  const rows = (): McpServerRow[] => gateway.list().map((state) => ({ ...state, memoryMb: state.pid === null ? 0 : Math.round(engine.treeMb(state.pid)) }));
+
+  const list = createProcedure()
+    .path(["mcp", "list"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<McpServerRow[]>())
+    .meta({
+      description: "Give each MCP server of the gateway: its state, its process, its memory and its sessions",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom", "process"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<McpServerRow[]> => rows())
+    .build() as AnyProcedure;
+
+  const add = createProcedure()
+    .path(["mcp", "add"])
+    .input(zodAdapter<McpAddInput>(McpAddInput))
+    .output(anything<McpServerRow[]>())
+    .meta({
+      description: "Add or change an MCP server of the gateway. The sessions reach it at /mcp/<name>.",
+      args: ["name", "command"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
+    })
+    .handler(async (input: McpAddInput): Promise<McpServerRow[]> => {
+      const { name, ...spec } = input;
+      engine.setMcpServer(name, spec);
+      await gateway.reset(name);
+      return rows();
+    })
+    .build() as AnyProcedure;
+
+  const remove = createProcedure()
+    .path(["mcp", "remove"])
+    .input(zodAdapter<McpNameInput>(McpNameInput))
+    .output(anything<McpServerRow[]>())
+    .meta({
+      description: "Stop an MCP server of the gateway and remove it",
+      args: ["name"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom", "process"], destructive: true, idempotent: true },
+    })
+    .handler(async (input: McpNameInput): Promise<McpServerRow[]> => {
+      engine.setMcpServer(input.name, null);
+      await gateway.reset(input.name);
+      return rows();
+    })
+    .build() as AnyProcedure;
+
+  const restart = createProcedure()
+    .path(["mcp", "restart"])
+    .input(zodAdapter<McpNameInput>(McpNameInput))
+    .output(anything<McpServerRow[]>())
+    .meta({
+      description: "Stop an MCP server of the gateway. Its sessions stay open, and the next request starts it again.",
+      args: ["name"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["process"], destructive: false, idempotent: true },
+    })
+    .handler(async (input: McpNameInput): Promise<McpServerRow[]> => {
+      await gateway.restart(input.name);
+      return rows();
+    })
+    .build() as AnyProcedure;
+
+  return [list, add, remove, restart];
 }

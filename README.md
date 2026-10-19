@@ -43,6 +43,21 @@ headroom history --minutes 120
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
 
+## The MCP gateway
+
+Claude Code starts a copy of each stdio MCP server for each session. The gateway starts one copy of a server for all the sessions, and serves it at `http://127.0.0.1:4730/mcp/<name>`.
+
+```sh
+headroom mcp add vex --cwd ~/git/Vex/packages/mcp -- node --import tsx src/main.ts
+headroom mcp config vex
+headroom mcp list
+```
+
+- `headroom mcp config` gives the configuration for Claude Code: an `http` server with a `headersHelper`. The helper gives the token of the daemon at each connection.
+- The gateway starts a server at the first request, and stops it after 30 minutes with no request. `--idle 0` keeps it.
+- Start a server with `node` directly, not through `npx` or `pnpm exec`. A server of the MCP SDK stops when its input closes, so a stop of the daemon also stops it.
+- Use the gateway only for a server that keeps no state for a session. A server with one browser for each session stays a stdio server.
+
 | Exit code | Meaning |
 |---|---|
 | The code of the job | The job ran under its lease. |
