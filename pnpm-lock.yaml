@@ -205,6 +205,22 @@ importers:
         version: 5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(tsx@4.23.15))
 
   packages/daemon:
+    dependencies:
+      '@headroom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@procedures/client':
+        specifier: ^0.13.2
+        version: 0.13.2
+      '@procedures/peer':
+        specifier: ^0.13.2
+        version: 0.13.2
+      '@procedures/server':
+        specifier: ^0.13.2
+        version: 0.13.2
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
     devDependencies:
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue
@@ -495,11 +511,38 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@mark1russell7/algebra@0.7.1':
+    resolution: {integrity: sha512-+nimxDO9pEOwNxVJ7/F4vOAba8CnytN/DbRJKN7FxF/Q+g5Yy2u6e+3bbjiuq0eH9vCWwc3WlIuyDJhSFfuNow==}
+    engines: {node: '>=22.19'}
+    peerDependencies:
+      zod: ^4.1.0
+
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7':
     resolution: {gitHosted: true, integrity: sha512-328oeIz1/QtCaK5wXO18E7eZPohVGh3lO+cpjkHFNl1vEL48FEUqTiXLHWDEiHjqnsogmCKyrCs9ssWTEaPV7A==, tarball: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7}
     version: 1.0.0
     engines: {node: '>=22'}
     hasBin: true
+
+  '@mark1russell7/quantity@0.2.0':
+    resolution: {integrity: sha512-pE2OganjbhstZgoeLVu5YRVQq6bOnV/5T4GYuJhIu0+PF77+DwpfrIZonhNNfEZHz/P4ioiwFowbIwxPq9VkSA==}
+    engines: {node: '>=22.19'}
+    peerDependencies:
+      zod: ^4.1.0
+    peerDependenciesMeta:
+      zod:
+        optional: true
+
+  '@mark1russell7/service@0.5.2':
+    resolution: {integrity: sha512-PwoZg09iW3my0Iu/+dlf9dWXCu6v28Lqd5Joy/eRpO0HNdwGkBcUjvptYkzF4ApaFzJpxDu/sMaG1vBn8KudxA==}
+    engines: {node: '>=22.19'}
+    peerDependencies:
+      ioredis: ^6.0.0
+      zod: ^4.1.0
+    peerDependenciesMeta:
+      ioredis:
+        optional: true
+      zod:
+        optional: true
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     resolution: {gitHosted: true, integrity: sha512-HDxumpWNUeciZKaXbAGFPyoOTrt0trj7L3/koNvWnTN/vEuF0gYzqVJdsgfTQ9bE/DhSxfNMRxtrh4KYnbbimA==, tarball: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7}
@@ -514,6 +557,24 @@ packages:
 
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
+
+  '@procedures/client@0.13.2':
+    resolution: {integrity: sha512-aH+yu+1AIZxY8hT0RwxSC0mbtPkF/cImUBL9HzRcvZAgAhL+RczhV5wkKaxnVMmCxEqlK9JwsTT0+RE0cmmamw==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      express: ^4.0.0 || ^5.0.0
+    peerDependenciesMeta:
+      express:
+        optional: true
+
+  '@procedures/peer@0.13.2':
+    resolution: {integrity: sha512-TUNG5Dmoi2zfoyc+jrk9wS5zn533xhCC8FXEW8QnmG84irwySAijoIPdY6gks5H4o7EzJbchW6bQV4M1Ef10sw==}
+    engines: {node: '>=22'}
+
+  '@procedures/server@0.13.2':
+    resolution: {integrity: sha512-qj+MtVMyq7p7BbviQUJnqNCC2BKhkbEYjvktSOZANQkUaeT/KSJL4lDa1R5i95Xdn5M2HnxSh3i3/xC4zjG3zA==}
+    engines: {node: '>=22'}
+    hasBin: true
 
   '@publint/pack@0.1.7':
     resolution: {integrity: sha512-4EDEmvxWtgsCnnVeBvtFIFZtUhPPt1+bA9JrSwU4Sa//6oKtzCSlGGXYJr44OD9aGISymbieJ4mCKHUygUDU+g==}
@@ -1064,6 +1125,21 @@ packages:
     engines: {node: '>=20.11'}
     hasBin: true
 
+  ws@8.22.0:
+    resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
 snapshots:
 
   '@clack/core@1.5.1':
@@ -1225,7 +1301,23 @@ snapshots:
   '@koromix/koffi-win32-x64@3.3.3':
     optional: true
 
+  '@mark1russell7/algebra@0.7.1(zod@4.6.7)':
+    dependencies:
+      '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
+      zod: 4.6.7
+
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7': {}
+
+  '@mark1russell7/quantity@0.2.0(zod@4.6.7)':
+    optionalDependencies:
+      zod: 4.6.7
+
+  '@mark1russell7/service@0.5.2(zod@4.6.7)':
+    dependencies:
+      '@mark1russell7/algebra': 0.7.1(zod@4.6.7)
+      '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
+    optionalDependencies:
+      zod: 4.6.7
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:
@@ -1236,6 +1328,41 @@ snapshots:
       '@clack/prompts': 1.8.1
 
   '@oxc-project/types@0.154.0': {}
+
+  '@procedures/client@0.13.2':
+    dependencies:
+      '@mark1russell7/algebra': 0.7.1(zod@4.6.7)
+      '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
+      '@mark1russell7/service': 0.5.2(zod@4.6.7)
+      ws: 8.22.0
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - bufferutil
+      - ioredis
+      - utf-8-validate
+
+  '@procedures/peer@0.13.2':
+    dependencies:
+      '@mark1russell7/service': 0.5.2(zod@4.6.7)
+      '@procedures/client': 0.13.2
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - bufferutil
+      - express
+      - ioredis
+      - utf-8-validate
+
+  '@procedures/server@0.13.2':
+    dependencies:
+      '@mark1russell7/service': 0.5.2(zod@4.6.7)
+      '@procedures/client': 0.13.2
+      '@procedures/peer': 0.13.2
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - bufferutil
+      - express
+      - ioredis
+      - utf-8-validate
 
   '@publint/pack@0.1.7':
     dependencies:
@@ -1641,3 +1768,7 @@ snapshots:
       - msw
 
   why-is-node-running@3.2.1: {}
+
+  ws@8.22.0: {}
+
+  zod@4.6.7: {}

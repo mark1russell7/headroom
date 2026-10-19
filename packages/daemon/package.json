@@ -15,5 +15,15 @@
     "@types/node": "^26.6.4",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@headroom/core": "workspace:*",
+    "@procedures/client": "^0.13.2",
+    "@procedures/peer": "^0.13.2",
+    "@procedures/server": "^0.13.2",
+    "zod": "^4.6.7"
+  },
+  "bin": {
+    "headroom": "./src/cli.ts"
   }
 }

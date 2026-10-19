@@ -14,7 +14,7 @@ export interface EngineOptions {
   readonly sampler: Sampler;
   readonly store: Store;
   readonly now?: (() => number) | undefined;
-  /** The memory that the broker never grants, in MB. The default is 1024. */
+  /** The memory that the broker keeps free, in MB. The default is 1024. */
   readonly reserveMb?: number | undefined;
   /** The time between two reads of the process list. The default is 10 seconds. */
   readonly processEveryMs?: number | undefined;
@@ -31,7 +31,7 @@ export interface Status {
   readonly at: number;
   readonly memory: SystemMemory;
   readonly reserveMb: number;
-  /** The amounts that a new lease can get now. */
+  /** The amounts that a new lease can get at this time. */
   readonly free: Record<string, number>;
   readonly pools: Record<string, number>;
   readonly leases: readonly Lease[];
@@ -84,7 +84,7 @@ export class Engine {
     this.#memory = this.#sampler.memory();
   }
 
-  /** This function gives the capacity now. */
+  /** This function gives the capacity at this time. */
   capacity(): Capacity {
     return { totalMb: this.#memory.totalMb, availableMb: this.#memory.availableMb, pools: this.#store.pools() };
   }
@@ -124,7 +124,7 @@ export class Engine {
     return this.#broker.get(lease.id) ?? lease;
   }
 
-  /** This function ends a lease, then grants the waiting leases that now fit. */
+  /** This function ends a lease. Then it grants the waiting leases that fit in the memory that the lease frees. */
   release(id: string, reason?: string): Lease | undefined {
     const lease = this.#broker.release(id, reason);
     if (lease) this.#persist([lease]);
@@ -150,7 +150,7 @@ export class Engine {
     this.#persist(this.#broker.tick(this.capacity()));
   }
 
-  /** This function gives the state now. */
+  /** This function gives the state at this time. */
   status(): Status {
     const capacity = this.capacity();
     return {

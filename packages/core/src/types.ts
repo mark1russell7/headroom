@@ -27,7 +27,7 @@ export interface ProcessInfo {
   readonly name: string;
   /** The private memory of the process: the part that no other process shares. */
   readonly privateMb: number;
-  /** The working set of the process: the part in physical memory now. */
+  /** The working set of the process: the part in physical memory at this time. */
   readonly workingMb: number;
 }
 

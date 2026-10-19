@@ -12,7 +12,8 @@
     "template": "template repo",
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
-    "lint:ste": "ste-lint"
+    "lint:ste": "ste-lint",
+    "headroom": "node packages/daemon/src/cli.ts"
   },
   "devDependencies": {
     "@mark1russell7/template-cli": "^0.1.0",

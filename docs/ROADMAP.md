@@ -1,6 +1,6 @@
-# The roadmap of headroom
+# The roadmap of headroodondone (done (done (done (in progress0)0)0)0)
 
-Mark approved the plan on 2026-10-19. The plan follows his design rule: choose the most general option for the long term.
+Mark approved the plan on 2026-10-19. The plan follows the design rule of Mark: choose the most general option for the long term.
 
 ## The design
 
@@ -37,10 +37,10 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 
 | ID | Item | Status |
 |---|---|---|
-| H0 | The repository, the plan and the tracker | in progress |
-| H1 | The sampler: the memory counters, the owner of each process tree, the history in SQLite | next |
-| H2 | The leases: the pools, the admission rule, the queue, the release on process exit | next |
-| H3 | The daemon: the `resources.*` procedures on `runProcedureHost` over HTTP, and the `headroom` CLI | next |
+| H0 | The repository, the plan and the tracker | done |
+| H1 | The sampler: the memory counters, the owner of each process tree, the history in SQLite | done (v0) |
+| H2 | The leases: the pools, the admission rule, the queue, the release on process exit | done (v0) |
+| H3 | The daemon: the `resources.*` procedures on `runProcedureHost` over HTTP, and the `headroom` CLI | done (v0) |
 | H4 | The MCP face: the tools, and a long wait as an MCP task (after client CLI-11 and CLI-35) | later |
 | H5 | The hub: the organizer writes the state of headroom into the `resources` collection of the Fleet Hub | later |
 | H6 | Enforce on Windows: a job object with a memory limit, and a stop when the job closes | later |
@@ -48,9 +48,9 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H8 | A Claude Code hook that sends each heavy command through `headroom run` | later |
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | later |
 | H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | later |
-| H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | next |
+| H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress |
 | H12 | Start the daemon at login, and start it again after a crash | later |
-| H13 | The resume plan: the command of each live session, for a reboot | in progress |
+| H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
 
 ## The MCP gateway (H11)
 

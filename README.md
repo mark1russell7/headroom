@@ -9,12 +9,42 @@ Many Claude Code sessions, Docker and the browser share one computer. When memor
 headroom does three jobs:
 
 1. **Observe.** It samples the memory counters of the computer every few seconds. It gives the memory of each process tree to its owner, for example a Claude Code session or Docker. It keeps the history in SQLite.
-2. **Admit.** A job asks for a lease: an amount of memory, a number of processors, or a slot of another named resource. headroom grants the lease when the measured free memory has room for it. Otherwise the job waits in a queue.
+2. **Admit.** A job asks for a lease. The lease names an amount of memory, a count of processors or a slot of a named resource. The daemon grants the lease when the measured free memory has room for it. Otherwise the job waits in a queue.
 3. **Enforce.** headroom starts the job itself, with a memory limit at the size of its lease. On Windows, a job object holds the limit. On Linux, a cgroup holds it. A job that grows past its lease stops with a clear reason, and the other jobs keep their memory.
 
 ## Status
 
-Version 0 is in progress. `docs/ROADMAP.md` gives the plan and the status of each item.
+Version 0 works: the sampler, the leases, the daemon and the CLI. Its leases are advisory. `docs/ROADMAP.md` gives the plan and the status of each item.
+
+## Use
+
+Start the daemon in a terminal. It listens on `127.0.0.1:4730` and writes its address and token to `~/.headroom/daemon.json`.
+
+```sh
+headroom serve
+```
+
+Run a heavy job under a lease. The job waits until the memory is free. When the daemon does not run, the job runs at once with a warning.
+
+```sh
+headroom run --mem 2g -- pnpm test
+headroom run --slot docker --mem 1g -- docker compose up -d mongo
+```
+
+See the memory, the free amounts, the leases and the memory of each owner:
+
+```sh
+headroom status
+headroom history --minutes 120
+```
+
+A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
+
+| Exit code | Meaning |
+|---|---|
+| The code of the job | The job ran under its lease. |
+| 75 | The lease was not granted in time, or it ended before the job started. Nothing ran. |
+| 2 | The command line is not correct. |
 
 ## How it is built
 

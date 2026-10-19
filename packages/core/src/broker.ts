@@ -49,7 +49,7 @@ export interface Lease {
 export interface Capacity {
   /** The total physical memory, in MB. */
   readonly totalMb: number;
-  /** The available memory now, in MB, as the sampler measured it. */
+  /** The available memory at the time of the sample, in MB. */
   readonly availableMb: number;
   /** The capacity of each configured pool. A pool with no entry has a capacity of 1: a lock. */
   readonly pools: Amounts;
@@ -61,9 +61,9 @@ export interface BrokerOptions {
   readonly newId?: (() => string) | undefined;
   /** This function tells if a process runs. The default asks the operating system. */
   readonly isAlive?: ((pid: number) => boolean) | undefined;
-  /** This function gives the memory, in MB, that the processes of a granted lease use now. */
+  /** This function gives the memory, in MB, that the processes of a granted lease use at this time. */
   readonly usedMb?: ((lease: Lease) => number) | undefined;
-  /** The memory that the broker never grants, in MB. The default is 1024. */
+  /** The memory that the broker keeps free, in MB. The default is 1024. */
   readonly reserveMb?: number | undefined;
   /** A waiting request gains 1 of priority for each period of this length. The default is 1 minute. */
   readonly agingMs?: number | undefined;
@@ -176,7 +176,7 @@ export class Broker {
   }
 
   /**
-   * This function gives the amounts that a new lease can get now. For the memory, it is the
+   * This function gives the amounts that a new lease can get at this time. For the memory, it is the
    * available memory less the reserve, less the part of each granted lease that its job does not use yet.
    */
   free(capacity: Capacity): Record<string, number> {
@@ -235,7 +235,7 @@ export class Broker {
     return lease.priority + Math.floor((now - lease.requestedAt) / this.#agingMs);
   }
 
-  /** This function tells why a lease can never fit, or gives `null` when it can fit. */
+  /** This function tells why a lease cannot fit at any time, or gives `null` when it can fit. */
   #neverFits(lease: Lease, capacity: Capacity): string | null {
     for (const [name, amount] of Object.entries(lease.amounts)) {
       const limit = name === MEMORY ? capacity.totalMb - this.#reserveMb : (capacity.pools[name] ?? 1);
@@ -244,7 +244,7 @@ export class Broker {
     return null;
   }
 
-  /** This function tells which amount does not fit now, or gives `null` when all fit. */
+  /** This function tells which amount does not fit at this time, or gives `null` when all fit. */
   #shortOf(lease: Lease, free: Record<string, number>): string | null {
     for (const [name, amount] of Object.entries(lease.amounts)) {
       const left = free[name] ?? (name === MEMORY ? 0 : 1);

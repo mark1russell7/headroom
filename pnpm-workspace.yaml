@@ -11,3 +11,6 @@ allowBuilds:
 
 minimumReleaseAgeExclude:
   - "@mark1russell7/template-cli@0.1.0"
+  - "@procedures/client@0.13.2"
+  - "@procedures/peer@0.13.2"
+  - "@procedures/server@0.13.2"
