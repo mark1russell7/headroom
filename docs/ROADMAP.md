@@ -48,8 +48,19 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H8 | A Claude Code hook that sends each heavy command through `headroom run` | later |
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | later |
 | H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | later |
-| H11 | Measure the memory of the MCP servers of each session, then decide on one shared copy | later |
+| H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | next |
 | H12 | Start the daemon at login, and start it again after a crash | later |
+| H13 | The resume plan: the command of each live session, for a reboot | in progress |
+
+## The MCP gateway (H11)
+
+A stdio MCP server has one pipe to one client. Claude Code starts each stdio server for each session, so 11 sessions run 11 copies. On 2026-10-19, 127 MCP processes held 8.5 GB of private memory.
+
+- headroom starts each local MCP server that keeps no state for a session. It starts one copy only.
+- headroom connects to it as an MCP client, and serves it at `http://127.0.0.1:4730/mcp/<name>`.
+- The sessions use that URL as an `http` server. A token in a header protects it.
+- headroom starts a server again after a crash. It reports the memory of each server as the owner `mcp:<name>`.
+- A server that keeps state for each session stays a stdio server: for example playwright, with one browser for each session.
 
 ## Version 0
 
