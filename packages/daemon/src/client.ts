@@ -63,10 +63,7 @@ export function isNetworkError(error: unknown): boolean {
 
 const RESTART_CODES = new Set(["NETWORK_ERROR", "UNAUTHORIZED", "UNAVAILABLE", "SERVICE_UNAVAILABLE"]);
 
-/**
- * This function tells if an error comes from a restart of the daemon: no answer, the token of the old
- * process, or a daemon that stops.
- */
+/** This function tells if an error comes from a restart of the daemon. The causes: no answer, an old token, or a daemon that stops. */
 export function isRestartError(error: unknown): boolean {
   return typeof error === "object" && error !== null && RESTART_CODES.has(String((error as { code?: unknown }).code));
 }
