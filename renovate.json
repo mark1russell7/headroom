@@ -1,43 +1,5 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "helpers:pinGitHubActionDigestsToSemver"],
-  "timezone": "America/New_York",
-  "schedule": ["before 6am on monday"],
-  "minimumReleaseAge": "3 days",
-  "rangeStrategy": "bump",
-  "labels": ["dependencies"],
-  "platformAutomerge": false,
-  "packageRules": [
-    {
-      "description": "One pull request each week for the minor updates of the runtime dependencies. A person merges it.",
-      "matchUpdateTypes": ["minor"],
-      "groupName": "minor updates",
-      "groupSlug": "minor"
-    },
-    {
-      "description": "One pull request each week for the patch updates and the dev dependencies. Renovate merges it when CI passes.",
-      "matchUpdateTypes": ["patch", "digest", "pin"],
-      "groupName": "patch and dev updates",
-      "groupSlug": "patch-dev",
-      "automerge": true
-    },
-    {
-      "matchDepTypes": ["devDependencies"],
-      "matchUpdateTypes": ["minor", "patch"],
-      "groupName": "patch and dev updates",
-      "groupSlug": "patch-dev",
-      "automerge": true
-    },
-    {
-      "description": "One pull request each week for the GitHub Actions. Renovate merges it when CI passes.",
-      "matchManagers": ["github-actions"],
-      "groupName": "GitHub Actions",
-      "automerge": true
-    },
-    {
-      "description": "The packages of Mark: pnpm installs them after 1 day, so Renovate waits 1 day too.",
-      "matchPackageNames": ["@procedures/**", "@mark1russell7/**"],
-      "minimumReleaseAge": "1 day"
-    }
-  ]
+  "extends": ["github>mark1russell7/template//renovate/default"],
+  "ignorePaths": ["**/node_modules/**"]
 }
