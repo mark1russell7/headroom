@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
 import { createSampler, readSessions, type History, type Lease, type Status } from "@headroom/core";
-import { connect, isNetworkError, type Connection } from "./client.ts";
+import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
@@ -102,7 +102,9 @@ function runCommand(command: readonly string[]): Promise<number> {
   });
 }
 
-async function waitForGrant(connection: Connection, lease: Lease, deadline: number): Promise<Lease> {
+/** This function waits until the lease is no longer waiting. When the daemon restarts, it connects again and continues to wait. */
+async function waitForGrant(start: Connection, lease: Lease, deadline: number): Promise<{ lease: Lease; connection: Connection }> {
+  let connection = start;
   let current = lease;
   let said = "";
   while (current.state === "waiting" && Date.now() < deadline) {
@@ -110,9 +112,16 @@ async function waitForGrant(connection: Connection, lease: Lease, deadline: numb
       console.error(`headroom: ${current.job} ${current.reason}`);
       said = current.reason;
     }
-    current = await connection.call<Lease>(["resources", "wait"], { id: current.id, timeoutMs: Math.max(1000, Math.min(60_000, deadline - Date.now())) });
+    try {
+      current = await connection.call<Lease>(["resources", "wait"], { id: current.id, timeoutMs: Math.max(1000, Math.min(60_000, deadline - Date.now())) });
+    } catch (error) {
+      if (!isRestartError(error)) throw error;
+      // The new process of the daemon has a new token, and it keeps the lease.
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      connection = connect() ?? connection;
+    }
   }
-  return current;
+  return { lease: current, connection };
 }
 
 async function run(argv: string[]): Promise<number> {
@@ -159,9 +168,9 @@ async function run(argv: string[]): Promise<number> {
     console.error("headroom: the daemon does not answer, so the job runs without a lease.");
     return runCommand(positionals);
   }
-  const lease = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
+  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
   if (lease.state === "waiting") {
-    await connection.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
+    await latest.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
     console.error(`headroom: ${job} waited too long (${lease.reason ?? "no room"}). Nothing ran.`);
     return 75;
   }
@@ -171,7 +180,7 @@ async function run(argv: string[]): Promise<number> {
   }
   const code = await runCommand(positionals);
   try {
-    await connection.call(["resources", "release"], { id: lease.id, reason: `the job ended with code ${code}` });
+    await (connect() ?? latest).call(["resources", "release"], { id: lease.id, reason: `the job ended with code ${code}` });
   } catch {
     // The daemon ends the lease anyway when this process exits.
   }
