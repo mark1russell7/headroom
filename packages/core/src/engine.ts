@@ -44,6 +44,8 @@ export interface Status {
   readonly sessions: readonly SessionInfo[];
   /** The active alerts, the oldest first. */
   readonly alerts: readonly Alert[];
+  /** The process of the daemon: its ID, its private memory in MB from the last read of the processes, and its start. */
+  readonly self: { readonly pid: number; readonly privateMb: number; readonly startedAt: number };
 }
 
 /** An alert that ended. */
@@ -129,6 +131,7 @@ export class Engine {
   #processesAt = 0;
   #recordedAt = 0;
   #prunedAt = 0;
+  readonly #startedAt: number;
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -141,6 +144,7 @@ export class Engine {
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#servers = options.servers ?? (() => new Map());
     this.#alertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
+    this.#startedAt = this.#now();
     this.#broker = new Broker({
       now: this.#now,
       reserveMb: this.#reserveMb,
@@ -264,6 +268,11 @@ export class Engine {
       owners: this.#owners,
       sessions: this.#sessions,
       alerts: [...this.#alerts.values()],
+      self: {
+        pid: process.pid,
+        privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
+        startedAt: this.#startedAt,
+      },
     };
   }
 
