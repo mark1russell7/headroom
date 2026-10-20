@@ -100,6 +100,7 @@ describe("Engine pool tags", () => {
     ];
     nonPagedMb = 1300;
     engine.tick();
+    expect(engine.poolTags().pagedGrowing).toEqual([]);
     expect(engine.poolTags().growing.map((row) => [row.tag, row.growthMb])).toEqual([
       ["DAL3", 300],
       ["File", 2],
@@ -107,6 +108,31 @@ describe("Engine pool tags", () => {
     const [alert] = engine.alerts().active;
     expect(alert?.kind).toBe("pool");
     expect(alert?.message).toContain("The tags that grow: DAL3 +300 MB, File +2 MB.");
+    engine.close();
+  });
+});
+
+describe("Engine paged pool tags", () => {
+  it("names the paged tag that grows in the paged pool alert", () => {
+    let now = 1_000_000;
+    let tags: PoolTag[] = [{ tag: "FMfn", nonPagedMb: 0, pagedMb: 470 }];
+    let pagedMb = 3000;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: pagedMb, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      poolTags: () => tags,
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere", alertRules: { ...DEFAULT_ALERT_RULES, pagedMb: 3500 } });
+    engine.tick();
+    now += 6 * 60_000;
+    tags = [{ tag: "FMfn", nonPagedMb: 0, pagedMb: 816 }];
+    pagedMb = 3600;
+    engine.tick();
+    expect(engine.poolTags().pagedGrowing).toEqual([{ tag: "FMfn", pagedMb: 816, growthMb: 346 }]);
+    const [alert] = engine.alerts().active;
+    expect(alert?.id).toBe("pool:paged");
+    expect(alert?.message).toContain("The tags that grow: FMfn +346 MB.");
     engine.close();
   });
 });

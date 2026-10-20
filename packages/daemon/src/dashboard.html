@@ -519,7 +519,16 @@ function renderTags() {
     h("tbody", {}, t.largest.slice(0, 10).map((r) => h("tr", {},
       h("td", { class: "mono", text: r.tag }),
       h("td", { style: "white-space:nowrap" }, h("span", { class: "miniBar", style: `width:${Math.max(2, (r.nonPagedMb / max) * 120).toFixed(0)}px` }), mb(r.nonPagedMb)),
-      h("td", { class: `num${r.growthMb >= 10 ? " up" : ""}`, text: first ? "-" : `${r.growthMb >= 0 ? "+" : ""}${r.growthMb} MB` }))))));
+      h("td", { class: `num${r.growthMb >= 10 ? " up" : ""}`, text: first ? "-" : `${r.growthMb >= 0 ? "+" : ""}${r.growthMb} MB` })))),
+  ), ...(first || !(t.pagedGrowing || []).length ? [] : [
+    h("p", { class: "hint", style: "margin:14px 0 6px", text: "The paged pool: the tags that grew most. A file system filter that keeps file names grows FMfn." }),
+    h("table", {},
+      h("thead", {}, h("tr", {}, h("th", { text: "Tag" }), h("th", { class: "num", text: "Paged" }), h("th", { class: "num", text: "Change" }))),
+      h("tbody", {}, t.pagedGrowing.slice(0, 5).map((r) => h("tr", {},
+        h("td", { class: "mono", text: r.tag }),
+        h("td", { class: "num", text: mb(r.pagedMb) }),
+        h("td", { class: `num${r.growthMb >= 10 ? " up" : ""}`, text: `+${r.growthMb} MB` }))))),
+  ]));
 }
 
 // ---- the refresh loops ----

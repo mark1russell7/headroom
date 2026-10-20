@@ -45,5 +45,12 @@ describe("detect", () => {
     expect(alerts[2]?.message).toContain("800 MB more than one hour ago");
   });
 
+  it("flags a large or fast-growing paged pool", () => {
+    const big = detect({ ...input([], {}), memory: { ...memory, kernelPagedMb: 4600 } });
+    expect(big.map((alert) => alert.id)).toEqual(["pool:paged"]);
+    const fast = detect({ ...input([], {}), memory: { ...memory, kernelPagedMb: 2900 }, pagedHourAgoMb: 2200 });
+    expect(fast[0]?.message).toContain("The paged kernel pool is 2.8 GB, 700 MB more than one hour ago");
+  });
+
   it("gives nothing on a quiet computer", () => expect(detect({ ...input([], {}), poolHourAgoMb: 980 })).toEqual([]));
 });
