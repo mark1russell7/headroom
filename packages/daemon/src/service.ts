@@ -18,8 +18,8 @@ import { answers } from "./client.ts";
 import { headroomHome, logPath, readDiscovery } from "./paths.ts";
 
 /**
- * The title of the daemon process. It is in the command line of the daemon, so a search for the daemon
- * finds it, and a broad search for `cli.ts` does not need to stop it.
+ * The title of the daemon process. The command line of the daemon contains it. Thus a search can find
+ * the daemon by its title, not by `cli.ts`.
  */
 export const DAEMON_TITLE = "headroom-daemon";
 
