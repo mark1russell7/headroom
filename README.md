@@ -48,7 +48,7 @@ On Windows, `headroom run` puts the job into a job object:
 - When the run ends, Windows stops each process that the job started and that still runs. Thus a test server or a search does not stay as an orphan. `--keep` turns this off, for a command that starts a service on purpose.
 - `--limit` makes the memory of the lease a hard limit: the job cannot commit more. An allocation above the limit fails, and the job stops with its own error.
 - The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak.
-- A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time: two at the same time start so many browser processes that new processes can fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` allows two.
+- A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` lets two run.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
