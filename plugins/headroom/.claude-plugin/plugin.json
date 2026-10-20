@@ -1,0 +1,10 @@
+{
+  "name": "headroom",
+  "description": "A hook that sends a heavy command (tests, builds, Playwright, Docker builds) through headroom run when the memory of the computer is tight.",
+  "author": {
+    "name": "Mark Russell"
+  },
+  "repository": "https://github.com/mark1russell7/headroom",
+  "license": "MIT",
+  "keywords": ["headroom", "memory", "leases", "hooks"]
+}
