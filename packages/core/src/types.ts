@@ -83,3 +83,14 @@ export interface PoolTag {
   readonly nonPagedMb: number;
   readonly pagedMb: number;
 }
+
+/**
+ * The load of the desktop session: the processes, and the USER and GDI objects of all its processes. Each process
+ * with a window takes part of the desktop heap. When the heap runs out, a new process stops at its start with
+ * 0xC0000142, also with free memory. Windows gives no counter of the heap itself, so these numbers stand for it.
+ */
+export interface SessionLoad {
+  readonly processes: number;
+  readonly userObjects: number | null;
+  readonly gdiObjects: number | null;
+}

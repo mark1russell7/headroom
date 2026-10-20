@@ -18,4 +18,4 @@ export type { Sampler } from "./sampler.ts";
 export { Store } from "./store.ts";
 export type { MemoryRow, OwnerRow } from "./store.ts";
 export { MEMORY } from "./types.ts";
-export type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, ProcessInfo, Sample, SessionInfo, SystemMemory } from "./types.ts";
+export type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, ProcessInfo, Sample, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";

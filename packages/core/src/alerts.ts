@@ -6,6 +6,7 @@
  * - `memory`: little available memory.
  * - `commit`: a commit charge near its limit.
  * - `pool`: a large kernel pool (non-paged or paged), or a pool that grows fast. A driver leak shows here.
+ * - `desktop`: many processes in the session. The desktop heap can run out, and new processes then fail at their start.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -13,10 +14,10 @@
  */
 
 import type { Lease } from "./broker.ts";
-import type { OwnerKind, ProcessInfo, SystemMemory } from "./types.ts";
+import type { OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "stop";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "stop";
 
 /** One active alert. */
 export interface Alert {
@@ -51,6 +52,8 @@ export interface AlertRules {
   readonly pagedMb: number;
   /** A paged pool that grows more than this in one hour, in MB, starts an alert. The default is 500. */
   readonly pagedGrowthMb: number;
+  /** More processes than this in the session start an alert. The default is 1000. */
+  readonly processes: number;
 }
 
 /** The default limits. */
@@ -63,6 +66,7 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   poolGrowthMb: 500,
   pagedMb: 4096,
   pagedGrowthMb: 500,
+  processes: 1000,
 };
 
 /** The data of one check. */
@@ -77,6 +81,8 @@ export interface AlertInput {
   readonly poolHourAgoMb?: number | undefined;
   /** The paged pool one hour ago, in MB, when the history has it. */
   readonly pagedHourAgoMb?: number | undefined;
+  /** The load of the session. */
+  readonly load?: SessionLoad | undefined;
 }
 
 /** The owner kinds that a runaway alert does not examine: Docker and WSL have caps of their own, and the system is not a job. */
@@ -165,6 +171,18 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       pid: null,
       mb: Math.round(memory.kernelPagedMb),
       message: `The paged kernel pool is ${gb(memory.kernelPagedMb)}${pagedGrowth > 0 ? `, ${Math.round(pagedGrowth)} MB more than one hour ago` : ""}. A file system filter can leak it.`,
+    });
+  }
+  const load = input.load;
+  if (load && load.processes > rules.processes) {
+    const objects = load.userObjects === null ? "" : ` (${load.userObjects} USER and ${load.gdiObjects ?? 0} GDI objects)`;
+    alerts.push({
+      id: "desktop",
+      kind: "desktop",
+      subject: "session",
+      pid: null,
+      mb: 0,
+      message: `${load.processes} processes run in this session${objects}. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.`,
     });
   }
   return alerts;

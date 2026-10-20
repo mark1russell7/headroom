@@ -48,6 +48,7 @@ On Windows, `headroom run` puts the job into a job object:
 - When the run ends, Windows stops each process that the job started and that still runs. Thus a test server or a search does not stay as an orphan. `--keep` turns this off, for a command that starts a service on purpose.
 - `--limit` makes the memory of the lease a hard limit: the job cannot commit more. An allocation above the limit fails, and the job stops with its own error.
 - The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak.
+- A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time: two at the same time start so many browser processes that new processes can fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` allows two.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
@@ -60,6 +61,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `orphan` | A process with no owner holds more than 1 GB, and its parent stopped. |
 | `memory` | Less than 1 GB of memory is available. |
 | `commit` | The commit charge is above 90% of its limit. |
+| `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 

@@ -5,6 +5,7 @@
  * - A Toolhelp snapshot gives each process with its parent.
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
  * - `NtQuerySystemInformation` of `ntdll.dll` gives the use of the kernel pools by each pool tag.
+ * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
@@ -183,7 +184,19 @@ function poolTags(): PoolTag[] {
   throw new Error("NtQuerySystemInformation: the buffer stays too small");
 }
 
+const user32 = koffi.load("user32.dll");
+const getGuiResources = user32.func("uint32_t __stdcall GetGuiResources(intptr_t process, uint32_t flags)");
+// GR_GLOBAL in place of a process handle gives the counts of all the processes of the session.
+const GR_GLOBAL = -2;
+const GR_GDIOBJECTS = 0;
+const GR_USEROBJECTS = 1;
+
+/** This function reads the USER and GDI objects of all the processes of the session. */
+function gui(): { userObjects: number; gdiObjects: number } {
+  return { userObjects: getGuiResources(GR_GLOBAL, GR_USEROBJECTS), gdiObjects: getGuiResources(GR_GLOBAL, GR_GDIOBJECTS) };
+}
+
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, poolTags, close: () => {} };
+  return { memory, processes, poolTags, gui, close: () => {} };
 }

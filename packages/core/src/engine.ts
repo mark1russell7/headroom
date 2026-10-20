@@ -8,7 +8,7 @@ import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import type { Sampler } from "./sampler.ts";
 import type { MemoryRow, OwnerRow, Store } from "./store.ts";
-import type { McpServerSpec, OwnerUsage, ProcessInfo, SessionInfo, SystemMemory } from "./types.ts";
+import type { McpServerSpec, OwnerUsage, ProcessInfo, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";
 
 /** The options of an engine. */
 export interface EngineOptions {
@@ -46,6 +46,8 @@ export interface Status {
   readonly alerts: readonly Alert[];
   /** The process of the daemon: its ID, its private memory in MB from the last read of the processes, and its start. */
   readonly self: { readonly pid: number; readonly privateMb: number; readonly startedAt: number };
+  /** The processes and the USER and GDI objects of the session, from the last read of the processes. */
+  readonly session: SessionLoad;
 }
 
 /** An alert that ended. */
@@ -122,6 +124,7 @@ export class Engine {
   #memory: SystemMemory;
   #processes: readonly ProcessInfo[] = [];
   #owners: readonly OwnerUsage[] = [];
+  #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
   readonly #alertRules: AlertRules;
   readonly #alerts = new Map<string, Alert>();
   #ended: EndedAlert[] = [];
@@ -174,6 +177,8 @@ export class Engine {
       this.#sessions = readSessions(this.#sessionsDir);
       const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers());
       this.#owners = owners;
+      const gui = this.#sampler.gui?.();
+      this.#load = { processes: this.#processes.length, userObjects: gui?.userObjects ?? null, gdiObjects: gui?.gdiObjects ?? null };
       if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
         this.#tagsAt = now;
         const read = this.#sampler.poolTags();
@@ -187,7 +192,7 @@ export class Engine {
     this.#persist(changed);
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
-      this.#store.saveSample(now, this.#memory, this.#owners);
+      this.#store.saveSample(now, this.#memory, this.#owners, this.#load);
     }
     if (now - this.#prunedAt >= 3_600_000) {
       this.#prunedAt = now;
@@ -272,6 +277,7 @@ export class Engine {
       owners: this.#owners,
       sessions: this.#sessions,
       alerts: [...this.#alerts.values()],
+      session: this.#load,
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -348,7 +354,7 @@ export class Engine {
     const poolHourAgoMb = hourOld ? first.kernelNonpagedMb : undefined;
     const pagedHourAgoMb = hourOld ? first.kernelPagedMb : undefined;
     const found = detect(
-      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb },
+      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb, load: this.#load },
       this.#alertRules,
     );
     // A pool alert names the tags that grow, so the reader can find the driver.
