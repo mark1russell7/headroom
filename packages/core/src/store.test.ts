@@ -21,7 +21,7 @@ describe("Store", () => {
 
     const memory = { totalMb: 28000, availableMb: 700, commitMb: 66000, commitLimitMb: 77000, kernelPagedMb: 2400, kernelNonpagedMb: 5000 };
     store.saveSample(1000, memory, [{ owner: "kernel", kind: "kernel", privateMb: 7400, workingMb: 7400, processes: 0 }]);
-    expect(store.memorySince(0)).toEqual([{ at: 1000, ...memory }]);
+    expect(store.memorySince(0)).toEqual([{ at: 1000, ...memory, processes: null, userObjects: null, gdiObjects: null }]);
     expect(store.ownersSince(0)[0]?.owner).toBe("kernel");
     store.prune(2000);
     expect(store.memorySince(0)).toEqual([]);

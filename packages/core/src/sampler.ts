@@ -12,6 +12,8 @@ export interface Sampler {
   processes(): ProcessInfo[];
   /** This function reads the use of the kernel pools by each pool tag. Only Windows has pool tags. */
   poolTags?(): PoolTag[];
+  /** This function reads the USER and GDI objects of all the processes of the session. Only Windows has them. */
+  gui?(): { readonly userObjects: number; readonly gdiObjects: number };
   /** This function frees the resources of the sampler. */
   close(): void;
 }

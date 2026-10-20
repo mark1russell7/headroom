@@ -9,11 +9,15 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
-import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, SystemMemory } from "./types.ts";
+import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
 export interface MemoryRow extends SystemMemory {
   readonly at: number;
+  /** The load of the session at the sample, when the sample has it. */
+  readonly processes?: number | null;
+  readonly userObjects?: number | null;
+  readonly gdiObjects?: number | null;
 }
 
 /** One stored owner sample. */
@@ -33,7 +37,8 @@ CREATE TABLE IF NOT EXISTS pools (name TEXT PRIMARY KEY, capacity REAL NOT NULL)
 CREATE TABLE IF NOT EXISTS mcp_servers (name TEXT PRIMARY KEY, spec TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS memory (
   at INTEGER PRIMARY KEY, total_mb INTEGER, available_mb INTEGER, commit_mb INTEGER,
-  commit_limit_mb INTEGER, kernel_paged_mb INTEGER, kernel_nonpaged_mb INTEGER
+  commit_limit_mb INTEGER, kernel_paged_mb INTEGER, kernel_nonpaged_mb INTEGER,
+  processes INTEGER, user_objects INTEGER, gdi_objects INTEGER
 );
 CREATE TABLE IF NOT EXISTS owners (
   at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL,
@@ -53,6 +58,10 @@ export class Store {
     // A database of an older version has no column for the peak memory of a lease.
     const columns = this.#db.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
     if (!columns.includes("peak_mb")) this.#db.exec("ALTER TABLE leases ADD COLUMN peak_mb REAL");
+    const memoryColumns = this.#db.prepare("PRAGMA table_info(memory)").all().map((row) => String(row["name"]));
+    for (const column of ["processes", "user_objects", "gdi_objects"]) {
+      if (!memoryColumns.includes(column)) this.#db.exec(`ALTER TABLE memory ADD COLUMN ${column} INTEGER`);
+    }
   }
 
   /** This function writes a lease, new or changed. */
@@ -115,10 +124,16 @@ export class Store {
   }
 
   /** This function writes one memory sample and the memory of each owner at the same time. */
-  saveSample(at: number, memory: SystemMemory, owners: readonly OwnerUsage[]): void {
+  saveSample(at: number, memory: SystemMemory, owners: readonly OwnerUsage[], load?: SessionLoad): void {
     this.#db
-      .prepare("INSERT OR REPLACE INTO memory VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(at, memory.totalMb, memory.availableMb, memory.commitMb, memory.commitLimitMb, memory.kernelPagedMb, memory.kernelNonpagedMb);
+      .prepare(
+        `INSERT OR REPLACE INTO memory (at, total_mb, available_mb, commit_mb, commit_limit_mb, kernel_paged_mb, kernel_nonpaged_mb,
+           processes, user_objects, gdi_objects) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        at, memory.totalMb, memory.availableMb, memory.commitMb, memory.commitLimitMb, memory.kernelPagedMb, memory.kernelNonpagedMb,
+        load?.processes ?? null, load?.userObjects ?? null, load?.gdiObjects ?? null,
+      );
     const insert = this.#db.prepare("INSERT OR REPLACE INTO owners VALUES (?, ?, ?, ?, ?, ?)");
     for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes);
   }
@@ -133,7 +148,8 @@ export class Store {
       step > 60_000
         ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, AVG(total_mb) AS total_mb, AVG(available_mb) AS available_mb,
              AVG(commit_mb) AS commit_mb, AVG(commit_limit_mb) AS commit_limit_mb, AVG(kernel_paged_mb) AS kernel_paged_mb,
-             AVG(kernel_nonpaged_mb) AS kernel_nonpaged_mb
+             AVG(kernel_nonpaged_mb) AS kernel_nonpaged_mb, MAX(processes) AS processes, MAX(user_objects) AS user_objects,
+             MAX(gdi_objects) AS gdi_objects
            FROM memory WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER) ORDER BY at`
         : "SELECT * FROM memory WHERE at >= ? ORDER BY at";
     return this.#db.prepare(query).all(since).map((row) => ({
@@ -144,6 +160,9 @@ export class Store {
       commitLimitMb: Number(row["commit_limit_mb"]),
       kernelPagedMb: Number(row["kernel_paged_mb"]),
       kernelNonpagedMb: Number(row["kernel_nonpaged_mb"]),
+      processes: row["processes"] == null ? null : Number(row["processes"]),
+      userObjects: row["user_objects"] == null ? null : Number(row["user_objects"]),
+      gdiObjects: row["gdi_objects"] == null ? null : Number(row["gdi_objects"]),
     }));
   }
 

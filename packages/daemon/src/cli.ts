@@ -22,6 +22,7 @@ import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
 import { parseMemory, parseTime } from "./parse.ts";
+import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import * as service from "./service.ts";
 
 const HELP = `headroom: the memory and job broker of this computer
@@ -34,6 +35,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g|auto] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
+               A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
@@ -80,6 +82,8 @@ function printStatus(status: Status): void {
   if ((status.alerts ?? []).length > 0) console.log("");
   console.log(`Memory: ${mb(memory.availableMb)} available of ${mb(memory.totalMb)}. Committed ${mb(memory.commitMb)} of ${mb(memory.commitLimitMb)}.`);
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
+  const load = status.session;
+  if (load) console.log(`Session: ${load.processes} processes${load.userObjects === null ? "" : `, ${load.userObjects} USER and ${load.gdiObjects ?? 0} GDI objects`}.`);
   const free = Object.entries(status.free).map(([name, amount]) => `${name} ${name === "memory" ? mb(Math.max(0, amount)) : amount}`);
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
@@ -192,6 +196,7 @@ async function run(argv: string[]): Promise<number> {
       wait: { type: "string" },
       limit: { type: "boolean" },
       keep: { type: "boolean" },
+      "no-auto-slot": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
@@ -202,6 +207,13 @@ async function run(argv: string[]): Promise<number> {
   if (values.mem && values.mem !== "auto") amounts["memory"] = parseMemory(values.mem);
   if (values.cpu) amounts["cpu"] = Number(values.cpu);
   for (const slot of values.slot ?? []) amounts[slot] = (amounts[slot] ?? 0) + 1;
+  // Browser tests of two sessions at the same time start many browser processes, and process starts can fail
+  // (0xC0000142). The slot `browser` is a lock of 1 unless a pool sets more.
+  for (const slot of values["no-auto-slot"] === true ? [] : autoSlots(positionals.join(" "))) {
+    if (amounts[slot] !== undefined) continue;
+    amounts[slot] = 1;
+    if (slot === BROWSER_SLOT) console.error(`headroom: this job runs browser tests, so it takes the slot "${BROWSER_SLOT}": one browser test job at a time.`);
+  }
   const job = values.job ?? positionals.join(" ").slice(0, 500);
   if (values.limit && !values.mem) {
     console.error("headroom run --limit needs --mem: the limit is the memory of the lease.");

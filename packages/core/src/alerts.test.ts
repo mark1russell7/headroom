@@ -52,5 +52,12 @@ describe("detect", () => {
     expect(fast[0]?.message).toContain("The paged kernel pool is 2.8 GB, 700 MB more than one hour ago");
   });
 
+  it("flags a session with very many processes", () => {
+    const busy = detect({ ...input([], {}), load: { processes: 1240, userObjects: 9100, gdiObjects: 15000 } });
+    expect(busy.map((alert) => alert.id)).toEqual(["desktop"]);
+    expect(busy[0]?.message).toContain("1240 processes run in this session (9100 USER and 15000 GDI objects)");
+    expect(detect({ ...input([], {}), load: { processes: 504, userObjects: 2685, gdiObjects: 4445 } })).toEqual([]);
+  });
+
   it("gives nothing on a quiet computer", () => expect(detect({ ...input([], {}), poolHourAgoMb: 980 })).toEqual([]));
 });
