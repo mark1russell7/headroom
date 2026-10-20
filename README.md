@@ -57,6 +57,7 @@ headroom mcp list
 - The gateway starts a server at the first request, and stops it after 30 minutes with no request. `--idle 0` keeps it.
 - Start a server with `node` directly, not through `npx` or `pnpm exec`. A server of the MCP SDK stops when its input closes, so a stop of the daemon also stops it.
 - Use the gateway only for a server that keeps no state for a session. A server with one browser for each session stays a stdio server.
+- The gateway sends the progress of a call to its session. It also sends a question of the server (MCP elicitation) to the session of the call. Stdio does not tell which call asks. Thus, when more than one session waits for the server, the answer is `decline`.
 
 A program that starts only stdio servers, for example the launcher of a plugin, uses the bridge:
 

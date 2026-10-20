@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { HostFaceContext } from "@procedures/peer";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { killTree, McpGateway } from "./gateway.ts";
@@ -18,9 +19,9 @@ interface Counted {
   readonly pid: number;
 }
 
-function counted(result: unknown): Counted {
+function counted(result: unknown): Counted & Record<string, unknown> {
   const content = (result as { content: { type: string; text: string }[] }).content;
-  return JSON.parse(content[0]?.text ?? "{}") as Counted;
+  return JSON.parse(content[0]?.text ?? "{}") as Counted & Record<string, unknown>;
 }
 
 describe("McpGateway", () => {
@@ -29,8 +30,9 @@ describe("McpGateway", () => {
   let base = "";
   const clients: Client[] = [];
 
-  const connect = async (): Promise<Client> => {
-    const client = new Client({ name: "test", version: "1.0.0" });
+  const connect = async (answer?: boolean): Promise<Client> => {
+    const client = new Client({ name: "test", version: "1.0.0" }, answer === undefined ? {} : { capabilities: { elicitation: {} } });
+    if (answer !== undefined) client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { ok: answer } }));
     const transport = new StreamableHTTPClientTransport(new URL(`${base}/mcp/counter`), { requestInit: { headers: { Authorization: "Bearer secret" } } });
     await client.connect(transport as unknown as Parameters<Client["connect"]>[0]);
     clients.push(client);
@@ -60,7 +62,7 @@ describe("McpGateway", () => {
   it("serves one copy of a server to two sessions", async () => {
     const a = await connect();
     const b = await connect();
-    expect((await a.listTools()).tools.map((tool) => tool.name)).toEqual(["count"]);
+    expect((await a.listTools()).tools.map((tool) => tool.name)).toEqual(["count", "confirm"]);
     expect(a.getInstructions()).toBe("Counts the calls.");
     const first = counted(await a.callTool({ name: "count", arguments: {} }));
     const second = counted(await b.callTool({ name: "count", arguments: {} }));
@@ -75,6 +77,14 @@ describe("McpGateway", () => {
     const seen: number[] = [];
     await client.callTool({ name: "count", arguments: { steps: 3 } }, undefined, { onprogress: (progress) => seen.push(progress.progress) });
     expect(seen).toEqual([1, 2, 3]);
+  });
+
+  it("sends a question of the server to the session of the call", async () => {
+    const asks = await connect(true);
+    expect(counted(await asks.callTool({ name: "confirm", arguments: {} }))).toEqual({ action: "accept", content: { ok: true } });
+    // A session without the elicitation capability cannot answer: the server gets `decline`.
+    const silent = await connect();
+    expect(counted(await silent.callTool({ name: "confirm", arguments: {} }))).toMatchObject({ action: "decline" });
   });
 
   it("refuses a request without the token, and a web page", async () => {
@@ -145,7 +155,7 @@ describe("the stdio bridge", () => {
   it("connects a stdio client to the one copy", async () => {
     const a = await bridged();
     const b = await bridged();
-    expect((await a.listTools()).tools.map((tool) => tool.name)).toEqual(["count"]);
+    expect((await a.listTools()).tools.map((tool) => tool.name)).toEqual(["count", "confirm"]);
     const first = counted(await a.callTool({ name: "count", arguments: {} }));
     const second = counted(await b.callTool({ name: "count", arguments: {} }));
     expect(second.pid).toBe(first.pid);

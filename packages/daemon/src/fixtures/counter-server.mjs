@@ -20,4 +20,11 @@ server.registerTool(
     return { content: [{ type: "text", text: JSON.stringify({ count, pid: process.pid }) }] };
   },
 );
+server.registerTool("confirm", { description: "Ask the person a question" }, async () => {
+  const answer = await server.server.elicitInput({
+    message: "Release the page?",
+    requestedSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+  });
+  return { content: [{ type: "text", text: JSON.stringify(answer) }] };
+});
 await server.connect(new StdioServerTransport());
