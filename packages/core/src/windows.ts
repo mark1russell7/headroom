@@ -4,6 +4,7 @@
  * - `K32GetPerformanceInfo` gives the physical memory, the commit charge and the kernel pools.
  * - A Toolhelp snapshot gives each process with its parent.
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
+ * - `NtQuerySystemInformation` of `ntdll.dll` gives the use of the kernel pools by each pool tag.
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
@@ -11,7 +12,7 @@
 
 import koffi from "koffi";
 import { MB, type Sampler } from "./sampler.ts";
-import type { ProcessInfo, SystemMemory } from "./types.ts";
+import type { PoolTag, ProcessInfo, SystemMemory } from "./types.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -149,7 +150,40 @@ function processes(): ProcessInfo[] {
   return list;
 }
 
-/** This function gives the sampler of Windows. The library stays loaded for the life of the process. */
+const ntdll = koffi.load("ntdll.dll");
+const querySystemInformation = ntdll.func("int32 __stdcall NtQuerySystemInformation(uint32 cls, _Out_ uint8_t *buffer, uint32 length, _Out_ uint32 *returned)");
+const SYSTEM_POOL_TAG_INFORMATION = 22;
+const STATUS_INFO_LENGTH_MISMATCH = -1073741820;
+// One entry of SYSTEM_POOLTAG on 64-bit Windows: the tag, the paged counts and size, then the non-paged counts and size.
+const TAG_ENTRY = 40;
+let tagBuffer = Buffer.alloc(512 * 1024);
+
+/** This function reads the use of the kernel pools by each pool tag. A user without admin rights can read it. */
+function poolTags(): PoolTag[] {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const returned = [0];
+    const status = querySystemInformation(SYSTEM_POOL_TAG_INFORMATION, tagBuffer, tagBuffer.length, returned);
+    if (status === STATUS_INFO_LENGTH_MISMATCH) {
+      tagBuffer = Buffer.alloc(Math.max(tagBuffer.length * 2, (returned[0] ?? 0) + 64 * 1024));
+      continue;
+    }
+    if (status !== 0) throw new Error(`NtQuerySystemInformation failed with the status 0x${(status >>> 0).toString(16)}`);
+    const count = tagBuffer.readUInt32LE(0);
+    const tags: PoolTag[] = [];
+    for (let index = 0; index < count; index++) {
+      const at = 8 + index * TAG_ENTRY;
+      tags.push({
+        tag: tagBuffer.toString("latin1", at, at + 4),
+        pagedMb: Number(tagBuffer.readBigUInt64LE(at + 16)) / MB,
+        nonPagedMb: Number(tagBuffer.readBigUInt64LE(at + 32)) / MB,
+      });
+    }
+    return tags;
+  }
+  throw new Error("NtQuerySystemInformation: the buffer stays too small");
+}
+
+/** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, close: () => {} };
+  return { memory, processes, poolTags, close: () => {} };
 }

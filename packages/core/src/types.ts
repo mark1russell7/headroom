@@ -73,3 +73,13 @@ export interface SessionInfo {
   readonly status: string | null;
   readonly cwd: string | null;
 }
+
+/**
+ * The use of the kernel pools by one pool tag. A driver marks each of its kernel allocations with a tag
+ * of 4 characters, so the tag that grows names the driver that leaks.
+ */
+export interface PoolTag {
+  readonly tag: string;
+  readonly nonPagedMb: number;
+  readonly pagedMb: number;
+}
