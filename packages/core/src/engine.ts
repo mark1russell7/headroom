@@ -78,6 +78,8 @@ export interface PoolTags {
   readonly sinceAt: number | null;
   readonly largest: readonly PoolTagRow[];
   readonly growing: readonly PoolTagRow[];
+  /** The tags whose paged pool grew most over the window. */
+  readonly pagedGrowing: readonly { readonly tag: string; readonly pagedMb: number; readonly growthMb: number }[];
 }
 
 /** The time that an event alert stays active. */
@@ -110,7 +112,7 @@ export class Engine {
   readonly #reserveMb: number;
   readonly #processEveryMs: number;
   /** The snapshots of the non-paged pool by tag, in MB, of the last hour. */
-  #tags: { readonly at: number; readonly tags: ReadonlyMap<string, number> }[] = [];
+  #tags: { readonly at: number; readonly tags: ReadonlyMap<string, number>; readonly paged: ReadonlyMap<string, number> }[] = [];
   #tagsAt = 0;
   readonly #recordEveryMs: number;
   readonly #retentionMs: number;
@@ -174,8 +176,10 @@ export class Engine {
       this.#owners = owners;
       if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
         this.#tagsAt = now;
-        const tags = new Map(this.#sampler.poolTags().map((tag) => [tag.tag, tag.nonPagedMb]));
-        this.#tags = [...this.#tags.filter((snapshot) => now - snapshot.at <= POOL_TAGS_KEEP_MS), { at: now, tags }];
+        const read = this.#sampler.poolTags();
+        const tags = new Map(read.map((tag) => [tag.tag, tag.nonPagedMb]));
+        const paged = new Map(read.map((tag) => [tag.tag, tag.pagedMb]));
+        this.#tags = [...this.#tags.filter((snapshot) => now - snapshot.at <= POOL_TAGS_KEEP_MS), { at: now, tags, paged }];
       }
       this.#check(now, ownerOf);
     }
@@ -315,13 +319,18 @@ export class Engine {
   poolTags(limit = 20): PoolTags {
     const last = this.#tags.at(-1);
     const first = this.#tags[0];
-    if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [] };
+    if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [] };
     const rows = [...last.tags].map(([tag, mb]) => ({ tag, nonPagedMb: round(mb), growthMb: round(mb - (first.tags.get(tag) ?? 0)) }));
     return {
       at: last.at,
       sinceAt: first.at,
       largest: [...rows].sort((a, b) => b.nonPagedMb - a.nonPagedMb).slice(0, limit),
       growing: rows.filter((row) => row.growthMb > 0).sort((a, b) => b.growthMb - a.growthMb).slice(0, limit),
+      pagedGrowing: [...last.paged]
+        .map(([tag, mb]) => ({ tag, pagedMb: round(mb), growthMb: round(mb - (first.paged.get(tag) ?? 0)) }))
+        .filter((row) => row.growthMb > 0)
+        .sort((a, b) => b.growthMb - a.growthMb)
+        .slice(0, limit),
     };
   }
 
@@ -335,15 +344,22 @@ export class Engine {
     const kindOf = new Map(this.#owners.map((owner) => [owner.owner, owner.kind]));
     // The growth of the pool is measured over one hour. A history shorter than 50 minutes gives no growth.
     const first = this.#store.memorySince(now - 3_600_000)[0];
-    const poolHourAgoMb = first && now - first.at > 50 * 60_000 ? first.kernelNonpagedMb : undefined;
+    const hourOld = first !== undefined && now - first.at > 50 * 60_000;
+    const poolHourAgoMb = hourOld ? first.kernelNonpagedMb : undefined;
+    const pagedHourAgoMb = hourOld ? first.kernelPagedMb : undefined;
     const found = detect(
-      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb },
+      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb },
       this.#alertRules,
     );
     // A pool alert names the tags that grow, so the reader can find the driver.
     const growing = this.poolTags(3).growing.filter((row) => row.growthMb >= 1);
     const named = growing.length === 0 ? "" : ` The tags that grow: ${growing.map((row) => `${row.tag.trim()} +${row.growthMb} MB`).join(", ")}.`;
-    for (const [index, alert] of found.entries()) if (alert.kind === "pool" && named) found[index] = { ...alert, message: `${alert.message}${named}` };
+    const pagedGrowing = this.poolTags(3).pagedGrowing.filter((row) => row.growthMb >= 1);
+    const pagedNamed = pagedGrowing.length === 0 ? "" : ` The tags that grow: ${pagedGrowing.map((row) => `${row.tag.trim()} +${row.growthMb} MB`).join(", ")}.`;
+    for (const [index, alert] of found.entries()) {
+      if (alert.id === "pool" && named) found[index] = { ...alert, message: `${alert.message}${named}` };
+      if (alert.id === "pool:paged" && pagedNamed) found[index] = { ...alert, message: `${alert.message}${pagedNamed}` };
+    }
     for (const [id, event] of this.#events) {
       if (event.until <= now) this.#events.delete(id);
       else found.push(event.alert);

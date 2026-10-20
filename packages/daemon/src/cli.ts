@@ -309,7 +309,8 @@ async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
     console.log("No snapshot of the pool tags yet. The daemon reads them every 5 minutes, and only on Windows.");
     return 0;
   }
-  const owners = drivers ? driversOf([...new Set([...tags.largest, ...tags.growing].map((row) => row.tag))]) : new Map<string, string[]>();
+  const named = [...tags.largest, ...tags.growing, ...tags.pagedGrowing].map((row) => row.tag);
+  const owners = drivers ? driversOf([...new Set(named)]) : new Map<string, string[]>();
   if (json) {
     console.log(JSON.stringify({ ...tags, drivers: Object.fromEntries(owners) }, null, 2));
     return 0;
@@ -326,6 +327,14 @@ async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
   show(tags.largest);
   console.log("\nThe tags that grew most:");
   show(tags.growing);
+  if (tags.pagedGrowing.length > 0) {
+    console.log("\nThe tags that grew most in the paged pool:");
+    for (const row of tags.pagedGrowing.slice(0, 8)) {
+      const files = owners.get(row.tag) ?? [];
+      const named = files.length === 0 ? "" : `  ${files.slice(0, 4).join(", ")}${files.length > 4 ? ` and ${files.length - 4} more` : ""}`;
+      console.log(`  ${JSON.stringify(row.tag).padEnd(8)} ${`${row.pagedMb} MB`.padStart(10)} ${`+${row.growthMb} MB`.padStart(11)}${named}`);
+    }
+  }
   if (!drivers) console.log("\nTo name the driver of each tag: headroom pool-tags --drivers");
   return 0;
 }

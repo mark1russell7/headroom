@@ -60,7 +60,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `orphan` | A process with no owner holds more than 1 GB, and its parent stopped. |
 | `memory` | Less than 1 GB of memory is available. |
 | `commit` | The commit charge is above 90% of its limit. |
-| `pool` | The non-paged kernel pool is above 3 GB, or it grew more than 500 MB in one hour. The alert names the pool tags that grow. |
+| `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.

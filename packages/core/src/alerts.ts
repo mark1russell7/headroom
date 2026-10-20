@@ -5,7 +5,7 @@
  * - `orphan`: a large process with no owner whose parent stopped. Nothing reads its output.
  * - `memory`: little available memory.
  * - `commit`: a commit charge near its limit.
- * - `pool`: a large non-paged kernel pool, or a pool that grows fast. A driver leak shows here.
+ * - `pool`: a large kernel pool (non-paged or paged), or a pool that grows fast. A driver leak shows here.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -47,6 +47,10 @@ export interface AlertRules {
   readonly poolMb: number;
   /** A non-paged pool that grows more than this in one hour, in MB, starts an alert. The default is 500. */
   readonly poolGrowthMb: number;
+  /** A paged pool above this size, in MB, starts an alert. The default is 4096. */
+  readonly pagedMb: number;
+  /** A paged pool that grows more than this in one hour, in MB, starts an alert. The default is 500. */
+  readonly pagedGrowthMb: number;
 }
 
 /** The default limits. */
@@ -57,6 +61,8 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   commitRatio: 0.9,
   poolMb: 3072,
   poolGrowthMb: 500,
+  pagedMb: 4096,
+  pagedGrowthMb: 500,
 };
 
 /** The data of one check. */
@@ -69,6 +75,8 @@ export interface AlertInput {
   readonly leases: readonly Lease[];
   /** The non-paged pool one hour ago, in MB, when the history has it. */
   readonly poolHourAgoMb?: number | undefined;
+  /** The paged pool one hour ago, in MB, when the history has it. */
+  readonly pagedHourAgoMb?: number | undefined;
 }
 
 /** The owner kinds that a runaway alert does not examine: Docker and WSL have caps of their own, and the system is not a job. */
@@ -146,6 +154,17 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       pid: null,
       mb: Math.round(memory.kernelNonpagedMb),
       message: `The non-paged kernel pool is ${gb(memory.kernelNonpagedMb)}${growth > 0 ? `, ${Math.round(growth)} MB more than one hour ago` : ""}. A driver can leak it.`,
+    });
+  }
+  const pagedGrowth = input.pagedHourAgoMb === undefined ? 0 : memory.kernelPagedMb - input.pagedHourAgoMb;
+  if (memory.kernelPagedMb > rules.pagedMb || pagedGrowth > rules.pagedGrowthMb) {
+    alerts.push({
+      id: "pool:paged",
+      kind: "pool",
+      subject: "paged pool",
+      pid: null,
+      mb: Math.round(memory.kernelPagedMb),
+      message: `The paged kernel pool is ${gb(memory.kernelPagedMb)}${pagedGrowth > 0 ? `, ${Math.round(pagedGrowth)} MB more than one hour ago` : ""}. A file system filter can leak it.`,
     });
   }
   return alerts;
