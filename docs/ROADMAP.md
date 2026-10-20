@@ -47,7 +47,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H7 | Enforce on Linux and WSL: a cgroup with `MemoryMax` | later |
 | H8 | A Claude Code hook that sends each heavy command through `headroom run` | waits for Mark: the plugin is ready, and Mark decides to turn it on |
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | done: the alerts, and the pool tags with their drivers |
-| H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | later |
+| H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | in progress: the slot `browser` for browser tests, by itself. Each other slot works with `--slot`. |
 | H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress: the gateway works, the rollout waits for the owners |
 | H12 | Start the daemon at login, and start it again after a crash: `headroom service install` | done |
 | H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
