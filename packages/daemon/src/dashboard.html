@@ -244,7 +244,9 @@ function markLive(ok) {
   state.ok = ok;
   if (ok) state.at = Date.now();
   const live = $("live");
-  live.replaceChildren(h("span", { class: ok ? "dot" : "dot off" }), h("span", { text: ok ? `live · ${clockS(state.at)}` : `no answer since ${state.at ? clockS(state.at) : "the start"}` }));
+  const self = state.status?.self;
+  const daemon = ok && self ? ` · the daemon uses ${mb(self.privateMb)}, up ${ago(self.startedAt)}` : "";
+  live.replaceChildren(h("span", { class: ok ? "dot" : "dot off" }), h("span", { text: ok ? `live · ${clockS(state.at)}${daemon}` : `no answer since ${state.at ? clockS(state.at) : "the start"}` }));
   document.querySelector(".wrap").classList.toggle("stale", !ok);
 }
 
@@ -464,7 +466,7 @@ function renderOwners() {
 function leaseTable(leases, ended) {
   if (!leases.length) return h("div", { class: "empty", text: ended ? "No lease ended in this window." : "No lease is active. Start a heavy job with: headroom run --mem 2g -- <command>" });
   return h("table", {},
-    h("thead", {}, h("tr", {}, ["State", "Holder", "Job", "Amounts", ended ? "Ended" : "For", "Note"].map((t, i) => h("th", { class: i === 3 || i === 4 ? "num" : "", text: t })))),
+    h("thead", {}, h("tr", {}, ["State", "Holder", "Job", "Amounts", "Peak", ended ? "Ended" : "For", "Note"].map((t, i) => h("th", { class: i >= 3 && i <= 5 ? "num" : "", text: t })))),
     h("tbody", {}, leases.map((l) => {
       const icon = l.state === "granted" ? ICON.good() : l.state === "waiting" ? ICON.wait() : ICON.off();
       const word = l.state === "granted" ? "runs" : l.state === "waiting" ? "waits" : l.state;
@@ -473,6 +475,7 @@ function leaseTable(leases, ended) {
         h("td", { text: l.holder }),
         h("td", { class: "mono" }, h("div", { class: "clip", title: l.job, text: l.job })),
         h("td", { class: "num", text: amounts(l.amounts) }),
+        h("td", { class: "num", text: l.peakMb == null ? "-" : mb(l.peakMb) }),
         h("td", { class: "num", text: ended ? clock(l.endedAt) : ago(l.grantedAt ?? l.requestedAt) }),
         h("td", { class: "clip", title: l.reason || "", text: l.reason || "" }));
     })));
