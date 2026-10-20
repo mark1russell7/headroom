@@ -182,3 +182,26 @@ describe("the stdio bridge", () => {
     expect(after.count).toBe(1);
   });
 });
+
+describe("the marks of a server process", () => {
+  it("starts a Node server with the title headroom-mcp-<name> and the variable HEADROOM_MCP_SERVER", async () => {
+    const marked = new McpGateway({ specs: () => ({ marked: { command: process.execPath, args: [fixture] } }) });
+    const face = marked.face()({ policy: { token: undefined } } as unknown as HostFaceContext);
+    const server = createServer((req, res) => {
+      if (!face.handler?.(req, res)) {
+        res.statusCode = 404;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = new Client({ name: "test", version: "1.0.0" });
+    const url = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp/marked`);
+    await client.connect(new StreamableHTTPClientTransport(url) as unknown as Parameters<Client["connect"]>[0]);
+    const result = counted(await client.callTool({ name: "count", arguments: {} }));
+    expect(result).toMatchObject({ title: "headroom-mcp-marked", server: "marked" });
+    await client.close();
+    await marked.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+});

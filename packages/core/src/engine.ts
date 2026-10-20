@@ -68,6 +68,10 @@ export interface PoolTags {
   readonly growing: readonly PoolTagRow[];
 }
 
+/** The time that an event alert stays active. */
+const EVENT_MS = 15 * 60_000;
+/** The window in which two cut clients of `headroom run` start a stop alert. */
+const STOP_WINDOW_MS = 2 * 60_000;
 const POOL_TAGS_EVERY_MS = 5 * 60_000;
 const POOL_TAGS_KEEP_MS = 60 * 60_000;
 const round = (mb: number): number => Math.round(mb * 10) / 10;
@@ -107,6 +111,10 @@ export class Engine {
   readonly #alertRules: AlertRules;
   readonly #alerts = new Map<string, Alert>();
   #ended: EndedAlert[] = [];
+  /** The event alerts, with the time when each one ends. */
+  readonly #events = new Map<string, { readonly alert: Omit<Alert, "since">; readonly until: number }>();
+  /** The leases of the last minutes that ended because their process exited. */
+  #cut: { readonly at: number; readonly lease: Lease }[] = [];
   #sessions: readonly SessionInfo[] = [];
   #processesAt = 0;
   #recordedAt = 0;
@@ -304,6 +312,10 @@ export class Engine {
     const growing = this.poolTags(3).growing.filter((row) => row.growthMb >= 1);
     const named = growing.length === 0 ? "" : ` The tags that grow: ${growing.map((row) => `${row.tag.trim()} +${row.growthMb} MB`).join(", ")}.`;
     for (const [index, alert] of found.entries()) if (alert.kind === "pool" && named) found[index] = { ...alert, message: `${alert.message}${named}` };
+    for (const [id, event] of this.#events) {
+      if (event.until <= now) this.#events.delete(id);
+      else found.push(event.alert);
+    }
     const ids = new Set(found.map((alert) => alert.id));
     for (const [id, alert] of this.#alerts) {
       if (ids.has(id)) continue;
@@ -324,5 +336,38 @@ export class Engine {
     if (changed.length === 0) return;
     for (const lease of changed) this.#store.saveLease(lease);
     for (const listener of this.#listeners) listener(changed);
+    this.#notice(changed);
+  }
+
+  /**
+   * This function notes the clients of `headroom run` that stopped without a release. A client releases
+   * its lease when its job ends. Thus several leases that end because their process exited show a broad stop.
+   */
+  #notice(changed: readonly Lease[]): void {
+    const now = this.#now();
+    const cut = changed.filter((lease) => lease.state === "expired" && lease.pid !== null);
+    if (cut.length === 0) return;
+    this.#cut = [...this.#cut.filter((entry) => now - entry.at <= STOP_WINDOW_MS), ...cut.map((lease) => ({ at: now, lease }))];
+    if (this.#cut.length < 2) return;
+    const holders = [...new Set(this.#cut.map((entry) => entry.lease.holder))].join(", ");
+    this.note(
+      {
+        id: "stop:clients",
+        kind: "stop",
+        subject: "headroom run",
+        pid: null,
+        mb: 0,
+        message: `${this.#cut.length} clients of headroom run stopped without a release in ${STOP_WINDOW_MS / 60_000} minutes (holders: ${holders}). Another process can have stopped them.`,
+      },
+      EVENT_MS,
+    );
+  }
+
+  /** This function adds an event alert. It stays active for a time, and a second note of the same event starts the time again. */
+  note(alert: Omit<Alert, "since">, forMs: number = EVENT_MS): void {
+    const now = this.#now();
+    const since = this.#alerts.get(alert.id)?.since ?? now;
+    this.#events.set(alert.id, { alert, until: now + forMs });
+    this.#alerts.set(alert.id, { ...alert, since });
   }
 }

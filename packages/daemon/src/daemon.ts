@@ -12,6 +12,7 @@ import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { McpGateway } from "./gateway.ts";
+import { DAEMON_TITLE } from "./service.ts";
 import { databasePath, headroomHome, readDiscovery, removeDiscovery, writeDiscovery } from "./paths.ts";
 import { gatewayProcedures, resourceProcedures } from "./procedures.ts";
 
@@ -40,10 +41,26 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     // This is not a failure of a service, so the service manager does not start it again.
     return options.mode === "background" ? 0 : 1;
   }
+  // The daemon before this one did not remove its discovery file: another process stopped it.
+  const unclean = running && running.pid !== process.pid ? running.pid : null;
+  process.title = DAEMON_TITLE;
 
   const store = new Store(databasePath());
   const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
   const engine = new Engine({ sampler: await createSampler(), store, reserveMb: options.reserveMb, servers: () => gateway.pids() });
+  if (unclean !== null) {
+    const last = engine.history(Date.now() - 86_400_000).memory.at(-1)?.at;
+    const after = last === undefined ? "" : `, after ${new Date(last).toISOString().slice(11, 16)} UTC`;
+    engine.note({
+      id: "stop:daemon",
+      kind: "stop",
+      subject: "headroom daemon",
+      pid: unclean,
+      mb: 0,
+      message: `The daemon before this one (process ${unclean}) stopped without a clean stop${after}. Another process can have stopped it.`,
+    });
+    log(`The daemon before this one (process ${unclean}) stopped without a clean stop.`);
+  }
   const registry = new ProcedureRegistry();
   registerModules(registry, [defineModule("@headroom/daemon", [...resourceProcedures(engine), ...gatewayProcedures(engine, gateway)])]);
 

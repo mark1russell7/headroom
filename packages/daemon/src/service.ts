@@ -17,19 +17,27 @@ import { processIsAlive } from "@headroom/core";
 import { answers } from "./client.ts";
 import { headroomHome, logPath, readDiscovery } from "./paths.ts";
 
+/**
+ * The title of the daemon process. The command line of the daemon contains it. Thus a search can find
+ * the daemon by its title, not by `cli.ts`.
+ */
+export const DAEMON_TITLE = "headroom-daemon";
+
 /** The name of the scheduled task and of the systemd unit. */
 export const SERVICE_NAME = "headroom";
 
 /** The command that the service starts. */
 export interface ServiceCommand {
   readonly node: string;
+  /** The options of Node before the script, for example the title that marks the process. */
+  readonly nodeOptions: readonly string[];
   readonly cli: string;
   readonly args: readonly string[];
 }
 
 /** This function gives the command of the service: this Node and this CLI, with the arguments of `serve`. */
 export function serviceCommand(serveArgs: readonly string[] = []): ServiceCommand {
-  return { node: process.execPath, cli: join(import.meta.dirname, "cli.ts"), args: ["serve", "--background", "--log", logPath(), ...serveArgs] };
+  return { node: process.execPath, nodeOptions: [`--title=${DAEMON_TITLE}`], cli: join(import.meta.dirname, "cli.ts"), args: ["serve", "--background", "--log", logPath(), ...serveArgs] };
 }
 
 /** This function quotes one argument for a Windows command line. */
@@ -49,7 +57,7 @@ function xml(text: string): string {
  */
 export function windowsTaskXml(command: ServiceCommand, user: string, everyMinutes: number = 2, from: Date = new Date()): string {
   const conhost = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "conhost.exe");
-  const args = ["--headless", command.node, command.cli, ...command.args].map(windowsArg).join(" ");
+  const args = ["--headless", command.node, ...command.nodeOptions, command.cli, ...command.args].map(windowsArg).join(" ");
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -115,7 +123,7 @@ export function systemdArg(arg: string): string {
 
 /** This function gives the systemd user unit. */
 export function systemdUnit(command: ServiceCommand): string {
-  const exec = [command.node, command.cli, ...command.args].map(systemdArg).join(" ");
+  const exec = [command.node, ...command.nodeOptions, command.cli, ...command.args].map(systemdArg).join(" ");
   return `[Unit]
 Description=headroom: the memory and job broker of this computer
 Documentation=https://github.com/mark1russell7/headroom

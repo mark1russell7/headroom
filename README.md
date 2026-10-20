@@ -25,6 +25,8 @@ headroom service install
 headroom service status
 ```
 
+The command line of the daemon has the title `headroom-daemon`. The command line of a Node server of the gateway has the title `headroom-mcp-<name>`, and the server has the variable `HEADROOM_MCP_SERVER`. To find or stop these processes, search for the titles, not for `cli.ts`.
+
 On Windows, a scheduled task starts the daemon at logon and every 2 minutes when it stopped. The log is `~/.headroom/daemon.log`. On Linux, a systemd user unit starts it. `headroom service uninstall` stops the daemon and removes the service. To start the daemon in a terminal, use `headroom serve`.
 
 Run a heavy job under a lease. The job waits until the memory is free. When the daemon does not run, the job runs at once with a warning.
@@ -52,6 +54,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `memory` | Less than 1 GB of memory is available. |
 | `commit` | The commit charge is above 90% of its limit. |
 | `pool` | The non-paged kernel pool is above 3 GB, or it grew more than 500 MB in one hour. The alert names the pool tags that grow. |
+| `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
 
