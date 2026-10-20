@@ -1,0 +1,12 @@
+{
+  "name": "headroom",
+  "description": "The Claude Code plugin of headroom, the memory and job broker of one computer.",
+  "owner": { "name": "Mark Russell" },
+  "plugins": [
+    {
+      "name": "headroom",
+      "source": "./plugins/headroom",
+      "description": "A hook that sends a heavy command through headroom run when the memory of the computer is tight."
+    }
+  ]
+}

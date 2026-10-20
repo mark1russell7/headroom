@@ -65,6 +65,16 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
 
+## The plugin for Claude Code
+
+The plugin `headroom` has a hook for the Bash and PowerShell tools. When a session starts a heavy command (tests, builds, Playwright, Docker builds) and the memory is tight, the hook refuses the command. It gives the session the form under a lease, for example `cd app && headroom run --mem auto -- pnpm test`.
+
+- The memory is tight when less than 4 GB is free for a lease, or when jobs wait.
+- The hook does not approve a command. The session sends the new form, and the permission rules of the user apply to it.
+- Without a daemon, or for a light command, the hook does nothing. It adds approximately 65 ms to each command.
+
+To turn it on in Claude Code: `/plugin marketplace add C:Usersmarktgitheadroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
+
 ## The dashboard
 
 The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the memory, the alerts, the memory of each owner, the leases, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
