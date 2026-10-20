@@ -51,6 +51,16 @@ export interface EndedAlert extends Alert {
   readonly endedAt: number;
 }
 
+/** A memory amount for a job, from the peaks of its last runs. */
+export interface Suggestion {
+  /** The amount in MB, or `null` when no run of the job has a peak. */
+  readonly memoryMb: number | null;
+  /** The number of runs that the amount uses. */
+  readonly runs: number;
+  /** The highest peak of those runs in MB. */
+  readonly peakMb: number | null;
+}
+
 /** One pool tag: its non-paged size and its change over the window, in MB. */
 export interface PoolTagRow {
   readonly tag: string;
@@ -188,11 +198,24 @@ export class Engine {
   }
 
   /** This function ends a lease. Then it grants the waiting leases that fit in the memory that the lease frees. */
-  release(id: string, reason?: string): Lease | undefined {
-    const lease = this.#broker.release(id, reason);
+  release(id: string, reason?: string, peakMb?: number | null): Lease | undefined {
+    const lease = this.#broker.release(id, reason, peakMb ?? null);
     if (lease) this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
     return lease ? (this.#broker.get(id) ?? lease) : undefined;
+  }
+
+  /**
+   * This function gives a memory amount for a job from the peaks of its last runs. The amount is the 90th percentile
+   * and 25% more, rounded up to 64 MB. It prefers the runs of the same holder. Without a run, it gives `null`.
+   */
+  suggest(job: string, holder?: string): Suggestion {
+    const own = holder === undefined ? [] : this.#store.peaksOf(job, holder);
+    const peaks = own.length > 0 ? own : this.#store.peaksOf(job);
+    if (peaks.length === 0) return { memoryMb: null, runs: 0, peakMb: null };
+    const sorted = [...peaks].sort((a, b) => a - b);
+    const p90 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))] ?? 0;
+    return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(sorted[sorted.length - 1] ?? 0) };
   }
 
   /** This function records a heartbeat of a lease. */

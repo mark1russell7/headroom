@@ -1,3 +1,7 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES } from "./alerts.ts";
 import { Engine } from "./engine.ts";
@@ -26,6 +30,48 @@ describe("Engine stop alerts", () => {
     expect(engine.alerts().active).toEqual([]);
     expect(engine.alerts().ended[0]?.id).toBe("stop:clients");
     engine.close();
+  });
+});
+
+describe("Engine suggest", () => {
+  const sampler: Sampler = {
+    memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: () => [],
+    close: () => undefined,
+  };
+
+  it("sizes a job from the peaks of its last runs, the runs of the same holder first", () => {
+    const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
+    expect(engine.suggest("pnpm test", "graph")).toEqual({ memoryMb: null, runs: 0, peakMb: null });
+    const run = (holder: string, peakMb: number) => {
+      const lease = engine.request({ holder, job: "pnpm test", amounts: { memory: 512 }, ttlMs: 60_000 });
+      engine.release(lease.id, "the job ended", peakMb);
+    };
+    for (const peak of [400, 420, 900, 410]) run("graph", peak);
+    run("client", 3000);
+    // The runs of graph: the 90th percentile is 900 MB, and 25% more is 1125 MB, rounded up to 1152 MB.
+    expect(engine.suggest("pnpm test", "graph")).toEqual({ memoryMb: 1152, runs: 4, peakMb: 900 });
+    // A holder with no run of its own uses the runs of all holders.
+    expect(engine.suggest("pnpm test", "vex")).toMatchObject({ runs: 5, peakMb: 3000 });
+    engine.close();
+  });
+
+  it("keeps the peak of a lease in the store, and adds the column to an older database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-store-"));
+    const path = join(dir, "old.db");
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE leases (
+      id TEXT PRIMARY KEY, holder TEXT NOT NULL, job TEXT NOT NULL, amounts TEXT NOT NULL,
+      priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
+      requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT)`);
+    old.close();
+    const engine = new Engine({ sampler, store: new Store(path), sessionsDir: "/nowhere" });
+    const lease = engine.request({ holder: "graph", job: "tsc", amounts: {}, ttlMs: 60_000 });
+    engine.release(lease.id, "the job ended", 640);
+    engine.close();
+    const reopened = new Store(path);
+    expect(reopened.peaksOf("tsc")).toEqual([640]);
+    reopened.close();
   });
 });
 

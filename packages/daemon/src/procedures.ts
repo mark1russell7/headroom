@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*` and `mcp.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Engine, History, Lease, PoolTags, Status } from "@headroom/core";
+import type { Alerts, Engine, History, Lease, PoolTags, Status, Suggestion } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -27,7 +27,10 @@ const WaitInput = IdInput.extend({
 });
 type WaitInput = z.infer<typeof WaitInput>;
 
-const ReleaseInput = IdInput.extend({ reason: z.string().max(200).optional().describe("Why the lease ends") });
+const ReleaseInput = IdInput.extend({
+  reason: z.string().max(200).optional().describe("Why the lease ends"),
+  peakMb: z.number().min(0).optional().describe("The peak memory of the job in MB, from its job object"),
+});
 type ReleaseInput = z.infer<typeof ReleaseInput>;
 
 const HistoryInput = z.object({
@@ -46,6 +49,12 @@ const PoolTagsInput = z.object({
   limit: z.number().int().positive().max(200).default(20).describe("The number of tags in each list (default: 20)"),
 });
 type PoolTagsInput = z.infer<typeof PoolTagsInput>;
+
+const SuggestInput = z.object({
+  job: z.string().min(1).max(500).describe("The job, as headroom run names it: the command line or --job"),
+  holder: z.string().min(1).max(200).optional().describe("The holder: its own runs come first"),
+});
+type SuggestInput = z.infer<typeof SuggestInput>;
 
 const Empty = z.object({}).strict();
 type Empty = z.infer<typeof Empty>;
@@ -119,7 +128,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: ReleaseInput): Promise<Lease> => found(engine.release(input.id, input.reason), input.id))
+    .handler(async (input: ReleaseInput): Promise<Lease> => found(engine.release(input.id, input.reason, input.peakMb), input.id))
     .build() as AnyProcedure;
 
   const renew = createProcedure()
@@ -190,7 +199,20 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit))
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, renew, history, pool, alerts, pooltags];
+  const suggest = createProcedure()
+    .path(["resources", "suggest"])
+    .input(zodAdapter<SuggestInput>(SuggestInput))
+    .output(anything<Suggestion>())
+    .meta({
+      description: "Give a memory amount for a job from the peaks of its last runs (the 90th percentile and 25% more)",
+      args: ["job"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (input: SuggestInput): Promise<Suggestion> => engine.suggest(input.job, input.holder))
+    .build() as AnyProcedure;
+
+  return [status, lease, wait, release, renew, history, pool, alerts, pooltags, suggest];
 }
 
 const ServerName = z.string().regex(SERVER_NAME, "Use letters, digits, - and _").describe("The name of the server, for example vex");
