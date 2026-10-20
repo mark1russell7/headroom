@@ -8,7 +8,7 @@ const memory = { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLim
 
 const lease = (pid: number): Lease => ({
   id: "l1", holder: "graph", job: "vitest", amounts: { memory: 6000 }, priority: 0, pid, ttlMs: 0, state: "granted",
-  requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null,
+  requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null,
 });
 
 function input(processes: ProcessInfo[], owners: Record<number, [string, OwnerKind]>, extra: Partial<AlertInput> = {}): AlertInput {

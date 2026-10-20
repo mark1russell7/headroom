@@ -15,7 +15,7 @@
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
-import { createJob, createSampler, MB, readSessions, type Alert, type Alerts, type History, type Job, type Lease, type PoolTags, type Status } from "@headroom/core";
+import { createJob, createSampler, MB, readSessions, type Alert, type Alerts, type History, type Job, type Lease, type PoolTags, type Status, type Suggestion } from "@headroom/core";
 import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
@@ -31,7 +31,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom service restart [--now] [--wait 60m] | stop | start | uninstall | status
   headroom mcp list | add | remove | restart | config   (the MCP gateway)
   headroom status [--json]
-  headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
+  headroom run [--mem 2g|auto] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
   headroom dashboard                         (open the dashboard in the browser)
@@ -116,6 +116,9 @@ function runCommand(command: readonly string[]): Promise<number> {
 }
 
 /** This function waits until the lease is no longer waiting. When the daemon restarts, it connects again and continues to wait. */
+/** The amount of `--mem auto` for a job with no run that has a peak, in MB. */
+const AUTO_DEFAULT_MB = 1024;
+
 /** How `headroom run` holds its job: a job object, and a memory limit with --limit. */
 interface Enforcement {
   /** True (--keep): no job object, so the processes of the job can stay after the run. */
@@ -196,22 +199,33 @@ async function run(argv: string[]): Promise<number> {
     return 2;
   }
   const amounts: Record<string, number> = {};
-  if (values.mem) amounts["memory"] = parseMemory(values.mem);
+  if (values.mem && values.mem !== "auto") amounts["memory"] = parseMemory(values.mem);
   if (values.cpu) amounts["cpu"] = Number(values.cpu);
   for (const slot of values.slot ?? []) amounts[slot] = (amounts[slot] ?? 0) + 1;
   const job = values.job ?? positionals.join(" ").slice(0, 500);
-  const enforcement = { keep: values.keep === true, limit: values.limit === true, leaseMb: amounts["memory"] ?? null };
-  if (enforcement.limit && enforcement.leaseMb === null) {
+  if (values.limit && !values.mem) {
     console.error("headroom run --limit needs --mem: the limit is the memory of the lease.");
     return 2;
   }
+  const keep = values.keep === true;
 
   const connection = connect();
   if (!connection) {
     console.error("headroom: the daemon does not run, so the job runs without a lease.");
-    return (await runEnforced(positionals, enforcement)).code;
+    return (await runEnforced(positionals, { keep, limit: false, leaseMb: null })).code;
   }
   const holder = values.holder ?? (await holderOf());
+  // --mem auto: the peaks of the last runs of this job give the amount.
+  if (values.mem === "auto") {
+    const suggestion = await connection.call<Suggestion>(["resources", "suggest"], { job, holder }).catch(() => null);
+    amounts["memory"] = suggestion?.memoryMb ?? AUTO_DEFAULT_MB;
+    console.error(
+      suggestion?.memoryMb
+        ? `headroom: --mem auto gives ${mb(amounts["memory"])}, from the peaks of ${suggestion.runs} ${suggestion.runs === 1 ? "run" : "runs"} (the highest ${mb(suggestion.peakMb ?? 0)}).`
+        : `headroom: --mem auto gives ${mb(AUTO_DEFAULT_MB)}, because no run of this job has a peak yet.`,
+    );
+  }
+  const enforcement: Enforcement = { keep, limit: values.limit === true, leaseMb: amounts["memory"] ?? null };
   let first: Lease;
   try {
     first = await connection.call<Lease>(["resources", "lease"], {
@@ -239,7 +253,11 @@ async function run(argv: string[]): Promise<number> {
   const { code, peakMb } = await runEnforced(positionals, enforcement);
   const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
   try {
-    await (connect() ?? latest).call(["resources", "release"], { id: lease.id, reason: `the job ended with code ${code}${peak}` });
+    await (connect() ?? latest).call(["resources", "release"], {
+      id: lease.id,
+      reason: `the job ended with code ${code}${peak}`,
+      ...(peakMb === null ? {} : { peakMb }),
+    });
   } catch {
     // The daemon ends the lease anyway when this process exits.
   }

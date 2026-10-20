@@ -43,6 +43,8 @@ export interface Lease {
   readonly heartbeatAt: number;
   /** Why the lease ended, or why it waits. */
   readonly reason: string | null;
+  /** The peak memory of the job in MB, from its holder at the release. It is `null` before the job ends and without a job object. */
+  readonly peakMb: number | null;
 }
 
 /** The capacity at one time. */
@@ -139,16 +141,17 @@ export class Broker {
       endedAt: null,
       heartbeatAt: now,
       reason: null,
+      peakMb: null,
     };
     this.#leases.set(lease.id, lease);
     return lease;
   }
 
   /** This function ends an active lease. It gives the lease, or `undefined` for an unknown id. */
-  release(id: string, reason = "released"): Lease | undefined {
+  release(id: string, reason = "released", peakMb: number | null = null): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
-    return this.#set({ ...lease, state: lease.state === "waiting" ? "cancelled" : "released", endedAt: this.#now(), reason });
+    return this.#set({ ...lease, state: lease.state === "waiting" ? "cancelled" : "released", endedAt: this.#now(), reason, peakMb });
   }
 
   /** This function records a heartbeat of an active lease. */

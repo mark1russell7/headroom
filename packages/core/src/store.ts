@@ -25,7 +25,8 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS leases (
   id TEXT PRIMARY KEY, holder TEXT NOT NULL, job TEXT NOT NULL, amounts TEXT NOT NULL,
   priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
-  requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT
+  requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT,
+  peak_mb REAL
 );
 CREATE INDEX IF NOT EXISTS leases_state ON leases (state);
 CREATE TABLE IF NOT EXISTS pools (name TEXT PRIMARY KEY, capacity REAL NOT NULL);
@@ -49,19 +50,23 @@ export class Store {
     this.#db = new DatabaseSync(path);
     this.#db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
     this.#db.exec(SCHEMA);
+    // A database of an older version has no column for the peak memory of a lease.
+    const columns = this.#db.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
+    if (!columns.includes("peak_mb")) this.#db.exec("ALTER TABLE leases ADD COLUMN peak_mb REAL");
   }
 
   /** This function writes a lease, new or changed. */
   saveLease(lease: Lease): void {
     this.#db
       .prepare(
-        `INSERT INTO leases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
-           ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason`,
+           ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
-        lease.state, lease.requestedAt, lease.grantedAt, lease.endedAt, lease.heartbeatAt, lease.reason,
+        lease.state, lease.requestedAt, lease.grantedAt, lease.endedAt, lease.heartbeatAt, lease.reason, lease.peakMb,
       );
   }
 
@@ -73,6 +78,14 @@ export class Store {
   /** This function reads the leases that ended after a time, the newest first. */
   endedLeases(since: number, limit = 100): Lease[] {
     return this.#db.prepare("SELECT * FROM leases WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT ?").all(since, limit).map(toLease);
+  }
+
+  /** This function reads the peak memory of the last runs of a job, the newest first. With a holder, only the runs of that holder. */
+  peaksOf(job: string, holder?: string, limit = 20): number[] {
+    const rows = holder === undefined
+      ? this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, limit)
+      : this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND holder = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, holder, limit);
+    return rows.map((row) => Number(row["peak_mb"]));
   }
 
   /** This function reads the capacity of each configured pool. */
@@ -182,5 +195,6 @@ function toLease(row: Record<string, unknown>): Lease {
     endedAt: nullable(row["ended_at"]),
     heartbeatAt: Number(row["heartbeat_at"]),
     reason: row["reason"] === null || row["reason"] === undefined ? null : String(row["reason"]),
+    peakMb: nullable(row["peak_mb"]),
   };
 }

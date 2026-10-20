@@ -8,7 +8,7 @@ export type { Alert, AlertInput, AlertKind, AlertRules } from "./alerts.ts";
 export { Broker, isActive, processIsAlive } from "./broker.ts";
 export type { BrokerOptions, Capacity, Lease, LeaseRequest, LeaseState } from "./broker.ts";
 export { Engine } from "./engine.ts";
-export type { Alerts, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, Status } from "./engine.ts";
+export type { Alerts, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, Status, Suggestion } from "./engine.ts";
 export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
 export { createJob } from "./enforce.ts";
