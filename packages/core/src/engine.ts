@@ -3,6 +3,7 @@
  * calls `tick()` every few seconds, and after each request and each release.
  */
 
+import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "./broker.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import type { Sampler } from "./sampler.ts";
@@ -16,6 +17,8 @@ export interface EngineOptions {
   readonly now?: (() => number) | undefined;
   /** The memory that the broker keeps free, in MB. The default is 1024. */
   readonly reserveMb?: number | undefined;
+  /** The limits of the alerts. The default is `DEFAULT_ALERT_RULES`. */
+  readonly alertRules?: AlertRules | undefined;
   /** The time between two reads of the process list. The default is 10 seconds. */
   readonly processEveryMs?: number | undefined;
   /** The time between two samples in the store. The default is 1 minute. */
@@ -39,6 +42,19 @@ export interface Status {
   readonly leases: readonly Lease[];
   readonly owners: readonly OwnerUsage[];
   readonly sessions: readonly SessionInfo[];
+  /** The active alerts, the oldest first. */
+  readonly alerts: readonly Alert[];
+}
+
+/** An alert that ended. */
+export interface EndedAlert extends Alert {
+  readonly endedAt: number;
+}
+
+/** The active alerts and the alerts that ended last. */
+export interface Alerts {
+  readonly active: readonly Alert[];
+  readonly ended: readonly EndedAlert[];
 }
 
 /** The history since a time. */
@@ -64,6 +80,9 @@ export class Engine {
   #memory: SystemMemory;
   #processes: readonly ProcessInfo[] = [];
   #owners: readonly OwnerUsage[] = [];
+  readonly #alertRules: AlertRules;
+  readonly #alerts = new Map<string, Alert>();
+  #ended: EndedAlert[] = [];
   #sessions: readonly SessionInfo[] = [];
   #processesAt = 0;
   #recordedAt = 0;
@@ -79,6 +98,7 @@ export class Engine {
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#servers = options.servers ?? (() => new Map());
+    this.#alertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
     this.#broker = new Broker({
       now: this.#now,
       reserveMb: this.#reserveMb,
@@ -104,7 +124,9 @@ export class Engine {
       this.#processesAt = now;
       this.#processes = this.#sampler.processes();
       this.#sessions = readSessions(this.#sessionsDir);
-      this.#owners = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers()).owners;
+      const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers());
+      this.#owners = owners;
+      this.#check(now, ownerOf);
     }
     const changed = this.#broker.tick(this.capacity());
     this.#persist(changed);
@@ -181,6 +203,7 @@ export class Engine {
       leases: this.#broker.leases().filter(isActive),
       owners: this.#owners,
       sessions: this.#sessions,
+      alerts: [...this.#alerts.values()],
     };
   }
 
@@ -214,6 +237,30 @@ export class Engine {
       const timer = setTimeout(done, options.timeoutMs ?? 600_000);
       options.signal?.addEventListener("abort", aborted, { once: true });
     });
+  }
+
+  /** This function gives the active alerts and the alerts that ended last. */
+  alerts(): Alerts {
+    return { active: [...this.#alerts.values()], ended: [...this.#ended] };
+  }
+
+  /** This function checks the conditions of the alerts. A condition that continues keeps its start time. */
+  #check(now: number, ownerOf: ReadonlyMap<number, string>): void {
+    const kindOf = new Map(this.#owners.map((owner) => [owner.owner, owner.kind]));
+    // The growth of the pool is measured over one hour. A history shorter than 50 minutes gives no growth.
+    const first = this.#store.memorySince(now - 3_600_000)[0];
+    const poolHourAgoMb = first && now - first.at > 50 * 60_000 ? first.kernelNonpagedMb : undefined;
+    const found = detect(
+      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb },
+      this.#alertRules,
+    );
+    const ids = new Set(found.map((alert) => alert.id));
+    for (const [id, alert] of this.#alerts) {
+      if (ids.has(id)) continue;
+      this.#alerts.delete(id);
+      this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
+    }
+    for (const alert of found) this.#alerts.set(alert.id, { ...alert, since: this.#alerts.get(alert.id)?.since ?? now });
   }
 
   /** This function closes the store and the sampler. */

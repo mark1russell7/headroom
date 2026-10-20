@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*` and `mcp.*`. Each procedure uses one engine.
  */
 
-import type { Engine, History, Lease, Status } from "@headroom/core";
+import type { Alerts, Engine, History, Lease, Status } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -158,7 +158,20 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     })
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, renew, history, pool];
+  const alerts = createProcedure()
+    .path(["resources", "alerts"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<Alerts>())
+    .meta({
+      description: "Give the active alerts (a runaway process, an orphan, low memory, the commit charge, the kernel pool) and the alerts that ended last",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom", "process"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<Alerts> => engine.alerts())
+    .build() as AnyProcedure;
+
+  return [status, lease, wait, release, renew, history, pool, alerts];
 }
 
 const ServerName = z.string().regex(SERVER_NAME, "Use letters, digits, - and _").describe("The name of the server, for example vex");

@@ -46,12 +46,12 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H6 | Enforce on Windows: a job object with a memory limit, and a stop when the job closes | later |
 | H7 | Enforce on Linux and WSL: a cgroup with `MemoryMax` | later |
 | H8 | A Claude Code hook that sends each heavy command through `headroom run` | later |
-| H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | later |
+| H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | in progress: the alerts for the pool, the memory and the commit charge work. The report of the pool tags is next. |
 | H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | later |
 | H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress: the gateway works, the rollout waits for the owners |
 | H12 | Start the daemon at login, and start it again after a crash: `headroom service install` | done |
 | H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
-| H14 | Runaway alerts: a process above 4 GB that has no lease, or a process whose parent stopped. headroom reports to the organizer. It does not stop the process. | later |
+| H14 | Runaway alerts: a process above 4 GB that has no lease, or a process whose parent stopped. headroom reports to the organizer. It does not stop the process. | done |
 
 ## The MCP gateway (H11)
 
