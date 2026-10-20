@@ -13,9 +13,10 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { processIsAlive } from "@headroom/core";
-import { answers } from "./client.ts";
-import { headroomHome, logPath, readDiscovery } from "./paths.ts";
+import { processIsAlive, type Status } from "@headroom/core";
+import { answers, connect } from "./client.ts";
+import { killTree } from "./gateway.ts";
+import { headroomHome, logPath, readDiscovery, writePlannedStop } from "./paths.ts";
 
 /**
  * The title of the daemon process. The command line of the daemon contains it. Thus a search can find
@@ -186,6 +187,59 @@ export function install(serveArgs: readonly string[] = []): number {
     return enabled.code;
   }
   return unsupported();
+}
+
+/** The options of `restart()`. */
+export interface RestartOptions {
+  /** True: restart at once. False (the default): wait until no lease waits, because an old client can lose its wait. */
+  readonly now?: boolean | undefined;
+  /** The longest wait for the queue, in ms. The default is 60 minutes. */
+  readonly waitMs?: number | undefined;
+}
+
+/**
+ * This function restarts the daemon through its service, for example to load a new version. It marks the stop
+ * as planned, so the next daemon does not report it as a stop by another process. It gives the exit code.
+ */
+export async function restart(options: RestartOptions = {}): Promise<number> {
+  const deadline = Date.now() + (options.waitMs ?? 3_600_000);
+  while (!options.now) {
+    const connection = connect();
+    if (!connection) break;
+    const waiting = (await connection.call<Status>(["resources", "status"], {})).leases.filter((lease) => lease.state === "waiting").length;
+    if (waiting === 0) break;
+    if (Date.now() > deadline) {
+      console.error(`headroom: ${waiting} leases still wait. No restart. Use --now to restart anyway.`);
+      return 75;
+    }
+    console.log(`${waiting} leases wait. The restart waits for them. Next check in 30 s.`);
+    await new Promise((resolve) => setTimeout(resolve, 30_000));
+  }
+  const old = readDiscovery();
+  if (process.platform === "linux") {
+    // systemd stops the daemon with a signal, so the daemon stops cleanly and the stop is not reported.
+    const code = exec("systemctl", ["--user", "restart", `${SERVICE_NAME}.service`]).code;
+    if (code !== 0) return code;
+  } else if (process.platform === "win32") {
+    if (old && processIsAlive(old.pid)) {
+      writePlannedStop(old.pid);
+      killTree(old.pid);
+    }
+    const code = exec("schtasks", ["/Run", "/TN", SERVICE_NAME], true).code;
+    if (code !== 0) return (console.error(`The task "${SERVICE_NAME}" did not start. Register it with: headroom service install`), code);
+  } else {
+    return unsupported();
+  }
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const running = readDiscovery();
+    if (running && running.pid !== old?.pid && (await answers(running))) {
+      console.log(`headroom restarted: process ${running.pid}.`);
+      return 0;
+    }
+  }
+  console.error("headroom did not answer 60 s after the restart. Look at the log: headroom service status");
+  return 1;
 }
 
 /** This function stops the daemon and removes the service. It gives the exit code. */
