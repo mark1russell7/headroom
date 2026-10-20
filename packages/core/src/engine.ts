@@ -51,6 +51,27 @@ export interface EndedAlert extends Alert {
   readonly endedAt: number;
 }
 
+/** One pool tag: its non-paged size and its change over the window, in MB. */
+export interface PoolTagRow {
+  readonly tag: string;
+  readonly nonPagedMb: number;
+  readonly growthMb: number;
+}
+
+/** The non-paged pool by tag over the last hour. */
+export interface PoolTags {
+  /** The time of the last snapshot. It is `null` before the first snapshot, and on a platform with no tags. */
+  readonly at: number | null;
+  /** The time of the first snapshot of the window. */
+  readonly sinceAt: number | null;
+  readonly largest: readonly PoolTagRow[];
+  readonly growing: readonly PoolTagRow[];
+}
+
+const POOL_TAGS_EVERY_MS = 5 * 60_000;
+const POOL_TAGS_KEEP_MS = 60 * 60_000;
+const round = (mb: number): number => Math.round(mb * 10) / 10;
+
 /** The active alerts and the alerts that ended last. */
 export interface Alerts {
   readonly active: readonly Alert[];
@@ -72,6 +93,9 @@ export class Engine {
   readonly #now: () => number;
   readonly #reserveMb: number;
   readonly #processEveryMs: number;
+  /** The snapshots of the non-paged pool by tag, in MB, of the last hour. */
+  #tags: { readonly at: number; readonly tags: ReadonlyMap<string, number> }[] = [];
+  #tagsAt = 0;
   readonly #recordEveryMs: number;
   readonly #retentionMs: number;
   readonly #sessionsDir: string;
@@ -126,6 +150,11 @@ export class Engine {
       this.#sessions = readSessions(this.#sessionsDir);
       const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers());
       this.#owners = owners;
+      if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
+        this.#tagsAt = now;
+        const tags = new Map(this.#sampler.poolTags().map((tag) => [tag.tag, tag.nonPagedMb]));
+        this.#tags = [...this.#tags.filter((snapshot) => now - snapshot.at <= POOL_TAGS_KEEP_MS), { at: now, tags }];
+      }
       this.#check(now, ownerOf);
     }
     const changed = this.#broker.tick(this.capacity());
@@ -239,6 +268,23 @@ export class Engine {
     });
   }
 
+  /**
+   * This function gives the non-paged pool by tag: the largest tags, and the change of each tag over the
+   * snapshots of the last hour. A driver that leaks shows as a tag that grows. Only Windows has tags.
+   */
+  poolTags(limit = 20): PoolTags {
+    const last = this.#tags.at(-1);
+    const first = this.#tags[0];
+    if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [] };
+    const rows = [...last.tags].map(([tag, mb]) => ({ tag, nonPagedMb: round(mb), growthMb: round(mb - (first.tags.get(tag) ?? 0)) }));
+    return {
+      at: last.at,
+      sinceAt: first.at,
+      largest: [...rows].sort((a, b) => b.nonPagedMb - a.nonPagedMb).slice(0, limit),
+      growing: rows.filter((row) => row.growthMb > 0).sort((a, b) => b.growthMb - a.growthMb).slice(0, limit),
+    };
+  }
+
   /** This function gives the active alerts and the alerts that ended last. */
   alerts(): Alerts {
     return { active: [...this.#alerts.values()], ended: [...this.#ended] };
@@ -254,6 +300,10 @@ export class Engine {
       { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb },
       this.#alertRules,
     );
+    // A pool alert names the tags that grow, so the reader can find the driver.
+    const growing = this.poolTags(3).growing.filter((row) => row.growthMb >= 1);
+    const named = growing.length === 0 ? "" : ` The tags that grow: ${growing.map((row) => `${row.tag.trim()} +${row.growthMb} MB`).join(", ")}.`;
+    for (const [index, alert] of found.entries()) if (alert.kind === "pool" && named) found[index] = { ...alert, message: `${alert.message}${named}` };
     const ids = new Set(found.map((alert) => alert.id));
     for (const [id, alert] of this.#alerts) {
       if (ids.has(id)) continue;

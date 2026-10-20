@@ -14,9 +14,10 @@
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
-import { createSampler, readSessions, type Alert, type Alerts, type History, type Lease, type Status } from "@headroom/core";
+import { createSampler, readSessions, type Alert, type Alerts, type History, type Lease, type PoolTags, type Status } from "@headroom/core";
 import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
+import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
 import { parseMemory, parseTime } from "./parse.ts";
@@ -32,6 +33,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] -- <command> [args...]
   headroom alerts [--watch] [--json]
+  headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom history [--minutes 60] [--json]
   headroom pool <name> <capacity>
   headroom release <id>
@@ -232,6 +234,35 @@ async function watchAlerts(): Promise<number> {
   }
 }
 
+async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  const tags = await connection.call<PoolTags>(["resources", "pooltags"], { limit: 15 });
+  if (tags.at === null || tags.sinceAt === null) {
+    console.log("No snapshot of the pool tags yet. The daemon reads them every 5 minutes, and only on Windows.");
+    return 0;
+  }
+  const owners = drivers ? driversOf([...new Set([...tags.largest, ...tags.growing].map((row) => row.tag))]) : new Map<string, string[]>();
+  if (json) {
+    console.log(JSON.stringify({ ...tags, drivers: Object.fromEntries(owners) }, null, 2));
+    return 0;
+  }
+  const show = (rows: PoolTags["largest"]): void => {
+    for (const row of rows) {
+      const files = owners.get(row.tag) ?? [];
+      const named = files.length === 0 ? "" : `  ${files.slice(0, 4).join(", ")}${files.length > 4 ? ` and ${files.length - 4} more` : ""}`;
+      console.log(`  ${JSON.stringify(row.tag).padEnd(8)} ${`${row.nonPagedMb} MB`.padStart(10)} ${`${row.growthMb >= 0 ? "+" : ""}${row.growthMb} MB`.padStart(11)}${named}`);
+    }
+  };
+  const minutes = Math.round((tags.at - tags.sinceAt) / 60_000);
+  console.log(`The largest non-paged pool tags (the change over ${minutes} minutes):`);
+  show(tags.largest);
+  console.log("\nThe tags that grew most:");
+  show(tags.growing);
+  if (!drivers) console.log("\nTo name the driver of each tag: headroom pool-tags --drivers");
+  return 0;
+}
+
 function resumePlan(): void {
   const sessions = readSessions().sort((a, b) => (a.name === "organizer" ? -1 : b.name === "organizer" ? 1 : a.name.localeCompare(b.name)));
   console.log("# The resume plan: one line for each live Claude Code session, the organizer first\n");
@@ -281,6 +312,10 @@ async function main(argv: string[]): Promise<number> {
     }
     case "run":
       return run(rest);
+    case "pool-tags": {
+      const { values } = parseArgs({ args: rest, options: { drivers: { type: "boolean" }, json: { type: "boolean" } } });
+      return showPoolTags(values.drivers === true, values.json === true);
+    }
     case "alerts": {
       const { values } = parseArgs({ args: rest, options: { watch: { type: "boolean" }, json: { type: "boolean" } } });
       return values.watch ? watchAlerts() : showAlerts(values.json === true);

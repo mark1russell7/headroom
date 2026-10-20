@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*` and `mcp.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Engine, History, Lease, Status } from "@headroom/core";
+import type { Alerts, Engine, History, Lease, PoolTags, Status } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -40,6 +40,11 @@ const PoolInput = z.object({
   capacity: z.number().describe("The capacity. A capacity below 0 removes the pool, and then its capacity is 1."),
 });
 type PoolInput = z.infer<typeof PoolInput>;
+
+const PoolTagsInput = z.object({
+  limit: z.number().int().positive().max(200).default(20).describe("The number of tags in each list (default: 20)"),
+});
+type PoolTagsInput = z.infer<typeof PoolTagsInput>;
 
 const Empty = z.object({}).strict();
 type Empty = z.infer<typeof Empty>;
@@ -171,7 +176,20 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .handler(async (): Promise<Alerts> => engine.alerts())
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, renew, history, pool, alerts];
+  const pooltags = createProcedure()
+    .path(["resources", "pooltags"])
+    .input(zodAdapter<PoolTagsInput>(PoolTagsInput))
+    .output(anything<PoolTags>())
+    .meta({
+      description: "Give the non-paged kernel pool by pool tag: the largest tags and the tags that grew in the last hour (Windows)",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit))
+    .build() as AnyProcedure;
+
+  return [status, lease, wait, release, renew, history, pool, alerts, pooltags];
 }
 
 const ServerName = z.string().regex(SERVER_NAME, "Use letters, digits, - and _").describe("The name of the server, for example vex");

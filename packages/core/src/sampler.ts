@@ -2,7 +2,7 @@
  * The sampler reads the memory of the computer and of its processes. Each platform has its own sampler.
  */
 
-import type { ProcessInfo, Sample, SystemMemory } from "./types.ts";
+import type { PoolTag, ProcessInfo, Sample, SystemMemory } from "./types.ts";
 
 /** A sampler of one platform. */
 export interface Sampler {
@@ -10,6 +10,8 @@ export interface Sampler {
   memory(): SystemMemory;
   /** This function reads the processes with their parents and their memory. */
   processes(): ProcessInfo[];
+  /** This function reads the use of the kernel pools by each pool tag. Only Windows has pool tags. */
+  poolTags?(): PoolTag[];
   /** This function frees the resources of the sampler. */
   close(): void;
 }
