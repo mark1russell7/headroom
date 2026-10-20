@@ -17,7 +17,7 @@ server.registerTool(
       await new Promise((resolve) => setTimeout(resolve, 30));
     }
     count += 1;
-    return { content: [{ type: "text", text: JSON.stringify({ count, pid: process.pid }) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ count, pid: process.pid, title: process.title, server: process.env.HEADROOM_MCP_SERVER }) }] };
   },
 );
 server.registerTool("confirm", { description: "Ask the person a question" }, async () => {

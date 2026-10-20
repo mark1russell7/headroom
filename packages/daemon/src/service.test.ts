@@ -3,6 +3,7 @@ import { systemdArg, systemdUnit, windowsArg, windowsTaskXml, type ServiceComman
 
 const command: ServiceCommand = {
   node: "C:\\Program Files\\nodejs\\node.exe",
+  nodeOptions: ["--title=headroom-daemon"],
   cli: "C:\\Users\\a & b\\headroom\\cli.ts",
   args: ["serve", "--background", "--log", "C:\\Users\\a & b\\.headroom\\daemon.log"],
 };
@@ -19,7 +20,7 @@ describe("windowsTaskXml", () => {
   it("starts Node through a hidden console", () => {
     expect(text).toMatch(/<Command>.*conhost\.exe<\/Command>/);
     expect(text).toContain(
-      "<Arguments>--headless &quot;C:\\Program Files\\nodejs\\node.exe&quot; &quot;C:\\Users\\a &amp; b\\headroom\\cli.ts&quot; serve --background",
+      "<Arguments>--headless &quot;C:\\Program Files\\nodejs\\node.exe&quot; --title=headroom-daemon &quot;C:\\Users\\a &amp; b\\headroom\\cli.ts&quot; serve --background",
     );
   });
   it("starts at logon, again when it stops, and one copy only", () => {
@@ -34,8 +35,8 @@ describe("windowsTaskXml", () => {
 
 describe("systemdUnit", () => {
   it("quotes the arguments and restarts after a failure", () => {
-    const unit = systemdUnit({ node: "/usr/bin/node", cli: "/home/m/my repo/cli.ts", args: ["serve", "--log", "/tmp/50%.log"] });
-    expect(unit).toContain('ExecStart=/usr/bin/node "/home/m/my repo/cli.ts" serve --log /tmp/50%%.log');
+    const unit = systemdUnit({ node: "/usr/bin/node", nodeOptions: ["--title=headroom-daemon"], cli: "/home/m/my repo/cli.ts", args: ["serve", "--log", "/tmp/50%.log"] });
+    expect(unit).toContain('ExecStart=/usr/bin/node --title=headroom-daemon "/home/m/my repo/cli.ts" serve --log /tmp/50%%.log');
     expect(unit).toContain("Restart=on-failure");
   });
   it("escapes a backslash and a quote", () => expect(systemdArg('a\\"b')).toBe('"a\\\\\\"b"'));

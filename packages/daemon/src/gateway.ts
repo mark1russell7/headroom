@@ -14,6 +14,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { McpServerSpec } from "@headroom/core";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -280,8 +281,9 @@ class Upstream {
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;
     const transport = new stdio.StdioClientTransport({
       command: this.spec.command,
-      args: [...(this.spec.args ?? [])],
-      env: { ...env, ...this.spec.env },
+      // A title marks the process of a Node server in its command line: headroom-mcp-<name>.
+      args: [...(/^node(\.exe)?$/i.test(basename(this.spec.command)) ? [`--title=headroom-mcp-${this.name}`] : []), ...(this.spec.args ?? [])],
+      env: { ...env, ...this.spec.env, HEADROOM_MCP_SERVER: this.name },
       stderr: "pipe",
       ...(this.spec.cwd ? { cwd: this.spec.cwd } : {}),
     });

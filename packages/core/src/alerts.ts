@@ -6,6 +6,8 @@
  * - `memory`: little available memory.
  * - `commit`: a commit charge near its limit.
  * - `pool`: a large non-paged kernel pool, or a pool that grows fast. A driver leak shows here.
+ * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
+ *   An event alert stays active for some minutes.
  *
  * The alerts only report. headroom does not stop a process for an alert.
  */
@@ -14,7 +16,7 @@ import type { Lease } from "./broker.ts";
 import type { OwnerKind, ProcessInfo, SystemMemory } from "./types.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "stop";
 
 /** One active alert. */
 export interface Alert {
