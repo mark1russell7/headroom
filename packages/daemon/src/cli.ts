@@ -7,6 +7,7 @@
  * - `headroom status`: show the memory, the free amounts, the leases and the owners.
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
  * - `headroom mcp list | add | remove | restart | config`: the servers of the MCP gateway.
+ * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge and the kernel pool.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
@@ -32,6 +33,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom status [--json]
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] -- <command> [args...]
+  headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom history [--minutes 60] [--json]
@@ -319,6 +321,15 @@ async function main(argv: string[]): Promise<number> {
     case "pool-tags": {
       const { values } = parseArgs({ args: rest, options: { drivers: { type: "boolean" }, json: { type: "boolean" } } });
       return showPoolTags(values.drivers === true, values.json === true);
+    }
+    case "dashboard": {
+      const endpoint = connect()?.endpoint;
+      if (!endpoint) return (console.error("headroom does not run. Start it with: headroom service install"), 1);
+      const url = `${new URL(endpoint).origin}/`;
+      console.log(`The dashboard: ${url}`);
+      const [open, ...args] = process.platform === "win32" ? ["cmd", "/c", "start", "", url] : process.platform === "darwin" ? ["open", url] : ["xdg-open", url];
+      spawn(open as string, args, { stdio: "ignore", detached: true, windowsHide: true }).on("error", () => undefined).unref();
+      return 0;
     }
     case "alerts": {
       const { values } = parseArgs({ args: rest, options: { watch: { type: "boolean" }, json: { type: "boolean" } } });

@@ -110,9 +110,20 @@ export class Store {
     for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes);
   }
 
-  /** This function reads the memory samples since a time, the oldest first. */
-  memorySince(since: number): MemoryRow[] {
-    return this.#db.prepare("SELECT * FROM memory WHERE at >= ? ORDER BY at").all(since).map((row) => ({
+  /**
+   * This function reads the memory samples since a time, the oldest first. With a step longer than one
+   * minute, each row is the average of the samples of one step, so a long window stays small.
+   */
+  memorySince(since: number, stepMs = 0): MemoryRow[] {
+    const step = Math.floor(stepMs);
+    const query =
+      step > 60_000
+        ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, AVG(total_mb) AS total_mb, AVG(available_mb) AS available_mb,
+             AVG(commit_mb) AS commit_mb, AVG(commit_limit_mb) AS commit_limit_mb, AVG(kernel_paged_mb) AS kernel_paged_mb,
+             AVG(kernel_nonpaged_mb) AS kernel_nonpaged_mb
+           FROM memory WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER) ORDER BY at`
+        : "SELECT * FROM memory WHERE at >= ? ORDER BY at";
+    return this.#db.prepare(query).all(since).map((row) => ({
       at: Number(row["at"]),
       totalMb: Number(row["total_mb"]),
       availableMb: Number(row["available_mb"]),
@@ -123,9 +134,16 @@ export class Store {
     }));
   }
 
-  /** This function reads the owner samples since a time, the oldest first. */
-  ownersSince(since: number): OwnerRow[] {
-    return this.#db.prepare("SELECT * FROM owners WHERE at >= ? ORDER BY at, private_mb DESC").all(since).map((row) => ({
+  /** This function reads the owner samples since a time, the oldest first. A step longer than one minute averages each step. */
+  ownersSince(since: number, stepMs = 0): OwnerRow[] {
+    const step = Math.floor(stepMs);
+    const query =
+      step > 60_000
+        ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, owner, MAX(kind) AS kind, AVG(private_mb) AS private_mb,
+             AVG(working_mb) AS working_mb, MAX(processes) AS processes
+           FROM owners WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER), owner ORDER BY at, private_mb DESC`
+        : "SELECT * FROM owners WHERE at >= ? ORDER BY at, private_mb DESC";
+    return this.#db.prepare(query).all(since).map((row) => ({
       at: Number(row["at"]),
       owner: String(row["owner"]),
       kind: String(row["kind"]) as OwnerKind,

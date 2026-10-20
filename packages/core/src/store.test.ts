@@ -29,6 +29,26 @@ describe("Store", () => {
   });
 });
 
+describe("Store history with a step", () => {
+  it("averages the samples of each step", () => {
+    const store = new Store(":memory:");
+    const memory = (availableMb: number) => ({ totalMb: 100, availableMb, commitMb: 50, commitLimitMb: 200, kernelPagedMb: 1, kernelNonpagedMb: 2 });
+    const owner = (privateMb: number) => [{ owner: "session:a", kind: "session" as const, privateMb, workingMb: privateMb, processes: 3 }];
+    // Four samples one minute apart: two in the first 2-minute step, two in the second.
+    for (const [index, mb] of [10, 20, 30, 50].entries()) store.saveSample(index * 60_000, memory(mb), owner(mb));
+    expect(store.memorySince(0, 120_000).map((row) => [row.at, row.availableMb])).toEqual([
+      [0, 15],
+      [120_000, 40],
+    ]);
+    expect(store.ownersSince(0, 120_000).map((row) => [row.at, row.owner, row.privateMb])).toEqual([
+      [0, "session:a", 15],
+      [120_000, "session:a", 40],
+    ]);
+    expect(store.memorySince(0)).toHaveLength(4);
+    store.close();
+  });
+});
+
 describe("the Linux parsers", () => {
   it("reads /proc/meminfo", () => {
     const text = "MemTotal:       16384000 kB\nMemAvailable:    2048000 kB\nCommitted_AS:   20480000 kB\nCommitLimit:    24576000 kB\nSReclaimable:    102400 kB\nSUnreclaim:      51200 kB\nKernelStack:     10240 kB\nPageTables:      40960 kB\n";

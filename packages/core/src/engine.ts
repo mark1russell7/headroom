@@ -244,9 +244,9 @@ export class Engine {
     };
   }
 
-  /** This function gives the history since a time. */
-  history(since: number): History {
-    return { memory: this.#store.memorySince(since), owners: this.#store.ownersSince(since), leases: this.#store.endedLeases(since) };
+  /** This function gives the history since a time. With a step longer than one minute, each row is the average of one step. */
+  history(since: number, stepMs = 0): History {
+    return { memory: this.#store.memorySince(since, stepMs), owners: this.#store.ownersSince(since, stepMs), leases: this.#store.endedLeases(since) };
   }
 
   /** This function calls the listener with the leases that change. It gives a function that removes the listener. */

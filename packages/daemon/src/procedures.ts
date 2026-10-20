@@ -32,6 +32,7 @@ type ReleaseInput = z.infer<typeof ReleaseInput>;
 
 const HistoryInput = z.object({
   minutes: z.number().int().positive().max(10_080).default(60).describe("The length of the history in minutes (default: 60)"),
+  step: z.number().int().positive().max(1440).default(1).describe("The minutes in each row: each row is the average of its samples (default: 1)"),
 });
 type HistoryInput = z.infer<typeof HistoryInput>;
 
@@ -144,7 +145,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },
     })
-    .handler(async (input: HistoryInput): Promise<History> => engine.history(Date.now() - input.minutes * 60_000))
+    .handler(async (input: HistoryInput): Promise<History> => engine.history(Date.now() - input.minutes * 60_000, input.step * 60_000))
     .build() as AnyProcedure;
 
   const pool = createProcedure()
