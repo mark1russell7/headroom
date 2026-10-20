@@ -43,6 +43,16 @@ headroom history --minutes 120
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
 
+The alerts tell about a problem before the memory runs out. `headroom status` shows them first, and `headroom alerts --watch` writes one line when an alert starts or ends. The alerts only report. They do not stop a process.
+
+| Alert | The condition |
+|---|---|
+| `runaway` | One process holds more than 4 GB with no lease. Docker and the system are not examined. |
+| `orphan` | A process with no owner holds more than 1 GB, and its parent stopped. |
+| `memory` | Less than 1 GB of memory is available. |
+| `commit` | The commit charge is above 90% of its limit. |
+| `pool` | The non-paged kernel pool is above 3 GB, or it grew more than 500 MB in one hour. |
+
 ## The MCP gateway
 
 Claude Code starts a copy of each stdio MCP server for each session. The gateway starts one copy of a server for all the sessions, and serves it at `http://127.0.0.1:4730/mcp/<name>`.

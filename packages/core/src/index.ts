@@ -3,10 +3,12 @@
  * It uses no package of the client, so other programs can embed it.
  */
 
+export { DEFAULT_ALERT_RULES, detect } from "./alerts.ts";
+export type { Alert, AlertInput, AlertKind, AlertRules } from "./alerts.ts";
 export { Broker, isActive, processIsAlive } from "./broker.ts";
 export type { BrokerOptions, Capacity, Lease, LeaseRequest, LeaseState } from "./broker.ts";
 export { Engine } from "./engine.ts";
-export type { EngineOptions, History, Status } from "./engine.ts";
+export type { Alerts, EndedAlert, EngineOptions, History, Status } from "./engine.ts";
 export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
 export { createSampler, MB, takeSample } from "./sampler.ts";

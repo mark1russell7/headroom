@@ -7,13 +7,14 @@
  * - `headroom status`: show the memory, the free amounts, the leases and the owners.
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
  * - `headroom mcp list | add | remove | restart | config`: the servers of the MCP gateway.
+ * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge and the kernel pool.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
-import { createSampler, readSessions, type History, type Lease, type Status } from "@headroom/core";
+import { createSampler, readSessions, type Alert, type Alerts, type History, type Lease, type Status } from "@headroom/core";
 import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { mcpCommand } from "./gateway-cli.ts";
@@ -30,6 +31,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom status [--json]
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] -- <command> [args...]
+  headroom alerts [--watch] [--json]
   headroom history [--minutes 60] [--json]
   headroom pool <name> <capacity>
   headroom release <id>
@@ -63,8 +65,14 @@ function mb(value: number): string {
   return value >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`;
 }
 
+function clock(at: number): string {
+  return new Date(at).toISOString().slice(11, 16);
+}
+
 function printStatus(status: Status): void {
   const { memory } = status;
+  for (const alert of status.alerts ?? []) console.log(`ALERT since ${clock(alert.since)} UTC: ${alert.message}`);
+  if ((status.alerts ?? []).length > 0) console.log("");
   console.log(`Memory: ${mb(memory.availableMb)} available of ${mb(memory.totalMb)}. Committed ${mb(memory.commitMb)} of ${mb(memory.commitLimitMb)}.`);
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
   const free = Object.entries(status.free).map(([name, amount]) => `${name} ${name === "memory" ? mb(Math.max(0, amount)) : amount}`);
@@ -187,6 +195,43 @@ async function run(argv: string[]): Promise<number> {
   return code;
 }
 
+async function showAlerts(json: boolean): Promise<number> {
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  const alerts = await connection.call<Alerts>(["resources", "alerts"], {});
+  if (json) console.log(JSON.stringify(alerts, null, 2));
+  else {
+    if (alerts.active.length === 0) console.log("No active alerts.");
+    for (const alert of alerts.active) console.log(`ALERT since ${clock(alert.since)} UTC: ${alert.message}`);
+    for (const alert of alerts.ended.slice(0, 10)) console.log(`ended ${clock(alert.endedAt)} UTC (since ${clock(alert.since)}): ${alert.message}`);
+  }
+  return 0;
+}
+
+/**
+ * This function writes one line when an alert starts and one line when it ends, until it is stopped.
+ * A Claude Code session can follow it with the Monitor tool. It continues through a restart of the daemon.
+ */
+async function watchAlerts(): Promise<number> {
+  const seen = new Map<string, Alert>();
+  let connection = connect();
+  for (;;) {
+    try {
+      if (!connection) throw Object.assign(new Error("headroom does not run"), { code: "NETWORK_ERROR" });
+      const { active } = await connection.call<Alerts>(["resources", "alerts"], {});
+      const ids = new Set(active.map((alert) => alert.id));
+      for (const alert of active) if (!seen.has(alert.id)) console.log(`${clock(Date.now())} ALERT ${alert.message}`);
+      for (const [id, alert] of seen) if (!ids.has(id)) console.log(`${clock(Date.now())} ENDED ${alert.message}`);
+      seen.clear();
+      for (const alert of active) seen.set(alert.id, alert);
+    } catch (error) {
+      if (!isRestartError(error)) throw error;
+      connection = connect();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+  }
+}
+
 function resumePlan(): void {
   const sessions = readSessions().sort((a, b) => (a.name === "organizer" ? -1 : b.name === "organizer" ? 1 : a.name.localeCompare(b.name)));
   console.log("# The resume plan: one line for each live Claude Code session, the organizer first\n");
@@ -236,6 +281,10 @@ async function main(argv: string[]): Promise<number> {
     }
     case "run":
       return run(rest);
+    case "alerts": {
+      const { values } = parseArgs({ args: rest, options: { watch: { type: "boolean" }, json: { type: "boolean" } } });
+      return values.watch ? watchAlerts() : showAlerts(values.json === true);
+    }
     case "history": {
       const { values } = parseArgs({ args: rest, options: { minutes: { type: "string" }, json: { type: "boolean" } } });
       const connection = connect();
