@@ -43,6 +43,12 @@ headroom status
 headroom history --minutes 120
 ```
 
+On Windows, `headroom run` puts the job into a job object:
+
+- When the run ends, Windows stops each process that the job started and that still runs. Thus a test server or a search does not stay as an orphan. `--keep` turns this off, for a command that starts a service on purpose.
+- `--limit` makes the memory of the lease a hard limit: the job cannot commit more. An allocation above the limit fails, and the job stops with its own error.
+- The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak, so the next lease can have the right size.
+
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
 
 The alerts tell about a problem before the memory runs out. `headroom status` shows them first, and `headroom alerts --watch` writes one line when an alert starts or ends. The alerts only report. They do not stop a process.
