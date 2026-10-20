@@ -242,6 +242,33 @@ export async function restart(options: RestartOptions = {}): Promise<number> {
   return 1;
 }
 
+/**
+ * This function stops the daemon and keeps it stopped until `start()`, for example while its folder moves.
+ * On Windows it disables the task, so the trigger of every 2 minutes does not start the daemon again.
+ */
+export function stop(): number {
+  if (process.platform === "linux") return exec("systemctl", ["--user", "stop", `${SERVICE_NAME}.service`]).code;
+  if (process.platform !== "win32") return unsupported();
+  const disabled = exec("schtasks", ["/Change", "/TN", SERVICE_NAME, "/DISABLE"], true).code;
+  if (disabled !== 0) return (console.error(`The task "${SERVICE_NAME}" is not registered.`), disabled);
+  const running = readDiscovery();
+  if (running && processIsAlive(running.pid)) {
+    writePlannedStop(running.pid);
+    killTree(running.pid);
+  }
+  console.log(`headroom stopped. The task "${SERVICE_NAME}" is disabled until: headroom service start`);
+  return 0;
+}
+
+/** This function enables the service again and starts the daemon. It gives the exit code. */
+export function start(): number {
+  if (process.platform === "linux") return exec("systemctl", ["--user", "start", `${SERVICE_NAME}.service`]).code;
+  if (process.platform !== "win32") return unsupported();
+  const enabled = exec("schtasks", ["/Change", "/TN", SERVICE_NAME, "/ENABLE"], true).code;
+  if (enabled !== 0) return (console.error(`The task "${SERVICE_NAME}" is not registered. Register it with: headroom service install`), enabled);
+  return exec("schtasks", ["/Run", "/TN", SERVICE_NAME]).code;
+}
+
 /** This function stops the daemon and removes the service. It gives the exit code. */
 export function uninstall(): number {
   let code: number;
