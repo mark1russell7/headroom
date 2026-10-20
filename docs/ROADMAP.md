@@ -43,7 +43,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H3 | The daemon: the `resources.*` procedures on `runProcedureHost` over HTTP, and the `headroom` CLI | done (v0) |
 | H4 | The MCP face: the tools, and a long wait as an MCP task (after client CLI-11 and CLI-35) | later |
 | H5 | The hub: the organizer writes the state of headroom into the `resources` collection of the Fleet Hub | later |
-| H6 | Enforce on Windows: a job object with a memory limit, and a stop when the job closes | later |
+| H6 | Enforce on Windows: a job object with a memory limit, and a stop when the job closes | done: the job object, `--limit` and `--keep` |
 | H7 | Enforce on Linux and WSL: a cgroup with `MemoryMax` | later |
 | H8 | A Claude Code hook that sends each heavy command through `headroom run` | later |
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | done: the alerts, and the pool tags with their drivers |

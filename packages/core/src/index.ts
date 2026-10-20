@@ -11,6 +11,8 @@ export { Engine } from "./engine.ts";
 export type { Alerts, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, Status } from "./engine.ts";
 export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
+export { createJob } from "./enforce.ts";
+export type { Job, JobLimits } from "./enforce.ts";
 export { createSampler, MB, takeSample } from "./sampler.ts";
 export type { Sampler } from "./sampler.ts";
 export { Store } from "./store.ts";

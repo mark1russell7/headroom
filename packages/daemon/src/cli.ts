@@ -15,7 +15,7 @@
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
-import { createSampler, readSessions, type Alert, type Alerts, type History, type Lease, type PoolTags, type Status } from "@headroom/core";
+import { createJob, createSampler, MB, readSessions, type Alert, type Alerts, type History, type Job, type Lease, type PoolTags, type Status } from "@headroom/core";
 import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
@@ -32,7 +32,8 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp list | add | remove | restart | config   (the MCP gateway)
   headroom status [--json]
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
-               [--priority 0] [--wait 30m] -- <command> [args...]
+               [--priority 0] [--wait 30m] [--limit] [--keep] -- <command> [args...]
+               --limit: the job cannot use more memory than --mem. --keep: no job object.
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
@@ -115,6 +116,44 @@ function runCommand(command: readonly string[]): Promise<number> {
 }
 
 /** This function waits until the lease is no longer waiting. When the daemon restarts, it connects again and continues to wait. */
+/** How `headroom run` holds its job: a job object, and a memory limit with --limit. */
+interface Enforcement {
+  /** True (--keep): no job object, so the processes of the job can stay after the run. */
+  readonly keep: boolean;
+  /** True (--limit): the job cannot commit more memory than its lease. */
+  readonly limit: boolean;
+  readonly leaseMb: number | null;
+}
+
+/**
+ * This function runs a command in a job object (H6, Windows). When this process exits, Windows stops each process of the
+ * job that still runs, so no process of the job stays as an orphan. With --limit, the job cannot commit more memory than
+ * its lease. The function prints the peak memory of the job, so the holder can size the next lease.
+ */
+async function runEnforced(command: readonly string[], enforcement: Enforcement): Promise<{ code: number; peakMb: number | null }> {
+  let held: Job | null = null;
+  if (!enforcement.keep) {
+    // The process of headroom is in the job too: the limit adds its memory and a margin.
+    const selfMb = process.memoryUsage().rss / MB;
+    const limitMb = enforcement.limit && enforcement.leaseMb !== null ? enforcement.leaseMb + selfMb + 64 : undefined;
+    try {
+      held = await createJob(limitMb === undefined ? {} : { memoryMb: limitMb });
+    } catch (error) {
+      console.error(`headroom: no job object (${error instanceof Error ? error.message : String(error)}). The job runs without one.`);
+    }
+  }
+  const base = held?.peakMb() ?? 0;
+  const code = await runCommand(command);
+  if (!held) return { code, peakMb: null };
+  const peakMb = Math.max(0, held.peakMb() - base);
+  const of = enforcement.leaseMb === null ? "" : ` of its lease of ${mb(enforcement.leaseMb)}`;
+  console.error(`headroom: the job used at most ${mb(peakMb)}${of}.`);
+  if (held.limitMb !== null && held.peakMb() >= held.limitMb * 0.97) {
+    console.error(`headroom: the job reached its memory limit. Ask for a larger lease, for example --mem ${Math.ceil((enforcement.leaseMb ?? 0) * 1.5 / 1024)}g.`);
+  }
+  return { code, peakMb };
+}
+
 async function waitForGrant(start: Connection, lease: Lease, deadline: number): Promise<{ lease: Lease; connection: Connection }> {
   let connection = start;
   let current = lease;
@@ -148,6 +187,8 @@ async function run(argv: string[]): Promise<number> {
       job: { type: "string" },
       priority: { type: "string" },
       wait: { type: "string" },
+      limit: { type: "boolean" },
+      keep: { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
@@ -159,11 +200,16 @@ async function run(argv: string[]): Promise<number> {
   if (values.cpu) amounts["cpu"] = Number(values.cpu);
   for (const slot of values.slot ?? []) amounts[slot] = (amounts[slot] ?? 0) + 1;
   const job = values.job ?? positionals.join(" ").slice(0, 500);
+  const enforcement = { keep: values.keep === true, limit: values.limit === true, leaseMb: amounts["memory"] ?? null };
+  if (enforcement.limit && enforcement.leaseMb === null) {
+    console.error("headroom run --limit needs --mem: the limit is the memory of the lease.");
+    return 2;
+  }
 
   const connection = connect();
   if (!connection) {
     console.error("headroom: the daemon does not run, so the job runs without a lease.");
-    return runCommand(positionals);
+    return (await runEnforced(positionals, enforcement)).code;
   }
   const holder = values.holder ?? (await holderOf());
   let first: Lease;
@@ -178,7 +224,7 @@ async function run(argv: string[]): Promise<number> {
   } catch (error) {
     if (!isNetworkError(error)) throw error;
     console.error("headroom: the daemon does not answer, so the job runs without a lease.");
-    return runCommand(positionals);
+    return (await runEnforced(positionals, enforcement)).code;
   }
   const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
   if (lease.state === "waiting") {
@@ -190,9 +236,10 @@ async function run(argv: string[]): Promise<number> {
     console.error(`headroom: the lease ended before the job started: ${lease.reason ?? lease.state}`);
     return 75;
   }
-  const code = await runCommand(positionals);
+  const { code, peakMb } = await runEnforced(positionals, enforcement);
+  const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
   try {
-    await (connect() ?? latest).call(["resources", "release"], { id: lease.id, reason: `the job ended with code ${code}` });
+    await (connect() ?? latest).call(["resources", "release"], { id: lease.id, reason: `the job ended with code ${code}${peak}` });
   } catch {
     // The daemon ends the lease anyway when this process exits.
   }
