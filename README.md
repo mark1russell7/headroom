@@ -58,6 +58,14 @@ headroom mcp list
 - Start a server with `node` directly, not through `npx` or `pnpm exec`. A server of the MCP SDK stops when its input closes, so a stop of the daemon also stops it.
 - Use the gateway only for a server that keeps no state for a session. A server with one browser for each session stays a stdio server.
 
+A program that starts only stdio servers, for example the launcher of a plugin, uses the bridge:
+
+```sh
+node packages/daemon/src/bridge.mjs vex -- npx -y @mark1russell7/vex-mcp
+```
+
+The bridge sends the messages of the session to the gateway. When the gateway does not serve the server, the bridge starts the command after `--`. Thus the same launcher works on a computer without headroom. The bridge uses approximately 30 MB, and it opens a new session after a restart of the daemon.
+
 | Exit code | Meaning |
 |---|---|
 | The code of the job | The job ran under its lease. |

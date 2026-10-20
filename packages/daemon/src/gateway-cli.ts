@@ -60,6 +60,9 @@ export async function mcpCommand(argv: readonly string[], connection: Connection
     const config = claudeConfig(name);
     console.log(JSON.stringify(config, null, 2));
     console.log(`\nTo add it for each session of this user:\n  claude mcp add-json ${name} '${JSON.stringify(config)}' --scope user`);
+    const bridge = join(import.meta.dirname, "bridge.mjs").replace(/\\/g, "/");
+    console.log(`\nFor a program that starts only stdio servers, for example the launcher of a plugin:\n  node ${bridge} ${name} -- <the usual command of the server>`);
+    console.log("The bridge uses the gateway when it serves the server. Otherwise it starts the usual command.");
     return 0;
   }
   if (!connection) {
