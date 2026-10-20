@@ -1,7 +1,10 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { HostFaceContext } from "@procedures/peer";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -93,6 +96,77 @@ describe("McpGateway", () => {
     const before = counted(await client.callTool({ name: "count", arguments: {} }));
     killTree(before.pid);
     await new Promise((resolve) => setTimeout(resolve, 1500));
+    const after = counted(await client.callTool({ name: "count", arguments: {} }));
+    expect(after.pid).not.toBe(before.pid);
+    expect(after.count).toBe(1);
+  });
+});
+
+describe("the stdio bridge", () => {
+  let http: HttpServer;
+  let gateway: McpGateway;
+  let home = "";
+  const clients: Client[] = [];
+
+  beforeAll(async () => {
+    gateway = new McpGateway({ specs: () => specs });
+    const face = gateway.face()({ policy: { token: "secret" } } as unknown as HostFaceContext);
+    http = createServer((req, res) => {
+      if (!face.handler?.(req, res)) {
+        res.statusCode = 404;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    home = mkdtempSync(join(tmpdir(), "headroom-bridge-"));
+    const endpoint = `http://127.0.0.1:${(http.address() as AddressInfo).port}/api`;
+    writeFileSync(join(home, "daemon.json"), JSON.stringify({ pid: process.pid, endpoint, token: "secret", startedAt: new Date().toISOString() }));
+  });
+
+  afterAll(async () => {
+    await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
+    await gateway.close();
+    http.closeAllConnections();
+    await new Promise((resolve) => http.close(resolve));
+  });
+
+  const bridged = async (name = "counter", local: readonly string[] = []): Promise<Client> => {
+    const client = new Client({ name: "bridged", version: "1.0.0" });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [join(import.meta.dirname, "bridge.mjs"), name, ...(local.length > 0 ? ["--", ...local] : [])],
+      env: { ...(process.env as Record<string, string>), HEADROOM_HOME: home },
+    });
+    await client.connect(transport as unknown as Parameters<Client["connect"]>[0]);
+    clients.push(client);
+    return client;
+  };
+
+  it("connects a stdio client to the one copy", async () => {
+    const a = await bridged();
+    const b = await bridged();
+    expect((await a.listTools()).tools.map((tool) => tool.name)).toEqual(["count"]);
+    const first = counted(await a.callTool({ name: "count", arguments: {} }));
+    const second = counted(await b.callTool({ name: "count", arguments: {} }));
+    expect(second.pid).toBe(first.pid);
+    const seen: number[] = [];
+    await a.callTool({ name: "count", arguments: { steps: 2 } }, undefined, { onprogress: (progress) => seen.push(progress.progress) });
+    expect(seen).toEqual([1, 2]);
+  });
+
+  it("starts the local command only when the gateway does not serve the server", async () => {
+    const local = [process.execPath, fixture];
+    const shared = counted(await (await bridged("counter", local)).callTool({ name: "count", arguments: {} }));
+    expect(gateway.pids().has(shared.pid)).toBe(true);
+    const own = counted(await (await bridged("unknown", local)).callTool({ name: "count", arguments: {} }));
+    expect(gateway.pids().has(own.pid)).toBe(false);
+    expect(own.count).toBe(1);
+  });
+
+  it("opens a new session when the gateway lost the old one", async () => {
+    const client = await bridged();
+    const before = counted(await client.callTool({ name: "count", arguments: {} }));
+    await gateway.reset("counter");
     const after = counted(await client.callTool({ name: "count", arguments: {} }));
     expect(after.pid).not.toBe(before.pid);
     expect(after.count).toBe(1);

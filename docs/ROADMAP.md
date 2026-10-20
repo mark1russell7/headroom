@@ -51,6 +51,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress: the gateway works, the rollout waits for the owners |
 | H12 | Start the daemon at login, and start it again after a crash: `headroom service install` | done |
 | H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
+| H14 | Runaway alerts: a process above 4 GB that has no lease, or a process whose parent stopped. headroom reports to the organizer. It does not stop the process. | later |
 
 ## The MCP gateway (H11)
 
@@ -66,6 +67,7 @@ The state on 2026-10-19:
 
 - The gateway works: `headroom mcp add`, `list`, `remove`, `restart` and `config`. The gateway is a face of the host on the listener of the daemon. Each session gets an MCP session of its own. The gateway sends each request, its cancel and its progress to the one copy.
 - A test sent two sessions to the MCP server of Vex. One process of 51 MB answered both. Before, each session started its own chain of 4 processes, approximately 260 MB.
+- The bridge `bridge.mjs` connects a program that starts only stdio servers to the gateway. When the gateway does not serve the server, it starts the usual command. It uses approximately 30 MB for each session.
 - The rollout waits for the owner of each server. The plugin of Vex has the largest gain: 60 processes and 2.1 GB on 2026-10-19. The `loom` server of jarvis has 15 processes and 710 MB.
 
 ## Version 0
