@@ -87,6 +87,7 @@ interface ForwardedRequest {
 /** The part of the extra data of a request handler that the gateway uses. */
 interface RequestExtra {
   readonly signal: AbortSignal;
+  readonly requestId: string | number;
   sendNotification(notification: { method: string; params?: Record<string, unknown> }): Promise<void>;
 }
 
@@ -103,6 +104,8 @@ interface ServerInfo {
 interface Session {
   readonly transport: StreamableHTTPServerTransport;
   readonly server: Server;
+  /** The requests of the session that the server has not answered. */
+  readonly inFlight: Set<string | number>;
   seenAt: number;
 }
 
@@ -245,6 +248,22 @@ class Upstream {
     for (const session of this.sessions.values()) send(session.server).catch(() => undefined);
   }
 
+  /**
+   * This function sends a question of the server (MCP elicitation) to the session that waits for an
+   * answer of the server. Stdio does not tell which call asks. Thus the gateway sends the question
+   * only when exactly one session has a request in flight. Otherwise, the answer is `decline`.
+   */
+  async #elicit(request: ForwardedRequest, resultSchema: unknown): Promise<unknown> {
+    const busy = [...this.sessions.values()].filter((session) => session.inFlight.size > 0);
+    const session = busy.length === 1 ? busy[0] : undefined;
+    if (!session || !session.server.getClientCapabilities()?.elicitation) {
+      this.#log(`The MCP server ${this.name} asked a question, and no single session can answer: ${busy.length} sessions wait.`);
+      return { action: "decline" };
+    }
+    const send = session.server.request.bind(session.server) as unknown as SendRequest;
+    return send(request, resultSchema, { relatedRequestId: [...session.inFlight][0], timeout: CALL_TIMEOUT_MS });
+  }
+
   #fail(error: unknown): void {
     this.#failures += 1;
     this.#failedAt = Date.now();
@@ -270,7 +289,8 @@ class Upstream {
       for (const line of chunk.toString("utf8").split(/\r?\n/)) if (line.trim()) this.#stderr.push(line.slice(0, 500));
       this.#stderr.splice(0, Math.max(0, this.#stderr.length - STDERR_LINES));
     });
-    const client = new clientModule.Client({ name: "headroom-gateway", version: "0.1.0" }, { capabilities: {} });
+    // The gateway can ask a person: it sends each question of the server to the session of the call.
+    const client = new clientModule.Client({ name: "headroom-gateway", version: "0.1.0" }, { capabilities: { elicitation: {} } });
     client.onclose = () => {
       // A stop sets the client to null first. Thus only an unexpected exit is a failure.
       if (this.#client !== client) return;
@@ -285,6 +305,8 @@ class Upstream {
     client.setNotificationHandler(types.ResourceUpdatedNotificationSchema, async (notification) =>
       this.#each((server) => server.sendResourceUpdated(notification.params)),
     );
+    const handle = client.setRequestHandler.bind(client) as unknown as SetHandler;
+    handle(types.ElicitRequestSchema, (request) => this.#elicit(request, types.ElicitResultSchema));
     try {
       await client.connect(transport, { timeout: START_TIMEOUT_MS });
     } catch (error) {
@@ -309,7 +331,7 @@ class Upstream {
 }
 
 /** This function sends the requests of a session for each capability of the server to the server. */
-function forwardRequests(server: Server, upstream: Upstream, capabilities: ServerCapabilities, types: Sdk["types"]): void {
+function forwardRequests(session: Session, upstream: Upstream, capabilities: ServerCapabilities, types: Sdk["types"]): void {
   const pairs: [unknown, unknown][] = [];
   if (capabilities.tools) {
     pairs.push([types.ListToolsRequestSchema, types.ListToolsResultSchema], [types.CallToolRequestSchema, types.CallToolResultSchema]);
@@ -328,8 +350,17 @@ function forwardRequests(server: Server, upstream: Upstream, capabilities: Serve
     pairs.push([types.ListPromptsRequestSchema, types.ListPromptsResultSchema], [types.GetPromptRequestSchema, types.GetPromptResultSchema]);
   }
   if (capabilities.completions) pairs.push([types.CompleteRequestSchema, types.CompleteResultSchema]);
-  const handle = server.setRequestHandler.bind(server) as unknown as SetHandler;
-  for (const [requestSchema, resultSchema] of pairs) handle(requestSchema, (request, extra) => upstream.forward(request, resultSchema, extra));
+  const handle = session.server.setRequestHandler.bind(session.server) as unknown as SetHandler;
+  for (const [requestSchema, resultSchema] of pairs) {
+    handle(requestSchema, async (request, extra) => {
+      session.inFlight.add(extra.requestId);
+      try {
+        return await upstream.forward(request, resultSchema, extra);
+      } finally {
+        session.inFlight.delete(extra.requestId);
+      }
+    });
+  }
 }
 
 /** The capabilities that a session gets: those of the server that the gateway forwards. */
@@ -502,13 +533,14 @@ export class McpGateway {
       capabilities: forwardedCapabilities(info.capabilities),
       ...(info.instructions ? { instructions: info.instructions } : {}),
     });
-    forwardRequests(server, upstream, info.capabilities, types);
     const transport: StreamableHTTPServerTransport = new http.StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (id) => {
-        upstream.sessions.set(id, { transport, server, seenAt: Date.now() });
+        upstream.sessions.set(id, session);
       },
     });
+    const session: Session = { transport, server, inFlight: new Set(), seenAt: Date.now() };
+    forwardRequests(session, upstream, info.capabilities, types);
     // The SDK types of the transport do not compile under `exactOptionalPropertyTypes`.
     await server.connect(transport as unknown as Parameters<Server["connect"]>[0]);
     server.onclose = () => {
