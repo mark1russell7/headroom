@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="headroom-token" content="%%TOKEN%%">
+<title>headroom</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 24a11 11 0 0 1 22 0' fill='none' stroke='%232a78d6' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M16 24l6-8' stroke='%23eb6834' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+/* The tokens follow the reference palette of the dataviz method: light first, dark redefines them. */
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface: #fcfcfb; --raise: #f0efec;
+  --ink: #0b0b0b; --ink-2: #52514e; --muted: #6f6d68;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10);
+  --s1: #2a78d6; --s2: #eb6834; --s1-wash: rgba(42, 120, 214, 0.10); --track: #cde2fb;
+  --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b; --good-text: #006300;
+  --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --raise: #232321;
+    --ink: #f0efec; --ink-2: #c3c2b7; --muted: #9a988f;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+    --s1: #3987e5; --s2: #d95926; --s1-wash: rgba(57, 135, 229, 0.12); --track: #1c3350;
+    --good-text: #0ca30c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --raise: #232321;
+  --ink: #f0efec; --ink-2: #c3c2b7; --muted: #9a988f;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
+  --s1: #3987e5; --s2: #d95926; --s1-wash: rgba(57, 135, 229, 0.12); --track: #1c3350;
+  --good-text: #0ca30c;
+}
+* { box-sizing: border-box; }
+html { background: var(--page); }
+body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 var(--sans); }
+.wrap { max-width: 1240px; margin: 0 auto; padding: 20px max(16px, env(safe-area-inset-right, 0px)) 40px max(16px, env(safe-area-inset-left, 0px)); display: grid; gap: 16px; }
+
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.mark { display: flex; align-items: center; gap: 10px; }
+.mark h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
+.mark span { color: var(--ink-2); font-size: 13px; }
+.live { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 2px var(--surface); flex: none; }
+.dot.off { background: var(--crit); }
+
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.filters .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+.seg { display: inline-flex; background: var(--raise); border-radius: 8px; padding: 2px; }
+.seg button { font: inherit; font-size: 13px; color: var(--ink-2); background: none; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border); font-weight: 600; }
+.seg button:focus-visible, .chart svg:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+
+.alerts { display: grid; gap: 8px; }
+.alert { display: grid; grid-template-columns: auto auto 1fr auto; align-items: start; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--warn); border-radius: 10px; padding: 10px 14px; }
+.alert.crit { border-left-color: var(--crit); }
+.alert.serious { border-left-color: var(--serious); }
+.alert .kind { font-weight: 650; text-transform: capitalize; }
+.alert .since { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.alert .msg { min-width: 0; }
+
+.tiles { display: grid; grid-template-columns: 1.6fr repeat(4, 1fr); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.tile .label { color: var(--ink-2); font-size: 13px; }
+.tile .value { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; margin-top: 2px; }
+.tile.hero .value { font-size: 48px; line-height: 1.05; }
+.tile .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.meter { height: 8px; background: var(--track); border-radius: 4px; margin-top: 10px; overflow: hidden; }
+.meter > div { height: 100%; border-radius: 0 4px 4px 0; background: var(--s1); }
+.meter > div.warn { background: var(--warn); }
+.meter > div.crit { background: var(--crit); }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.card h2 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+.card .hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; color: var(--ink-2); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; overflow: visible; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); font-size: 12px; min-width: 150px; z-index: 2; }
+.tip .t { color: var(--muted); margin-bottom: 4px; }
+.tip .row { display: flex; align-items: center; gap: 8px; }
+.tip .row b { font-weight: 650; font-variant-numeric: tabular-nums; }
+.tip .row span:last-child { color: var(--ink-2); }
+
+details { margin-top: 8px; }
+details summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+td { padding: 7px 8px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono { font-family: var(--mono); font-size: 12px; }
+.clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scroll { overflow-x: auto; }
+.empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.chip svg { flex: none; }
+
+.owners { display: grid; gap: 2px; }
+.owner { display: grid; grid-template-columns: minmax(120px, 210px) 1fr 72px 88px; align-items: center; gap: 10px; padding: 5px 0; }
+.owner .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.owner .name small { display: block; color: var(--muted); font-size: 11px; white-space: normal; }
+.owner .bar { height: 12px; }
+.owner .bar > div { height: 100%; background: var(--s1); border-radius: 0 4px 4px 0; min-width: 2px; }
+.owner .val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.miniBar { display: inline-block; height: 8px; background: var(--s1); border-radius: 0 3px 3px 0; vertical-align: middle; margin-right: 8px; }
+.up { color: var(--ink); font-weight: 600; }
+.foot { color: var(--muted); font-size: 12px; text-align: center; }
+.stale { opacity: 0.55; transition: opacity 0.2s; }
+
+@media (max-width: 1000px) { .tiles { grid-template-columns: repeat(2, 1fr); } .tile.hero { grid-column: 1 / -1; } .grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .tiles { grid-template-columns: 1fr; } .owner { grid-template-columns: minmax(90px, 1fr) 1fr 64px; } .owner .spark { display: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark">
+      <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 24a11 11 0 0 1 22 0" fill="none" stroke="var(--s1)" stroke-width="4" stroke-linecap="round"/><path d="M16 24l6-8" stroke="var(--s2)" stroke-width="3" stroke-linecap="round"/></svg>
+      <h1>headroom</h1>
+      <span>the memory and the jobs of this computer</span>
+    </div>
+    <div class="live" id="live"><span class="dot"></span><span>connecting</span></div>
+  </header>
+
+  <div class="filters" role="group" aria-label="Time window">
+    <span class="label">Window</span>
+    <div class="seg" id="windows"></div>
+  </div>
+
+  <section class="alerts" id="alerts" aria-live="polite"></section>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="grid2">
+    <div class="card"><h2>Memory</h2><p class="hint">Available and committed memory, in GB. The line for the RAM shows the size of the physical memory.</p><div class="legend" id="memLegend"></div><div class="chart" id="memChart"></div><div id="memTable"></div></div>
+    <div class="card"><h2>Kernel pools</h2><p class="hint">The memory of the drivers, in MB. A non-paged pool that only grows is a driver leak.</p><div class="legend" id="poolLegend"></div><div class="chart" id="poolChart"></div><div id="poolTable"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Memory by owner</h2>
+    <p class="hint">The private memory of each Claude Code session, MCP server and program group, now. The line at the right shows the window.</p>
+    <div class="owners" id="owners"></div>
+  </section>
+
+  <section class="card">
+    <h2>Leases</h2>
+    <p class="hint">The jobs that run under <code>headroom run</code>, and the jobs that wait for room.</p>
+    <div class="scroll" id="leases"></div>
+    <details><summary>Ended leases in the window</summary><div class="scroll" id="ended"></div></details>
+  </section>
+
+  <section class="grid2">
+    <div class="card"><h2>MCP gateway</h2><p class="hint">One shared copy of each MCP server for all the sessions.</p><div class="scroll" id="mcp"></div></div>
+    <div class="card"><h2>Pool tags</h2><p class="hint" id="tagsHint">The largest non-paged pool tags, and their change in the last hour. <code>headroom pool-tags --drivers</code> names the driver of a tag.</p><div class="scroll" id="tags"></div></div>
+  </section>
+
+  <p class="foot" id="foot">headroom stops its requests while this tab is hidden.</p>
+</div>
+
+<script>
+"use strict";
+// The dashboard of headroom. It reads the procedures of the daemon with fetch, and it draws with plain DOM and SVG.
+// Names and jobs come from other processes: the page writes them with textContent, never as HTML.
+
+const TOKEN = document.querySelector('meta[name="headroom-token"]').content;
+const WINDOWS = [
+  { minutes: 60, label: "1 h", step: 1 },
+  { minutes: 360, label: "6 h", step: 3 },
+  { minutes: 1440, label: "24 h", step: 12 },
+  { minutes: 10080, label: "7 days", step: 84 },
+];
+const state = { status: null, history: null, mcp: [], tags: null, window: 360, ok: true, at: 0 };
+try { const saved = Number(localStorage.getItem("headroom.window")); if (WINDOWS.some((w) => w.minutes === saved)) state.window = saved; } catch {}
+
+// ---- helpers ----
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs, ...children) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k === "style") e.style.cssText = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of children.flat()) if (c != null && c !== false) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+}
+const NS = "http://www.w3.org/2000/svg";
+function s(tag, attrs, ...children) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) e.setAttribute(k, v);
+  for (const c of children.flat()) if (c != null) e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+}
+const mb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${Math.round(v)} MB`);
+const gbNum = (v) => (v / 1024).toFixed(1);
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const clockS = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const dayClock = (t) => new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+function ago(t) {
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (sec < 60) return `${sec} s`;
+  if (sec < 3600) return `${Math.round(sec / 60)} min`;
+  if (sec < 86400) return `${(sec / 3600).toFixed(1)} h`;
+  return `${(sec / 86400).toFixed(1)} days`;
+}
+function amounts(a) {
+  return Object.entries(a || {}).map(([k, v]) => (k === "memory" ? mb(v) : `${k} ${v}`)).join(", ") || "-";
+}
+// Icons carry the meaning of a status color, so the color is never alone.
+const ICON = {
+  good: () => s("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": "true" }, s("circle", { cx: 5, cy: 5, r: 4, fill: "var(--good)" })),
+  wait: () => s("svg", { width: 12, height: 12, viewBox: "0 0 12 12", "aria-hidden": "true" }, s("circle", { cx: 6, cy: 6, r: 4.5, fill: "none", stroke: "var(--warn)", "stroke-width": 2 }), s("path", { d: "M6 3.5V6l1.8 1.2", stroke: "var(--warn)", "stroke-width": 1.5, fill: "none", "stroke-linecap": "round" })),
+  off: () => s("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": "true" }, s("circle", { cx: 5, cy: 5, r: 3.5, fill: "none", stroke: "var(--muted)", "stroke-width": 1.5 })),
+  alert: (color) => s("svg", { width: 16, height: 16, viewBox: "0 0 16 16", "aria-hidden": "true" }, s("path", { d: "M8 1.5 15 14H1z", fill: color }), s("path", { d: "M8 6v3.5M8 11.5v.5", stroke: "var(--surface)", "stroke-width": 1.6, "stroke-linecap": "round" })),
+};
+
+// ---- the procedures ----
+async function call(path, input) {
+  const res = await fetch(`/api/${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify(input || {}),
+  });
+  // A restart of the daemon changes its token: a new load of the page gets the new one.
+  if (res.status === 401) { setTimeout(() => location.reload(), 1500); throw new Error("the token changed"); }
+  if (!res.ok) throw new Error(`${path}: ${res.status}`);
+  return res.json();
+}
+
+function markLive(ok) {
+  state.ok = ok;
+  if (ok) state.at = Date.now();
+  const live = $("live");
+  live.replaceChildren(h("span", { class: ok ? "dot" : "dot off" }), h("span", { text: ok ? `live · ${clockS(state.at)}` : `no answer since ${state.at ? clockS(state.at) : "the start"}` }));
+  document.querySelector(".wrap").classList.toggle("stale", !ok);
+}
+
+// ---- the window filter ----
+function renderWindows() {
+  $("windows").replaceChildren(...WINDOWS.map((w) => h("button", {
+    type: "button", "aria-pressed": String(w.minutes === state.window), text: w.label,
+    onclick: () => { state.window = w.minutes; try { localStorage.setItem("headroom.window", String(w.minutes)); } catch {} renderWindows(); refreshHistory(); },
+  })));
+}
+
+// ---- the charts ----
+function niceStep(range) {
+  const raw = range / 4, pow = 10 ** Math.floor(Math.log10(raw)), f = raw / pow;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * pow;
+}
+
+/**
+ * A line chart over time: one y axis, 2px lines, a hairline grid, direct end labels when they do not collide,
+ * a crosshair with one tooltip for every series, keyboard steps with the arrow keys, and a table of the data.
+ */
+function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, reference, label }) {
+  legendHost.replaceChildren(...series.map((sr) => h("span", {}, h("i", { class: "key", style: `background:${sr.color}` }), sr.name)), h("span", { style: "margin-left:auto;color:var(--muted)", text: `in ${unit}` }));
+  if (times.length < 2) { host.replaceChildren(h("div", { class: "empty", text: "No history yet in this window." })); tableHost.replaceChildren(); return; }
+  const W = Math.max(300, host.clientWidth || 600), H = 220, padL = 44, padR = 96, padT = 10, padB = 24;
+  const pw = W - padL - padR, ph = H - padT - padB;
+  const t0 = times[0], t1 = times[times.length - 1];
+  let max = Math.max(...series.flatMap((sr) => sr.values.filter((v) => v != null)), reference ? reference.value : 0);
+  const step = niceStep(toUnit(max) || 1);
+  const top = Math.ceil(toUnit(max) / step) * step || step;
+  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * pw;
+  const y = (v) => padT + ph - (toUnit(v) / top) * ph;
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, tabindex: 0, role: "img", "aria-label": `${label}. Use the left and right arrow keys to read the values.` });
+  for (let v = 0; v <= top + 1e-9; v += step) {
+    const yy = padT + ph - (v / top) * ph;
+    svg.append(s("line", { x1: padL, x2: padL + pw, y1: yy, y2: yy, stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+    svg.append(s("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", style: "font-variant-numeric:tabular-nums" }, String(+v.toFixed(2))));
+  }
+  // The number of time labels follows the width, so the labels do not touch on a phone.
+  const span = t1 - t0, ticks = Math.max(2, Math.min(5, Math.floor(pw / 95)));
+  for (let i = 0; i <= ticks; i++) {
+    const t = t0 + (span * i) / ticks;
+    svg.append(s("text", { x: x(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle", "font-size": 11, fill: "var(--muted)" }, span > 36 * 3600e3 ? dayClock(t) : clock(t)));
+  }
+  if (reference) {
+    const yy = y(reference.value);
+    svg.append(s("line", { x1: padL, x2: padL + pw, y1: yy, y2: yy, stroke: "var(--axis)", "stroke-width": 1 }));
+    // A halo in the surface color keeps the label legible where a line crosses it.
+    svg.append(s("text", { x: padL + pw - 4, y: yy - 5, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", stroke: "var(--surface)", "stroke-width": 4, "paint-order": "stroke" }, reference.label));
+  }
+  // A gap in the samples (the daemon did not run) breaks the line.
+  const gap = Math.max(3 * ((t1 - t0) / Math.max(1, times.length - 1)), 3 * 60_000);
+  const ends = [];
+  for (const sr of series) {
+    let d = "", prev = null;
+    sr.values.forEach((v, i) => {
+      if (v == null) { prev = null; return; }
+      d += `${prev != null && times[i] - times[prev] <= gap ? "L" : "M"}${x(times[i]).toFixed(1)},${y(v).toFixed(1)}`;
+      prev = i;
+    });
+    svg.append(s("path", { d, fill: "none", stroke: sr.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    const last = sr.values.length - 1;
+    if (sr.values[last] != null) {
+      svg.append(s("circle", { cx: x(times[last]), cy: y(sr.values[last]), r: 4, fill: sr.color, stroke: "var(--surface)", "stroke-width": 2 }));
+      ends.push({ y: y(sr.values[last]), value: sr.values[last], name: sr.name });
+    }
+  }
+  // Direct end labels only when they do not collide; the legend carries the names in each case.
+  const sorted = [...ends].sort((a, b) => a.y - b.y);
+  const clear = sorted.every((e, i) => i === 0 || e.y - sorted[i - 1].y >= 26);
+  if (clear) for (const e of ends) {
+    svg.append(s("text", { x: padL + pw + 10, y: e.y - 1, "font-size": 12, "font-weight": 650, fill: "var(--ink)" }, `${toUnit(e.value).toFixed(unit === "GB" ? 1 : 0)} ${unit}`));
+    svg.append(s("text", { x: padL + pw + 10, y: e.y + 12, "font-size": 11, fill: "var(--ink-2)" }, e.name));
+  }
+  // The crosshair finds the nearest sample; one tooltip lists every series.
+  const cross = s("line", { y1: padT, y2: padT + ph, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden" });
+  const dots = series.map((sr) => s("circle", { r: 4, fill: sr.color, stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" }));
+  svg.append(cross, ...dots);
+  const tip = h("div", { class: "tip", hidden: true });
+  let index = times.length - 1;
+  const show = (i) => {
+    index = Math.max(0, Math.min(times.length - 1, i));
+    const xx = x(times[index]);
+    cross.setAttribute("x1", xx); cross.setAttribute("x2", xx); cross.setAttribute("visibility", "visible");
+    series.forEach((sr, k) => {
+      const v = sr.values[index];
+      dots[k].setAttribute("visibility", v == null ? "hidden" : "visible");
+      if (v != null) { dots[k].setAttribute("cx", xx); dots[k].setAttribute("cy", y(v)); }
+    });
+    tip.replaceChildren(h("div", { class: "t", text: span > 36 * 3600e3 ? dayClock(times[index]) : clock(times[index]) }),
+      ...series.map((sr) => h("div", { class: "row" }, h("i", { class: "key", style: `background:${sr.color}` }), h("b", { text: sr.values[index] == null ? "-" : `${toUnit(sr.values[index]).toFixed(unit === "GB" ? 1 : 0)} ${unit}` }), h("span", { text: sr.name }))));
+    tip.hidden = false;
+    const left = (xx / W) * host.clientWidth;
+    tip.style.left = `${Math.min(host.clientWidth - 170, Math.max(0, left + 12))}px`;
+    tip.style.top = "8px";
+  };
+  const hide = () => { cross.setAttribute("visibility", "hidden"); dots.forEach((d) => d.setAttribute("visibility", "hidden")); tip.hidden = true; };
+  const hit = s("rect", { x: padL, y: padT, width: pw, height: ph, fill: "transparent" });
+  hit.addEventListener("pointermove", (ev) => {
+    const box = svg.getBoundingClientRect();
+    const t = t0 + (((ev.clientX - box.left) / box.width) * W - padL) / pw * (t1 - t0);
+    let lo = 0, hi = times.length - 1;
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid; else hi = mid; }
+    show(Math.abs(times[lo] - t) < Math.abs(times[hi] - t) ? lo : hi);
+  });
+  hit.addEventListener("pointerleave", hide);
+  svg.append(hit);
+  svg.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft") { show(index - 1); ev.preventDefault(); }
+    else if (ev.key === "ArrowRight") { show(index + 1); ev.preventDefault(); }
+    else if (ev.key === "Escape") hide();
+  });
+  svg.addEventListener("focus", () => show(index));
+  svg.addEventListener("blur", hide);
+  host.replaceChildren(svg, tip);
+
+  // The table view: the same values, at most 24 rows, the newest first.
+  const every = Math.max(1, Math.ceil(times.length / 24));
+  const rows = [];
+  for (let i = times.length - 1; i >= 0; i -= every) rows.push(h("tr", {}, h("td", { text: dayClock(times[i]) }), ...series.map((sr) => h("td", { class: "num", text: sr.values[i] == null ? "-" : `${toUnit(sr.values[i]).toFixed(unit === "GB" ? 1 : 0)}` }))));
+  tableHost.replaceChildren(h("details", {}, h("summary", { text: "The data as a table" }),
+    h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Time" }), ...series.map((sr) => h("th", { class: "num", text: `${sr.name} (${unit})` })))), h("tbody", {}, rows)))));
+}
+
+function sparkline(values, width = 88, height = 22) {
+  const v = values.filter((n) => n != null);
+  if (v.length < 2) return s("svg", { width, height });
+  const lo = Math.min(...v), hi = Math.max(...v), r = hi - lo || 1;
+  const pts = values.map((n, i) => (n == null ? null : [(i / (values.length - 1)) * (width - 6) + 3, height - 3 - ((n - lo) / r) * (height - 6)])).filter(Boolean);
+  const last = pts[pts.length - 1];
+  return s("svg", { width, height, viewBox: `0 0 ${width} ${height}`, "aria-hidden": "true" },
+    s("polyline", { points: pts.map((p) => p.map((n) => n.toFixed(1)).join(",")).join(" "), fill: "none", stroke: "var(--axis)", "stroke-width": 1.5, "stroke-linejoin": "round" }),
+    s("circle", { cx: last[0], cy: last[1], r: 2.5, fill: "var(--s1)" }));
+}
+
+// ---- the sections ----
+function renderAlerts() {
+  const alerts = state.status?.alerts || [];
+  const level = (k) => (k === "memory" || k === "commit" || k === "runaway" ? "crit" : k === "pool" ? "serious" : "warn");
+  const color = { crit: "var(--crit)", serious: "var(--serious)", warn: "var(--warn)" };
+  $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${level(a.kind)}` },
+    ICON.alert(color[level(a.kind)]), h("span", { class: "kind", text: a.kind }), h("span", { class: "msg", text: a.message }), h("span", { class: "since", text: `since ${clock(a.since)}` }))));
+}
+
+function tile(label, value, sub, extra, hero) {
+  return h("div", { class: `card tile${hero ? " hero" : ""}` }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }), sub ? h("div", { class: "sub", text: sub }) : null, extra);
+}
+function meter(fraction, warnAt, critAt) {
+  const level = fraction >= critAt ? "crit" : fraction >= warnAt ? "warn" : "";
+  return h("div", { class: "meter", role: "meter", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(fraction * 100) }, h("div", { class: level, style: `width:${Math.min(100, fraction * 100).toFixed(1)}%` }));
+}
+function renderTiles() {
+  const st = state.status;
+  if (!st) return;
+  const m = st.memory;
+  const used = 1 - m.availableMb / m.totalMb;
+  const granted = st.leases.filter((l) => l.state === "granted"), waiting = st.leases.filter((l) => l.state === "waiting");
+  const pool = (state.history?.memory || []).map((r) => r.kernelNonpagedMb);
+  const poolDelta = pool.length > 1 ? m.kernelNonpagedMb - pool[0] : null;
+  $("tiles").replaceChildren(
+    tile("Available memory", mb(m.availableMb), `of ${mb(m.totalMb)} RAM · ${Math.round(used * 100)}% in use`, meter(used, 0.85, 0.95), true),
+    tile("Free for a lease", mb(Math.max(0, st.free.memory ?? 0)), `after the reserve of ${mb(st.reserveMb)}`),
+    tile("Committed", mb(m.commitMb), `of the limit ${mb(m.commitLimitMb)}`, meter(m.commitMb / m.commitLimitMb, 0.8, 0.9)),
+    tile("Non-paged pool", mb(m.kernelNonpagedMb), poolDelta == null ? `paged ${mb(m.kernelPagedMb)}` : `${poolDelta >= 0 ? "+" : "-"}${mb(Math.abs(poolDelta))} in the window`, h("div", { style: "margin-top:6px" }, sparkline(pool, 120, 24))),
+    tile("Leases", `${granted.length} run · ${waiting.length} wait`, waiting.length ? `the first waits for ${ago(waiting[0].requestedAt)}` : "no job waits"),
+  );
+}
+
+function renderCharts() {
+  const rows = state.history?.memory || [];
+  const times = rows.map((r) => r.at);
+  const total = rows.length ? rows[rows.length - 1].totalMb : state.status?.memory.totalMb;
+  lineChart($("memChart"), $("memTable"), $("memLegend"), {
+    label: "Available and committed memory over time",
+    times, unit: "GB", toUnit: (v) => v / 1024,
+    reference: total ? { value: total, label: `RAM ${gbNum(total)} GB` } : null,
+    series: [
+      { name: "Available", color: "var(--s1)", values: rows.map((r) => r.availableMb) },
+      { name: "Committed", color: "var(--s2)", values: rows.map((r) => r.commitMb) },
+    ],
+  });
+  lineChart($("poolChart"), $("poolTable"), $("poolLegend"), {
+    label: "The kernel pools over time",
+    times, unit: "MB", toUnit: (v) => v,
+    series: [
+      { name: "Non-paged", color: "var(--s1)", values: rows.map((r) => r.kernelNonpagedMb) },
+      { name: "Paged", color: "var(--s2)", values: rows.map((r) => r.kernelPagedMb) },
+    ],
+  });
+}
+
+function renderOwners() {
+  const owners = state.status?.owners || [];
+  if (!owners.length) { $("owners").replaceChildren(h("div", { class: "empty", text: "No sample yet." })); return; }
+  const top = owners.slice(0, 14), rest = owners.slice(14);
+  const rows = rest.length ? [...top, { owner: `${rest.length} more owners`, kind: "other", privateMb: rest.reduce((a, o) => a + o.privateMb, 0), workingMb: rest.reduce((a, o) => a + o.workingMb, 0), processes: rest.reduce((a, o) => a + o.processes, 0), rest: true }] : top;
+  const max = Math.max(...rows.map((o) => o.privateMb), 1);
+  // The history of each owner, for the line at the right of its row.
+  const series = new Map();
+  for (const r of state.history?.owners || []) {
+    if (!series.has(r.owner)) series.set(r.owner, new Map());
+    series.get(r.owner).set(r.at, r.privateMb);
+  }
+  const times = (state.history?.memory || []).map((r) => r.at);
+  $("owners").replaceChildren(...rows.map((o) => {
+    const hist = series.get(o.owner);
+    const label = o.owner.startsWith("session:") ? o.owner.slice(8) : o.owner;
+    const kind = o.rest ? "" : o.owner.startsWith("session:") ? "Claude Code session" : o.owner.startsWith("mcp:") ? "MCP server of the gateway" : o.kind;
+    return h("div", { class: "owner" },
+      h("div", { class: "name", title: o.owner }, h("span", { text: label }), h("small", { text: `${kind}${kind ? " · " : ""}${o.processes} processes · ${mb(o.workingMb)} in RAM` })),
+      h("div", { class: "bar" }, h("div", { style: `width:${((o.privateMb / max) * 100).toFixed(1)}%` })),
+      h("div", { class: "val", text: mb(o.privateMb) }),
+      h("div", { class: "spark" }, hist ? sparkline(times.map((t) => hist.get(t) ?? null)) : null));
+  }));
+}
+
+function leaseTable(leases, ended) {
+  if (!leases.length) return h("div", { class: "empty", text: ended ? "No lease ended in this window." : "No lease is active. Start a heavy job with: headroom run --mem 2g -- <command>" });
+  return h("table", {},
+    h("thead", {}, h("tr", {}, ["State", "Holder", "Job", "Amounts", ended ? "Ended" : "For", "Note"].map((t, i) => h("th", { class: i === 3 || i === 4 ? "num" : "", text: t })))),
+    h("tbody", {}, leases.map((l) => {
+      const icon = l.state === "granted" ? ICON.good() : l.state === "waiting" ? ICON.wait() : ICON.off();
+      const word = l.state === "granted" ? "runs" : l.state === "waiting" ? "waits" : l.state;
+      return h("tr", {},
+        h("td", {}, h("span", { class: "chip" }, icon, word)),
+        h("td", { text: l.holder }),
+        h("td", { class: "mono" }, h("div", { class: "clip", title: l.job, text: l.job })),
+        h("td", { class: "num", text: amounts(l.amounts) }),
+        h("td", { class: "num", text: ended ? clock(l.endedAt) : ago(l.grantedAt ?? l.requestedAt) }),
+        h("td", { class: "clip", title: l.reason || "", text: l.reason || "" }));
+    })));
+}
+function renderLeases() {
+  const leases = [...(state.status?.leases || [])].sort((a, b) => (a.state === b.state ? a.requestedAt - b.requestedAt : a.state === "granted" ? -1 : 1));
+  $("leases").replaceChildren(leaseTable(leases, false));
+  $("ended").replaceChildren(leaseTable((state.history?.leases || []).slice(0, 20), true));
+}
+
+function renderMcp() {
+  const rows = state.mcp || [];
+  if (!rows.length) { $("mcp").replaceChildren(h("div", { class: "empty", text: "The gateway has no server. Add one with: headroom mcp add <name> -- <command>" })); return; }
+  $("mcp").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, ["Server", "State", "Process", "Memory", "Sessions", "Last use"].map((t, i) => h("th", { class: i >= 2 ? "num" : "", text: t })))),
+    h("tbody", {}, rows.flatMap((r) => {
+      const icon = r.state === "running" ? ICON.good() : r.state === "waiting" || r.state === "starting" ? ICON.wait() : ICON.off();
+      const word = r.state === "running" ? "runs" : r.state === "waiting" ? "failed, waits" : r.state === "starting" ? "starts" : "stopped (starts at the next call)";
+      const main = h("tr", {},
+        h("td", { class: "mono", text: r.name }),
+        h("td", {}, h("span", { class: "chip" }, icon, word)),
+        h("td", { class: "num", text: r.pid ?? "-" }),
+        h("td", { class: "num", text: r.pid ? mb(r.memoryMb) : "-" }),
+        h("td", { class: "num", text: r.sessions }),
+        h("td", { class: "num", text: r.usedAt ? `${ago(r.usedAt)} ago` : "-" }));
+      return r.error ? [main, h("tr", {}, h("td", { colspan: 6, class: "mono", style: "color:var(--muted)", text: `error: ${r.error}` }))] : [main];
+    }))));
+}
+
+function renderTags() {
+  const t = state.tags;
+  if (!t || t.at == null) { $("tags").replaceChildren(h("div", { class: "empty", text: "No snapshot yet. The daemon reads the pool tags every 5 minutes, and only on Windows." })); return; }
+  const minutes = Math.round((t.at - t.sinceAt) / 60000);
+  const first = minutes < 1;
+  $("tagsHint").replaceChildren(first
+    ? `The largest non-paged pool tags. The change shows after the next snapshot, 5 minutes after ${clock(t.at)}. `
+    : `The largest non-paged pool tags, and their change in the last ${minutes} minutes. `, h("code", { text: "headroom pool-tags --drivers" }), " names the driver of a tag.");
+  const max = Math.max(...t.largest.map((r) => r.nonPagedMb), 1);
+  $("tags").replaceChildren(h("table", {},
+    h("thead", {}, h("tr", {}, h("th", { text: "Tag" }), h("th", { text: "Non-paged" }), h("th", { class: "num", text: "Change" }))),
+    h("tbody", {}, t.largest.slice(0, 10).map((r) => h("tr", {},
+      h("td", { class: "mono", text: r.tag }),
+      h("td", { style: "white-space:nowrap" }, h("span", { class: "miniBar", style: `width:${Math.max(2, (r.nonPagedMb / max) * 120).toFixed(0)}px` }), mb(r.nonPagedMb)),
+      h("td", { class: `num${r.growthMb >= 10 ? " up" : ""}`, text: first ? "-" : `${r.growthMb >= 0 ? "+" : ""}${r.growthMb} MB` }))))));
+}
+
+// ---- the refresh loops ----
+async function refreshStatus() {
+  try { state.status = await call("resources/status"); markLive(true); renderAlerts(); renderTiles(); renderOwners(); renderLeases(); }
+  catch { markLive(false); }
+}
+async function refreshHistory() {
+  const w = WINDOWS.find((x) => x.minutes === state.window) || WINDOWS[1];
+  try { state.history = await call("resources/history", { minutes: w.minutes, step: w.step }); renderCharts(); renderTiles(); renderOwners(); renderLeases(); }
+  catch { markLive(false); }
+}
+async function refreshMcp() { try { state.mcp = await call("mcp/list"); renderMcp(); } catch {} }
+async function refreshTags() { try { state.tags = await call("resources/pooltags", { limit: 10 }); renderTags(); } catch {} }
+
+const LOOPS = [[refreshStatus, 3000], [refreshMcp, 10000], [refreshHistory, 60000], [refreshTags, 60000]];
+let timers = [];
+function start() {
+  stop();
+  for (const [run, every] of LOOPS) { run(); timers.push(setInterval(run, every)); }
+}
+function stop() { timers.forEach(clearInterval); timers = []; }
+// A hidden tab makes no requests, so the dashboard costs nothing when nobody looks at it.
+document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
+let resizeTimer = 0;
+new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderCharts, 150); }).observe(document.querySelector(".grid2"));
+
+renderWindows();
+if (!document.hidden) start();
+</script>
+</body>
+</html>

@@ -58,6 +58,14 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
 
+## The dashboard
+
+The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the memory, the alerts, the memory of each owner, the leases, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
+
+- The page is one HTML file of approximately 35 KB, with no framework and no build step. The daemon keeps it as one string.
+- The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
+- Only a request to `127.0.0.1` or `localhost` gets the page, because the page holds the token of the daemon.
+
 ## The MCP gateway
 
 Claude Code starts a copy of each stdio MCP server for each session. The gateway starts one copy of a server for all the sessions, and serves it at `http://127.0.0.1:4730/mcp/<name>`.

@@ -11,6 +11,7 @@ import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@p
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
+import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
 import { DAEMON_TITLE } from "./service.ts";
 import { databasePath, headroomHome, readDiscovery, removeDiscovery, takePlannedStop, writeDiscovery } from "./paths.ts";
@@ -74,14 +75,14 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
     "headroom",
   );
-  // The MCP gateway is a face on the same listener as the procedures: /mcp/<name> next to /api.
+  // The MCP gateway and the dashboard are faces on the same listener as the procedures: /mcp/<name> and / next to /api.
   const started = await runProcedureHost({
     name: "headroom",
     mode: options.mode ?? "foreground",
     host: {
       ...base,
-      faces: { ...base.faces, mcp: gateway.face() },
-      listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), "mcp"] })),
+      faces: { ...base.faces, mcp: gateway.face(), dashboard: dashboardFace() },
+      listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), "mcp", "dashboard"] })),
     },
     log,
   });
