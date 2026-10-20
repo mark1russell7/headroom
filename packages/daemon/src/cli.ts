@@ -27,7 +27,7 @@ const HELP = `headroom: the memory and job broker of this computer
 
   headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
   headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
-  headroom service uninstall | status
+  headroom service restart [--now] [--wait 60m] | uninstall | status
   headroom mcp list | add | remove | restart | config   (the MCP gateway)
   headroom status [--json]
   headroom run [--mem 2g] [--cpu 2] [--slot docker]... [--holder name] [--job name]
@@ -294,8 +294,12 @@ async function main(argv: string[]): Promise<number> {
         return service.install([...(values.port ? ["--port", values.port] : []), ...(values.reserve ? ["--reserve", values.reserve] : [])]);
       }
       if (action === "uninstall") return service.uninstall();
+      if (action === "restart") {
+        const { values } = parseArgs({ args, options: { now: { type: "boolean" }, wait: { type: "string" } } });
+        return service.restart({ now: values.now === true, waitMs: values.wait ? parseTime(values.wait) : undefined });
+      }
       if (action === "status") return service.status();
-      console.error("Usage: headroom service install | uninstall | status");
+      console.error("Usage: headroom service install | restart | uninstall | status");
       return 2;
     }
     case "status": {

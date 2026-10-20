@@ -26,6 +26,27 @@ export function logPath(): string {
   return join(headroomHome(), "daemon.log");
 }
 
+/** The mark of a planned stop: `headroom service restart` writes the process ID of the daemon that it stops. */
+export function plannedStopPath(): string {
+  return join(headroomHome(), "planned-stop.json");
+}
+
+/** This function marks the stop of a daemon as planned, so the next daemon does not report it. */
+export function writePlannedStop(pid: number): void {
+  writeFileSync(plannedStopPath(), `${JSON.stringify({ pid, at: new Date().toISOString() })}\n`);
+}
+
+/** This function reads and removes the mark of a planned stop. It gives the process ID, or `null`. */
+export function takePlannedStop(): number | null {
+  try {
+    const { pid } = JSON.parse(readFileSync(plannedStopPath(), "utf8")) as { pid: unknown };
+    rmSync(plannedStopPath(), { force: true });
+    return typeof pid === "number" ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The data that a client uses to reach the daemon. */
 export interface Discovery {
   readonly pid: number;

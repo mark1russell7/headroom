@@ -13,7 +13,7 @@ import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { McpGateway } from "./gateway.ts";
 import { DAEMON_TITLE } from "./service.ts";
-import { databasePath, headroomHome, readDiscovery, removeDiscovery, writeDiscovery } from "./paths.ts";
+import { databasePath, headroomHome, readDiscovery, removeDiscovery, takePlannedStop, writeDiscovery } from "./paths.ts";
 import { gatewayProcedures, resourceProcedures } from "./procedures.ts";
 
 /** The default port of the daemon. */
@@ -41,8 +41,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     // This is not a failure of a service, so the service manager does not start it again.
     return options.mode === "background" ? 0 : 1;
   }
-  // The daemon before this one did not remove its discovery file: another process stopped it.
-  const unclean = running && running.pid !== process.pid ? running.pid : null;
+  // The daemon before this one did not remove its discovery file: another process stopped it,
+  // unless `headroom service restart` marked the stop as planned.
+  const planned = takePlannedStop();
+  const unclean = running && running.pid !== process.pid && running.pid !== planned ? running.pid : null;
+  if (planned !== null && running?.pid === planned) log(`The planned restart stopped the daemon before this one (process ${planned}).`);
   process.title = DAEMON_TITLE;
 
   const store = new Store(databasePath());
