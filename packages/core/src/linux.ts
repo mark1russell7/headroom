@@ -2,10 +2,11 @@
  * The sampler of Linux and WSL. It reads `/proc`, so it starts no process.
  */
 
-import { readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { parseNetDev, parsePortRange, parseProcTcp } from "./network.ts";
 import { MB, type Sampler } from "./sampler.ts";
-import type { DiskSpace, ProcessInfo, SystemMemory } from "./types.ts";
+import type { DiskSpace, NetAdapter, ProcessInfo, SystemMemory, TcpTable } from "./types.ts";
 
 /** This function reads the fields of `/proc/meminfo` or of `/proc/<pid>/status`, in kB. */
 export function parseKb(text: string): Map<string, number> {
@@ -82,8 +83,8 @@ function ioOf(path: string): { readonly readBytes?: number | undefined; readonly
   }
 }
 
-/** This function makes the sampler of Linux. */
-export function linuxSampler(root = "/proc"): Sampler {
+/** This function makes the sampler of Linux. `root` is the folder of `/proc`, and `sys` is the folder of `/sys`. */
+export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
   function memory(): SystemMemory {
     return parseMeminfo(readFileSync(`${root}/meminfo`, "utf8"));
   }
@@ -119,7 +120,47 @@ export function linuxSampler(root = "/proc"): Sampler {
     return list;
   }
 
-  return { memory, processes, disks: () => linuxDisks(), close: () => {} };
+  /** This function reads the interfaces with a device: the physical adapters and the Wi-Fi adapters. A loopback, a bridge or a veth has no device. */
+  function network(): NetAdapter[] {
+    const list: NetAdapter[] = [];
+    for (const row of parseNetDev(readFileSync(`${root}/net/dev`, "utf8"))) {
+      if (!existsSync(`${sys}/class/net/${row.name}/device`)) continue;
+      const bits = linkBits(`${sys}/class/net/${row.name}/speed`);
+      list.push({ ...row, inBitsPerSecond: bits, outBitsPerSecond: bits });
+    }
+    return list;
+  }
+
+  /** This function reads the TCP connections of IPv4 and IPv6, and the dynamic port range. The files give no process. */
+  function tcp(): TcpTable {
+    const read = (path: string): string => {
+      try {
+        return readFileSync(path, "utf8");
+      } catch {
+        return "";
+      }
+    };
+    return {
+      dynamic: parsePortRange(read(`${root}/sys/net/ipv4/ip_local_port_range`)) ?? LINUX_DYNAMIC_PORTS,
+      connections: [...parseProcTcp(read(`${root}/net/tcp`)), ...parseProcTcp(read(`${root}/net/tcp6`))],
+    };
+  }
+
+  return { memory, processes, disks: () => linuxDisks(), network, tcp, close: () => {} };
+}
+
+/** The default dynamic port range of Linux: the ports 32768 to 60999. */
+const LINUX_DYNAMIC_PORTS = { first: 32_768, count: 28_232 };
+
+/** This function reads the speed of a link from `/sys/class/net/<name>/speed`, in Mb/s, and gives it in bits per second. */
+function linkBits(path: string): number | null {
+  try {
+    const mbits = Number(readFileSync(path, "utf8").trim());
+    return Number.isFinite(mbits) && mbits > 0 ? mbits * 1_000_000 : null;
+  } catch {
+    // A link that is down, or a Wi-Fi adapter, gives no speed.
+    return null;
+  }
 }
 
 /**

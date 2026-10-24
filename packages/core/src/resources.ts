@@ -10,18 +10,19 @@ import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
 import { treeMb } from "./owners.ts";
 import { MB } from "./sampler.ts";
-import type { Amounts, DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
+import type { Amounts, DiskSpace, NetRead, OwnerKind, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
+import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
 
 /** The kinds of resource. An id with no known kind is a slot, as before. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "network" | "port" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "gpu";
 
-/** The unit of the amounts of a kind. The disk writes use MB/h. */
-export type Unit = "MB" | "cores" | "count" | "MB/h";
+/** The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s";
 
 /** The processor times of the computer since its start (H23), in milliseconds, for all the processors together. */
 export interface CpuTimes {
@@ -54,6 +55,12 @@ export interface Readings {
   readonly pools: Amounts;
   /** The sum of the amounts of the granted leases, for each id. */
   readonly granted: Amounts;
+  /** The byte counters of the network adapters at this read (H24). */
+  readonly network?: NetRead | undefined;
+  /** The byte counters of the network adapters at the read before this read. The throughput comes from the two reads. */
+  readonly previousNetwork?: NetRead | undefined;
+  /** The TCP connections and the dynamic port range (H24). */
+  readonly tcp?: TcpTable | undefined;
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -81,7 +88,7 @@ export interface ResourceStatus extends Measurement {
   readonly unit: Unit;
   /**
    * The 10 owners that use the instance most, from the attribute part of its kind. A kind with no attribute part has none.
-   * Memory: the private MB. Disk: the MB written in the last hour, for all the drives together. CPU: the cores.
+   * Memory: the private MB. Disk: the MB written in the last hour, for all the drives together. CPU: the cores. Ports: the connections.
    */
   readonly owners: readonly ResourceOwner[];
 }
@@ -154,6 +161,8 @@ export interface InstanceFacts {
   /** The change of the instance over the window of the rule, when the history has it. */
   readonly change: Change | undefined;
   readonly readings: Readings;
+  /** The owner of each process. The text of the ports alert names the owners with the most connections. */
+  readonly owners: Owners;
 }
 
 /** The facts of an alert on one process. */
@@ -586,6 +595,99 @@ const CPU: Resource = {
   enforce: null,
 };
 
+/**
+ * The network (H24): two instances, `net:in` and `net:out`, in MB/s for all the physical and Wi-Fi adapters together.
+ * The capacity is the sum of the link speeds. The bytes of each process need ETW, so this kind has no attribute part.
+ */
+const NET: Resource = {
+  kind: "net",
+  unit: "MB/s",
+  measure: {
+    read: ({ network, previousNetwork }) => {
+      if (network === undefined) return [];
+      const flows = netFlows(previousNetwork, network);
+      return (["in", "out"] as const).map((direction) => {
+        const { capacity, used } = flows[direction];
+        const free = capacity === null || used === null ? null : Math.max(0, Math.round((capacity - used) * 1000) / 1000);
+        return { id: `net:${direction}`, capacity, used, free };
+      });
+    },
+  },
+  attribute: null,
+  alert: NO_ALERTS,
+  admit: null,
+  enforce: null,
+};
+
+/** The count of owners that the text of the ports alert names. */
+const PORT_OWNERS_SHOWN = 3;
+
+/**
+ * The attribute part of the TCP ports: the connections of each owner with a local port in the dynamic range. A row
+ * with no process, for example TIME_WAIT on Windows, has no owner.
+ */
+const TCP_CONNECTIONS: Attribute = {
+  unit: "count",
+  // The read of a process has no count of connections, so the outlier rules do not examine the ports.
+  counter: () => undefined,
+  read: ({ tcp }, owners) =>
+    tcp === undefined
+      ? []
+      : tcpByOwner(tcp, owners.ownerOf, owners.kindOf).map((each) => ({
+          resource: "ports",
+          owner: each.owner,
+          kind: each.kind,
+          amount: each.connections,
+          processes: each.processes,
+        })),
+};
+
+/**
+ * The dynamic TCP ports (H24): one instance, `ports:tcp`. The capacity is the dynamic port range. The used part is the
+ * count of connections with a local port in the range, in each state. When no port is free, new connections fail.
+ */
+const PORTS: Resource = {
+  kind: "ports",
+  unit: "count",
+  measure: {
+    read: ({ tcp }) => {
+      if (tcp === undefined) return [];
+      const { used } = dynamicUse(tcp);
+      return [{ id: "ports:tcp", capacity: tcp.dynamic.count, used, free: tcp.dynamic.count - used }];
+    },
+  },
+  attribute: TCP_CONNECTIONS,
+  alert: {
+    rules: (limits) => [
+      {
+        type: "level",
+        alert: "ports",
+        on: "used",
+        severity: true,
+        warning: { ratio: limits.portsWarnRatio },
+        critical: { ratio: limits.portsCriticalRatio },
+        text: ({ measurement, readings, owners }) => {
+          const used = measurement.used ?? 0;
+          const capacity = measurement.capacity ?? 0;
+          const tcp = readings.tcp;
+          const waiting = tcp === undefined ? 0 : dynamicUse(tcp).timeWait;
+          const top = tcp === undefined ? [] : tcpByOwner(tcp, owners.ownerOf, owners.kindOf).slice(0, PORT_OWNERS_SHOWN);
+          const most = top.length === 0 ? "" : ` Most connections: ${top.map((each) => `${each.owner} ${each.connections}`).join(", ")}.`;
+          const percent = capacity > 0 ? Math.round((used / capacity) * 100) : 0;
+          return {
+            subject: "TCP ports",
+            mb: 0,
+            message: `${used} of ${capacity} dynamic TCP ports are in use (${percent}%), ${waiting} of them in TIME_WAIT.${most} When no dynamic port is free, new connections fail.`,
+          };
+        },
+      },
+    ],
+  },
+  // Later: a port lease for the dev servers.
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -608,7 +710,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */

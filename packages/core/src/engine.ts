@@ -8,6 +8,7 @@ import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { availableParallelism } from "node:os";
+import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import {
   leasesOf,
@@ -30,12 +31,14 @@ import {
   MEMORY,
   type DiskSpace,
   type McpServerSpec,
+  type NetRead,
   type OwnerKind,
   type OwnerUsage,
   type ProcessInfo,
   type SessionInfo,
   type SessionLoad,
   type SystemMemory,
+  type TcpTable,
 } from "./types.ts";
 
 /** The options of an engine. */
@@ -92,8 +95,8 @@ export interface Status {
   /** The fixed drives, from the last read of the processes. */
   readonly disks: readonly DiskStatus[];
   /**
-   * The level of each resource instance: the memory, the commit charge, the kernel pools, the desktop, the drives, the
-   * processors and the slots. Each instance has its 10 largest owners.
+   * The level of each resource instance, with its 10 largest owners. The instances are the memory, the commit charge, the
+   * kernel pools, the desktop, the drives, the processors, the network, the TCP ports and the slots.
    */
   readonly resources: readonly ResourceStatus[];
   /**
@@ -101,6 +104,8 @@ export interface Status {
    * each write, also to a pipe or a device, and do not name the drive.
    */
   readonly writes: readonly OwnerWrites[];
+  /** The TCP connections of the last read of the processes (H24), or `null` on a platform with no TCP read. */
+  readonly tcp: TcpSummary | null;
 }
 
 /** An alert that ended. */
@@ -209,6 +214,12 @@ export class Engine {
   #cores: readonly OwnerCores[] | undefined;
   #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
   #disks: readonly DiskSpace[] = [];
+  /** The byte counters of the network adapters at the last read and at the read before it (H24). */
+  #network: NetRead | undefined;
+  #previousNetwork: NetRead | undefined;
+  /** The TCP connections of the last read, and its time (H24). */
+  #tcp: TcpTable | undefined;
+  #tcpAt = 0;
   /** The free space of each drive, in MB, over the last hour. */
   readonly #diskReadings = new Map<string, { readonly at: number; readonly freeMb: number }[]>();
   readonly #largeFiles: (mounts: readonly string[]) => readonly LargeFile[];
@@ -299,6 +310,9 @@ export class Engine {
       processors: this.#processors,
       pools: this.#store.pools(),
       granted,
+      network: this.#network,
+      previousNetwork: this.#previousNetwork,
+      tcp: this.#tcp,
     };
     return this.#readings;
   }
@@ -336,6 +350,7 @@ export class Engine {
         this.#store.savePoolTags(now, read);
       }
       this.#readDisks(now);
+      this.#readNetwork(now);
       this.#check(now, ownerOf);
     }
     const changed = this.#broker.tick(this.capacity());
@@ -455,6 +470,7 @@ export class Engine {
       disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
       resources: withKinds(this.#measurements, this.#readings === null ? undefined : { readings: this.#readings, owners: this.#ownership }),
       writes: this.#writes,
+      tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -524,6 +540,16 @@ export class Engine {
     };
   }
 
+  /**
+   * This function gives the listening TCP ports of the last read, with the process and the owner of each port, by port.
+   * A session can find a free port for a dev server, or the holder of a port.
+   */
+  ports(): TcpPorts {
+    const tcp = this.#tcp;
+    if (tcp === undefined) return { at: null, dynamic: null, listening: [] };
+    return { at: this.#tcpAt, dynamic: tcp.dynamic, listening: listeningPorts(tcp, this.#processes, this.#ownership.ownerOf) };
+  }
+
   /** This function gives the active alerts and the alerts that ended last. */
   alerts(): Alerts {
     return { active: [...this.#alerts.values()], ended: [...this.#ended] };
@@ -544,7 +570,7 @@ export class Engine {
     const found = detect(
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
-        load: this.#load, disks, writes: this.#writes,
+        load: this.#load, disks, writes: this.#writes, tcp: this.#tcp,
       },
       this.#alertRules,
     );
@@ -591,6 +617,29 @@ export class Engine {
     for (const disk of this.#disks) {
       const kept = (this.#diskReadings.get(disk.mount) ?? []).filter((reading) => now - reading.at <= DISK_KEEP_MS);
       this.#diskReadings.set(disk.mount, [...kept, { at: now, freeMb: disk.freeMb }]);
+    }
+  }
+
+  /**
+   * This function reads the byte counters of the network adapters and the TCP connections (H24). It keeps the previous
+   * read of the adapters for the throughput. A failed read gives no read, and the tick continues.
+   */
+  #readNetwork(now: number): void {
+    if (this.#sampler.network) {
+      this.#previousNetwork = this.#network;
+      try {
+        this.#network = { at: now, adapters: this.#sampler.network() };
+      } catch {
+        this.#network = undefined;
+      }
+    }
+    if (this.#sampler.tcp) {
+      try {
+        this.#tcp = this.#sampler.tcp();
+        this.#tcpAt = now;
+      } catch {
+        this.#tcp = undefined;
+      }
     }
   }
 

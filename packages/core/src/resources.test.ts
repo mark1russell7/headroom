@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Lease } from "./broker.ts";
 import { treeMb } from "./owners.ts";
-import { kindOf, leasesOf, limitOf, measure, RESOURCES, resourceOf, roomOf, rooms, type Owners, type Readings } from "./resources.ts";
+import { kindOf, leasesOf, limitOf, measure, RESOURCES, resourceOf, roomOf, rooms, withKinds, type Owners, type Readings } from "./resources.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb });
@@ -54,6 +54,46 @@ describe("resources", () => {
       { id: "docker", capacity: 2, used: 0, free: 2 },
       { id: "browser", capacity: 1, used: 1, free: 0 },
     ]);
+  });
+
+  it("measures the network in and out and the dynamic TCP ports, and gives the connections of each owner (H24)", () => {
+    expect(kindOf("net:in")).toBe("net");
+    expect(kindOf("ports:tcp")).toBe("ports");
+    const wifi = (inBytes: number, outBytes: number) => ({ name: "Wi-Fi", inBytes, outBytes, inBitsPerSecond: 1_000_000_000, outBitsPerSecond: 1_000_000_000 });
+    const net: Readings = {
+      ...readings,
+      previousNetwork: { at: 0, adapters: [wifi(0, 0)] },
+      network: { at: 10_000, adapters: [wifi(12 * 1024 * 1024, 3 * 1024 * 1024)] },
+      tcp: {
+        dynamic: { first: 49_152, count: 16_384 },
+        connections: [
+          { localPort: 3000, state: "listen", pid: 2, address: "127.0.0.1" },
+          { localPort: 50_000, state: "established", pid: 2 },
+          { localPort: 50_001, state: "established", pid: 3 },
+          { localPort: 50_002, state: "established", pid: 4 },
+          { localPort: 50_003, state: "time-wait", pid: 0 },
+        ],
+      },
+    };
+    const measurements = measure(net).filter((each) => each.id.startsWith("net:") || each.id.startsWith("ports:"));
+    expect(measurements).toEqual([
+      { id: "net:in", capacity: 119.2, used: 1.2, free: 118 },
+      { id: "net:out", capacity: 119.2, used: 0.3, free: 118.9 },
+      { id: "ports:tcp", capacity: 16_384, used: 4, free: 16_380 },
+    ]);
+    const statuses = withKinds(measurements, { readings: net, owners });
+    expect(statuses.map((each) => [each.id, each.kind, each.unit, each.owners])).toEqual([
+      ["net:in", "net", "MB/s", []],
+      ["net:out", "net", "MB/s", []],
+      ["ports:tcp", "ports", "count", [{ owner: "session:graph", kind: "session", value: 2, unit: "count" }, { owner: "docker", kind: "docker", value: 1, unit: "count" }]],
+    ]);
+    // Without a read, the kinds give no instance. Before the second read, the network has no used part.
+    expect(measure(readings).some((each) => each.id.startsWith("net:") || each.id.startsWith("ports:"))).toBe(false);
+    expect(RESOURCES.get("net")?.measure.read({ ...net, previousNetwork: undefined })).toEqual([
+      { id: "net:in", capacity: 119.2, used: null, free: null },
+      { id: "net:out", capacity: 119.2, used: null, free: null },
+    ]);
+    expect(RESOURCES.get("ports")?.admit).toBeNull();
   });
 
   it("gives no commit capacity when the commit limit is unknown", () => {

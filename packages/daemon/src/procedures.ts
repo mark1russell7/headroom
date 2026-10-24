@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*` and `mcp.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Config, Engine, History, JobUsage, Lease, PoolTags, Status, Suggestion } from "@headroom/core";
+import type { Alerts, Config, Engine, History, JobUsage, Lease, PoolTags, Status, Suggestion, TcpPorts } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -198,7 +198,8 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .input(zodAdapter<Empty>(Empty))
     .output(anything<Alerts>())
     .meta({
-      description: "Give the active alerts (a runaway process, an orphan, low memory, the commit charge, the kernel pool) and the alerts that ended last",
+      description:
+        "Give the active alerts (a runaway process, an orphan, low memory, the commit charge, the kernel pool, a drive, the dynamic TCP ports) and the alerts that ended last",
       args: [],
       output: "json",
       effects: { reads: ["headroom", "process"], writes: [], destructive: false },
@@ -217,6 +218,19 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
       effects: { reads: ["headroom"], writes: [], destructive: false },
     })
     .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit))
+    .build() as AnyProcedure;
+
+  const ports = createProcedure()
+    .path(["resources", "ports"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<TcpPorts>())
+    .meta({
+      description: "Give the listening TCP ports with the process and the owner of each, by port, and the dynamic port range",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom", "process"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<TcpPorts> => engine.ports())
     .build() as AnyProcedure;
 
   const suggest = createProcedure()
@@ -258,7 +272,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig("jobTemp", input.jobTemp))
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, renew, history, pool, alerts, pooltags, suggest, configGet, configSet];
+  return [status, lease, wait, release, renew, history, pool, alerts, pooltags, ports, suggest, configGet, configSet];
 }
 
 /** This function gives the usage of a release with only the fields that have a value. */

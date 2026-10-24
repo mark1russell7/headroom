@@ -2,7 +2,7 @@
  * The sampler reads the memory of the computer and of its processes. Each platform has its own sampler.
  */
 
-import type { DiskSpace, PoolTag, ProcessInfo, Sample, SystemMemory } from "./types.ts";
+import type { DiskSpace, NetAdapter, PoolTag, ProcessInfo, Sample, SystemMemory, TcpTable } from "./types.ts";
 
 /** A sampler of one platform. */
 export interface Sampler {
@@ -16,6 +16,10 @@ export interface Sampler {
   gui?(): { readonly userObjects: number; readonly gdiObjects: number };
   /** This function reads the free space of the fixed drives. It does not read a network drive or a removable drive, because they can stop the read. */
   disks?(): DiskSpace[];
+  /** This function reads the byte counters of the physical adapters and the Wi-Fi adapters (H24). */
+  network?(): NetAdapter[];
+  /** This function reads the TCP connections of IPv4 and IPv6 with their processes, and the dynamic port range (H24). */
+  tcp?(): TcpTable;
   /** This function frees the resources of the sampler. */
   close(): void;
 }

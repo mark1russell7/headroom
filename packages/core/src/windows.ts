@@ -8,15 +8,18 @@
  * - `NtQuerySystemInformation` of `ntdll.dll` also gives the use of the kernel pools by each pool tag.
  * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
  * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
+ * - `GetIfTable2` of `iphlpapi.dll` gives the byte counters of the adapters, and `GetExtendedTcpTable` gives the TCP connections (H24).
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
  */
 
+import { execFileSync } from "node:child_process";
 import { statfsSync } from "node:fs";
 import koffi from "koffi";
+import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpTable } from "./network.ts";
 import { MB, type Sampler } from "./sampler.ts";
-import type { DiskSpace, PoolTag, ProcessInfo, SystemMemory } from "./types.ts";
+import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, SystemMemory, TcpConnection, TcpTable } from "./types.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -290,7 +293,72 @@ function disks(): DiskSpace[] {
   return list;
 }
 
+const iphlpapi = koffi.load("iphlpapi.dll");
+// GetIfTable2 allocates the table, and FreeMibTable frees it.
+const getIfTable2 = iphlpapi.func("uint32_t __stdcall GetIfTable2(_Out_ void **table)");
+const freeMibTable = iphlpapi.func("void __stdcall FreeMibTable(void *memory)");
+const getExtendedTcpTable = iphlpapi.func(
+  "uint32_t __stdcall GetExtendedTcpTable(_Out_ uint8_t *table, _Inout_ uint32_t *size, int order, uint32_t family, int tableClass, uint32_t reserved)",
+);
+const AF_INET = 2;
+const AF_INET6 = 23;
+const TCP_TABLE_OWNER_PID_ALL = 5;
+const ERROR_INSUFFICIENT_BUFFER = 122;
+const IF_ROW_SIZE = 1352;
+let tcpBuffer = Buffer.alloc(64 * 1024);
+let dynamicRange: PortRange | undefined;
+
+/**
+ * This function reads the byte counters of the physical adapters and the Wi-Fi adapters with `GetIfTable2`. It frees
+ * the table at the end. A failed read gives no adapters.
+ */
+function network(): NetAdapter[] {
+  const out: unknown[] = [null];
+  if (getIfTable2(out) !== 0 || out[0] === null || out[0] === undefined) return [];
+  const table = out[0];
+  try {
+    const count = Number(koffi.decode(table, "uint32_t"));
+    return parseIfTable(Buffer.from(koffi.view(table, 8 + count * IF_ROW_SIZE)));
+  } finally {
+    freeMibTable(table);
+  }
+}
+
+/** This function reads one table of `GetExtendedTcpTable`. A table that grows between the calls makes the buffer larger. */
+function tcpTable(family: number): TcpConnection[] {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const size = [tcpBuffer.length];
+    const status = getExtendedTcpTable(tcpBuffer, size, 0, family, TCP_TABLE_OWNER_PID_ALL, 0);
+    if (status === ERROR_INSUFFICIENT_BUFFER) {
+      tcpBuffer = Buffer.alloc((size[0] ?? tcpBuffer.length) + 16 * 1024);
+      continue;
+    }
+    return status === 0 ? parseTcpTable(tcpBuffer, family === AF_INET6) : [];
+  }
+  return [];
+}
+
+/**
+ * This function gives the dynamic port range from `netsh int ipv4 show dynamicport tcp`. It starts `netsh` one time,
+ * at the first read. Without an answer, the range is the default of Windows.
+ */
+function dynamicPorts(): PortRange {
+  if (dynamicRange !== undefined) return dynamicRange;
+  try {
+    const text = execFileSync("netsh", ["int", "ipv4", "show", "dynamicport", "tcp"], { encoding: "utf8", timeout: 5000, windowsHide: true });
+    dynamicRange = parseDynamicPorts(text);
+  } catch {
+    dynamicRange = DEFAULT_DYNAMIC_PORTS;
+  }
+  return dynamicRange;
+}
+
+/** This function reads the TCP connections of IPv4 and IPv6 with their processes. A user without admin rights can read them. */
+function tcp(): TcpTable {
+  return { dynamic: dynamicPorts(), connections: [...tcpTable(AF_INET), ...tcpTable(AF_INET6)] };
+}
+
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, poolTags, gui, disks, close: () => {} };
+  return { memory, processes, poolTags, gui, disks, network, tcp, close: () => {} };
 }

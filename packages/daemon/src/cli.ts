@@ -10,6 +10,7 @@
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
  * - `headroom config [job-temp <folder>]`: show or change the settings.
+ * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -35,6 +36,7 @@ import {
   type PoolTags,
   type Status,
   type Suggestion,
+  type TcpPorts,
 } from "@headroom/core";
 import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
@@ -66,6 +68,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
+  headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   headroom history [--minutes 60] [--json]
   headroom pool <name> <capacity>
   headroom release <id>
@@ -97,6 +100,11 @@ async function holderOf(): Promise<string> {
 
 function mb(value: number): string {
   return value >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`;
+}
+
+/** This function writes a throughput in MB/s, with 2 decimals below 0.1 MB/s. */
+function rate(value: number): string {
+  return `${value >= 10 ? value.toFixed(0) : value >= 0.1 ? value.toFixed(1) : value.toFixed(2)} MB/s`;
 }
 
 function clock(at: number): string {
@@ -135,6 +143,16 @@ function printStatus(status: Status): void {
     const most = (cpu.owners ?? []).filter((each) => each.value >= 0.05).slice(0, 3);
     const named = most.length === 0 ? "" : ` Most: ${most.map((each) => `${each.owner} ${each.value.toFixed(1)}`).join(", ")}.`;
     console.log(`CPU: ${cpu.used.toFixed(1)} of ${cpu.capacity} cores in use.${named}`);
+  }
+  // H24: the network needs two reads of the adapters, so its first status after a start has no rate.
+  const usedOf = (id: string): number | null => (status.resources ?? []).find((each) => each.id === id)?.used ?? null;
+  const received = usedOf("net:in");
+  const sent = usedOf("net:out");
+  if (received !== null && sent !== null) console.log(`Network: ${rate(received)} in, ${rate(sent)} out.`);
+  const ports = (status.resources ?? []).find((each) => each.id === "ports:tcp");
+  if (status.tcp && ports !== undefined && ports.used !== null && ports.capacity) {
+    const part = Math.round((ports.used / ports.capacity) * 100);
+    console.log(`TCP: ${status.tcp.connections} connections (${status.tcp.timeWait} waiting to close), ${part}% of the dynamic ports.`);
   }
   const free = Object.entries(status.free).map(([name, amount]) => `${name} ${amountText(name, amount)}`);
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
@@ -459,6 +477,35 @@ async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
   return 0;
 }
 
+/**
+ * `headroom ports`: the listening TCP ports with the process and the owner of each, by port. Sessions start dev servers
+ * that collide on ports, so this list tells a session which port is free and which process holds a port.
+ */
+async function showPorts(json: boolean): Promise<number> {
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  const ports = await connection.call<TcpPorts>(["resources", "ports"], {});
+  if (json) {
+    console.log(JSON.stringify(ports, null, 2));
+    return 0;
+  }
+  if (ports.at === null) {
+    console.log("No read of the TCP ports yet. The daemon reads them every 10 seconds.");
+    return 0;
+  }
+  // The addresses come last, because an IPv6 address can be long.
+  console.log(`${"PORT".padEnd(6)} ${"PID".padStart(7)}  ${"PROCESS".padEnd(26)} ${"OWNER".padEnd(22)} ADDRESSES`);
+  for (const row of ports.listening) {
+    const pid = row.pid === 0 ? "-" : String(row.pid);
+    const name = (row.name || "-").slice(0, 26).padEnd(26);
+    console.log(`${String(row.port).padEnd(6)} ${pid.padStart(7)}  ${name} ${(row.owner || "-").slice(0, 22).padEnd(22)} ${row.addresses.join(", ")}`);
+  }
+  const range = ports.dynamic;
+  const dynamic = range === null ? "" : ` Outgoing connections use the dynamic ports ${range.first}-${range.first + range.count - 1}, so give a dev server a port below ${range.first}.`;
+  console.log(`\n${ports.listening.length} listening ports.${dynamic}`);
+  return 0;
+}
+
 /** This function prints the settings. */
 function printConfig(config: Config): void {
   console.log(`job-temp: ${config.jobTemp ?? "(none: each job of headroom run uses the TEMP of its parent)"}`);
@@ -579,6 +626,10 @@ async function main(argv: string[]): Promise<number> {
       const lease = await connection.call<Lease>(["resources", "release"], { id: rest[0], reason: "released by hand" });
       console.log(`${lease.id}: ${lease.state}`);
       return 0;
+    }
+    case "ports": {
+      const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
+      return showPorts(values.json === true);
     }
     case "config":
       return configCommand(rest);

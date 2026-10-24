@@ -43,11 +43,13 @@ headroom status
 headroom history --minutes 120
 ```
 
-`headroom status` also gives the owners that wrote most in the last hour, and the processors in use:
+`headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network and the TCP connections:
 
 ```text
 Writes (last hour): session:graph 31.2 GB, mcp:vex 2.1 GB.
 CPU: 3.4 of 16 cores in use. Most: session:graph 2.1, mcp:vex 0.4.
+Network: 1.2 MB/s in, 0.3 MB/s out.
+TCP: 812 connections (120 waiting to close), 2% of the dynamic ports.
 ```
 
 - The writes come from the write counter of each process: `WriteTransferCount` on Windows, and `write_bytes` of `/proc/<pid>/io` on Linux. The line names the 5 owners above 10 MB.
@@ -55,6 +57,19 @@ CPU: 3.4 of 16 cores in use. Most: session:graph 2.1, mcp:vex 0.4.
 - A write is not always new space. A file that a job writes again uses no new space.
 - The process `System` writes the file cache and the pages of mapped files to the drives. Thus one write can count for its process and for the owner `system`.
 - The cores of an owner are an average over the last minute, from the processor time of its processes.
+- The network line is the throughput of the physical adapters and the Wi-Fi adapters over the last 10 seconds. A loopback, a tunnel or a virtual adapter does not count. After a start of the daemon, the line comes after 10 seconds, because a rate needs two reads.
+- The TCP line counts the connections of IPv4 and IPv6. A connection that waits to close is in `TIME_WAIT`, and Windows keeps its port for some minutes. The part is the connections with a local port in the dynamic range (49152 to 65535 on Windows), in each state.
+
+Sessions start dev servers, and two servers on the same port collide. `headroom ports` shows the listening TCP ports, with the process and the owner of each port, by port. `--json` gives the list and the dynamic port range.
+
+```text
+PORT       PID  PROCESS                    OWNER                  ADDRESSES
+135        932  svchost.exe                system                 0.0.0.0, ::
+3000     21512  node.exe                   session:graph          127.0.0.1
+5173     30404  node.exe                   session:client         ::1
+
+3 listening ports. Outgoing connections use the dynamic ports 49152-65535, so give a dev server a port below 49152.
+```
 
 On Windows, `headroom run` puts the job into a job object:
 
@@ -98,6 +113,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
 | `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It names the 3 owners that wrote most in the last hour, each above 100 MB, for example `Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB.` It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
+| `ports` | More than 80% of the dynamic TCP ports are in use (a warning), or more than 95% (critical). When no dynamic port is free, new connections fail. The alert names the 3 owners with the most connections, and the count in `TIME_WAIT`. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
