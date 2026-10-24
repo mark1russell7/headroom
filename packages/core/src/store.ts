@@ -2,14 +2,15 @@
  * The store of headroom: one SQLite file in WAL mode, through `node:sqlite`.
  *
  * It keeps the leases, the capacity of the configured pools, one memory sample each minute and
- * the memory of each owner each minute. It removes the samples that are older than the retention.
+ * the memory of each owner each minute. It also keeps the snapshots of the pool tags. It removes the samples
+ * that are older than the retention.
  */
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
-import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, SessionLoad, SystemMemory } from "./types.ts";
+import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
 export interface MemoryRow extends SystemMemory {
@@ -44,7 +45,20 @@ CREATE TABLE IF NOT EXISTS owners (
   at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL,
   private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner)
 );
+CREATE TABLE IF NOT EXISTS pool_tags (
+  at INTEGER NOT NULL, tag TEXT NOT NULL, nonpaged_mb REAL, paged_mb REAL, PRIMARY KEY (at, tag)
+);
 `;
+
+/** The time that the store keeps a snapshot of the pool tags. */
+const POOL_TAGS_KEEP_MS = 2 * 3_600_000;
+
+/** One stored snapshot of the pool tags: the non-paged and the paged pool of each tag, in MB. */
+export interface PoolTagSnapshot {
+  readonly at: number;
+  readonly tags: ReadonlyMap<string, number>;
+  readonly paged: ReadonlyMap<string, number>;
+}
 
 /** The store. */
 export class Store {
@@ -185,10 +199,47 @@ export class Store {
     }));
   }
 
+  /**
+   * This function writes one snapshot of the pool tags. It keeps only the tags of 1 MB or more, because most
+   * tags are small. It also removes the snapshots that are older than 2 hours, so the table stays small.
+   */
+  savePoolTags(at: number, tags: readonly PoolTag[]): void {
+    const insert = this.#db.prepare("INSERT OR REPLACE INTO pool_tags VALUES (?, ?, ?, ?)");
+    this.#db.exec("BEGIN");
+    try {
+      this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(at - POOL_TAGS_KEEP_MS);
+      for (const tag of tags) {
+        if (tag.nonPagedMb + tag.pagedMb >= 1) insert.run(at, tag.tag, tag.nonPagedMb, tag.pagedMb);
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /** This function reads the snapshots of the pool tags since a time, the oldest first. */
+  poolTagsSince(since: number): PoolTagSnapshot[] {
+    const snapshots: { at: number; tags: Map<string, number>; paged: Map<string, number> }[] = [];
+    for (const row of this.#db.prepare("SELECT * FROM pool_tags WHERE at >= ? ORDER BY at, tag").all(since)) {
+      const at = Number(row["at"]);
+      let snapshot = snapshots.at(-1);
+      if (snapshot?.at !== at) {
+        snapshot = { at, tags: new Map(), paged: new Map() };
+        snapshots.push(snapshot);
+      }
+      const tag = String(row["tag"]);
+      snapshot.tags.set(tag, Number(row["nonpaged_mb"] ?? 0));
+      snapshot.paged.set(tag, Number(row["paged_mb"] ?? 0));
+    }
+    return snapshots;
+  }
+
   /** This function removes the samples older than a time, and the leases that ended before it. */
   prune(before: number): void {
     this.#db.prepare("DELETE FROM memory WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM owners WHERE at < ?").run(before);
+    this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(before);
   }
 

@@ -156,6 +156,9 @@ export class Engine {
       usedMb: (lease) => (lease.pid === null ? 0 : treeMb(lease.pid, this.#processes)),
     });
     this.#broker.restore(this.#store.activeLeases());
+    // The snapshots of the last hour continue after a restart, so the change of each tag has its full window.
+    this.#tags = this.#store.poolTagsSince(this.#startedAt - POOL_TAGS_KEEP_MS);
+    this.#tagsAt = this.#tags.at(-1)?.at ?? 0;
     this.#memory = this.#sampler.memory();
   }
 
@@ -185,6 +188,7 @@ export class Engine {
         const tags = new Map(read.map((tag) => [tag.tag, tag.nonPagedMb]));
         const paged = new Map(read.map((tag) => [tag.tag, tag.pagedMb]));
         this.#tags = [...this.#tags.filter((snapshot) => now - snapshot.at <= POOL_TAGS_KEEP_MS), { at: now, tags, paged }];
+        this.#store.savePoolTags(now, read);
       }
       this.#check(now, ownerOf);
     }
