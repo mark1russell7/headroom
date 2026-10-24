@@ -6,6 +6,7 @@
  * - `headroom service install`: start the daemon at login, and again when it stops.
  * - `headroom status`: show the memory, the free amounts, the leases and the owners.
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
+ * - `headroom job <name|id> [--holder h] [--all] [--json]`: the state of a job of `headroom run` (H26).
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
@@ -14,9 +15,10 @@
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, type StdioOptions } from "node:child_process";
+import { closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
 import { userInfo } from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   createJob,
@@ -31,6 +33,7 @@ import {
   type Config,
   type History,
   type Job,
+  type JobExit,
   type JobUsage,
   type Lease,
   type PoolTags,
@@ -44,6 +47,7 @@ import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
 import { diskAmounts, finishTemp, jobEnv, prepareTemp } from "./job.ts";
+import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import * as service from "./service.ts";
@@ -57,13 +61,17 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
   headroom run [--mem 2g|auto] [--cpu 2] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
-               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] -- <command> [args...]
+               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--log file] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
+               --log file: the output of the job also goes to the end of the file.
+               The run prints the lease id first: headroom job <id> gives the state of the job.
                --disk 5g: space on the drive of the current folder. --disk D:=5g: on the drive D:.
                With a temp root (headroom config job-temp), the job gets its own TEMP folder,
                and the run removes it at the end. --keep-temp: keep the folder.
                A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
                A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
+  ${JOB_USAGE}
+               The state of a job: queued, running or exited, with its exit code. No job: exit 3.
   headroom config [job-temp <folder> | job-temp --clear]   (show or change the settings)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
@@ -171,22 +179,61 @@ function quote(arg: string): string {
   return process.platform === "win32" && /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
 }
 
-/** This function runs a command, and gives its exit code. `env` adds variables to the environment of the command. */
-function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}): Promise<number> {
+/** The end of a command: the exit code that `headroom run` gives, and the exit of the command itself. */
+interface CommandEnd {
+  readonly code: number;
+  readonly exit: JobExit;
+}
+
+/** The longest wait for the last output of a job with a log after its exit. A process that the job left can keep the pipes open. */
+const LOG_DRAIN_MS = 2000;
+
+/**
+ * This function runs a command, and gives its exit code and its exit. `env` adds variables to the environment of the
+ * command. With a log file, the output and the errors of the command go to the console and to the end of the file.
+ */
+function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}, log: string | null = null): Promise<CommandEnd> {
   return new Promise((resolve) => {
     const [file, ...args] = command;
-    if (!file) return resolve(2);
-    const options = { stdio: "inherit" as const, env: jobEnv(env) };
+    if (!file) return resolve({ code: 2, exit: { code: null, signal: null } });
+    const sink = log === null ? null : createWriteStream(log, { flags: "a" });
+    sink?.on("error", (error) => console.error(`headroom: the log file ${log ?? ""} failed: ${error.message}`));
+    const stdio: StdioOptions = sink === null ? "inherit" : ["inherit", "pipe", "pipe"];
+    const options = { stdio, env: jobEnv(env) };
     // On Windows, pnpm and npm are .cmd files, which only a shell starts. The shell gets one quoted command line.
     const child =
       process.platform === "win32"
         ? spawn([file, ...args].map(quote).join(" "), { ...options, shell: true })
         : spawn(file, args, options);
+    let done = false;
+    const finish = (end: CommandEnd): void => {
+      if (done) return;
+      done = true;
+      if (sink === null || sink.closed) return resolve(end);
+      sink.once("close", () => resolve(end));
+      sink.end();
+    };
+    if (sink !== null) {
+      for (const [from, to] of [[child.stdout, process.stdout], [child.stderr, process.stderr]] as const) {
+        from?.on("data", (chunk: Buffer) => {
+          to.write(chunk);
+          if (!done) sink.write(chunk);
+        });
+      }
+    }
     child.on("error", (error) => {
       console.error(`headroom: the command did not start: ${error.message}`);
-      resolve(127);
+      finish({ code: 127, exit: { code: 127, signal: null } });
     });
-    child.on("exit", (code, signal) => resolve(code ?? (signal ? 1 : 0)));
+    child.on("exit", (code, signal) => {
+      const end: CommandEnd = { code: code ?? (signal ? 1 : 0), exit: { code, signal } };
+      if (sink === null) return finish(end);
+      const timer = setTimeout(() => finish(end), LOG_DRAIN_MS);
+      child.on("close", () => {
+        clearTimeout(timer);
+        finish(end);
+      });
+    });
   });
 }
 
@@ -212,7 +259,8 @@ async function runEnforced(
   command: readonly string[],
   enforcement: Enforcement,
   env: Readonly<Record<string, string>> = {},
-): Promise<{ code: number; peakMb: number | null }> {
+  log: string | null = null,
+): Promise<CommandEnd & { peakMb: number | null }> {
   let held: Job | null = null;
   if (!enforcement.keep) {
     // The process of headroom is in the job too: the limit adds its memory and a margin.
@@ -225,15 +273,35 @@ async function runEnforced(
     }
   }
   const base = held?.peakMb() ?? 0;
-  const code = await runCommand(command, env);
-  if (!held) return { code, peakMb: null };
+  const { code, exit } = await runCommand(command, env, log);
+  if (!held) return { code, exit, peakMb: null };
   const peakMb = Math.max(0, held.peakMb() - base);
   const of = enforcement.leaseMb === null ? "" : ` of its lease of ${mb(enforcement.leaseMb)}`;
   console.error(`headroom: the job used at most ${mb(peakMb)}${of}.`);
   if (held.limitMb !== null && held.peakMb() >= held.limitMb * 0.97) {
     console.error(`headroom: the job reached its memory limit. Ask for a larger lease, for example --mem ${Math.ceil((enforcement.leaseMb ?? 0) * 1.5 / 1024)}g.`);
   }
-  return { code, peakMb };
+  return { code, exit, peakMb };
+}
+
+/** This function opens a log file of `headroom run --log` to append, with its folder. It gives the absolute path, or an error text. */
+function openLog(path: string): { readonly path: string } | { readonly error: string } {
+  const absolute = resolve(path);
+  try {
+    mkdirSync(dirname(absolute), { recursive: true });
+    closeSync(openSync(absolute, "a"));
+    return { path: absolute };
+  } catch (error) {
+    return { error: `the log file ${absolute} does not open: ${error instanceof Error ? error.message : String(error)}` };
+  }
+}
+
+/** This function gives the line that names a new lease, for example "headroom: lease 3f2a9c1e for e2e, queued for browser." */
+function leaseLine(lease: Lease): string {
+  const waitsFor = /^waits for ([^:]+):/.exec(lease.reason ?? "")?.[1];
+  const state =
+    lease.state === "granted" ? "granted" : lease.state === "waiting" ? `queued${waitsFor === undefined ? "" : ` for ${waitsFor}`}` : lease.state;
+  return `headroom: lease ${lease.id.slice(0, 8)} for ${lease.job}, ${state}.`;
 }
 
 async function waitForGrant(start: Connection, lease: Lease, deadline: number): Promise<{ lease: Lease; connection: Connection }> {
@@ -293,12 +361,19 @@ async function run(argv: string[]): Promise<number> {
       "keep-temp": { type: "boolean" },
       "no-auto-slot": { type: "boolean" },
       "force-disk": { type: "boolean" },
+      log: { type: "string" },
     },
   });
   if (positionals.length === 0) {
     console.error("headroom run needs a command after --. Example: headroom run --mem 2g -- pnpm test");
     return 2;
   }
+  const opened = values.log === undefined ? null : openLog(values.log);
+  if (opened !== null && "error" in opened) {
+    console.error(`headroom: ${opened.error}`);
+    return 2;
+  }
+  const log = opened?.path ?? null;
   const amounts: Record<string, number> = {};
   if (values.mem && values.mem !== "auto") amounts["memory"] = parseMemory(values.mem);
   if (values.cpu) amounts["cpu"] = Number(values.cpu);
@@ -328,7 +403,7 @@ async function run(argv: string[]): Promise<number> {
   const connection = connect();
   if (!connection) {
     console.error("headroom: the daemon does not run, so the job runs without a lease.");
-    return (await runEnforced(positionals, { keep, limit: false, leaseMb: null })).code;
+    return (await runEnforced(positionals, { keep, limit: false, leaseMb: null }, {}, log)).code;
   }
   // When the daemon does not answer, the lease request that comes next reports it.
   const status = await connection.call<Status>(["resources", "status"], {}).catch(() => null);
@@ -360,12 +435,15 @@ async function run(argv: string[]): Promise<number> {
       amounts,
       pid: process.pid,
       ...(values.priority ? { priority: Number(values.priority) } : {}),
+      ...(log === null ? {} : { log }),
     });
   } catch (error) {
     if (!isNetworkError(error)) throw error;
     console.error("headroom: the daemon does not answer, so the job runs without a lease.");
-    return (await runEnforced(positionals, enforcement)).code;
+    return (await runEnforced(positionals, enforcement, {}, log)).code;
   }
+  // H26: a session can wait on this id with `headroom job <id>`, also after its shell stops.
+  console.error(leaseLine(first));
   const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
   if (lease.state === "waiting") {
     await latest.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
@@ -379,22 +457,26 @@ async function run(argv: string[]): Promise<number> {
   // H19: with a temp root, the job writes its temp files under its lease. With --keep, the job keeps the TEMP of its
   // parent, because a service that it starts on purpose can use its temp folder after the job ends.
   const temp = keep ? null : await prepareTemp(latest, lease.id);
-  let result: { code: number; peakMb: number | null } = { code: 1, peakMb: null };
+  let result: CommandEnd & { peakMb: number | null } = { code: 1, exit: { code: null, signal: null }, peakMb: null };
   let tempMb: number | null = null;
   try {
-    result = await runEnforced(positionals, enforcement, temp?.env ?? {});
+    result = await runEnforced(positionals, enforcement, temp?.env ?? {}, log);
   } finally {
     if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
   }
-  const { code, peakMb } = result;
+  const { code, exit, peakMb } = result;
   const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
+  const ended = exit.code === null && exit.signal !== null ? `the job ended with signal ${exit.signal}` : `the job ended with code ${code}`;
   const usage: JobUsage = { ...(peakMb === null ? {} : { peakMb }), ...(tempMb === null ? {} : { tempMb }) };
   try {
     await (connect() ?? latest).call(["resources", "release"], {
       id: lease.id,
-      reason: `the job ended with code ${code}${peak}`,
+      reason: `${ended}${peak}`,
       ...(peakMb === null ? {} : { peakMb }),
       ...(Object.keys(usage).length === 0 ? {} : { usage }),
+      // H26: the exit of the job, for `headroom job`. A job that a signal stopped has no exit code.
+      ...(exit.code === null ? {} : { exitCode: exit.code }),
+      ...(exit.signal === null ? {} : { signal: exit.signal }),
     });
   } catch {
     // The daemon ends the lease anyway when this process exits.
@@ -587,6 +669,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "run":
       return run(rest);
+    case "job":
+      return jobCommand(rest, connect());
     case "pool-tags": {
       const { values } = parseArgs({ args: rest, options: { drivers: { type: "boolean" }, json: { type: "boolean" } } });
       return showPoolTags(values.drivers === true, values.json === true);

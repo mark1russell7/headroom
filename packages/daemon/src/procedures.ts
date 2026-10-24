@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*` and `mcp.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Config, Engine, History, JobUsage, Lease, PoolTags, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, PoolTags, Status, Suggestion, TcpPorts } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -16,6 +16,7 @@ const LeaseInput = z.object({
   priority: z.number().int().min(-100).max(100).optional().describe("A higher priority goes first (default: 0)"),
   pid: z.number().int().positive().optional().describe("The process that holds the lease. The lease ends when it exits."),
   ttlMs: z.number().int().positive().max(86_400_000).optional().describe("Without a pid: the heartbeat limit in ms (default: 300000)"),
+  log: z.string().min(1).max(1000).optional().describe("The absolute path of the log file of the job"),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -40,8 +41,17 @@ const ReleaseInput = IdInput.extend({
   reason: z.string().max(200).optional().describe("Why the lease ends"),
   peakMb: z.number().min(0).optional().describe("The peak memory of the job in MB, from its job object"),
   usage: Usage.optional().describe("The use of the job at its release, from its holder"),
+  exitCode: z.number().int().optional().describe("The exit code of the job"),
+  signal: z.string().min(1).max(32).optional().describe("The signal that stopped the job, for example SIGTERM"),
 });
 type ReleaseInput = z.infer<typeof ReleaseInput>;
+
+const JobInput = z.object({
+  query: z.string().min(1).max(500).describe("The id of a lease, a prefix of 8 or more characters of it, or the name of a job"),
+  holder: z.string().min(1).max(200).optional().describe("Only the jobs of this holder"),
+  all: z.boolean().default(false).describe("Each match of the last 24 hours, not only the latest (default: false)"),
+});
+type JobInput = z.infer<typeof JobInput>;
 
 const ConfigSetInput = z.object({
   jobTemp: z
@@ -119,6 +129,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
         priority: input.priority,
         pid: input.pid,
         ttlMs: input.ttlMs,
+        log: input.log,
       }),
     )
     .build() as AnyProcedure;
@@ -148,7 +159,24 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: ReleaseInput): Promise<Lease> => found(engine.release(input.id, input.reason, input.peakMb, usageOf(input.usage)), input.id))
+    .handler(async (input: ReleaseInput): Promise<Lease> => {
+      const exit = input.exitCode === undefined && input.signal === undefined ? undefined : { code: input.exitCode ?? null, signal: input.signal ?? null };
+      return found(engine.release(input.id, input.reason, input.peakMb, usageOf(input.usage), exit), input.id);
+    })
+    .build() as AnyProcedure;
+
+  const job = createProcedure()
+    .path(["resources", "job"])
+    .input(zodAdapter<JobInput>(JobInput))
+    .output(anything<JobState[]>())
+    .meta({
+      description:
+        "Give the state of a job of headroom run: queued, running or exited, with its exit code, its times, its peak memory and its log. The newest first: one job, or each match of 24 hours with all.",
+      args: ["query"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (input: JobInput): Promise<JobState[]> => engine.jobs({ query: input.query, holder: input.holder, all: input.all }))
     .build() as AnyProcedure;
 
   const renew = createProcedure()
@@ -272,7 +300,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig("jobTemp", input.jobTemp))
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, renew, history, pool, alerts, pooltags, ports, suggest, configGet, configSet];
+  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, suggest, configGet, configSet];
 }
 
 /** This function gives the usage of a release with only the fields that have a value. */

@@ -81,6 +81,27 @@ On Windows, `headroom run` puts the job into a job object:
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
 
+A queued job can run after the shell that started it stops. `headroom job` gives the state of a job, so a session can wait for the end of the job and read its exit code:
+
+```sh
+headroom run --job graph-e2e --log D:\logs\e2e.log -- pnpm e2e
+headroom job graph-e2e
+headroom job 3f2a9c1e --json
+```
+
+```text
+headroom: lease 3f2a9c1e for graph-e2e, queued for browser.
+graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6 min, peak 1.8 GB. Log: D:\logs\e2e.log
+```
+
+- `headroom run` writes the lease id and the job first. The release of the lease records the exit code of the job, or the signal that stopped it.
+- `--log <file>` sends the output and the errors of the job to the console and to the end of the file. The run makes the file and its folder when they do not exist. The lease records the absolute path.
+- `headroom job <name|id>` finds the lease by its id, or by a unique prefix of 8 or more characters of the id. Then it finds the latest lease of the job name. `--holder <h>` uses only the leases of one holder. `--all` gives each match of the last 24 hours.
+- The state is `queued` (the lease waits), `running` (the lease is granted) or `exited` (the lease is released, cancelled or expired). A lease that ends with no job exit, for example a lease whose client stopped, has the exit code `null` and a reason.
+- `--json` gives `{ id, job, holder, state, exitCode, signal, reason, queuedAt, startedAt, endedAt, waitedMs, ranMs, peakMb, log }`. The times are ISO strings or `null`. The procedure is `resources.job`.
+- The command gives the exit code 0 when it finds a job. With no match, it gives the exit code 3, and `--json` writes `{ "error": "no job", "query": "..." }`.
+- The store keeps each ended lease for at least 7 days.
+
 A job that writes much data asks for space on a drive with `--disk`. `--disk 5g` asks for space on the drive of the current folder, and `--disk D:=5g` names the drive. The lease waits until the drive has the space. The broker keeps the critical limit of the disk alert free: 5 GB, or 5% of a small drive. A disk lease holds its full amount until its release. A lease that is larger than the drive, or that names a drive that does not exist, is cancelled at once.
 
 ```sh

@@ -4,9 +4,10 @@
  */
 
 import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
-import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "./broker.ts";
+import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
+import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
@@ -150,6 +151,8 @@ const POOL_TAGS_EVERY_MS = 5 * 60_000;
 const POOL_TAGS_KEEP_MS = 60 * 60_000;
 /** The window of the readings of the free space of the drives. */
 const DISK_KEEP_MS = 60 * 60_000;
+/** The shortest time that the store keeps an ended lease, for `headroom job` (H26). With a shorter retention, the leases stay this long. */
+const LEASE_KEEP_MS = 7 * 24 * 3_600_000;
 /** A window shorter than this counts as this long, so one short write does not give a large speed. */
 const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
@@ -361,7 +364,7 @@ export class Engine {
     }
     if (now - this.#prunedAt >= 3_600_000) {
       this.#prunedAt = now;
-      this.#store.prune(now - this.#retentionMs);
+      this.#store.prune(now - this.#retentionMs, now - Math.max(this.#retentionMs, LEASE_KEEP_MS));
       this.#broker.forget(now - 3_600_000);
     }
     return changed;
@@ -376,8 +379,8 @@ export class Engine {
   }
 
   /** This function ends a lease. Then it grants the waiting leases that fit in the amounts that the lease frees. */
-  release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage): Lease | undefined {
-    const lease = this.#broker.release(id, reason, peakMb ?? null, usage);
+  release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage, exit?: JobExit): Lease | undefined {
+    const lease = this.#broker.release(id, reason, peakMb ?? null, usage, exit);
     if (lease) this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
     return lease ? (this.#broker.get(id) ?? lease) : undefined;
@@ -394,6 +397,11 @@ export class Engine {
     const sorted = [...peaks].sort((a, b) => a - b);
     const p90 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))] ?? 0;
     return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(sorted[sorted.length - 1] ?? 0) };
+  }
+
+  /** This function finds the jobs of a query in the store, the newest first (H26). Without `all`, it gives at most one job. */
+  jobs(query: JobQuery): JobState[] {
+    return findJobs(this.#store, query, this.#now());
   }
 
   /** This function records a heartbeat of a lease. */

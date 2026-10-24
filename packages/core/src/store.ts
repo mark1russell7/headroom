@@ -95,6 +95,11 @@ export class Store {
     const columns = this.#db.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
     if (!columns.includes("peak_mb")) this.#db.exec("ALTER TABLE leases ADD COLUMN peak_mb REAL");
     if (!columns.includes("usage")) this.#db.exec("ALTER TABLE leases ADD COLUMN usage TEXT");
+    // A database of an older version has no columns for the exit and the log of a job (H26).
+    for (const [column, type] of [["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"]] as const) {
+      if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
+    }
+    this.#db.exec("CREATE INDEX IF NOT EXISTS leases_job ON leases (job, requested_at)");
     const memoryColumns = this.#db.prepare("PRAGMA table_info(memory)").all().map((row) => String(row["name"]));
     for (const column of ["processes", "user_objects", "gdi_objects"]) {
       if (!memoryColumns.includes(column)) this.#db.exec(`ALTER TABLE memory ADD COLUMN ${column} INTEGER`);
@@ -108,17 +113,43 @@ export class Store {
   saveLease(lease: Lease): void {
     this.#db
       .prepare(
-        `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
+           exit_code, signal, log)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
-           usage = excluded.usage`,
+           usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
         lease.state, lease.requestedAt, lease.grantedAt, lease.endedAt, lease.heartbeatAt, lease.reason, lease.peakMb,
         lease.usage === undefined ? null : JSON.stringify(lease.usage),
+        lease.exitCode ?? null, lease.signal ?? null, lease.log ?? null,
       );
+  }
+
+  /** This function reads the leases whose id starts with a prefix, the newest first. A full id gives at most one lease. */
+  leasesByPrefix(prefix: string, limit = 10): Lease[] {
+    return this.#db
+      .prepare("SELECT * FROM leases WHERE substr(id, 1, ?) = ? ORDER BY requested_at DESC LIMIT ?")
+      .all(prefix.length, prefix, limit)
+      .map(toLease);
+  }
+
+  /**
+   * This function reads the leases of a job, the newest request first. With a holder, only the leases of that holder.
+   * With a time, only the leases that were active at that time or after it.
+   */
+  leasesOfJob(job: string, options: { readonly holder?: string | undefined; readonly since?: number | undefined; readonly limit?: number | undefined } = {}): Lease[] {
+    const since = options.since ?? 0;
+    const holder = options.holder ?? null;
+    return this.#db
+      .prepare(
+        `SELECT * FROM leases WHERE job = ? AND (? IS NULL OR holder = ?) AND (ended_at IS NULL OR ended_at >= ? OR requested_at >= ?)
+         ORDER BY requested_at DESC LIMIT ?`,
+      )
+      .all(job, holder, holder, since, since, options.limit ?? 100)
+      .map(toLease);
   }
 
   /** This function reads the active leases: the waiting and the granted ones. */
@@ -335,13 +366,16 @@ export class Store {
     return snapshots;
   }
 
-  /** This function removes the samples older than a time, and the leases that ended before it. */
-  prune(before: number): void {
+  /**
+   * This function removes the samples older than a time, and the leases that ended before the second time. The second
+   * time is the first time by default.
+   */
+  prune(before: number, leasesBefore: number = before): void {
     this.#db.prepare("DELETE FROM memory WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM owners WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM resource_samples WHERE at < ?").run(before);
-    this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(before);
+    this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(leasesBefore);
   }
 
   /** This function closes the database. */
@@ -368,5 +402,8 @@ function toLease(row: Record<string, unknown>): Lease {
     reason: row["reason"] === null || row["reason"] === undefined ? null : String(row["reason"]),
     peakMb: nullable(row["peak_mb"]),
     ...(row["usage"] === null || row["usage"] === undefined ? {} : { usage: JSON.parse(String(row["usage"])) as JobUsage }),
+    ...(row["exit_code"] === null || row["exit_code"] === undefined ? {} : { exitCode: Number(row["exit_code"]) }),
+    ...(row["signal"] === null || row["signal"] === undefined ? {} : { signal: String(row["signal"]) }),
+    ...(row["log"] === null || row["log"] === undefined ? {} : { log: String(row["log"]) }),
   };
 }

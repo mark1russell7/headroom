@@ -73,6 +73,24 @@ describe("Engine suggest", () => {
     expect(reopened.peaksOf("tsc")).toEqual([640]);
     reopened.close();
   });
+
+  it("gives the state of a job with its exit code, and keeps an ended lease 7 days with a shorter retention (H26)", () => {
+    let now = 1_000_000;
+    const day = 24 * 3_600_000;
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, retentionMs: 3_600_000, sessionsDir: "/nowhere" });
+    const lease = engine.request({ holder: "graph", job: "graph-e2e", amounts: {}, ttlMs: 60_000, log: "D:\\logs\\e2e.log" });
+    expect(engine.jobs({ query: "graph-e2e" })).toMatchObject([{ id: lease.id, state: "running", exitCode: null, log: "D:\\logs\\e2e.log" }]);
+    now += 60_000;
+    engine.release(lease.id, "the job ended with code 1", 512, undefined, { code: 1, signal: null });
+    expect(engine.jobs({ query: lease.id })).toMatchObject([{ state: "exited", exitCode: 1, ranMs: 60_000, peakMb: 512 }]);
+    now += 6 * day;
+    engine.tick();
+    expect(engine.jobs({ query: "graph-e2e" })).toHaveLength(1);
+    now += 2 * day;
+    engine.tick();
+    expect(engine.jobs({ query: "graph-e2e" })).toEqual([]);
+    engine.close();
+  });
 });
 
 describe("Engine pool tags", () => {

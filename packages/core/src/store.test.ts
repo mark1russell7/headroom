@@ -50,6 +50,63 @@ describe("Store", () => {
     expect(store.lease("l2")).toBeNull();
     store.close();
   });
+
+  it("keeps the exit code, the signal and the log of a job (H26)", () => {
+    const store = new Store(":memory:");
+    let now = 5000;
+    const broker = new Broker({ now: () => now, newId: () => "l1", isAlive: () => true });
+    const lease = broker.request({ holder: "graph", job: "e2e", amounts: {}, pid: 42, log: "D:\\logs\\e2e.log" });
+    store.saveLease(lease);
+    expect(store.lease("l1")?.log).toBe("D:\\logs\\e2e.log");
+    expect(store.lease("l1")?.exitCode).toBeUndefined();
+    broker.tick({ totalMb: 1000, availableMb: 1000, pools: {} });
+    now = 9000;
+    const ended = broker.release("l1", "the job ended with code 1", 300, undefined, { code: 1, signal: null });
+    if (ended) store.saveLease(ended);
+    expect(store.lease("l1")).toEqual(ended);
+    expect(store.lease("l1")).toMatchObject({ state: "released", exitCode: 1, log: "D:\\logs\\e2e.log" });
+    expect(store.lease("l1")?.signal).toBeUndefined();
+    const stopped = { ...lease, id: "l2", state: "released" as const, endedAt: 9000, signal: "SIGTERM" };
+    store.saveLease(stopped);
+    expect(store.lease("l2")).toEqual(stopped);
+    store.close();
+  });
+
+  it("adds the columns of the exit and the log to an older table of leases, and keeps its rows", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-leases-")), "old.db");
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE leases (
+      id TEXT PRIMARY KEY, holder TEXT NOT NULL, job TEXT NOT NULL, amounts TEXT NOT NULL,
+      priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
+      requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT)`);
+    old.exec(`INSERT INTO leases VALUES ('old1', 'graph', 'build', '{"memory":512}', 0, 42, 300000, 'released', 1000, 1500, 9000, 9000, 'released')`);
+    old.close();
+    const store = new Store(path);
+    const kept = store.lease("old1");
+    expect(kept).toMatchObject({ id: "old1", job: "build", state: "released", peakMb: null, endedAt: 9000 });
+    expect(kept?.exitCode).toBeUndefined();
+    expect(kept?.log).toBeUndefined();
+    if (kept) store.saveLease({ ...kept, exitCode: 0, log: "D:\\logs\\build.log" });
+    expect(store.lease("old1")).toMatchObject({ exitCode: 0, log: "D:\\logs\\build.log" });
+    store.close();
+  });
+
+  it("finds the leases by an id prefix and by the job, and keeps the ended leases for their own time", () => {
+    const store = new Store(":memory:");
+    const base = { holder: "graph", job: "e2e", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, grantedAt: null, heartbeatAt: 0, reason: null, peakMb: null };
+    store.saveLease({ ...base, id: "aaaa1111-1", state: "released", requestedAt: 1000, endedAt: 2000 });
+    store.saveLease({ ...base, id: "aaaa1111-2", state: "released", requestedAt: 3000, endedAt: 4000, holder: "vex" });
+    store.saveLease({ ...base, id: "bbbb2222-1", state: "waiting", requestedAt: 5000, endedAt: null });
+    expect(store.leasesByPrefix("aaaa1111").map((lease) => lease.id)).toEqual(["aaaa1111-2", "aaaa1111-1"]);
+    expect(store.leasesByPrefix("aaaa1111-1").map((lease) => lease.id)).toEqual(["aaaa1111-1"]);
+    expect(store.leasesByPrefix("a%")).toEqual([]);
+    expect(store.leasesOfJob("e2e").map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2", "aaaa1111-1"]);
+    expect(store.leasesOfJob("e2e", { holder: "graph", limit: 1 }).map((lease) => lease.id)).toEqual(["bbbb2222-1"]);
+    expect(store.leasesOfJob("e2e", { since: 3500 }).map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2"]);
+    store.prune(10_000, 3000);
+    expect(store.leasesOfJob("e2e").map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2"]);
+    store.close();
+  });
 });
 
 describe("Store pool tags", () => {
