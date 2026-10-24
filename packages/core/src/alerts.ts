@@ -12,10 +12,16 @@
  *   An event alert stays active for some minutes.
  *
  * The alerts only report. headroom does not stop a process for an alert.
+ *
+ * The rules of each kind are in the alert part of its resource (`resources.ts`). `detect()` examines them in the
+ * order of the kinds, and adds no text of its own.
  */
 
 import type { Lease } from "./broker.ts";
+import { grows, leasesOf, levelOf, RESOURCES, type Change, type Level, type LevelRule, type OutlierRule, type Owners, type Readings, type ResourceId } from "./resources.ts";
 import type { DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
+
+export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
 export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "stop";
@@ -94,16 +100,10 @@ export interface DiskInput extends DiskSpace {
  * enough free space. On a small drive, the limits are at most 20% and 5% of its size, so a small drive does not always alert.
  */
 export function diskLevel(disk: DiskSpace, rules: Pick<AlertRules, "diskWarnMb" | "diskCriticalMb"> = DEFAULT_ALERT_RULES): AlertSeverity | null {
-  if (disk.freeMb < Math.min(rules.diskCriticalMb, disk.totalMb * 0.05)) return "critical";
-  if (disk.freeMb < Math.min(rules.diskWarnMb, disk.totalMb * 0.2)) return "warning";
-  return null;
-}
-
-/** This function gives a size of a drive as text: "512 MB" below 1 GB, "4.2 GB" below 100 GB, and "952 GB" above. */
-export function diskSize(mb: number): string {
-  if (mb < 1024) return `${Math.round(mb)} MB`;
-  const gigabytes = mb / 1024;
-  return gigabytes < 100 ? `${Number(gigabytes.toFixed(1))} GB` : `${Math.round(gigabytes)} GB`;
+  const resource = RESOURCES.get("disk");
+  const rule = resource?.alert.rules({ ...DEFAULT_ALERT_RULES, ...rules }).find((each): each is LevelRule => each.type === "level");
+  const [measurement] = resource?.measure.read(readingsOf({ memory: NO_MEMORY, processes: [], disks: [disk] })) ?? [];
+  return rule === undefined || measurement === undefined ? null : levelOf(rule, measurement);
 }
 
 /** The data of one check. */
@@ -124,122 +124,85 @@ export interface AlertInput {
   readonly disks?: readonly DiskInput[] | undefined;
 }
 
-/** The owner kinds that a runaway alert does not examine: Docker and WSL have caps of their own, and the system is not a job. */
-const NOT_JOBS: ReadonlySet<OwnerKind> = new Set(["docker", "system", "kernel"]);
+const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
+const NO_LOAD: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
+const HOUR_MS = 3_600_000;
 
-const gb = (mb: number): string => `${(mb / 1024).toFixed(1)} GB`;
-
-/** This function gives the processes under the granted leases: each lease process and its descendants. */
-function leased(processes: readonly ProcessInfo[], leases: readonly Lease[]): Set<number> {
-  const children = new Map<number, number[]>();
-  for (const info of processes) {
-    if (info.pid === info.ppid) continue;
-    children.set(info.ppid, [...(children.get(info.ppid) ?? []), info.pid]);
-  }
-  const result = new Set<number>();
-  const stack = leases.filter((lease) => lease.state === "granted" && lease.pid !== null).map((lease) => lease.pid as number);
-  while (stack.length > 0) {
-    const pid = stack.pop() as number;
-    if (result.has(pid)) continue;
-    result.add(pid);
-    stack.push(...(children.get(pid) ?? []));
-  }
-  return result;
+/** This function gives the reads of one check for the measure parts of the kinds. */
+function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks">): Readings {
+  return { at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD, processors: 0, pools: {}, granted: {} };
 }
 
-/** This function gives the conditions of one check, without their start time. */
+/**
+ * This function gives the change of each instance from the history of a check. A kernel pool gets its growth over
+ * one hour. A drive gets the loss of its free space over its window.
+ */
+function changesOf(input: AlertInput): Map<ResourceId, Change> {
+  const changes = new Map<ResourceId, Change>();
+  if (input.poolHourAgoMb !== undefined) changes.set("pool:nonpaged", { windowMs: HOUR_MS, usedGain: input.memory.kernelNonpagedMb - input.poolHourAgoMb });
+  if (input.pagedHourAgoMb !== undefined) changes.set("pool:paged", { windowMs: HOUR_MS, usedGain: input.memory.kernelPagedMb - input.pagedHourAgoMb });
+  for (const disk of input.disks ?? []) changes.set(`disk:${disk.mount}`, { windowMs: (disk.windowMinutes ?? 0) * 60_000, freeLoss: disk.droppedMb ?? 0 });
+  return changes;
+}
+
+/** This function tells if an outlier rule examines a process with this owner kind. */
+function examines(rule: OutlierRule, info: ProcessInfo, kind: OwnerKind, owners: Owners, pids: ReadonlySet<number>): boolean {
+  if (rule.skip.includes(kind) || (rule.only !== undefined && !rule.only.includes(kind))) return false;
+  if (rule.when === "unleased") return !owners.leaseOf.has(info.pid);
+  if (rule.when === "orphaned") return info.ppid > 0 && !pids.has(info.ppid);
+  return true;
+}
+
+/**
+ * This function gives the conditions of one check, without their start time. First come the alerts on the processes,
+ * at most one for each process. Then come the alerts on the instances, in the order of the kinds.
+ */
 export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULES): Omit<Alert, "since">[] {
   const alerts: Omit<Alert, "since">[] = [];
+  const readings = readingsOf(input);
+  const owners: Owners = { ownerOf: input.ownerOf, kindOf: input.kindOf, leaseOf: leasesOf(input.processes, input.leases) };
+  const changes = changesOf(input);
+  const kinds = [...RESOURCES.values()].map((resource) => ({ resource, rules: resource.alert.rules(rules) }));
+
+  // The rules on one process. Only the process subject has rules at this time (H20 adds the owners).
   const pids = new Set(input.processes.map((info) => info.pid));
-  const underLease = leased(input.processes, input.leases);
   for (const info of input.processes) {
     const owner = input.ownerOf.get(info.pid) ?? "other";
     const kind = input.kindOf.get(owner) ?? "other";
-    const subject = `${info.name} (${info.pid})`;
-    if (info.privateMb > rules.runawayMb && !underLease.has(info.pid) && !NOT_JOBS.has(kind)) {
-      alerts.push({
-        id: `runaway:${info.pid}`,
-        kind: "runaway",
-        subject,
-        pid: info.pid,
-        mb: Math.round(info.privateMb),
-        message: `${subject} of ${owner} holds ${gb(info.privateMb)} with no lease`,
-      });
-    } else if (info.privateMb > rules.orphanMb && kind === "other" && info.ppid > 0 && !pids.has(info.ppid)) {
-      alerts.push({
-        id: `orphan:${info.pid}`,
-        kind: "orphan",
-        subject,
-        pid: info.pid,
-        mb: Math.round(info.privateMb),
-        message: `${subject} holds ${gb(info.privateMb)}, and its parent (${info.ppid}) stopped`,
-      });
+    // The first rule that gives an alert stops the search, so a process gets at most one alert.
+    kinds.some(({ resource, rules: each }) => {
+      const amount = resource.attribute?.counter(info);
+      if (amount === undefined) return false;
+      for (const rule of each) {
+        if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, pids)) continue;
+        const text = rule.text({ process: info, owner, amount });
+        alerts.push({ id: `${rule.alert}:${info.pid}`, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
+        return true;
+      }
+      return false;
+    });
+  }
+
+  // The rules on the instances. The first rule that gives an alert id wins, so a pool with two rules gives one alert.
+  const ids = new Set<string>();
+  for (const { resource, rules: each } of kinds) {
+    const instanceRules = each.filter((rule) => rule.type !== "outlier");
+    if (instanceRules.length === 0) continue;
+    for (const measurement of resource.measure.read(readings)) {
+      const change = changes.get(measurement.id);
+      for (const rule of instanceRules) {
+        if (rule.instance !== undefined && rule.instance !== measurement.id) continue;
+        const id = rule.alertId?.(measurement.id) ?? measurement.id;
+        if (ids.has(id)) continue;
+        const level: Level | null = rule.type === "level" ? levelOf(rule, measurement) : grows(rule, change) ? "warning" : null;
+        if (level === null) continue;
+        ids.add(id);
+        const text = rule.text({ measurement, change, readings });
+        const severity = rule.severity === true ? { severity: level } : {};
+        alerts.push({ id, kind: rule.alert, subject: text.subject, pid: null, mb: text.mb, ...severity, message: text.message });
+      }
     }
-  }
-  const { memory } = input;
-  if (memory.availableMb < rules.availableMb) {
-    alerts.push({ id: "memory", kind: "memory", subject: "memory", pid: null, mb: Math.round(memory.availableMb), message: `Only ${Math.round(memory.availableMb)} MB of memory is available` });
-  }
-  if (memory.commitLimitMb > 0 && memory.commitMb > memory.commitLimitMb * rules.commitRatio) {
-    alerts.push({
-      id: "commit",
-      kind: "commit",
-      subject: "commit",
-      pid: null,
-      mb: Math.round(memory.commitMb),
-      message: `The commit charge is ${gb(memory.commitMb)} of its limit ${gb(memory.commitLimitMb)}`,
-    });
-  }
-  const growth = input.poolHourAgoMb === undefined ? 0 : memory.kernelNonpagedMb - input.poolHourAgoMb;
-  if (memory.kernelNonpagedMb > rules.poolMb || growth > rules.poolGrowthMb) {
-    alerts.push({
-      id: "pool",
-      kind: "pool",
-      subject: "non-paged pool",
-      pid: null,
-      mb: Math.round(memory.kernelNonpagedMb),
-      message: `The non-paged kernel pool is ${gb(memory.kernelNonpagedMb)}${growth > 0 ? `, ${Math.round(growth)} MB more than one hour ago` : ""}. A driver can leak it.`,
-    });
-  }
-  const pagedGrowth = input.pagedHourAgoMb === undefined ? 0 : memory.kernelPagedMb - input.pagedHourAgoMb;
-  if (memory.kernelPagedMb > rules.pagedMb || pagedGrowth > rules.pagedGrowthMb) {
-    alerts.push({
-      id: "pool:paged",
-      kind: "pool",
-      subject: "paged pool",
-      pid: null,
-      mb: Math.round(memory.kernelPagedMb),
-      message: `The paged kernel pool is ${gb(memory.kernelPagedMb)}${pagedGrowth > 0 ? `, ${Math.round(pagedGrowth)} MB more than one hour ago` : ""}. A file system filter can leak it.`,
-    });
-  }
-  const load = input.load;
-  if (load && load.processes > rules.processes) {
-    const objects = load.userObjects === null ? "" : ` (${load.userObjects} USER and ${load.gdiObjects ?? 0} GDI objects)`;
-    alerts.push({
-      id: "desktop",
-      kind: "desktop",
-      subject: "session",
-      pid: null,
-      mb: 0,
-      message: `${load.processes} processes run in this session${objects}. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.`,
-    });
-  }
-  for (const disk of input.disks ?? []) {
-    const severity = diskLevel(disk, rules);
-    if (severity === null) continue;
-    const dropped = disk.droppedMb ?? 0;
-    const minutes = disk.windowMinutes ?? 0;
-    const window = minutes >= 55 ? "one hour ago" : `${Math.round(minutes)} minutes ago`;
-    const drop = dropped >= 100 && minutes >= 1 ? `, ${diskSize(dropped)} less than ${window}` : "";
-    alerts.push({
-      id: `disk:${disk.mount}`,
-      kind: "disk",
-      subject: `drive ${disk.mount}`,
-      pid: null,
-      mb: Math.round(disk.freeMb),
-      severity,
-      message: `Drive ${disk.mount} has ${diskSize(disk.freeMb)} free of ${diskSize(disk.totalMb)}${drop}.`,
-    });
   }
   return alerts;
 }
+

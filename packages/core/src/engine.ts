@@ -3,7 +3,7 @@
  * calls `tick()` every few seconds, and after each request and each release.
  */
 
-import { DEFAULT_ALERT_RULES, detect, diskSize, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
+import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "./broker.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { availableParallelism } from "node:os";
@@ -11,6 +11,7 @@ import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import { leasesOf, measure, resourceOf, rooms, withKinds, type Measurement, type Owners, type Readings, type ResourceId, type ResourceStatus } from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
 import type { MemoryRow, OwnerRow, Store } from "./store.ts";
+import { diskSize } from "./units.ts";
 import { MEMORY, type DiskSpace, type McpServerSpec, type OwnerUsage, type ProcessInfo, type SessionInfo, type SessionLoad, type SystemMemory } from "./types.ts";
 
 /** The options of an engine. */
