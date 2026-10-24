@@ -117,6 +117,33 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 .foot { color: var(--muted); font-size: 12px; text-align: center; }
 .stale { opacity: 0.55; transition: opacity 0.2s; }
 
+.sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.sec h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.sec .hint { margin: 0; color: var(--muted); font-size: 12px; }
+.res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr)); gap: 12px; margin-top: 10px; }
+.res { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-content: start; border-top: 3px solid var(--lv, transparent); }
+.res.warn, .note.warn { --lv: var(--warn); }
+.res.serious, .note.serious { --lv: var(--serious); }
+.res.crit, .note.crit { --lv: var(--crit); }
+.res .eye { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+.res h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.res .big { color: var(--ink-2); font-size: 13px; }
+.res .big b { color: var(--ink); font-size: 22px; font-weight: 650; letter-spacing: -0.01em; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.res .meter { margin-top: 0; }
+.res .sub { color: var(--muted); font-size: 12px; }
+.trend { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+.trend svg { flex: 1; min-width: 0; height: 32px; }
+.trend span { font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.note { font-size: 12px; background: var(--raise); border-left: 3px solid var(--lv, var(--warn)); border-radius: 0 6px 6px 0; padding: 4px 8px; overflow-wrap: anywhere; }
+.res .list { display: grid; gap: 4px; font-size: 12px; border-top: 1px solid var(--grid); padding-top: 6px; }
+.res .list .t { color: var(--muted); }
+.res .row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
+.res .row.own { grid-template-columns: minmax(0, 1fr) 56px auto; }
+.res .row > .clip { max-width: none; }
+.res .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.res .path { grid-column: 2 / -1; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.res .row .bar { height: 8px; background: var(--s1); border-radius: 0 3px 3px 0; min-width: 2px; }
+
 @media (max-width: 1000px) { .tiles { grid-template-columns: repeat(2, 1fr); } .tile.hero { grid-column: 1 / -1; } .grid2 { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .tiles { grid-template-columns: 1fr; } .owner { grid-template-columns: minmax(90px, 1fr) 1fr 64px; } .owner .spark { display: none; } }
 </style>
@@ -127,7 +154,7 @@ td.mono { font-family: var(--mono); font-size: 12px; }
     <div class="mark">
       <svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 24a11 11 0 0 1 22 0" fill="none" stroke="var(--s1)" stroke-width="4" stroke-linecap="round"/><path d="M16 24l6-8" stroke="var(--s2)" stroke-width="3" stroke-linecap="round"/></svg>
       <h1>headroom</h1>
-      <span>the memory and the jobs of this computer</span>
+      <span>the resources and the jobs of this computer</span>
     </div>
     <div class="live" id="live"><span class="dot"></span><span>connecting</span></div>
   </header>
@@ -140,6 +167,11 @@ td.mono { font-family: var(--mono); font-size: 12px; }
   <section class="alerts" id="alerts" aria-live="polite"></section>
 
   <section class="tiles" id="tiles"></section>
+
+  <section aria-labelledby="resTitle">
+    <div class="sec"><h2 id="resTitle">Resources</h2><p class="hint">One card for each resource: the free part now, the trend in the window, its alert, the leases that hold it and its top users.</p></div>
+    <div class="res-grid" id="resources"></div>
+  </section>
 
   <section class="grid2">
     <div class="card"><h2>Memory</h2><p class="hint">Available and committed memory, in GB. The line for the RAM shows the size of the physical memory.</p><div class="legend" id="memLegend"></div><div class="chart" id="memChart"></div><div id="memTable"></div></div>
@@ -179,7 +211,7 @@ const WINDOWS = [
   { minutes: 1440, label: "24 h", step: 12 },
   { minutes: 10080, label: "7 days", step: 84 },
 ];
-const state = { status: null, history: null, mcp: [], tags: null, window: 360, ok: true, at: 0 };
+const state = { status: null, history: null, mcp: [], tags: null, config: null, window: 360, ok: true, at: 0 };
 try { const saved = Number(localStorage.getItem("headroom.window")); if (WINDOWS.some((w) => w.minutes === saved)) state.window = saved; } catch {}
 
 // ---- helpers ----
@@ -217,9 +249,21 @@ function ago(t) {
   if (sec < 86400) return `${(sec / 3600).toFixed(1)} h`;
   return `${(sec / 86400).toFixed(1)} days`;
 }
-function amounts(a) {
-  return Object.entries(a || {}).map(([k, v]) => (k === "memory" ? mb(v) : `${k} ${v}`)).join(", ") || "-";
+// An amount in the unit of its resource: sizes in MB or GB, processors in cores, slots as counts.
+function amount(v, unit) {
+  if (v == null) return "-";
+  if (unit === "MB") return diskSize(v);
+  if (unit === "MB/h") return `${diskSize(v)}/h`;
+  const n = Number(v.toFixed(Math.abs(v) < 10 && v % 1 ? 1 : 0));
+  return unit === "cores" ? `${n} ${n === 1 ? "core" : "cores"}` : String(n);
 }
+const unitOf = (id) => state.status?.resources?.find((r) => r.id === id)?.unit ?? (id === "memory" || id.startsWith("disk:") ? "MB" : "count");
+function amounts(a) {
+  return Object.entries(a || {}).map(([k, v]) => (k === "memory" ? mb(v) : `${k} ${amount(v, unitOf(k))}`)).join(", ") || "-";
+}
+// The level of an alert, for its color: the severity of the alert, else its kind.
+const alertLevel = (a) => (a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : a.kind === "memory" || a.kind === "commit" || a.kind === "runaway" ? "crit" : a.kind === "pool" ? "serious" : "warn");
+const LEVEL = { crit: ["var(--crit)", "critical", 0], serious: ["var(--serious)", "serious", 1], warn: ["var(--warn)", "warning", 2] };
 // Icons carry the meaning of a status color, so the color is never alone.
 const ICON = {
   good: () => s("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": "true" }, s("circle", { cx: 5, cy: 5, r: 4, fill: "var(--good)" })),
@@ -386,11 +430,8 @@ function sparkline(values, width = 88, height = 22) {
 // ---- the sections ----
 function renderAlerts() {
   const alerts = state.status?.alerts || [];
-  const byKind = (k) => (k === "memory" || k === "commit" || k === "runaway" ? "crit" : k === "pool" ? "serious" : "warn");
-  const level = (a) => (a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : byKind(a.kind));
-  const color = { crit: "var(--crit)", serious: "var(--serious)", warn: "var(--warn)" };
-  $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${level(a)}` },
-    ICON.alert(color[level(a)]), h("span", { class: "kind", text: a.kind }), h("span", { class: "msg", text: a.message }), h("span", { class: "since", text: `since ${clock(a.since)}` }))));
+  $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${alertLevel(a)}` },
+    ICON.alert(LEVEL[alertLevel(a)][0]), h("span", { class: "kind", text: a.kind }), h("span", { class: "msg", text: a.message }), h("span", { class: "since", text: `since ${clock(a.since)}` }))));
 }
 
 function tile(label, value, sub, extra, hero) {
@@ -417,6 +458,89 @@ function renderTiles() {
     tile("Processes", String(st.session?.processes ?? "-"), st.session?.userObjects == null ? "in this session" : `${st.session.userObjects} USER · ${st.session.gdiObjects} GDI objects`,
       (st.disks || []).length ? h("div", { class: "sub", title: "The free space of each fixed drive", text: `Disks: ${st.disks.map((d) => `${d.mount} ${diskSize(d.freeMb)} free`).join(" · ")}` }) : null),
   );
+}
+
+// ---- the resources: one card for each instance of Status.resources, from the model ----
+// The group of each kind, in the order of the page. A kind that the page does not know goes last, with its own name.
+const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"]];
+const NAMES = { memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool" };
+function resName(r) {
+  const part = r.id.includes(":") ? r.id.slice(r.id.indexOf(":") + 1) : "";
+  return NAMES[r.id] || (r.kind === "disk" ? `Drive ${part}` : r.kind === "slot" ? `Slot ${r.id}` : `${r.kind[0].toUpperCase()}${r.kind.slice(1)} ${part}`.trim());
+}
+// The instance of an alert: its id, except the alert "pool" (the non-paged pool) and the process outliers of the memory.
+const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.kind === "runaway" || a.kind === "orphan" ? "memory" : a.id);
+
+/** The change in one hour: from the oldest point of the last hour that is 10 minutes old, else from the first point of the window. */
+function hourly(points, k, now, value) {
+  const old = points.find((p) => p[k] != null && now - p[0] <= 3600e3 && now - p[0] >= 600e3) || points.find((p) => p[k] != null && now - p[0] >= 600e3);
+  return old && value != null ? { rate: ((value - old[k]) * 3600e3) / (now - old[0]), since: old[0] } : null;
+}
+
+/** A trend line that fills its box. The scale is at least 2% of the capacity, so noise stays flat. A gap in the samples breaks the line. */
+function trend(points, k, capacity, label) {
+  const pts = points.filter((p) => p[k] != null);
+  if (pts.length < 2) return null;
+  const W = 240, H = 32, t0 = pts[0][0], t1 = pts[pts.length - 1][0];
+  let lo = Math.min(...pts.map((p) => p[k])), hi = Math.max(...pts.map((p) => p[k]));
+  const pad = Math.max(0, ((capacity ?? hi) * 0.02 - (hi - lo)) / 2);
+  lo -= pad; hi += pad;
+  const x = (t) => (((t - t0) / (t1 - t0 || 1)) * W).toFixed(1), y = (v) => (H - 2 - ((v - lo) / (hi - lo || 1)) * (H - 4)).toFixed(1);
+  const gap = Math.max((3 * (t1 - t0)) / (pts.length - 1), 180e3);
+  let d = "", prev = null;
+  for (const p of pts) { d += `${prev != null && p[0] - prev <= gap ? "L" : "M"}${x(p[0])},${y(p[k])}`; prev = p[0]; }
+  return s("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": label }, s("title", {}, label),
+    s("path", { d, fill: "none", stroke: "var(--s1)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
+}
+
+function resCard(r, st, points) {
+  const alerts = (st.alerts || []).filter((a) => alertOf(a) === r.id).sort((a, b) => LEVEL[alertLevel(a)][2] - LEVEL[alertLevel(b)][2]);
+  const lv = alerts.length ? alertLevel(alerts[0]) : "";
+  const u = (v) => amount(v, r.unit);
+  // A resource with a capacity shows its free part. A kernel pool or the desktop shows its used part.
+  const onFree = r.capacity != null && r.free != null, k = onFree ? 2 : 1, value = onFree ? r.free : r.used;
+  const used = r.capacity != null && r.used != null ? r.used / r.capacity : null;
+  const big = onFree ? h("div", { class: "big" }, h("b", { text: u(r.free) }), `free of ${u(r.capacity)}`)
+    : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), "in use")
+    : h("div", { class: "big" }, h("b", { text: u(r.capacity) }), "in total");
+  const sub = [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`].filter(Boolean).join(" · ");
+  const word = onFree ? "free" : "used";
+  const line = trend(points, k, r.capacity, `The ${word} part in the window`);
+  const change = r.unit === "MB" ? hourly(points, k, st.at, value) : null;
+  const rate = !change ? null : Math.abs(change.rate) < 1 ? "steady" : `${word} ${change.rate < 0 ? "−" : "+"}${diskSize(Math.abs(change.rate))}/h`;
+  const leases = (st.leases || []).filter((l) => (l.amounts?.[r.id] ?? 0) > 0);
+  const root = state.config?.jobTemp;
+  const sep = root && !root.includes("\\") ? "/" : "\\";
+  const owners = (r.owners || []).slice(0, 5);
+  const top = Math.max(...owners.map((o) => o.value), 1e-9);
+  return h("article", { class: `card res ${lv}` },
+    h("div", { class: "eye" }, h("span", { text: (GROUPS.find(([kind]) => kind === r.kind) || [0, r.kind])[1] }),
+      lv ? h("span", { class: "chip" }, ICON.alert(LEVEL[lv][0]), LEVEL[lv][1]) : h("span", { class: "chip" }, ICON.good(), "ok")),
+    h("h3", { text: resName(r) }),
+    big,
+    used == null ? null : h("div", { class: "meter", role: "meter", "aria-label": `${resName(r)} in use`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(used * 100) },
+      h("div", { class: lv === "crit" ? "crit" : lv ? "warn" : "", style: `width:${Math.min(100, used * 100).toFixed(1)}%` })),
+    sub ? h("div", { class: "sub", text: sub }) : null,
+    value == null ? null : h("div", { class: "trend" }, line || h("span", { class: "sub", text: "No history yet in this window." }),
+      rate ? h("span", { title: `The change of the ${word} part in one hour, since ${clock(change.since)}`, class: Math.abs(change.rate) >= 1024 ? "up" : "", text: rate }) : null),
+    ...alerts.map((a) => h("div", { class: `note ${alertLevel(a)}`, text: a.message })),
+    leases.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Leases" }), ...leases.map((l) => h("div", { class: "row" },
+      l.state === "granted" ? ICON.good() : ICON.wait(),
+      h("span", { class: "clip", title: `${l.holder} · ${l.job}`, text: `${l.holder} · ${l.job}` }),
+      h("b", { text: u(l.amounts[r.id]) }),
+      r.kind === "disk" && root && l.state === "granted" ? h("span", { class: "path", title: "The TEMP folder of the job", text: `${root.replace(/[\\/]+$/, "")}${sep}${l.id}` }) : null))) : null,
+    owners.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Top users" }), ...owners.map((o) => h("div", { class: "row own" },
+      h("span", { class: "clip", title: o.owner, text: o.owner.startsWith("session:") ? o.owner.slice(8) : o.owner }),
+      h("div", {}, h("div", { class: "bar", style: `width:${((o.value / top) * 100).toFixed(1)}%` })),
+      h("b", { text: amount(o.value, o.unit) })))) : null);
+}
+
+function renderResources() {
+  const st = state.status;
+  if (!st?.resources?.length) { $("resources").replaceChildren(h("div", { class: "empty", text: "No measurement yet." })); return; }
+  const rank = (r) => { const i = GROUPS.findIndex(([kind]) => kind === r.kind); return i < 0 ? GROUPS.length : i; };
+  const hist = state.history?.resources || {};
+  $("resources").replaceChildren(...st.resources.map((r, i) => [r, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([r]) => resCard(r, st, hist[r.id] || [])));
 }
 
 function renderCharts() {
@@ -537,18 +661,19 @@ function renderTags() {
 
 // ---- the refresh loops ----
 async function refreshStatus() {
-  try { state.status = await call("resources/status"); markLive(true); renderAlerts(); renderTiles(); renderOwners(); renderLeases(); }
+  try { state.status = await call("resources/status"); markLive(true); renderAlerts(); renderTiles(); renderResources(); renderOwners(); renderLeases(); }
   catch { markLive(false); }
 }
 async function refreshHistory() {
   const w = WINDOWS.find((x) => x.minutes === state.window) || WINDOWS[1];
-  try { state.history = await call("resources/history", { minutes: w.minutes, step: w.step }); renderCharts(); renderTiles(); renderOwners(); renderLeases(); }
+  try { state.history = await call("resources/history", { minutes: w.minutes, step: w.step }); renderCharts(); renderTiles(); renderResources(); renderOwners(); renderLeases(); }
   catch { markLive(false); }
 }
 async function refreshMcp() { try { state.mcp = await call("mcp/list"); renderMcp(); } catch {} }
 async function refreshTags() { try { state.tags = await call("resources/pooltags", { limit: 10 }); renderTags(); } catch {} }
+async function refreshConfig() { try { state.config = await call("config/get"); renderResources(); } catch {} }
 
-const LOOPS = [[refreshStatus, 3000], [refreshMcp, 10000], [refreshHistory, 60000], [refreshTags, 60000]];
+const LOOPS = [[refreshStatus, 3000], [refreshMcp, 10000], [refreshHistory, 60000], [refreshTags, 60000], [refreshConfig, 60000]];
 let timers = [];
 function start() {
   stop();

@@ -195,10 +195,19 @@ export class Store {
     for (const each of resources) level.run(at, each.id, each.capacity, each.used, each.free);
   }
 
-  /** This function reads the measurements of the resource instances since a time, the oldest first. */
-  resourcesSince(since: number): ResourceRow[] {
+  /**
+   * This function reads the measurements of the resource instances since a time, the oldest first. With a step longer
+   * than one minute, each row is the average of the samples of one instance in one step, as in `memorySince`.
+   */
+  resourcesSince(since: number, stepMs = 0): ResourceRow[] {
     const nullable = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
-    return this.#db.prepare("SELECT * FROM resource_samples WHERE at >= ? ORDER BY at, id").all(since).map((row) => ({
+    const step = Math.floor(stepMs);
+    const query =
+      step > 60_000
+        ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, id, AVG(capacity) AS capacity, AVG(used) AS used, AVG(free) AS free
+           FROM resource_samples WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER), id ORDER BY at, id`
+        : "SELECT * FROM resource_samples WHERE at >= ? ORDER BY at, id";
+    return this.#db.prepare(query).all(since).map((row) => ({
       at: Number(row["at"]),
       id: String(row["id"]),
       capacity: nullable(row["capacity"]),

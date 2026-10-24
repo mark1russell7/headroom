@@ -1,7 +1,7 @@
 /**
  * The dashboard: one page at `/` on the listener of the daemon. The page reads the procedures of the daemon
- * with `fetch`. It draws the memory, the alerts, the owners, the leases, the MCP servers and the pool tags.
- * It has no framework and no build step. The daemon keeps the page as one string of approximately 30 KB.
+ * with `fetch`. It draws the memory, the alerts, one panel for each resource, the owners, the leases, the MCP servers
+ * and the pool tags. It has no framework and no build step. The daemon keeps the page as one string of approximately 47 KB.
  *
  * - The page holds the token of the daemon. Only a request with a loopback host gets the page. Thus a site
  *   that tries DNS rebinding gets nothing, and a page of another site cannot read the answer.

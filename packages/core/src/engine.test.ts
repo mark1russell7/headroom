@@ -294,6 +294,17 @@ describe("Engine resources", () => {
     now += 31_000;
     engine.tick();
     expect(store.resourcesSince(now)).toHaveLength(rows.length);
+    // The history gives the points of each instance by id. The fields of before stay.
+    const history = engine.history(0);
+    expect(Object.keys(history.resources).sort()).toEqual(status.resources.map((each) => each.id).sort());
+    expect(history.resources["disk:D:"]).toEqual([
+      [now - 61_000, 75_000, 125_000],
+      [now, 75_000, 125_000],
+    ]);
+    expect(history.resources["cpu"]?.[0]).toEqual([now - 61_000, null, null]);
+    expect(history.memory).toHaveLength(2);
+    // With a step, each point is the average of one step.
+    expect(engine.history(0, 3_600_000).resources["memory"]).toHaveLength(1);
     engine.close();
   });
 

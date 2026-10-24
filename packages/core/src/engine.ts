@@ -139,12 +139,20 @@ export interface Alerts {
   readonly ended: readonly EndedAlert[];
 }
 
+/** One point of the history of a resource instance: the time, the used part and the free part, in the unit of its kind. */
+export type ResourcePoint = readonly [at: number, used: number | null, free: number | null];
+
 /** The history since a time. */
 export interface History {
   readonly memory: readonly MemoryRow[];
   readonly owners: readonly OwnerRow[];
   readonly leases: readonly Lease[];
+  /** The points of each resource instance, by id, the oldest first. A step longer than one minute averages each step. */
+  readonly resources: Readonly<Record<ResourceId, readonly ResourcePoint[]>>;
 }
+
+/** This function rounds an amount of a resource to 2 decimals, so a long history stays small. */
+const point = (value: number | null): number | null => (value === null ? null : Math.round(value * 100) / 100);
 
 /** The engine. */
 export class Engine {
@@ -423,7 +431,14 @@ export class Engine {
 
   /** This function gives the history since a time. With a step longer than one minute, each row is the average of one step. */
   history(since: number, stepMs = 0): History {
-    return { memory: this.#store.memorySince(since, stepMs), owners: this.#store.ownersSince(since, stepMs), leases: this.#store.endedLeases(since) };
+    const resources: Record<ResourceId, ResourcePoint[]> = {};
+    for (const row of this.#store.resourcesSince(since, stepMs)) (resources[row.id] ??= []).push([row.at, point(row.used), point(row.free)]);
+    return {
+      memory: this.#store.memorySince(since, stepMs),
+      owners: this.#store.ownersSince(since, stepMs),
+      leases: this.#store.endedLeases(since),
+      resources,
+    };
   }
 
   /** This function calls the listener with the leases that change. It gives a function that removes the listener. */

@@ -61,6 +61,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H21 | Disk: a report of what uses the space, and a safe cleanup. It removes only data that is disposable by definition. All other data goes to Mark first. The `*.before-devdrive` copies stay. | later |
 | H22 | One resource model: memory, disk, then CPU and more. Each resource has the same five parts: measure, attribute, alert, admit and enforce. | in progress: steps 1 to 6 are done. The design is `docs/RESOURCES.md`. Steps 1 to 4 shipped in #29, #30 and #31: the types, the broker on two admit modes, `Status.resources` and the alert rules. Step 5 makes disk a lease resource (`--disk 5g`, `--disk D:=5g`). Step 6 is H19. Next: step 7, H20. |
 | H23 | CPU on the resource model: the processors get the five parts of the model | later |
+| H25 | The dashboard: one panel for each resource, from the model | done |
 
 ## The MCP gateway (H11)
 
