@@ -8,14 +8,29 @@
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
- * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge and the kernel pool.
+ * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
 import { parseArgs } from "node:util";
-import { createJob, createSampler, MB, readSessions, type Alert, type Alerts, type History, type Job, type Lease, type PoolTags, type Status, type Suggestion } from "@headroom/core";
+import {
+  createJob,
+  createSampler,
+  diskLevel,
+  diskSize,
+  MB,
+  readSessions,
+  type Alert,
+  type Alerts,
+  type History,
+  type Job,
+  type Lease,
+  type PoolTags,
+  type Status,
+  type Suggestion,
+} from "@headroom/core";
 import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
@@ -34,9 +49,10 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
   headroom run [--mem 2g|auto] [--cpu 2] [--slot docker]... [--holder name] [--job name]
-               [--priority 0] [--wait 30m] [--limit] [--keep] -- <command> [args...]
+               [--priority 0] [--wait 30m] [--limit] [--keep] [--force-disk] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
                A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
+               A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
@@ -85,6 +101,14 @@ function printStatus(status: Status): void {
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
   const load = status.session;
   if (load) console.log(`Session: ${load.processes} processes${load.userObjects === null ? "" : `, ${load.userObjects} USER and ${load.gdiObjects ?? 0} GDI objects`}.`);
+  const disks = status.disks ?? [];
+  if (disks.length > 0) {
+    const each = disks.map((disk) => {
+      const drop = disk.dropMbPerHour >= 1024 ? ` (${diskSize(disk.dropMbPerHour)} less each hour)` : "";
+      return `${disk.mount} ${diskSize(disk.freeMb)} free of ${diskSize(disk.totalMb)}${drop}`;
+    });
+    console.log(`Disks: ${each.join(", ")}.`);
+  }
   const free = Object.entries(status.free).map(([name, amount]) => `${name} ${name === "memory" ? mb(Math.max(0, amount)) : amount}`);
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
@@ -183,6 +207,31 @@ async function waitForGrant(start: Connection, lease: Lease, deadline: number): 
   return { lease: current, connection };
 }
 
+/**
+ * This function examines the fixed drives before a job starts, because a full drive stops the builds, the tests and git
+ * of all the sessions. It gives 75 when a drive is nearly full and `force` is false. Otherwise, it gives `null`.
+ */
+async function checkDisks(connection: Connection, force: boolean): Promise<number | null> {
+  let status: Status;
+  try {
+    status = await connection.call<Status>(["resources", "status"], {});
+  } catch {
+    // The lease request that comes next reports a daemon that does not answer.
+    return null;
+  }
+  for (const disk of status.disks ?? []) {
+    const level = diskLevel(disk);
+    if (level === null) continue;
+    const free = `headroom: drive ${disk.mount} has only ${diskSize(disk.freeMb)} free.`;
+    if (level === "critical" && !force) {
+      console.error(`${free} The job does not start, because a full drive stops the whole fleet. Free space, or start it with --force-disk.`);
+      return 75;
+    }
+    console.error(`${free} Free space soon, because a full drive stops the whole fleet.${level === "critical" ? " The job starts because of --force-disk." : ""}`);
+  }
+  return null;
+}
+
 async function run(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -198,6 +247,7 @@ async function run(argv: string[]): Promise<number> {
       limit: { type: "boolean" },
       keep: { type: "boolean" },
       "no-auto-slot": { type: "boolean" },
+      "force-disk": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
@@ -227,6 +277,8 @@ async function run(argv: string[]): Promise<number> {
     console.error("headroom: the daemon does not run, so the job runs without a lease.");
     return (await runEnforced(positionals, { keep, limit: false, leaseMb: null })).code;
   }
+  const stopped = await checkDisks(connection, values["force-disk"] === true);
+  if (stopped !== null) return stopped;
   const holder = values.holder ?? (await holderOf());
   // --mem auto: the peaks of the last runs of this job give the amount.
   if (values.mem === "auto") {

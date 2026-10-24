@@ -7,6 +7,7 @@
  * - `commit`: a commit charge near its limit.
  * - `pool`: a large kernel pool (non-paged or paged), or a pool that grows fast. A driver leak shows here.
  * - `desktop`: many processes in the session. The desktop heap can run out, and new processes then fail at their start.
+ * - `disk`: little free space on a fixed drive. A full drive stops the builds, the tests and git of all the sessions.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -14,10 +15,13 @@
  */
 
 import type { Lease } from "./broker.ts";
-import type { OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
+import type { DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "stop";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "stop";
+
+/** The level of an alert. Only some kinds set it. */
+export type AlertSeverity = "warning" | "critical";
 
 /** One active alert. */
 export interface Alert {
@@ -30,6 +34,8 @@ export interface Alert {
   /** The size that started the alert, in MB. */
   readonly mb: number;
   readonly message: string;
+  /** The level of the alert. Without it, the kind gives the level. */
+  readonly severity?: AlertSeverity | undefined;
   /** The time of the first sample that showed the condition. */
   readonly since: number;
 }
@@ -54,6 +60,10 @@ export interface AlertRules {
   readonly pagedGrowthMb: number;
   /** More processes than this in the session start an alert. The default is 1000. */
   readonly processes: number;
+  /** Less free space than this on a fixed drive, in MB, starts a disk warning. The default is 20480. */
+  readonly diskWarnMb: number;
+  /** Less free space than this on a fixed drive, in MB, starts a critical disk alert, and `headroom run` does not start a job. The default is 5120. */
+  readonly diskCriticalMb: number;
 }
 
 /** The default limits. */
@@ -67,7 +77,34 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   pagedMb: 4096,
   pagedGrowthMb: 500,
   processes: 1000,
+  diskWarnMb: 20_480,
+  diskCriticalMb: 5120,
 };
+
+/** One fixed drive, with the free space that it lost over the last hour. */
+export interface DiskInput extends DiskSpace {
+  /** The free space that the drive lost over the window, in MB. It is 0 when the free space grew. */
+  readonly droppedMb?: number | undefined;
+  /** The length of the window, in minutes. */
+  readonly windowMinutes?: number | undefined;
+}
+
+/**
+ * This function gives the level of the free space of a drive: "critical", "warning", or `null` when the drive has
+ * enough free space. On a small drive, the limits are at most 20% and 5% of its size, so a small drive does not always alert.
+ */
+export function diskLevel(disk: DiskSpace, rules: Pick<AlertRules, "diskWarnMb" | "diskCriticalMb"> = DEFAULT_ALERT_RULES): AlertSeverity | null {
+  if (disk.freeMb < Math.min(rules.diskCriticalMb, disk.totalMb * 0.05)) return "critical";
+  if (disk.freeMb < Math.min(rules.diskWarnMb, disk.totalMb * 0.2)) return "warning";
+  return null;
+}
+
+/** This function gives a size of a drive as text: "512 MB" below 1 GB, "4.2 GB" below 100 GB, and "952 GB" above. */
+export function diskSize(mb: number): string {
+  if (mb < 1024) return `${Math.round(mb)} MB`;
+  const gigabytes = mb / 1024;
+  return gigabytes < 100 ? `${Number(gigabytes.toFixed(1))} GB` : `${Math.round(gigabytes)} GB`;
+}
 
 /** The data of one check. */
 export interface AlertInput {
@@ -83,6 +120,8 @@ export interface AlertInput {
   readonly pagedHourAgoMb?: number | undefined;
   /** The load of the session. */
   readonly load?: SessionLoad | undefined;
+  /** The fixed drives. */
+  readonly disks?: readonly DiskInput[] | undefined;
 }
 
 /** The owner kinds that a runaway alert does not examine: Docker and WSL have caps of their own, and the system is not a job. */
@@ -183,6 +222,23 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       pid: null,
       mb: 0,
       message: `${load.processes} processes run in this session${objects}. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.`,
+    });
+  }
+  for (const disk of input.disks ?? []) {
+    const severity = diskLevel(disk, rules);
+    if (severity === null) continue;
+    const dropped = disk.droppedMb ?? 0;
+    const minutes = disk.windowMinutes ?? 0;
+    const window = minutes >= 55 ? "one hour ago" : `${Math.round(minutes)} minutes ago`;
+    const drop = dropped >= 100 && minutes >= 1 ? `, ${diskSize(dropped)} less than ${window}` : "";
+    alerts.push({
+      id: `disk:${disk.mount}`,
+      kind: "disk",
+      subject: `drive ${disk.mount}`,
+      pid: null,
+      mb: Math.round(disk.freeMb),
+      severity,
+      message: `Drive ${disk.mount} has ${diskSize(disk.freeMb)} free of ${diskSize(disk.totalMb)}${drop}.`,
     });
   }
   return alerts;

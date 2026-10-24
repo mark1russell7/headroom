@@ -6,14 +6,16 @@
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
  * - `NtQuerySystemInformation` of `ntdll.dll` gives the use of the kernel pools by each pool tag.
  * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
+ * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
  */
 
+import { statfsSync } from "node:fs";
 import koffi from "koffi";
 import { MB, type Sampler } from "./sampler.ts";
-import type { PoolTag, ProcessInfo, SystemMemory } from "./types.ts";
+import type { DiskSpace, PoolTag, ProcessInfo, SystemMemory } from "./types.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -196,7 +198,33 @@ function gui(): { userObjects: number; gdiObjects: number } {
   return { userObjects: getGuiResources(GR_GLOBAL, GR_USEROBJECTS), gdiObjects: getGuiResources(GR_GLOBAL, GR_GDIOBJECTS) };
 }
 
+const getLogicalDrives = kernel32.func("uint32_t __stdcall GetLogicalDrives()");
+const getDriveType = kernel32.func("uint32_t __stdcall GetDriveTypeW(const char16_t *root)");
+const DRIVE_FIXED = 3;
+
+/**
+ * This function reads the free space of the fixed drives. `GetLogicalDrives` gives one bit for each drive letter, and
+ * `GetDriveTypeW` keeps only the fixed drives. A network drive or a removable drive can stop the read, so it reads none.
+ */
+function disks(): DiskSpace[] {
+  const mask = getLogicalDrives();
+  const list: DiskSpace[] = [];
+  for (let bit = 0; bit < 26; bit++) {
+    if (((mask >>> bit) & 1) === 0) continue;
+    const mount = `${String.fromCharCode(65 + bit)}:`;
+    const root = `${mount}\\`;
+    if (getDriveType(root) !== DRIVE_FIXED) continue;
+    try {
+      const stats = statfsSync(root);
+      list.push({ mount, freeMb: Math.round((stats.bavail * stats.bsize) / MB), totalMb: Math.round((stats.blocks * stats.bsize) / MB) });
+    } catch {
+      // A drive that is not ready (for example a locked BitLocker drive) has no free space to show.
+    }
+  }
+  return list;
+}
+
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, poolTags, gui, close: () => {} };
+  return { memory, processes, poolTags, gui, disks, close: () => {} };
 }

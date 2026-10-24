@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detect, type AlertInput } from "./alerts.ts";
+import { detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { OwnerKind, ProcessInfo } from "./types.ts";
 
@@ -60,4 +60,28 @@ describe("detect", () => {
   });
 
   it("gives nothing on a quiet computer", () => expect(detect({ ...input([], {}), poolHourAgoMb: 980 })).toEqual([]));
+
+  it("warns about a drive with little free space", () => {
+    const alerts = detect({ ...input([], {}), disks: [{ mount: "D:", freeMb: 12_600, totalMb: 200_000 }] });
+    expect(alerts).toEqual([
+      { id: "disk:D:", kind: "disk", subject: "drive D:", pid: null, mb: 12_600, severity: "warning", message: "Drive D: has 12.3 GB free of 195 GB." },
+    ]);
+  });
+
+  it("flags a nearly full drive as critical, with the loss of the last hour", () => {
+    const disks = [{ mount: "C:", freeMb: 4300, totalMb: 974_848, droppedMb: 39_014, windowMinutes: 60 }, { mount: "D:", freeMb: 125_000, totalMb: 200_000 }];
+    const alerts = detect({ ...input([], {}), disks });
+    expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["disk:C:", "critical"]]);
+    expect(alerts[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago.");
+    const recent = detect({ ...input([], {}), disks: [{ ...disks[0]!, windowMinutes: 12 }] });
+    expect(recent[0]?.message).toContain("38.1 GB less than 12 minutes ago.");
+  });
+
+  it("gives no disk alert above the limits, and scales the limits down on a small drive", () => {
+    expect(detect({ ...input([], {}), disks: [{ mount: "C:", freeMb: 265_000, totalMb: 774_000 }, { mount: "D:", freeMb: 20_481, totalMb: 200_000 }] })).toEqual([]);
+    // A drive of 30 GB warns below 20% (6 GB) and is critical below 5% (1.5 GB).
+    expect(diskLevel({ mount: "E:", freeMb: 8000, totalMb: 30_720 })).toBeNull();
+    expect(diskLevel({ mount: "E:", freeMb: 5000, totalMb: 30_720 })).toBe("warning");
+    expect(diskLevel({ mount: "E:", freeMb: 1000, totalMb: 30_720 })).toBe("critical");
+  });
 });

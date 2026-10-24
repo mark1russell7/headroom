@@ -54,6 +54,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H14 | Runaway alerts: a process above 4 GB that has no lease, or a process whose parent stopped. headroom reports to the organizer. It does not stop the process. | done |
 | H15 | The dashboard: a page of the daemon at `http://127.0.0.1:4730/`, and `headroom dashboard` | done |
 | H16 | The Dev Drive: the code and the package caches on a ReFS volume. `docs/DEV-DRIVE.md` gives the plan. | waits for Mark: the plan is ready |
+| H18 | Disk space: alerts for low free space, and headroom run waits on a full disk | done |
 
 ## The MCP gateway (H11)
 

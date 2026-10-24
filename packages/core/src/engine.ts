@@ -3,12 +3,13 @@
  * calls `tick()` every few seconds, and after each request and each release.
  */
 
-import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules } from "./alerts.ts";
+import { DEFAULT_ALERT_RULES, detect, diskSize, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "./broker.ts";
+import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import type { Sampler } from "./sampler.ts";
 import type { MemoryRow, OwnerRow, Store } from "./store.ts";
-import type { McpServerSpec, OwnerUsage, ProcessInfo, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";
+import type { DiskSpace, McpServerSpec, OwnerUsage, ProcessInfo, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";
 
 /** The options of an engine. */
 export interface EngineOptions {
@@ -29,6 +30,17 @@ export interface EngineOptions {
   readonly sessionsDir?: string | undefined;
   /** This function gives the process of each server of the MCP gateway, with the name of the server. */
   readonly servers?: (() => ReadonlyMap<number, string>) | undefined;
+  /**
+   * This function gives the new large files for the drives of the disk alerts. The default reads the home folder, the
+   * downloads, the temporary folders and the root of each drive. It gives the 3 largest files above 1 GB of the last 2 hours.
+   */
+  readonly largeFiles?: ((mounts: readonly string[]) => readonly LargeFile[]) | undefined;
+}
+
+/** One fixed drive, with the speed at which its free space decreases. */
+export interface DiskStatus extends DiskSpace {
+  /** The free space that the drive loses in one hour, in MB, over the last hour. It is 0 when the free space grew. */
+  readonly dropMbPerHour: number;
 }
 
 /** The state of the engine at one time. */
@@ -48,6 +60,8 @@ export interface Status {
   readonly self: { readonly pid: number; readonly privateMb: number; readonly startedAt: number };
   /** The processes and the USER and GDI objects of the session, from the last read of the processes. */
   readonly session: SessionLoad;
+  /** The fixed drives, from the last read of the processes. */
+  readonly disks: readonly DiskStatus[];
 }
 
 /** An alert that ended. */
@@ -90,6 +104,13 @@ const EVENT_MS = 15 * 60_000;
 const STOP_WINDOW_MS = 2 * 60_000;
 const POOL_TAGS_EVERY_MS = 5 * 60_000;
 const POOL_TAGS_KEEP_MS = 60 * 60_000;
+/** The window of the readings of the free space of the drives. */
+const DISK_KEEP_MS = 60 * 60_000;
+/** A window shorter than this counts as this long, so one short write does not give a large speed. */
+const DISK_MIN_SPAN_MS = 10 * 60_000;
+/** The time between two searches for large files while a disk alert is active. */
+const FILES_EVERY_MS = 5 * 60_000;
+const FILES_SINCE_MS = 2 * 3_600_000;
 const round = (mb: number): number => Math.round(mb * 10) / 10;
 
 /** The active alerts and the alerts that ended last. */
@@ -125,6 +146,12 @@ export class Engine {
   #processes: readonly ProcessInfo[] = [];
   #owners: readonly OwnerUsage[] = [];
   #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
+  #disks: readonly DiskSpace[] = [];
+  /** The free space of each drive, in MB, over the last hour. */
+  readonly #diskReadings = new Map<string, { readonly at: number; readonly freeMb: number }[]>();
+  readonly #largeFiles: (mounts: readonly string[]) => readonly LargeFile[];
+  /** The last search for large files: its time, the drives of its alerts, and the files. */
+  #files: { readonly at: number; readonly mounts: string; readonly list: readonly LargeFile[] } | null = null;
   readonly #alertRules: AlertRules;
   readonly #alerts = new Map<string, Alert>();
   #ended: EndedAlert[] = [];
@@ -149,6 +176,7 @@ export class Engine {
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#servers = options.servers ?? (() => new Map());
     this.#alertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
+    this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
     this.#startedAt = this.#now();
     this.#broker = new Broker({
       now: this.#now,
@@ -190,6 +218,7 @@ export class Engine {
         this.#tags = [...this.#tags.filter((snapshot) => now - snapshot.at <= POOL_TAGS_KEEP_MS), { at: now, tags, paged }];
         this.#store.savePoolTags(now, read);
       }
+      this.#readDisks(now);
       this.#check(now, ownerOf);
     }
     const changed = this.#broker.tick(this.capacity());
@@ -282,6 +311,7 @@ export class Engine {
       sessions: this.#sessions,
       alerts: [...this.#alerts.values()],
       session: this.#load,
+      disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -357,10 +387,15 @@ export class Engine {
     const hourOld = first !== undefined && now - first.at > 50 * 60_000;
     const poolHourAgoMb = hourOld ? first.kernelNonpagedMb : undefined;
     const pagedHourAgoMb = hourOld ? first.kernelPagedMb : undefined;
+    const disks: DiskInput[] = this.#disks.map((disk) => {
+      const { droppedMb, windowMinutes } = this.#diskWindow(disk.mount);
+      return { ...disk, droppedMb, windowMinutes };
+    });
     const found = detect(
-      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb, load: this.#load },
+      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb, load: this.#load, disks },
       this.#alertRules,
     );
+    this.#nameLargeFiles(now, found);
     // A pool alert names the tags that grow, so the reader can find the driver.
     const growing = this.poolTags(3).growing.filter((row) => row.growthMb >= 1);
     const named = growing.length === 0 ? "" : ` The tags that grow: ${growing.map((row) => `${row.tag.trim()} +${row.growthMb} MB`).join(", ")}.`;
@@ -381,6 +416,70 @@ export class Engine {
       this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
     }
     for (const alert of found) this.#alerts.set(alert.id, { ...alert, since: this.#alerts.get(alert.id)?.since ?? now });
+  }
+
+  /** This function reads the free space of the fixed drives, and keeps the readings of the last hour. */
+  #readDisks(now: number): void {
+    if (!this.#sampler.disks) return;
+    try {
+      this.#disks = this.#sampler.disks();
+    } catch {
+      this.#disks = [];
+    }
+    const mounts = new Set(this.#disks.map((disk) => disk.mount));
+    for (const mount of [...this.#diskReadings.keys()]) if (!mounts.has(mount)) this.#diskReadings.delete(mount);
+    for (const disk of this.#disks) {
+      const kept = (this.#diskReadings.get(disk.mount) ?? []).filter((reading) => now - reading.at <= DISK_KEEP_MS);
+      this.#diskReadings.set(disk.mount, [...kept, { at: now, freeMb: disk.freeMb }]);
+    }
+  }
+
+  /**
+   * This function gives the free space that a drive lost over the window, from the oldest to the newest reading.
+   * It also gives the length of the window and the loss in one hour. A loss is 0 when the free space grew.
+   */
+  #diskWindow(mount: string): { droppedMb: number; windowMinutes: number; dropMbPerHour: number } {
+    const readings = this.#diskReadings.get(mount) ?? [];
+    const oldest = readings[0];
+    const newest = readings.at(-1);
+    if (!oldest || !newest || newest.at <= oldest.at) return { droppedMb: 0, windowMinutes: 0, dropMbPerHour: 0 };
+    const spanMs = newest.at - oldest.at;
+    const droppedMb = Math.max(0, oldest.freeMb - newest.freeMb);
+    return { droppedMb, windowMinutes: spanMs / 60_000, dropMbPerHour: Math.round((droppedMb * 3_600_000) / Math.max(spanMs, DISK_MIN_SPAN_MS)) };
+  }
+
+  /**
+   * This function adds the new large files to each disk alert, so the reader can find the file that fills the drive.
+   * It searches only while a disk alert is active, and at most one time in 5 minutes for the same drives.
+   */
+  #nameLargeFiles(now: number, found: Omit<Alert, "since">[]): void {
+    const alerting = found.filter((alert) => alert.kind === "disk").map((alert) => alert.id.slice("disk:".length));
+    if (alerting.length === 0) {
+      this.#files = null;
+      return;
+    }
+    const mounts = alerting.join("|");
+    if (!this.#files || this.#files.mounts !== mounts || now - this.#files.at >= FILES_EVERY_MS) {
+      let list: readonly LargeFile[] = [];
+      try {
+        list = this.#largeFiles(alerting);
+      } catch {
+        // The search is extra information. The alert continues without it.
+      }
+      this.#files = { at: now, mounts, list };
+    }
+    // Each file goes to the drive with the longest mount that starts its path.
+    const mountOf = (path: string): string | undefined =>
+      this.#disks
+        .map((disk) => disk.mount)
+        .filter((mount) => path.toLowerCase().startsWith(mount.toLowerCase()))
+        .sort((a, b) => b.length - a.length)[0];
+    for (const [index, alert] of found.entries()) {
+      if (alert.kind !== "disk") continue;
+      const files = this.#files.list.filter((file) => mountOf(file.path) === alert.id.slice("disk:".length));
+      if (files.length === 0) continue;
+      found[index] = { ...alert, message: `${alert.message} New large files: ${files.map((file) => `${file.path} (${diskSize(file.mb)})`).join(", ")}.` };
+    }
   }
 
   /** This function closes the store and the sampler. */

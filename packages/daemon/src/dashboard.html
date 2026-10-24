@@ -205,6 +205,7 @@ function s(tag, attrs, ...children) {
   return e;
 }
 const mb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${Math.round(v)} MB`);
+const diskSize = (v) => (v < 1024 ? `${Math.round(v)} MB` : v < 102400 ? `${Number((v / 1024).toFixed(1))} GB` : `${Math.round(v / 1024)} GB`);
 const gbNum = (v) => (v / 1024).toFixed(1);
 const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const clockS = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -385,10 +386,11 @@ function sparkline(values, width = 88, height = 22) {
 // ---- the sections ----
 function renderAlerts() {
   const alerts = state.status?.alerts || [];
-  const level = (k) => (k === "memory" || k === "commit" || k === "runaway" ? "crit" : k === "pool" ? "serious" : "warn");
+  const byKind = (k) => (k === "memory" || k === "commit" || k === "runaway" ? "crit" : k === "pool" ? "serious" : "warn");
+  const level = (a) => (a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : byKind(a.kind));
   const color = { crit: "var(--crit)", serious: "var(--serious)", warn: "var(--warn)" };
-  $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${level(a.kind)}` },
-    ICON.alert(color[level(a.kind)]), h("span", { class: "kind", text: a.kind }), h("span", { class: "msg", text: a.message }), h("span", { class: "since", text: `since ${clock(a.since)}` }))));
+  $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${level(a)}` },
+    ICON.alert(color[level(a)]), h("span", { class: "kind", text: a.kind }), h("span", { class: "msg", text: a.message }), h("span", { class: "since", text: `since ${clock(a.since)}` }))));
 }
 
 function tile(label, value, sub, extra, hero) {
@@ -412,7 +414,8 @@ function renderTiles() {
     tile("Committed", mb(m.commitMb), `of the limit ${mb(m.commitLimitMb)}`, meter(m.commitMb / m.commitLimitMb, 0.8, 0.9)),
     tile("Non-paged pool", mb(m.kernelNonpagedMb), poolDelta == null ? `paged ${mb(m.kernelPagedMb)}` : `${poolDelta >= 0 ? "+" : "-"}${mb(Math.abs(poolDelta))} in the window`, h("div", { style: "margin-top:6px" }, sparkline(pool, 120, 24))),
     tile("Leases", `${granted.length} run · ${waiting.length} wait`, waiting.length ? `the first waits for ${ago(waiting[0].requestedAt)}` : "no job waits"),
-    tile("Processes", String(st.session?.processes ?? "-"), st.session?.userObjects == null ? "in this session" : `${st.session.userObjects} USER · ${st.session.gdiObjects} GDI objects`),
+    tile("Processes", String(st.session?.processes ?? "-"), st.session?.userObjects == null ? "in this session" : `${st.session.userObjects} USER · ${st.session.gdiObjects} GDI objects`,
+      (st.disks || []).length ? h("div", { class: "sub", title: "The free space of each fixed drive", text: `Disks: ${st.disks.map((d) => `${d.mount} ${diskSize(d.freeMb)} free`).join(" · ")}` }) : null),
   );
 }
 
