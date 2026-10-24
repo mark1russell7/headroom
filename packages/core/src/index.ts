@@ -5,6 +5,8 @@
 
 export { DEFAULT_ALERT_RULES, detect, diskLevel, diskSize } from "./alerts.ts";
 export type { Alert, AlertInput, AlertKind, AlertRules, AlertSeverity, DiskInput } from "./alerts.ts";
+export { counterDelta, CounterTracker } from "./counters.ts";
+export type { Counter, CounterRow, OwnerCores, OwnerWrites } from "./counters.ts";
 export { largeFileDirs, largeFiles } from "./disks.ts";
 export type { LargeFile } from "./disks.ts";
 export { Broker, isActive, processIsAlive } from "./broker.ts";
@@ -41,6 +43,7 @@ export type {
   Resource,
   ResourceId,
   ResourceKind,
+  ResourceOwner,
   ResourceStatus,
   Room,
   Rule,

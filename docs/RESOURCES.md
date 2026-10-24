@@ -419,6 +419,22 @@ Steps 5 and 6 differ from the design above in these points:
 - `History.resources` gives the points of each id: `[at, used, free]`, the oldest first. A step longer than one minute averages each step, as for the memory.
 - The dashboard makes one panel for each entry of `Status.resources`, from its kind and its unit. Thus a new kind gets a panel with no change to the page.
 
+### What step 7 changed
+
+Step 7 (H20) differs from the design above in these points:
+
+- Windows reads the totals of each process with one call of `NtQuerySystemInformation(SystemProcessInformation)`, not with `GetProcessIoCounters`. The call opens no process, so the protected processes and the process `System` have totals too.
+- `ProcessInfo` has `startedAt`, `cpuMs`, `readBytes` and `writeBytes`. The write total is in bytes, not in MB.
+- One counter tracker in `counters.ts` gives the change of each total for each owner. The disk and the processors use the same tracker.
+- The tracker keeps the last totals of the live processes, the reads of the last 10 minutes and the minutes of the last hour. A process that the previous read did not have starts at its first read. Only a process that started after the previous read counts with its full total.
+- `Readings.writes` and `Readings.cores` give the windows of the tracker to the parts. The attribute part of disk gives the MB of the last hour of each owner. The attribute part of `cpu` gives the cores of each owner over the last minute.
+- The measure of `cpu` gives the cores in use: the sum over the processes. The broker still counts `cpu`.
+- `Status.writes` gives the 10 owners that wrote most in the last hour. Each entry of `Status.resources` has its 10 largest owners, with no lease rows.
+- The store keeps the writes of each owner in the column `write_mb` of `owners`, not in a new table `owner_use`. The engine reads the minutes of the last hour at its start.
+- The text of the disk rule names the owners, not `explain()`.
+- The outlier rule on an owner (20 GB in one hour) and the lease rows of disk and `cpu` are not in this step.
+- The process `System` writes the file cache and the pages of mapped files. Thus one write can count for its process and for the owner `system`.
+
 ### H19: the temp folder of each job
 
 `headroom run` gives each job its own `TEMP` and `TMP` folder on the Dev Drive. Large test output then goes to `D:`, and a job cannot fill `C:` through its temp folder.

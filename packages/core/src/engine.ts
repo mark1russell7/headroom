@@ -5,6 +5,7 @@
 
 import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "./broker.ts";
+import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { availableParallelism } from "node:os";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
@@ -21,11 +22,21 @@ import {
   type ResourceId,
   type ResourceStatus,
 } from "./resources.ts";
-import type { Sampler } from "./sampler.ts";
+import { MB, type Sampler } from "./sampler.ts";
 import type { Config, MemoryRow, OwnerRow, Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
-import { MEMORY, type DiskSpace, type McpServerSpec, type OwnerUsage, type ProcessInfo, type SessionInfo, type SessionLoad, type SystemMemory } from "./types.ts";
+import {
+  MEMORY,
+  type DiskSpace,
+  type McpServerSpec,
+  type OwnerKind,
+  type OwnerUsage,
+  type ProcessInfo,
+  type SessionInfo,
+  type SessionLoad,
+  type SystemMemory,
+} from "./types.ts";
 
 /** The options of an engine. */
 export interface EngineOptions {
@@ -80,8 +91,16 @@ export interface Status {
   readonly session: SessionLoad;
   /** The fixed drives, from the last read of the processes. */
   readonly disks: readonly DiskStatus[];
-  /** The level of each resource instance: the memory, the commit charge, the kernel pools, the desktop, the drives, the processors and the slots. */
+  /**
+   * The level of each resource instance: the memory, the commit charge, the kernel pools, the desktop, the drives, the
+   * processors and the slots. Each instance has its 10 largest owners.
+   */
   readonly resources: readonly ResourceStatus[];
+  /**
+   * The 10 owners that wrote most in the last hour, from the write counters of their processes (H20). The counters count
+   * each write, also to a pipe or a device, and do not name the drive.
+   */
+  readonly writes: readonly OwnerWrites[];
 }
 
 /** An alert that ended. */
@@ -182,6 +201,12 @@ export class Engine {
   /** The owner of each process, from the last read of the processes. */
   #ownership: Owners = { ownerOf: new Map(), kindOf: new Map(), leaseOf: new Map() };
   #owners: readonly OwnerUsage[] = [];
+  /** The change of the processor time and of the written bytes of each owner (H20). */
+  readonly #counters = new CounterTracker(["cpuMs", "writeBytes"]);
+  /** The owners that wrote most in the last hour, from the last read of the processes. */
+  #writes: readonly OwnerWrites[] = [];
+  /** The cores of each owner over the last minute, from the last read of the processes. */
+  #cores: readonly OwnerCores[] | undefined;
   #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
   #disks: readonly DiskSpace[] = [];
   /** The free space of each drive, in MB, over the last hour. */
@@ -229,6 +254,9 @@ export class Engine {
     // The snapshots of the last hour continue after a restart, so the change of each tag has its full window.
     this.#tags = this.#store.poolTagsSince(this.#startedAt - POOL_TAGS_KEEP_MS);
     this.#tagsAt = this.#tags.at(-1)?.at ?? 0;
+    // The writes of the last hour continue after a restart, so a disk alert names the owners that filled the drive.
+    this.#counters.restore("writeBytes", this.#store.writesSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
+    this.#writes = this.#counters.writes(this.#startedAt);
     this.#memory = this.#sampler.memory();
   }
 
@@ -264,6 +292,8 @@ export class Engine {
       memory: this.#memory,
       processes: this.#processes,
       previous: this.#previous,
+      writes: this.#writes,
+      cores: this.#cores,
       disks: this.#disks,
       load: this.#load,
       processors: this.#processors,
@@ -292,6 +322,9 @@ export class Engine {
         kindOf: new Map(owners.map((owner) => [owner.owner, owner.kind])),
         leaseOf: leasesOf(this.#processes, this.#broker.leases()),
       };
+      this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf);
+      this.#writes = this.#counters.writes(now);
+      this.#cores = this.#counters.cores(now);
       const gui = this.#sampler.gui?.();
       this.#load = { processes: this.#processes.length, userObjects: gui?.userObjects ?? null, gdiObjects: gui?.gdiObjects ?? null };
       if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
@@ -309,7 +342,7 @@ export class Engine {
     this.#persist(changed);
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
-      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements);
+      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, this.#writtenMb(now));
     }
     if (now - this.#prunedAt >= 3_600_000) {
       this.#prunedAt = now;
@@ -420,7 +453,8 @@ export class Engine {
       alerts: [...this.#alerts.values()],
       session: this.#load,
       disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
-      resources: withKinds(this.#measurements),
+      resources: withKinds(this.#measurements, this.#readings === null ? undefined : { readings: this.#readings, owners: this.#ownership }),
+      writes: this.#writes,
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -508,7 +542,10 @@ export class Engine {
       return { ...disk, droppedMb, windowMinutes };
     });
     const found = detect(
-      { memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb, load: this.#load, disks },
+      {
+        memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
+        load: this.#load, disks, writes: this.#writes,
+      },
       this.#alertRules,
     );
     this.#nameLargeFiles(now, found);
@@ -532,6 +569,13 @@ export class Engine {
       this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
     }
     for (const alert of found) this.#alerts.set(alert.id, { ...alert, since: this.#alerts.get(alert.id)?.since ?? now });
+  }
+
+  /** This function closes the minute of the counter tracker. It gives the MB that each owner wrote in the minute, for the store. */
+  #writtenMb(now: number): Map<string, { readonly kind: OwnerKind; readonly mb: number }> {
+    const written = new Map<string, { readonly kind: OwnerKind; readonly mb: number }>();
+    for (const [owner, bytes] of this.#counters.close(now).get("writeBytes") ?? []) written.set(owner, { kind: this.#counters.kindOf(owner), mb: bytes / MB });
+    return written;
   }
 
   /** This function reads the free space of the fixed drives, and keeps the readings of the last hour. */

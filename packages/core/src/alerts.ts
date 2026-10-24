@@ -8,6 +8,7 @@
  * - `pool`: a large kernel pool (non-paged or paged), or a pool that grows fast. A driver leak shows here.
  * - `desktop`: many processes in the session. The desktop heap can run out, and new processes then fail at their start.
  * - `disk`: little free space on a fixed drive. A full drive stops the builds, the tests and git of all the sessions.
+ *   The message names the owners that wrote most in the last hour (H20).
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -20,6 +21,7 @@
 import type { Lease } from "./broker.ts";
 import { grows, leasesOf, levelOf, RESOURCES, type Change, type Level, type LevelRule, type OutlierRule, type Owners, type Readings, type ResourceId } from "./resources.ts";
 import type { DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
+import type { OwnerWrites } from "./counters.ts";
 
 export { diskSize } from "./units.ts";
 
@@ -122,6 +124,8 @@ export interface AlertInput {
   readonly load?: SessionLoad | undefined;
   /** The fixed drives. */
   readonly disks?: readonly DiskInput[] | undefined;
+  /** The owners that wrote most in the last hour (H20). A disk alert names the first 3 above 100 MB. */
+  readonly writes?: readonly OwnerWrites[] | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -129,8 +133,11 @@ const NO_LOAD: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null
 const HOUR_MS = 3_600_000;
 
 /** This function gives the reads of one check for the measure parts of the kinds. */
-function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks">): Readings {
-  return { at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD, processors: 0, pools: {}, granted: {} };
+function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes">): Readings {
+  return {
+    at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
+    processors: 0, pools: {}, granted: {}, writes: input.writes,
+  };
 }
 
 /**

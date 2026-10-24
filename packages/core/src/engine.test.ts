@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +7,7 @@ import { DEFAULT_ALERT_RULES } from "./alerts.ts";
 import { Engine } from "./engine.ts";
 import type { Sampler } from "./sampler.ts";
 import { Store } from "./store.ts";
-import type { PoolTag } from "./types.ts";
+import type { PoolTag, ProcessInfo } from "./types.ts";
 
 describe("Engine stop alerts", () => {
   it("flags clients of headroom run that stop without a release, for 15 minutes", () => {
@@ -271,15 +271,15 @@ describe("Engine resources", () => {
     engine.tick();
     const status = engine.status();
     expect(status.resources).toEqual([
-      { id: "memory", kind: "memory", unit: "MB", capacity: 28_000, used: 19_000, free: 9000 },
-      { id: "commit", kind: "commit", unit: "MB", capacity: 80_000, used: 30_000, free: 50_000 },
-      { id: "pool:nonpaged", kind: "pool", unit: "MB", capacity: null, used: 1000, free: null },
-      { id: "pool:paged", kind: "pool", unit: "MB", capacity: null, used: 900, free: null },
-      { id: "desktop", kind: "desktop", unit: "count", capacity: null, used: 0, free: null },
-      { id: "disk:C:", kind: "disk", unit: "MB", capacity: 774_000, used: 509_000, free: 265_000 },
-      { id: "disk:D:", kind: "disk", unit: "MB", capacity: 200_000, used: 75_000, free: 125_000 },
-      { id: "cpu", kind: "cpu", unit: "cores", capacity: 16, used: null, free: null },
-      { id: "browser", kind: "slot", unit: "count", capacity: 1, used: 1, free: 0 },
+      { id: "memory", kind: "memory", unit: "MB", capacity: 28_000, used: 19_000, free: 9000, owners: [] },
+      { id: "commit", kind: "commit", unit: "MB", capacity: 80_000, used: 30_000, free: 50_000, owners: [] },
+      { id: "pool:nonpaged", kind: "pool", unit: "MB", capacity: null, used: 1000, free: null, owners: [] },
+      { id: "pool:paged", kind: "pool", unit: "MB", capacity: null, used: 900, free: null, owners: [] },
+      { id: "desktop", kind: "desktop", unit: "count", capacity: null, used: 0, free: null, owners: [] },
+      { id: "disk:C:", kind: "disk", unit: "MB", capacity: 774_000, used: 509_000, free: 265_000, owners: [] },
+      { id: "disk:D:", kind: "disk", unit: "MB", capacity: 200_000, used: 75_000, free: 125_000, owners: [] },
+      { id: "cpu", kind: "cpu", unit: "cores", capacity: 16, used: null, free: null, owners: [] },
+      { id: "browser", kind: "slot", unit: "count", capacity: 1, used: 1, free: 0, owners: [] },
     ]);
     // The fields of before stay. `free` gets the processors and the drives, less their reserve.
     expect(status.free).toEqual({ browser: 0, cpu: 16, "disk:C:": 265_000 - 5120, "disk:D:": 125_000 - 5120, memory: 9000 - 1024 });
@@ -364,6 +364,66 @@ describe("Engine disk leases and temp folders", () => {
       engine.close();
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Engine writes and processor use of the owners", () => {
+  it("names the owners that write most, gives the cores of each owner, and continues the hour after a restart", () => {
+    const sessions = mkdtempSync(join(tmpdir(), "headroom-sessions-"));
+    writeFileSync(join(sessions, "100.json"), JSON.stringify({ pid: 100, name: "graph", sessionId: "s-graph" }));
+    let now = 1_000_000;
+    let step = 0;
+    const MB = 1024 * 1024;
+    const proc = (pid: number, ppid: number, name: string, writeMb: number, cpuMs: number): ProcessInfo => ({
+      pid, ppid, name, privateMb: 100, workingMb: 100, startedAt: 1000, cpuMs, writeBytes: writeMb * MB,
+    });
+    // Each read is 10 seconds later. The test of graph writes 1 GB and uses 2 cores. The MCP server writes 50 MB and uses 0.4 cores.
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [proc(100, 1, "claude.exe", 0, 0), proc(101, 100, "node.exe", step * 1024, step * 20_000), proc(200, 1, "node.exe", step * 50, step * 4000)],
+      disks: () => [{ mount: "C:", freeMb: 4300, totalMb: 974_848 }],
+      close: () => undefined,
+    };
+    const store = new Store(":memory:");
+    const options = { sampler, store, now: () => now, sessionsDir: sessions, processors: 16, servers: () => new Map([[200, "vex"]]), largeFiles: () => [] };
+    try {
+      const engine = new Engine(options);
+      engine.tick();
+      expect(engine.status().writes).toEqual([]);
+      for (step = 1; step <= 6; step++) {
+        now += 10_000;
+        engine.tick();
+      }
+      const status = engine.status();
+      expect(status.writes).toEqual([
+        { owner: "session:graph", kind: "session", mbPerMin: 6144, mbLastHour: 6144 },
+        { owner: "mcp:vex", kind: "mcp", mbPerMin: 300, mbLastHour: 300 },
+      ]);
+      const cpu = status.resources.find((each) => each.id === "cpu");
+      expect(cpu).toMatchObject({ capacity: 16, used: 2.4, free: 13.6 });
+      expect(cpu?.owners).toEqual([
+        { owner: "session:graph", kind: "session", value: 2, unit: "cores" },
+        { owner: "mcp:vex", kind: "mcp", value: 0.4, unit: "cores" },
+      ]);
+      expect(status.resources.find((each) => each.id === "disk:C:")?.owners[0]).toEqual({ owner: "session:graph", kind: "session", value: 6144, unit: "MB/h" });
+      expect(status.resources.find((each) => each.id === "memory")?.owners[0]).toMatchObject({ owner: "session:graph", unit: "MB", value: 200 });
+      expect(engine.alerts().active[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB. Most writes in the last hour: session:graph 6 GB, mcp:vex 300 MB.");
+      expect(store.writesSince(0)).toEqual([
+        { at: 1_060_000, owner: "mcp:vex", kind: "mcp", amount: 300 },
+        { at: 1_060_000, owner: "session:graph", kind: "session", amount: 6144 },
+      ]);
+
+      // A new engine reads the writes of the last hour from the store.
+      now += 5 * 60_000;
+      const restarted = new Engine(options);
+      expect(restarted.status().writes).toEqual([
+        { owner: "session:graph", kind: "session", mbPerMin: 0, mbLastHour: 6144 },
+        { owner: "mcp:vex", kind: "mcp", mbPerMin: 0, mbLastHour: 300 },
+      ]);
+      restarted.close();
+    } finally {
+      rmSync(sessions, { recursive: true, force: true });
     }
   });
 });

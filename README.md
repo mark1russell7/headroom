@@ -43,6 +43,19 @@ headroom status
 headroom history --minutes 120
 ```
 
+`headroom status` also gives the owners that wrote most in the last hour, and the processors in use:
+
+```text
+Writes (last hour): session:graph 31.2 GB, mcp:vex 2.1 GB.
+CPU: 3.4 of 16 cores in use. Most: session:graph 2.1, mcp:vex 0.4.
+```
+
+- The writes come from the write counter of each process: `WriteTransferCount` on Windows, and `write_bytes` of `/proc/<pid>/io` on Linux. The line names the 5 owners above 10 MB.
+- The Windows counter counts each write of a process, also to a pipe or a device. The counters do not name the drive, so the amount of an owner is for all the drives together.
+- A write is not always new space. A file that a job writes again uses no new space.
+- The process `System` writes the file cache and the pages of mapped files to the drives. Thus one write can count for its process and for the owner `system`.
+- The cores of an owner are an average over the last minute, from the processor time of its processes.
+
 On Windows, `headroom run` puts the job into a job object:
 
 - When the run ends, Windows stops each process that the job started and that still runs. Thus a test server or a search does not stay as an orphan. `--keep` turns this off, for a command that starts a service on purpose.
@@ -84,7 +97,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `commit` | The commit charge is above 90% of its limit. |
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
-| `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
+| `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It names the 3 owners that wrote most in the last hour, each above 100 MB, for example `Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB.` It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.

@@ -29,6 +29,20 @@ export interface ProcessInfo {
   readonly privateMb: number;
   /** The working set of the process: the part in physical memory at this time. */
   readonly workingMb: number;
+  /** The start of the process, in milliseconds since the epoch. A new process with the ID of an ended process has a different start. */
+  readonly startedAt?: number | undefined;
+  /** The processor time of the process since its start, in milliseconds: the user time and the kernel time. */
+  readonly cpuMs?: number | undefined;
+  /**
+   * The bytes that the process read since its start. Windows: `ReadTransferCount`, each read, also from a pipe or a device.
+   * Linux: `read_bytes` of `/proc/<pid>/io`. It is absent when the counter is not readable.
+   */
+  readonly readBytes?: number | undefined;
+  /**
+   * The bytes that the process wrote since its start (H20). Windows: `WriteTransferCount`, each write, also to a pipe or a
+   * device. Linux: `write_bytes` of `/proc/<pid>/io`. It is absent when the counter is not readable.
+   */
+  readonly writeBytes?: number | undefined;
 }
 
 /** One sample of the computer. The process list is empty when the sample did not read the processes. */

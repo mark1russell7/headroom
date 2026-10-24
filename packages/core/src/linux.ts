@@ -31,15 +31,55 @@ export function parseMeminfo(text: string): SystemMemory {
   };
 }
 
-/** This function reads the parent and the name of a process from the text of `/proc/<pid>/stat`. */
-export function parseStat(text: string): { readonly ppid: number; readonly name: string } | null {
+/** The parent, the name, the processor time and the start of a process, from `/proc/<pid>/stat`. */
+export interface StatLine {
+  readonly ppid: number;
+  readonly name: string;
+  /** The processor time of the process in clock ticks: `utime` and `stime`. It is absent in a short line. */
+  readonly cpuTicks?: number;
+  /** The start of the process, in clock ticks after the start of the computer. It is absent in a short line. */
+  readonly startTicks?: number;
+}
+
+/** This function reads the parent, the name, the processor time and the start of a process from the text of `/proc/<pid>/stat`. */
+export function parseStat(text: string): StatLine | null {
   // The name is in parentheses and can hold spaces, so the fields start after the last ")".
   const open = text.indexOf("(");
   const close = text.lastIndexOf(")");
   if (open < 0 || close < open) return null;
   const fields = text.slice(close + 2).split(" ");
   const ppid = Number(fields[1]);
-  return Number.isInteger(ppid) ? { ppid, name: text.slice(open + 1, close) } : null;
+  if (!Number.isInteger(ppid)) return null;
+  const name = text.slice(open + 1, close);
+  // The fields 14 and 15 of the line are the user time and the kernel time, and the field 22 is the start. The list starts at the field 3.
+  const field = (index: number): number => (fields[index] === undefined ? Number.NaN : Number(fields[index]));
+  const cpuTicks = field(11) + field(12);
+  const startTicks = field(19);
+  return {
+    ppid,
+    name,
+    ...(Number.isFinite(cpuTicks) ? { cpuTicks } : {}),
+    ...(Number.isFinite(startTicks) ? { startTicks } : {}),
+  };
+}
+
+/** The clock ticks in one second. Linux uses 100 on almost each computer. */
+const CLOCK_TICKS = 100;
+
+/** This function gives the start of the computer in milliseconds since the epoch, from the text of `/proc/stat`. */
+export function parseBootTime(text: string): number | undefined {
+  const match = /^btime\s+(\d+)/m.exec(text);
+  return match?.[1] === undefined ? undefined : Number(match[1]) * 1000;
+}
+
+/** This function reads `read_bytes` and `write_bytes` of `/proc/<pid>/io`. The file of a process of another user is not readable, so it gives no bytes. */
+function ioOf(path: string): { readonly readBytes?: number | undefined; readonly writeBytes?: number | undefined } {
+  try {
+    const io = parseKb(readFileSync(path, "utf8"));
+    return { readBytes: io.get("read_bytes"), writeBytes: io.get("write_bytes") };
+  } catch {
+    return {};
+  }
 }
 
 /** This function makes the sampler of Linux. */
@@ -50,6 +90,12 @@ export function linuxSampler(root = "/proc"): Sampler {
 
   function processes(): ProcessInfo[] {
     const list: ProcessInfo[] = [];
+    let bootAt: number | undefined;
+    try {
+      bootAt = parseBootTime(readFileSync(`${root}/stat`, "utf8"));
+    } catch {
+      // Without the start of the computer, the processes have no start.
+    }
     for (const dir of readdirSync(root)) {
       if (!/^\d+$/.test(dir)) continue;
       try {
@@ -62,6 +108,9 @@ export function linuxSampler(root = "/proc"): Sampler {
           name: stat.name,
           privateMb: ((status.get("RssAnon") ?? 0) * 1024) / MB,
           workingMb: ((status.get("VmRSS") ?? 0) * 1024) / MB,
+          startedAt: bootAt === undefined || stat.startTicks === undefined ? undefined : bootAt + (stat.startTicks * 1000) / CLOCK_TICKS,
+          cpuMs: stat.cpuTicks === undefined ? undefined : (stat.cpuTicks * 1000) / CLOCK_TICKS,
+          ...ioOf(`${root}/${dir}/io`),
         });
       } catch {
         // The process ended while its files were read.

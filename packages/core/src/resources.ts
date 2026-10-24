@@ -9,8 +9,10 @@ import type { Alert, AlertKind, AlertRules } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
 import { treeMb } from "./owners.ts";
+import { MB } from "./sampler.ts";
 import type { Amounts, DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
+import type { OwnerCores, OwnerWrites } from "./counters.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
@@ -35,6 +37,13 @@ export interface Readings {
   readonly processes: readonly ProcessInfo[];
   /** The processes of the read before this read. The rates come from the two reads. */
   readonly previous: readonly ProcessInfo[];
+  /**
+   * The owners that wrote most in the last hour, from the counter tracker of the engine (H20). The attribute part of the
+   * disk gives them, and the disk alert names them.
+   */
+  readonly writes?: readonly OwnerWrites[] | undefined;
+  /** The cores of each owner, as an average over the last minute, from the counter tracker of the engine. The cpu kind uses them. */
+  readonly cores?: readonly OwnerCores[] | undefined;
   readonly disks: readonly DiskSpace[];
   readonly load: SessionLoad;
   /** The processor times since the start of the computer (H23). */
@@ -58,10 +67,23 @@ export interface Measurement {
   readonly free: number | null;
 }
 
-/** The level of one instance, with its kind and its unit. `Status.resources` gives one for each instance. */
+/** The use of one owner of an instance, in the unit of the attribute part of its kind. */
+export interface ResourceOwner {
+  readonly owner: string;
+  readonly kind: OwnerKind;
+  readonly value: number;
+  readonly unit: Unit;
+}
+
+/** The level of one instance, with its kind, its unit and its owners. `Status.resources` gives one for each instance. */
 export interface ResourceStatus extends Measurement {
   readonly kind: ResourceKind;
   readonly unit: Unit;
+  /**
+   * The 10 owners that use the instance most, from the attribute part of its kind. A kind with no attribute part has none.
+   * Memory: the private MB. Disk: the MB written in the last hour, for all the drives together. CPU: the cores.
+   */
+  readonly owners: readonly ResourceOwner[];
 }
 
 /** The measure part of a kind. */
@@ -289,32 +311,65 @@ function poolText(subject: string, name: string, cause: string): (facts: Instanc
   };
 }
 
+/** This function gives the use of each owner and each lease from the amount of each process, the largest first. */
+function byOwner(resource: ResourceKind, processes: readonly ProcessInfo[], owners: Owners, amountOf: (info: ProcessInfo) => number | undefined): OwnerUse[] {
+  const sums = new Map<string, { kind: OwnerKind | "lease"; amount: number; processes: number }>();
+  const add = (owner: string, kind: OwnerKind | "lease", amount: number): void => {
+    const sum = sums.get(owner) ?? { kind, amount: 0, processes: 0 };
+    sum.amount += amount;
+    sum.processes += 1;
+    sums.set(owner, sum);
+  };
+  for (const info of processes) {
+    const amount = amountOf(info);
+    if (amount === undefined) continue;
+    const owner = owners.ownerOf.get(info.pid) ?? "other";
+    add(owner, owners.kindOf.get(owner) ?? "other", amount);
+    const lease = owners.leaseOf.get(info.pid);
+    if (lease !== undefined) add(`lease:${lease}`, "lease", amount);
+  }
+  return [...sums]
+    .map(([owner, sum]) => ({ resource, owner, kind: sum.kind, amount: sum.amount, processes: sum.processes }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
 /** This function gives the attribute part of a kind from the counter of one process. */
 function perProcess(resource: ResourceKind, unit: Unit, counter: (info: ProcessInfo) => number | undefined): Attribute {
-  return {
-    unit,
-    counter,
-    read(readings, owners) {
-      const sums = new Map<string, { kind: OwnerKind | "lease"; amount: number; processes: number }>();
-      const add = (owner: string, kind: OwnerKind | "lease", amount: number): void => {
-        const sum = sums.get(owner) ?? { kind, amount: 0, processes: 0 };
-        sum.amount += amount;
-        sum.processes += 1;
-        sums.set(owner, sum);
-      };
-      for (const info of readings.processes) {
-        const amount = counter(info);
-        if (amount === undefined) continue;
-        const owner = owners.ownerOf.get(info.pid) ?? "other";
-        add(owner, owners.kindOf.get(owner) ?? "other", amount);
-        const lease = owners.leaseOf.get(info.pid);
-        if (lease !== undefined) add(`lease:${lease}`, "lease", amount);
-      }
-      return [...sums]
-        .map(([owner, sum]) => ({ resource, owner, kind: sum.kind, amount: sum.amount, processes: sum.processes }))
-        .sort((a, b) => b.amount - a.amount);
-    },
-  };
+  return { unit, counter, read: (readings, owners) => byOwner(resource, readings.processes, owners, counter) };
+}
+
+/**
+ * The attribute part of the disk (H20). The counter of a process is the MB that it wrote since its start. The use of an
+ * owner is the MB that it wrote in the last hour, from the counter tracker of the engine. The counters do not name the drive.
+ */
+const DISK_WRITES: Attribute = {
+  unit: "MB/h",
+  counter: (info) => (info.writeBytes === undefined ? undefined : info.writeBytes / MB),
+  read: (readings) =>
+    (readings.writes ?? []).map((each) => ({ resource: "disk", owner: each.owner, kind: each.kind, amount: each.mbLastHour, processes: 0 })),
+};
+
+/**
+ * The attribute part of the processors. The counter of a process is its processor time in milliseconds. The use of an
+ * owner is its cores, as an average over the last minute, from the counter tracker of the engine.
+ */
+const CPU_USE: Attribute = {
+  unit: "cores",
+  counter: (info) => info.cpuMs,
+  read: (readings) => (readings.cores ?? []).map((each) => ({ resource: "cpu", owner: each.owner, kind: each.kind, amount: each.cores, processes: 0 })),
+};
+
+/** The owners that wrote most in the last hour for the disk alert: the first 3 above 100 MB. */
+const WRITERS_SHOWN = 3;
+const WRITERS_ABOVE_MB = 100;
+
+/** This function gives the text of the owners that wrote most in the last hour, or "" when no owner wrote 100 MB. */
+export function writersText(writes: readonly OwnerWrites[] | undefined): string {
+  const top = [...(writes ?? [])]
+    .filter((each) => each.mbLastHour >= WRITERS_ABOVE_MB)
+    .sort((a, b) => b.mbLastHour - a.mbLastHour)
+    .slice(0, WRITERS_SHOWN);
+  return top.length === 0 ? "" : ` Most writes in the last hour: ${top.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`;
 }
 
 /** The memory: one instance. The capacity is the physical memory, and the free part is the available memory. */
@@ -474,7 +529,7 @@ const DISK: Resource = {
   measure: {
     read: ({ disks }) => disks.map((disk) => ({ id: `disk:${disk.mount}`, capacity: disk.totalMb, used: disk.totalMb - disk.freeMb, free: disk.freeMb })),
   },
-  attribute: null,
+  attribute: DISK_WRITES,
   alert: {
     rules: (limits) => [
       {
@@ -485,14 +540,20 @@ const DISK: Resource = {
         severity: true,
         warning: { amount: limits.diskWarnMb, ratio: 0.2 },
         critical: { amount: limits.diskCriticalMb, ratio: 0.05 },
-        text: ({ measurement, change }) => {
+        text: ({ measurement, change, readings }) => {
           const mount = measurement.id.slice("disk:".length);
           const free = measurement.free ?? 0;
           const dropped = change?.freeLoss ?? 0;
           const minutes = (change?.windowMs ?? 0) / 60_000;
           const window = minutes >= 55 ? "one hour ago" : `${Math.round(minutes)} minutes ago`;
           const drop = dropped >= 100 && minutes >= 1 ? `, ${diskSize(dropped)} less than ${window}` : "";
-          return { subject: `drive ${mount}`, mb: Math.round(free), message: `Drive ${mount} has ${diskSize(free)} free of ${diskSize(measurement.capacity ?? 0)}${drop}.` };
+          // The write counters do not name the drive, so each disk alert names the same owners (H20).
+          const writers = writersText(readings.writes);
+          return {
+            subject: `drive ${mount}`,
+            mb: Math.round(free),
+            message: `Drive ${mount} has ${diskSize(free)} free of ${diskSize(measurement.capacity ?? 0)}${drop}.${writers}`,
+          };
         },
       },
     ],
@@ -505,14 +566,21 @@ const DISK: Resource = {
 };
 
 /**
- * The processors. Until H23 measures their use, the broker counts them: the capacity is the count of logical processors,
- * less the granted amounts. A configured pool `cpu` is a cap.
+ * The processors. The broker counts them until H23: the capacity is the count of logical processors, less the granted
+ * amounts. A configured pool `cpu` is a cap. The measure gives the cores in use, from the processor time of the processes.
  */
 const CPU: Resource = {
   kind: "cpu",
   unit: "cores",
-  measure: { read: ({ processors }) => [{ id: "cpu", capacity: processors, used: null, free: null }] },
-  attribute: null,
+  // The used part is the sum of the cores of all the owners. It is `null` before the tracker has two reads.
+  measure: {
+    read: ({ processors, cores }) => {
+      if (cores === undefined) return [{ id: "cpu", capacity: processors, used: null, free: null }];
+      const used = Math.round(cores.reduce((sum, each) => sum + each.cores, 0) * 100) / 100;
+      return [{ id: "cpu", capacity: processors, used, free: Math.max(0, Math.round((processors - used) * 100) / 100) }];
+    },
+  },
+  attribute: CPU_USE,
   alert: NO_ALERTS,
   admit: { mode: "counted", reserve: {} },
   enforce: null,
@@ -589,11 +657,38 @@ export function measure(readings: Readings): Measurement[] {
   return [...RESOURCES.values()].flatMap((resource) => resource.measure.read(readings));
 }
 
-/** This function adds the kind and the unit to each measurement. */
-export function withKinds(measurements: readonly Measurement[]): ResourceStatus[] {
+/** The count of owners of each instance in `Status.resources`. */
+const OWNERS_SHOWN = 10;
+
+/** This function rounds the use of an owner for its unit: a count to a whole number, else 1 decimal, as the dashboard shows it. */
+function roundFor(unit: Unit, value: number): number {
+  const scale = unit === "count" ? 1 : 10;
+  return Math.round(value * scale) / scale;
+}
+
+/**
+ * This function adds the kind, the unit and the owners to each measurement. The owners come from the attribute part of the
+ * kind, with the reads and the owners of the processes. The rows of the leases are absent, because they are parts of their owners.
+ */
+export function withKinds(measurements: readonly Measurement[], attribution?: { readonly readings: Readings; readonly owners: Owners }): ResourceStatus[] {
+  const byKind = new Map<ResourceKind, readonly ResourceOwner[]>();
+  const ownersOf = (resource: Resource): readonly ResourceOwner[] => {
+    const attribute = resource.attribute;
+    if (attribute === null || attribution === undefined) return [];
+    let list = byKind.get(resource.kind);
+    if (list === undefined) {
+      list = attribute
+        .read(attribution.readings, attribution.owners)
+        .flatMap((use) => (use.kind === "lease" ? [] : [{ owner: use.owner, kind: use.kind, value: roundFor(attribute.unit, use.amount), unit: attribute.unit }]))
+        .filter((each) => each.value > 0)
+        .slice(0, OWNERS_SHOWN);
+      byKind.set(resource.kind, list);
+    }
+    return list;
+  };
   return measurements.map((each) => {
     const resource = resourceOf(each.id);
-    return { id: each.id, kind: resource.kind, unit: resource.unit, capacity: each.capacity, used: each.used, free: each.free };
+    return { id: each.id, kind: resource.kind, unit: resource.unit, capacity: each.capacity, used: each.used, free: each.free, owners: ownersOf(resource) };
   });
 }
 
