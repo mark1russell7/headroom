@@ -29,6 +29,33 @@ describe("Store", () => {
   });
 });
 
+describe("Store pool tags", () => {
+  it("keeps the snapshots of the tags of 1 MB or more, grouped by time", () => {
+    const store = new Store(":memory:");
+    store.savePoolTags(1000, [
+      { tag: "DAL3", nonPagedMb: 270, pagedMb: 0 },
+      { tag: "FMfn", nonPagedMb: 0, pagedMb: 470 },
+      { tag: "Tiny", nonPagedMb: 0.4, pagedMb: 0.5 },
+    ]);
+    store.savePoolTags(2000, [
+      { tag: "DAL3", nonPagedMb: 300, pagedMb: 0 },
+      { tag: "Tiny", nonPagedMb: 0.6, pagedMb: 0.5 },
+    ]);
+    expect(store.poolTagsSince(0)).toEqual([
+      { at: 1000, tags: new Map([["DAL3", 270], ["FMfn", 0]]), paged: new Map([["DAL3", 0], ["FMfn", 470]]) },
+      { at: 2000, tags: new Map([["DAL3", 300], ["Tiny", 0.6]]), paged: new Map([["DAL3", 0], ["Tiny", 0.5]]) },
+    ]);
+    expect(store.poolTagsSince(1500).map((snapshot) => snapshot.at)).toEqual([2000]);
+
+    // A snapshot removes the snapshots that are older than 2 hours.
+    store.savePoolTags(1000 + 2 * 3_600_000 + 1, [{ tag: "DAL3", nonPagedMb: 310, pagedMb: 0 }]);
+    expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([2000, 1000 + 2 * 3_600_000 + 1]);
+    store.prune(3000);
+    expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([1000 + 2 * 3_600_000 + 1]);
+    store.close();
+  });
+});
+
 describe("Store history with a step", () => {
   it("averages the samples of each step", () => {
     const store = new Store(":memory:");

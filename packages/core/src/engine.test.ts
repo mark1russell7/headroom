@@ -112,6 +112,42 @@ describe("Engine pool tags", () => {
   });
 });
 
+describe("Engine pool tags after a restart", () => {
+  it("continues the window of the snapshots from the store", () => {
+    let now = 1_000_000;
+    let tags: PoolTag[] = [{ tag: "DAL3", nonPagedMb: 270, pagedMb: 10 }];
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      poolTags: () => tags,
+      close: () => undefined,
+    };
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-tags-")), "tags.db");
+    const first = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    first.tick();
+    expect(first.poolTags().at).toBe(1_000_000);
+    first.close();
+
+    now += 60_000;
+    const second = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    expect(second.poolTags()).toMatchObject({ at: 1_000_000, sinceAt: 1_000_000 });
+    second.tick();
+    // The last snapshot is 1 minute old, so the second engine takes no snapshot at once.
+    expect(second.poolTags().at).toBe(1_000_000);
+
+    now += 5 * 60_000;
+    tags = [{ tag: "DAL3", nonPagedMb: 400, pagedMb: 30 }];
+    second.tick();
+    expect(second.poolTags()).toMatchObject({
+      at: now,
+      sinceAt: 1_000_000,
+      growing: [{ tag: "DAL3", nonPagedMb: 400, growthMb: 130 }],
+      pagedGrowing: [{ tag: "DAL3", pagedMb: 30, growthMb: 20 }],
+    });
+    second.close();
+  });
+});
+
 describe("Engine paged pool tags", () => {
   it("names the paged tag that grows in the paged pool alert", () => {
     let now = 1_000_000;
