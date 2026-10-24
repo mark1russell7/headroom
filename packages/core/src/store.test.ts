@@ -93,6 +93,25 @@ describe("Store history with a step", () => {
     expect(store.memorySince(0)).toHaveLength(4);
     store.close();
   });
+
+  it("averages the resource samples of each instance in each step", () => {
+    const store = new Store(":memory:");
+    const memory = { totalMb: 100, availableMb: 50, commitMb: 50, commitLimitMb: 200, kernelPagedMb: 1, kernelNonpagedMb: 2 };
+    for (const [index, free] of [100, 80, 60, 20].entries()) {
+      store.saveSample(index * 60_000, memory, [], undefined, [
+        { id: "disk:D:", capacity: 200, used: 200 - free, free },
+        { id: "cpu", capacity: 16, used: null, free: null },
+      ]);
+    }
+    expect(store.resourcesSince(0, 120_000).map((row) => [row.at, row.id, row.used, row.free])).toEqual([
+      [0, "cpu", null, null],
+      [0, "disk:D:", 110, 90],
+      [120_000, "cpu", null, null],
+      [120_000, "disk:D:", 160, 40],
+    ]);
+    expect(store.resourcesSince(0)).toHaveLength(8);
+    store.close();
+  });
 });
 
 describe("the Linux parsers", () => {

@@ -101,9 +101,12 @@ To turn it on in Claude Code: `/plugin marketplace add C:Usersmarktgitheadroom`,
 
 ## The dashboard
 
-The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the memory, the alerts, the memory of each owner, the leases, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
+The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the memory, the alerts, one panel for each resource, the memory of each owner, the leases, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
 
-- The page is one HTML file of approximately 35 KB, with no framework and no build step. The daemon keeps it as one string.
+- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, the memory, the commit charge, the processors, the slots, the kernel pools and the desktop. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
+- Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
+- A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
+- The page is one HTML file of approximately 47 KB, with no framework and no build step. The daemon keeps it as one string.
 - The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
 - Only a request to `127.0.0.1` or `localhost` gets the page, because the page holds the token of the daemon.
 

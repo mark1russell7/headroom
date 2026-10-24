@@ -169,7 +169,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .input(zodAdapter<HistoryInput>(HistoryInput))
     .output(anything<History>())
     .meta({
-      description: "Give the memory samples, the memory of each owner and the ended leases of the last minutes",
+      description: "Give the memory samples, the memory of each owner, the ended leases and the points of each resource of the last minutes",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },

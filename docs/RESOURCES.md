@@ -414,6 +414,11 @@ Steps 5 and 6 differ from the design above in these points:
 - `Lease.usage` and the column `usage` of `leases` keep the use of the job. The client reports `peakMb` and `tempMb`. `writtenMb` is not reported yet.
 - The sweep of the daemon removes a folder only when the store has its lease and the lease ended. A folder with another name stays. A folder with the mark of `--keep-temp` stays.
 
+### The history and the dashboard (H25)
+
+- `History.resources` gives the points of each id: `[at, used, free]`, the oldest first. A step longer than one minute averages each step, as for the memory.
+- The dashboard makes one panel for each entry of `Status.resources`, from its kind and its unit. Thus a new kind gets a panel with no change to the page.
+
 ### H19: the temp folder of each job
 
 `headroom run` gives each job its own `TEMP` and `TMP` folder on the Dev Drive. Large test output then goes to `D:`, and a job cannot fill `C:` through its temp folder.
