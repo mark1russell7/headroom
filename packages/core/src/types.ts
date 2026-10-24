@@ -94,3 +94,12 @@ export interface SessionLoad {
   readonly userObjects: number | null;
   readonly gdiObjects: number | null;
 }
+
+/** The free space of one fixed drive, in MB. A full drive stops the builds, the tests and git for all the sessions. */
+export interface DiskSpace {
+  /** The name of the drive, for example "C:" on Windows, or its mount point on Linux. */
+  readonly mount: string;
+  /** The space that this user can use, in MB. */
+  readonly freeMb: number;
+  readonly totalMb: number;
+}

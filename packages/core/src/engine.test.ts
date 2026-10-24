@@ -148,6 +148,67 @@ describe("Engine pool tags after a restart", () => {
   });
 });
 
+describe("Engine disks", () => {
+  it("gives the loss of free space over the last hour, and names the new large files in a disk alert", () => {
+    let now = 1_000_000;
+    let freeMb = 300_000;
+    let searches = 0;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      disks: () => [
+        { mount: "C:", freeMb, totalMb: 974_848 },
+        { mount: "D:", freeMb: 125_000, totalMb: 200_000 },
+      ],
+      close: () => undefined,
+    };
+    const largeFiles = (mounts: readonly string[]) => {
+      searches++;
+      expect(mounts).toEqual(["C:"]);
+      return [
+        { path: "C:\\Users\\markt\\pool.etl", mb: 98_304, modifiedAt: now },
+        { path: "D:\\big.iso", mb: 4096, modifiedAt: now },
+      ];
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere", largeFiles });
+    engine.tick();
+    expect(engine.status().disks).toEqual([
+      { mount: "C:", freeMb: 300_000, totalMb: 974_848, dropMbPerHour: 0 },
+      { mount: "D:", freeMb: 125_000, totalMb: 200_000, dropMbPerHour: 0 },
+    ]);
+
+    // 50 000 MB less in 30 minutes is 100 000 MB in one hour.
+    now += 30 * 60_000;
+    freeMb = 250_000;
+    engine.tick();
+    expect(engine.status().disks[0]?.dropMbPerHour).toBe(100_000);
+    expect(engine.alerts().active).toEqual([]);
+    expect(searches).toBe(0);
+
+    now += 30 * 60_000;
+    freeMb = 4300;
+    engine.tick();
+    expect(engine.status().disks[0]?.dropMbPerHour).toBe(295_700);
+    const [alert] = engine.alerts().active;
+    expect(alert).toMatchObject({ id: "disk:C:", kind: "disk", severity: "critical", mb: 4300 });
+    expect(alert?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 289 GB less than one hour ago. New large files: C:\\Users\\markt\\pool.etl (96 GB).");
+
+    // The search for large files runs at most one time in 5 minutes.
+    now += 2 * 60_000;
+    engine.tick();
+    expect(searches).toBe(1);
+
+    // The oldest readings leave the window, and free space that grows is no loss.
+    now += 10 * 60_000;
+    freeMb = 400_000;
+    engine.tick();
+    expect(engine.status().disks[0]?.dropMbPerHour).toBe(0);
+    expect(engine.alerts().active).toEqual([]);
+    expect(engine.alerts().ended[0]?.id).toBe("disk:C:");
+    engine.close();
+  });
+});
+
 describe("Engine paged pool tags", () => {
   it("names the paged tag that grows in the paged pool alert", () => {
     let now = 1_000_000;

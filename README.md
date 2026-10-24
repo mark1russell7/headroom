@@ -36,7 +36,7 @@ headroom run --mem 2g -- pnpm test
 headroom run --slot docker --mem 1g -- docker compose up -d mongo
 ```
 
-See the memory, the free amounts, the leases and the memory of each owner:
+See the memory, the free space of the drives, the free amounts, the leases and the memory of each owner:
 
 ```sh
 headroom status
@@ -63,6 +63,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `commit` | The commit charge is above 90% of its limit. |
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
+| `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
@@ -123,7 +124,7 @@ The bridge sends the messages of the session to the gateway. When the gateway do
 | Exit code | Meaning |
 |---|---|
 | The code of the job | The job ran under its lease. |
-| 75 | The lease was not granted in time, or it ended before the job started. Nothing ran. |
+| 75 | The lease was not granted in time, or it ended before the job started. Or a fixed drive has less than 5 GB free: a full drive stops the builds, the tests and git of all the sessions. Nothing ran. Free space, or start the job again with `--force-disk`. |
 | 2 | The command line is not correct. |
 
 ## How it is built

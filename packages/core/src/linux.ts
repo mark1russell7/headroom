@@ -2,9 +2,10 @@
  * The sampler of Linux and WSL. It reads `/proc`, so it starts no process.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { MB, type Sampler } from "./sampler.ts";
-import type { ProcessInfo, SystemMemory } from "./types.ts";
+import type { DiskSpace, ProcessInfo, SystemMemory } from "./types.ts";
 
 /** This function reads the fields of `/proc/meminfo` or of `/proc/<pid>/status`, in kB. */
 export function parseKb(text: string): Map<string, number> {
@@ -69,5 +70,26 @@ export function linuxSampler(root = "/proc"): Sampler {
     return list;
   }
 
-  return { memory, processes, close: () => {} };
+  return { memory, processes, disks: () => linuxDisks(), close: () => {} };
+}
+
+/**
+ * This function reads the free space of the file systems of "/" and of the home folder. When the two
+ * folders are on the same device, it gives that device one time.
+ */
+export function linuxDisks(mounts: readonly string[] = ["/", homedir()]): DiskSpace[] {
+  const devices = new Set<number>();
+  const list: DiskSpace[] = [];
+  for (const mount of mounts) {
+    try {
+      const device = statSync(mount).dev;
+      if (devices.has(device)) continue;
+      devices.add(device);
+      const stats = statfsSync(mount);
+      list.push({ mount, freeMb: Math.round((stats.bavail * stats.bsize) / MB), totalMb: Math.round((stats.blocks * stats.bsize) / MB) });
+    } catch {
+      // The folder is not readable: it has no free space to show.
+    }
+  }
+  return list;
 }
