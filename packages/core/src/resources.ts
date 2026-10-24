@@ -57,6 +57,12 @@ export interface Measurement {
   readonly free: number | null;
 }
 
+/** The level of one instance, with its kind and its unit. `Status.resources` gives one for each instance. */
+export interface ResourceStatus extends Measurement {
+  readonly kind: ResourceKind;
+  readonly unit: Unit;
+}
+
 /** The measure part of a kind. */
 export interface Measure {
   /** This function gives the instances of the kind at one tick. */
@@ -430,6 +436,14 @@ export function limitOf(limit: Limit, capacity: number | null): number | null {
 /** This function gives the measurements of all the kinds at one tick, in the order of the kinds. */
 export function measure(readings: Readings): Measurement[] {
   return [...RESOURCES.values()].flatMap((resource) => resource.measure.read(readings));
+}
+
+/** This function adds the kind and the unit to each measurement. */
+export function withKinds(measurements: readonly Measurement[]): ResourceStatus[] {
+  return measurements.map((each) => {
+    const resource = resourceOf(each.id);
+    return { id: each.id, kind: resource.kind, unit: resource.unit, capacity: each.capacity, used: each.used, free: each.free };
+  });
 }
 
 /**

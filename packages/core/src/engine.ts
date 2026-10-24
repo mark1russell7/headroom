@@ -8,7 +8,7 @@ import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { availableParallelism } from "node:os";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
-import { leasesOf, measure, resourceOf, rooms, type Owners, type Readings, type ResourceId } from "./resources.ts";
+import { leasesOf, measure, resourceOf, rooms, withKinds, type Measurement, type Owners, type Readings, type ResourceId, type ResourceStatus } from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
 import type { MemoryRow, OwnerRow, Store } from "./store.ts";
 import { MEMORY, type DiskSpace, type McpServerSpec, type OwnerUsage, type ProcessInfo, type SessionInfo, type SessionLoad, type SystemMemory } from "./types.ts";
@@ -66,6 +66,8 @@ export interface Status {
   readonly session: SessionLoad;
   /** The fixed drives, from the last read of the processes. */
   readonly disks: readonly DiskStatus[];
+  /** The level of each resource instance: the memory, the commit charge, the kernel pools, the desktop, the drives, the processors and the slots. */
+  readonly resources: readonly ResourceStatus[];
 }
 
 /** An alert that ended. */
@@ -153,6 +155,8 @@ export class Engine {
   readonly #processors: number;
   /** The reads of the last call of `capacity()`. The admit parts read them. */
   #readings: Readings | null = null;
+  /** The measurements of the last call of `capacity()`. */
+  #measurements: readonly Measurement[] = [];
   /** The owner of each process, from the last read of the processes. */
   #ownership: Owners = { ownerOf: new Map(), kindOf: new Map(), leaseOf: new Map() };
   #owners: readonly OwnerUsage[] = [];
@@ -213,6 +217,7 @@ export class Engine {
   capacity(): Capacity {
     const readings = this.#read();
     const measurements = measure(readings);
+    this.#measurements = measurements;
     const ids = new Set<ResourceId>(measurements.filter((each) => resourceOf(each.id).admit !== null).map((each) => each.id));
     for (const id of Object.keys(readings.pools)) ids.add(id);
     for (const lease of this.#broker.leases()) if (isActive(lease)) for (const id of Object.keys(lease.amounts)) ids.add(id);
@@ -281,7 +286,7 @@ export class Engine {
     this.#persist(changed);
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
-      this.#store.saveSample(now, this.#memory, this.#owners, this.#load);
+      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements);
     }
     if (now - this.#prunedAt >= 3_600_000) {
       this.#prunedAt = now;
@@ -368,6 +373,7 @@ export class Engine {
       alerts: [...this.#alerts.values()],
       session: this.#load,
       disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
+      resources: withKinds(this.#measurements),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),

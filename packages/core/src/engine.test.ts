@@ -254,3 +254,60 @@ describe("Engine cpu", () => {
     engine.close();
   });
 });
+
+describe("Engine resources", () => {
+  it("gives the level of each resource instance in the status, and keeps it in the store each minute", () => {
+    let now = 1_000_000;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      gui: () => ({ userObjects: 2000, gdiObjects: 3000 }),
+      disks: () => [{ mount: "C:", freeMb: 265_000, totalMb: 774_000 }, { mount: "D:", freeMb: 125_000, totalMb: 200_000 }],
+      close: () => undefined,
+    };
+    const store = new Store(":memory:");
+    const engine = new Engine({ sampler, store, now: () => now, sessionsDir: "/nowhere", processors: 16 });
+    engine.request({ holder: "graph", job: "browse", amounts: { browser: 1 }, ttlMs: 600_000 });
+    engine.tick();
+    const status = engine.status();
+    expect(status.resources).toEqual([
+      { id: "memory", kind: "memory", unit: "MB", capacity: 28_000, used: 19_000, free: 9000 },
+      { id: "commit", kind: "commit", unit: "MB", capacity: 80_000, used: 30_000, free: 50_000 },
+      { id: "pool:nonpaged", kind: "pool", unit: "MB", capacity: null, used: 1000, free: null },
+      { id: "pool:paged", kind: "pool", unit: "MB", capacity: null, used: 900, free: null },
+      { id: "desktop", kind: "desktop", unit: "count", capacity: null, used: 0, free: null },
+      { id: "disk:C:", kind: "disk", unit: "MB", capacity: 774_000, used: 509_000, free: 265_000 },
+      { id: "disk:D:", kind: "disk", unit: "MB", capacity: 200_000, used: 75_000, free: 125_000 },
+      { id: "cpu", kind: "cpu", unit: "cores", capacity: 16, used: null, free: null },
+      { id: "browser", kind: "slot", unit: "count", capacity: 1, used: 1, free: 0 },
+    ]);
+    // The fields of before stay. `free` gets the processors and the drives, less their reserve.
+    expect(status.free).toEqual({ browser: 0, cpu: 16, "disk:C:": 265_000 - 5120, "disk:D:": 125_000 - 5120, memory: 9000 - 1024 });
+    expect(status.memory.availableMb).toBe(9000);
+    expect(status.reserveMb).toBe(1024);
+    const rows = store.resourcesSince(0);
+    expect(rows.map((row) => row.id)).toEqual(status.resources.map((each) => each.id).sort());
+    expect(rows.find((row) => row.id === "cpu")).toEqual({ at: now, id: "cpu", capacity: 16, used: null, free: null });
+    now += 30_000;
+    engine.tick();
+    expect(store.resourcesSince(0)).toHaveLength(rows.length);
+    now += 31_000;
+    engine.tick();
+    expect(store.resourcesSince(now)).toHaveLength(rows.length);
+    engine.close();
+  });
+
+  it("adds the table of the resource samples to an older database", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-resources-"));
+    const path = join(dir, "old.db");
+    const old = new DatabaseSync(path);
+    old.exec("CREATE TABLE memory (at INTEGER PRIMARY KEY, total_mb INTEGER, available_mb INTEGER, commit_mb INTEGER, commit_limit_mb INTEGER, kernel_paged_mb INTEGER, kernel_nonpaged_mb INTEGER)");
+    old.close();
+    const store = new Store(path);
+    store.saveSample(5, { totalMb: 1, availableMb: 1, commitMb: 1, commitLimitMb: 1, kernelPagedMb: 1, kernelNonpagedMb: 1 }, [], undefined, [{ id: "memory", capacity: 1, used: 0, free: 1 }]);
+    expect(store.resourcesSince(0)).toEqual([{ at: 5, id: "memory", capacity: 1, used: 0, free: 1 }]);
+    store.prune(6);
+    expect(store.resourcesSince(0)).toEqual([]);
+    store.close();
+  });
+});
