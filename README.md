@@ -29,6 +29,8 @@ The command line of the daemon has the title `headroom-daemon`. The command line
 
 On Windows, a scheduled task starts the daemon at logon and every 2 minutes when it stopped. The log is `~/.headroom/daemon.log`. On Linux, a systemd user unit starts it. `headroom service restart` loads a new version: it waits until no lease waits, and it marks the stop as planned, so no `stop` alert starts. `headroom service uninstall` stops the daemon and removes the service. To start the daemon in a terminal, use `headroom serve`.
 
+When leases wait for a long time, use `headroom service restart --when-idle` to load a new version. The command does not wait. The daemon restarts itself at its first tick with no waiting lease. `headroom status` shows the restart that waits, and `--cancel` cancels it. During a planned restart, `headroom run` waits for the new daemon.
+
 Run a heavy job under a lease. The job waits until the memory is free. When the daemon does not run, the job runs at once with a warning.
 
 ```sh

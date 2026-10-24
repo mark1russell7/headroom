@@ -13,9 +13,10 @@ import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
-import { DAEMON_TITLE } from "./service.ts";
+import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
 import { databasePath, headroomHome, readDiscovery, removeDiscovery, takePlannedStop, writeDiscovery } from "./paths.ts";
-import { gatewayProcedures, resourceProcedures } from "./procedures.ts";
+import { gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
+import { IdleRestart } from "./restart.ts";
 
 /** The default port of the daemon. */
 export const DEFAULT_PORT = 4730;
@@ -68,8 +69,27 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     });
     log(`The daemon before this one (process ${unclean}) stopped without a clean stop.`);
   }
+  // `headroom service restart --when-idle`: the daemon waits for an idle queue, and then it restarts itself.
+  let stopSelf = (): void => undefined;
+  const idle: IdleRestart = new IdleRestart({
+    waiting: () => engine.status().leases.filter((lease) => lease.state === "waiting").length,
+    restart: () => {
+      log("No lease waits, so the restart for an idle queue starts.");
+      restartFromDaemon(process.pid, log).then(
+        (stops) => {
+          if (stops) stopSelf();
+        },
+        (error: unknown) => {
+          log(`The restart for an idle queue did not start: ${error instanceof Error ? error.message : String(error)}`);
+          idle.failed();
+        },
+      );
+    },
+  });
   const registry = new ProcedureRegistry();
-  registerModules(registry, [defineModule("@headroom/daemon", [...resourceProcedures(engine), ...gatewayProcedures(engine, gateway)])]);
+  registerModules(registry, [
+    defineModule("@headroom/daemon", [...resourceProcedures(engine, () => idle.pending()), ...gatewayProcedures(engine, gateway), ...serviceProcedures(idle)]),
+  ]);
 
   const port = options.port ?? DEFAULT_PORT;
   const host = "127.0.0.1";
@@ -99,9 +119,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
 
   writeDiscovery({ pid: process.pid, endpoint: `http://${host}:${port}/api`, token, startedAt: new Date().toISOString() });
   log(`headroom runs at http://${host}:${port}/api (process ${process.pid})`);
+  stopSelf = () => void started.life.shutdown("the restart for an idle queue", { code: 0 });
   const timer = setInterval(() => {
     try {
       engine.tick();
+      idle.tick();
     } catch (error) {
       log(`The tick failed: ${error instanceof Error ? error.message : String(error)}`);
     }

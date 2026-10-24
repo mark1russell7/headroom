@@ -9,7 +9,7 @@
  * - The job records its peak memory, so the holder can see what the job used.
  *
  * Windows nests jobs. Thus a process that is in a job already, for example a shell of a terminal, can
- * also go into the job of headroom. Only `createJob()` on Windows loads this file.
+ * also go into the job of headroom. Only `createJob()` and `startOutsideJob()` on Windows load this file.
  */
 
 import koffi from "koffi";
@@ -57,6 +57,42 @@ const assignProcess = kernel32.func("int __stdcall AssignProcessToJobObject(intp
 const getCurrentProcess = kernel32.func("intptr_t __stdcall GetCurrentProcess()");
 const getLastError = kernel32.func("uint32_t __stdcall GetLastError()");
 const closeHandle = kernel32.func("int __stdcall CloseHandle(intptr_t handle)");
+
+const CREATE_BREAKAWAY_FROM_JOB = 0x0100_0000;
+const DETACHED_PROCESS = 0x8;
+const CREATE_NEW_PROCESS_GROUP = 0x200;
+const STARTF_USESTDHANDLES = 0x100;
+
+koffi.struct("HEADROOM_STARTUPINFOW", {
+  cb: "uint32_t",
+  lpReserved: "void *",
+  lpDesktop: "void *",
+  lpTitle: "void *",
+  dwX: "uint32_t",
+  dwY: "uint32_t",
+  dwXSize: "uint32_t",
+  dwYSize: "uint32_t",
+  dwXCountChars: "uint32_t",
+  dwYCountChars: "uint32_t",
+  dwFillAttribute: "uint32_t",
+  dwFlags: "uint32_t",
+  wShowWindow: "uint16_t",
+  cbReserved2: "uint16_t",
+  lpReserved2: "void *",
+  hStdInput: "void *",
+  hStdOutput: "void *",
+  hStdError: "void *",
+});
+koffi.struct("HEADROOM_PROCESS_INFORMATION", {
+  hProcess: "intptr_t",
+  hThread: "intptr_t",
+  dwProcessId: "uint32_t",
+  dwThreadId: "uint32_t",
+});
+const startupSize = koffi.sizeof("HEADROOM_STARTUPINFOW");
+const createProcess = kernel32.func(
+  "int __stdcall CreateProcessW(const char16_t *application, void *commandLine, void *processAttributes, void *threadAttributes, int inheritHandles, uint32_t flags, void *environment, const char16_t *cwd, HEADROOM_STARTUPINFOW *startup, _Out_ HEADROOM_PROCESS_INFORMATION *info)",
+);
 
 interface ExtendedLimit {
   BasicLimitInformation: { LimitFlags: number };
@@ -116,4 +152,50 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
       closeHandle(handle);
     },
   };
+}
+
+/**
+ * This function gives the limit flags of the job of the current process, or `null` when the process is in no job.
+ * With nested jobs, it gives the flags of the innermost job.
+ */
+export function ownJobFlags(): number | null {
+  const out = {} as ExtendedLimit;
+  if (queryInformation(0, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, out, extendedSize, null) === 0) return null;
+  return out.BasicLimitInformation.LimitFlags;
+}
+
+/** A process that `startOutsideJob()` started. */
+export interface StartedProcess {
+  readonly pid: number;
+  /** True: the process is outside the job of the current process. False: the job refused the breakaway. */
+  readonly breakaway: boolean;
+  /** The limit flags of the job of the current process, or `null` when the current process is in no job. */
+  readonly jobFlags: number | null;
+}
+
+/**
+ * This function starts a process with no console and no standard handles, in a new process group. The process does
+ * not stop with the current process. The function tries `CREATE_BREAKAWAY_FROM_JOB` first. When the job of the current
+ * process refuses it, the function starts the process in the job.
+ *
+ * Node cannot start a process outside a job, because libuv does not set `CREATE_BREAKAWAY_FROM_JOB`.
+ */
+export function startWindowsProcess(commandLine: string, cwd: string | null = null): StartedProcess {
+  const jobFlags = ownJobFlags();
+  const attempt = (flags: number): number | null => {
+    // CreateProcessW can change the command line, so it gets a buffer that it can write.
+    const line = Buffer.from(`${commandLine}\0`, "utf16le");
+    const startup = { cb: startupSize, dwFlags: STARTF_USESTDHANDLES, hStdInput: null, hStdOutput: null, hStdError: null };
+    const info = { hProcess: 0, hThread: 0, dwProcessId: 0, dwThreadId: 0 };
+    if (createProcess(null, line, null, null, 0, flags, null, cwd, startup, info) === 0) return null;
+    closeHandle(info.hThread);
+    closeHandle(info.hProcess);
+    return info.dwProcessId;
+  };
+  const base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+  const outside = attempt(base | CREATE_BREAKAWAY_FROM_JOB);
+  if (outside !== null) return { pid: outside, breakaway: true, jobFlags };
+  const inside = attempt(base);
+  if (inside === null) throw new Error(`CreateProcessW failed with the error ${getLastError()}`);
+  return { pid: inside, breakaway: false, jobFlags };
 }

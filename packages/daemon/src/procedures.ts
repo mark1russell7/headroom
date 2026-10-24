@@ -1,9 +1,10 @@
 /**
- * The procedures of headroom: `resources.*`, `config.*` and `mcp.*`. Each procedure uses one engine.
+ * The procedures of headroom: `resources.*`, `config.*`, `mcp.*` and `service.*`. Each procedure uses one engine.
  */
 
 import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, PoolTags, Status, Suggestion, TcpPorts } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
+import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
 
@@ -91,8 +92,14 @@ type Empty = z.infer<typeof Empty>;
 
 const anything = <T>(): ReturnType<typeof zodAdapter<T>> => zodAdapter<T>(z.custom<T>(() => true));
 
-/** This function gives the procedures of headroom for one engine. */
-export function resourceProcedures(engine: Engine): AnyProcedure[] {
+/** The status of the daemon: the status of the engine, and the restart that waits for an idle queue. */
+export interface DaemonStatus extends Status {
+  /** The restart that waits for an idle queue. A daemon of an older version does not give it. */
+  readonly restart?: PendingRestart | undefined;
+}
+
+/** This function gives the procedures of headroom for one engine. `pendingRestart` gives the restart that waits for an idle queue. */
+export function resourceProcedures(engine: Engine, pendingRestart: () => PendingRestart | null = () => null): AnyProcedure[] {
   const found = (lease: Lease | undefined, id: string): Lease => {
     if (!lease) throw new Error(`No lease has the id ${id}`);
     return lease;
@@ -101,14 +108,17 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
   const status = createProcedure()
     .path(["resources", "status"])
     .input(zodAdapter<Empty>(Empty))
-    .output(anything<Status>())
+    .output(anything<DaemonStatus>())
     .meta({
-      description: "Give the memory of the computer, the free amounts, the active leases and the memory of each owner",
+      description: "Give the memory of the computer, the free amounts, the active leases, the memory of each owner and a restart that waits",
       args: [],
       output: "json",
       effects: { reads: ["headroom", "process"], writes: [], destructive: false },
     })
-    .handler(async (): Promise<Status> => engine.status())
+    .handler(async (): Promise<DaemonStatus> => {
+      const restart = pendingRestart();
+      return restart === null ? engine.status() : { ...engine.status(), restart };
+    })
     .build() as AnyProcedure;
 
   const lease = createProcedure()
@@ -301,6 +311,29 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .build() as AnyProcedure;
 
   return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, suggest, configGet, configSet];
+}
+
+const RestartWhenIdleInput = z.object({
+  cancel: z.boolean().default(false).describe("True: cancel the restart that waits (default: false)"),
+});
+type RestartWhenIdleInput = z.infer<typeof RestartWhenIdleInput>;
+
+/** This function gives the procedures of the service: `service.*`. */
+export function serviceProcedures(idle: IdleRestart): AnyProcedure[] {
+  const restartWhenIdle = createProcedure()
+    .path(["service", "restartWhenIdle"])
+    .input(zodAdapter<RestartWhenIdleInput>(RestartWhenIdleInput))
+    .output(anything<IdleRestartState>())
+    .meta({
+      description: "Restart the daemon at the first tick when no lease waits, and return at once. cancel: true cancels the restart.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom", "process"], destructive: false, idempotent: true },
+    })
+    .handler(async (input: RestartWhenIdleInput): Promise<IdleRestartState> => (input.cancel ? idle.cancel() : idle.ask()))
+    .build() as AnyProcedure;
+
+  return [restartWhenIdle];
 }
 
 /** This function gives the usage of a release with only the fields that have a value. */

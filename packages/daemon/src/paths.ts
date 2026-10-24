@@ -36,6 +36,23 @@ export function writePlannedStop(pid: number): void {
   writeFileSync(plannedStopPath(), `${JSON.stringify({ pid, at: new Date().toISOString() })}\n`);
 }
 
+/** The mark of a planned stop: the process ID of the daemon that stops, and the time of the mark in ms. */
+export interface PlannedStop {
+  readonly pid: number;
+  readonly at: number;
+}
+
+/** This function reads the mark of a planned stop and keeps it. It gives `null` when no mark exists. */
+export function readPlannedStop(): PlannedStop | null {
+  try {
+    const { pid, at } = JSON.parse(readFileSync(plannedStopPath(), "utf8")) as { pid: unknown; at: unknown };
+    const time = typeof at === "string" ? Date.parse(at) : Number.NaN;
+    return typeof pid === "number" && !Number.isNaN(time) ? { pid, at: time } : null;
+  } catch {
+    return null;
+  }
+}
+
 /** This function reads and removes the mark of a planned stop. It gives the process ID, or `null`. */
 export function takePlannedStop(): number | null {
   try {

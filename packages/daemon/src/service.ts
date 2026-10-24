@@ -13,10 +13,12 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { processIsAlive, type Status } from "@headroom/core";
-import { answers, connect } from "./client.ts";
+import { processIsAlive, startOutsideJob, type Status } from "@headroom/core";
+import { answers, connect, connectTo, isNetworkError } from "./client.ts";
 import { killTree } from "./gateway.ts";
-import { headroomHome, logPath, readDiscovery, writePlannedStop } from "./paths.ts";
+import { headroomHome, logPath, readDiscovery, takePlannedStop, writePlannedStop } from "./paths.ts";
+import type { DaemonStatus } from "./procedures.ts";
+import type { IdleRestartState, PendingRestart } from "./restart.ts";
 
 /**
  * The title of the daemon process. The command line of the daemon contains it. Thus a search can find
@@ -195,6 +197,25 @@ export interface RestartOptions {
   readonly now?: boolean | undefined;
   /** The longest wait for the queue, in ms. The default is 60 minutes. */
   readonly waitMs?: number | undefined;
+  /**
+   * The process ID of a daemon that stops by itself, for the helper of `--when-idle`. The restart waits until this
+   * process exits, and does not stop its process tree, because the helper is in that tree.
+   */
+  readonly after?: number | undefined;
+  /** This function prints the lines of the restart. The default is the console. */
+  readonly log?: ((line: string) => void) | undefined;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** This function waits until a process exits. It gives false when the process is still alive at the end of the time. */
+async function exited(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (processIsAlive(pid)) {
+    if (Date.now() > deadline) return false;
+    await sleep(250);
+  }
+  return true;
 }
 
 /**
@@ -202,44 +223,149 @@ export interface RestartOptions {
  * as planned, so the next daemon does not report it as a stop by another process. It gives the exit code.
  */
 export async function restart(options: RestartOptions = {}): Promise<number> {
+  const say = options.log ?? ((line: string) => console.log(line));
+  const fail = options.log ?? ((line: string) => console.error(line));
   const deadline = Date.now() + (options.waitMs ?? 3_600_000);
-  while (!options.now) {
+  while (!options.now && options.after === undefined) {
     const connection = connect();
     if (!connection) break;
     const waiting = (await connection.call<Status>(["resources", "status"], {})).leases.filter((lease) => lease.state === "waiting").length;
     if (waiting === 0) break;
     if (Date.now() > deadline) {
-      console.error(`headroom: ${waiting} leases still wait. No restart. Use --now to restart anyway.`);
+      fail(`headroom: ${waiting} leases still wait. No restart. Use --now to restart anyway, or --when-idle.`);
       return 75;
     }
-    console.log(`${waiting} leases wait. The restart waits for them. Next check in 30 s.`);
-    await new Promise((resolve) => setTimeout(resolve, 30_000));
+    say(`${waiting} leases wait. The restart waits for them. Next check in 30 s. With --when-idle, the daemon does the wait.`);
+    await sleep(30_000);
   }
-  const old = readDiscovery();
+  let oldPid = readDiscovery()?.pid ?? null;
+  if (options.after !== undefined) {
+    oldPid = options.after;
+    if (!(await exited(options.after, 30_000))) {
+      fail(`The daemon (process ${options.after}) did not stop in 30 s. The restart stops it.`);
+      try {
+        process.kill(options.after);
+      } catch {
+        // The process stopped before the kill.
+      }
+    }
+  }
   if (process.platform === "linux") {
     // systemd stops the daemon with a signal, so the daemon stops cleanly and the stop is not reported.
     const code = exec("systemctl", ["--user", "restart", `${SERVICE_NAME}.service`]).code;
     if (code !== 0) return code;
   } else if (process.platform === "win32") {
-    if (old && processIsAlive(old.pid)) {
-      writePlannedStop(old.pid);
-      killTree(old.pid);
+    if (options.after === undefined && oldPid !== null && processIsAlive(oldPid)) {
+      writePlannedStop(oldPid);
+      killTree(oldPid);
     }
     const code = exec("schtasks", ["/Run", "/TN", SERVICE_NAME], true).code;
-    if (code !== 0) return (console.error(`The task "${SERVICE_NAME}" did not start. Register it with: headroom service install`), code);
+    if (code !== 0) return (fail(`The task "${SERVICE_NAME}" did not start. Register it with: headroom service install`), code);
   } else {
     return unsupported();
   }
-  for (let attempt = 0; attempt < 60; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+  for (let attempt = 1; attempt <= 60; attempt++) {
+    await sleep(1000);
     const running = readDiscovery();
-    if (running && running.pid !== old?.pid && (await answers(running))) {
-      console.log(`headroom restarted: process ${running.pid}.`);
+    if (running && running.pid !== oldPid && (await answers(running))) {
+      say(`headroom restarted: process ${running.pid}.`);
       return 0;
     }
+    // The task ignores a start while its old instance still ends (IgnoreNew). Thus the restart starts the task again.
+    if (process.platform === "win32" && attempt % 10 === 0) exec("schtasks", ["/Run", "/TN", SERVICE_NAME], true);
   }
-  console.error("headroom did not answer 60 s after the restart. Look at the log: headroom service status");
+  fail("headroom did not answer 60 s after the restart. Look at the log: headroom service status");
   return 1;
+}
+
+/** The title of the helper process of `--when-idle`. It is not the title of the daemon, so a search for the daemon does not find the helper. */
+export const RESTART_TITLE = "headroom-restart";
+
+/** This function gives the command line of the helper that restarts the task after the daemon `pid` stops. */
+export function helperCommandLine(pid: number, command: ServiceCommand = serviceCommand()): string {
+  const args = [command.node, `--title=${RESTART_TITLE}`, command.cli, "service", "restart", "--after", String(pid), "--log", logPath()];
+  return args.map(windowsArg).join(" ");
+}
+
+/**
+ * This function starts the restart of the daemon from the daemon itself, at the first tick when no lease waits. It
+ * gives true when the daemon must stop itself after the call.
+ *
+ * The choice of the mechanism on Windows:
+ *
+ * - The task has the `MultipleInstancesPolicy` `IgnoreNew`. Thus `schtasks /Run` has no effect while the old daemon runs.
+ * - Task Scheduler puts the processes of the task in a job object. A process in that job can keep the task active, or
+ *   stop with the task.
+ * - Option a: the daemon stops, and the repeat trigger of the task starts it again. The gap is up to 2 minutes.
+ * - Option b, the choice: the daemon starts a helper outside the job, with `CREATE_BREAKAWAY_FROM_JOB`. Then the daemon
+ *   stops cleanly. The helper waits for the exit of the daemon and starts the task. The gap is approximately 3 seconds.
+ * - Option a stays as the fallback. When the helper does not start the task, the repeat trigger starts the daemon.
+ * - The daemon writes the mark of a planned stop first. Thus no `stop` alert starts, and `headroom run` waits for the
+ *   new daemon.
+ *
+ * On Linux, `systemctl --no-block restart` gives the restart to systemd. systemd stops the daemon with a signal.
+ */
+export async function restartFromDaemon(pid: number, log: (line: string) => void): Promise<boolean> {
+  if (process.platform === "linux") {
+    writePlannedStop(pid);
+    const result = exec("systemctl", ["--user", "--no-block", "restart", `${SERVICE_NAME}.service`], true);
+    if (result.code === 0) return false;
+    takePlannedStop();
+    throw new Error(`systemctl did not restart the unit: ${result.out}`);
+  }
+  if (process.platform !== "win32") throw new Error(`headroom service supports Windows and Linux, not ${process.platform}`);
+  writePlannedStop(pid);
+  try {
+    const helper = await startOutsideJob(helperCommandLine(pid), headroomHome());
+    const job = helper.jobFlags === null ? "The daemon is in no job." : `The job of the daemon has the limit flags 0x${helper.jobFlags.toString(16)}.`;
+    const where = helper.breakaway ? "outside the job of the task" : "in the job of the task, because the job refused a breakaway";
+    log(`The helper (process ${helper.pid}) runs ${where}. It starts the task after this daemon stops. ${job}`);
+  } catch (error) {
+    log(`The helper did not start: ${error instanceof Error ? error.message : String(error)}. The task starts the daemon in 2 minutes or less.`);
+  }
+  return true;
+}
+
+/** The options of `restartWhenIdle()`. */
+export interface RestartWhenIdleOptions {
+  /** True: cancel the restart that waits. */
+  readonly cancel?: boolean | undefined;
+}
+
+/** This function writes the line of a restart that waits for an idle queue. */
+export function pendingLine(pending: PendingRestart): string {
+  return `A restart waits for an idle queue (asked at ${new Date(pending.askedAt).toISOString().slice(11, 16)} UTC).`;
+}
+
+/**
+ * This function asks the daemon to restart itself at the first tick when no lease waits. It does not wait. Without a
+ * daemon, it starts the normal restart. It gives the exit code.
+ */
+export async function restartWhenIdle(options: RestartWhenIdleOptions = {}): Promise<number> {
+  const cancel = options.cancel === true;
+  const connection = connect();
+  if (!connection) {
+    if (cancel) return (console.log("headroom does not run, so no restart waits."), 0);
+    console.log("headroom does not run, so the normal restart starts.");
+    return restart({ now: true });
+  }
+  let state: IdleRestartState;
+  try {
+    state = await connection.call<IdleRestartState>(["service", "restartWhenIdle"], { cancel });
+  } catch (error) {
+    if (isNetworkError(error)) {
+      if (cancel) return (console.log("The daemon does not answer, so no restart waits."), 0);
+      console.log("The daemon does not answer, so the normal restart starts.");
+      return restart({ now: true });
+    }
+    console.error(`headroom: the daemon refused the request (${error instanceof Error ? error.message : String(error)}).`);
+    console.error("An older daemon has no --when-idle. Use: headroom service restart");
+    return 1;
+  }
+  if (cancel) console.log(state.restarting ? "The restart started already." : "No restart waits for an idle queue.");
+  else if (state.restarting) console.log("headroom restarts.");
+  else console.log(`headroom restarts when no lease waits (now: ${state.waiting} waiting).`);
+  return 0;
 }
 
 /**
@@ -314,5 +440,9 @@ export async function status(): Promise<number> {
   const running = readDiscovery();
   const live = running !== null && (await answers(running));
   console.log(live && running ? `The daemon answers at ${running.endpoint} (process ${running.pid}).` : "The daemon does not answer.");
+  if (live && running) {
+    const pending = (await connectTo(running).call<DaemonStatus>(["resources", "status"], {}).catch(() => null))?.restart;
+    if (pending) console.log(pendingLine(pending));
+  }
   return live ? 0 : 1;
 }

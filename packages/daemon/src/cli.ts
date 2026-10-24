@@ -41,7 +41,7 @@ import {
   type Suggestion,
   type TcpPorts,
 } from "@headroom/core";
-import { connect, isNetworkError, isRestartError, type Connection } from "./client.ts";
+import { answers, connect, connectTo, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
@@ -49,6 +49,8 @@ import { sessionFromEnv } from "./holder.ts";
 import { diskAmounts, finishTemp, jobEnv, prepareTemp } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
+import { readDiscovery, readPlannedStop } from "./paths.ts";
+import type { DaemonStatus } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import * as service from "./service.ts";
 
@@ -57,6 +59,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
   headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
   headroom service restart [--now] [--wait 60m] | stop | start | uninstall | status
+  headroom service restart --when-idle [--cancel]   (the daemon restarts itself when no lease waits)
   headroom mcp list | add | remove | restart | warm | config   (the MCP gateway)
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
@@ -125,10 +128,11 @@ function amountText(name: string, amount: number): string {
   return kind === "memory" ? mb(Math.max(0, amount)) : kind === "disk" ? diskSize(Math.max(0, amount)) : String(amount);
 }
 
-function printStatus(status: Status): void {
+function printStatus(status: DaemonStatus): void {
   const { memory } = status;
   for (const alert of status.alerts ?? []) console.log(`ALERT since ${clock(alert.since)} UTC: ${alert.message}`);
-  if ((status.alerts ?? []).length > 0) console.log("");
+  if (status.restart) console.log(service.pendingLine(status.restart));
+  if ((status.alerts ?? []).length > 0 || status.restart) console.log("");
   console.log(`Memory: ${mb(memory.availableMb)} available of ${mb(memory.totalMb)}. Committed ${mb(memory.commitMb)} of ${mb(memory.commitLimitMb)}.`);
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
   const load = status.session;
@@ -304,6 +308,25 @@ function leaseLine(lease: Lease): string {
   return `headroom: lease ${lease.id.slice(0, 8)} for ${lease.job}, ${state}.`;
 }
 
+/** The longest wait of `headroom run` for the daemon after a planned stop: the repeat trigger of the task, and the start. */
+const RESTART_GRACE_MS = 150_000;
+
+/**
+ * This function waits for the new daemon after a planned stop, so a job does not run without a lease during a restart.
+ * It gives `null` when no planned stop is recent, or when no new daemon answers in time.
+ */
+async function afterPlannedRestart(): Promise<Connection | null> {
+  const planned = readPlannedStop();
+  if (planned === null || Date.now() - planned.at > RESTART_GRACE_MS) return null;
+  console.error("headroom: the daemon restarts. The job waits for the new daemon.");
+  while (Date.now() < planned.at + RESTART_GRACE_MS) {
+    const discovery = readDiscovery();
+    if (discovery && discovery.pid !== planned.pid && (await answers(discovery))) return connectTo(discovery);
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return null;
+}
+
 async function waitForGrant(start: Connection, lease: Lease, deadline: number): Promise<{ lease: Lease; connection: Connection }> {
   let connection = start;
   let current = lease;
@@ -400,7 +423,7 @@ async function run(argv: string[]): Promise<number> {
     }
   }
 
-  const connection = connect();
+  let connection = connect() ?? (await afterPlannedRestart());
   if (!connection) {
     console.error("headroom: the daemon does not run, so the job runs without a lease.");
     return (await runEnforced(positionals, { keep, limit: false, leaseMb: null }, {}, log)).code;
@@ -427,20 +450,28 @@ async function run(argv: string[]): Promise<number> {
     );
   }
   const enforcement: Enforcement = { keep, limit: values.limit === true, leaseMb: amounts["memory"] ?? null };
+  const request = {
+    holder,
+    job,
+    amounts,
+    pid: process.pid,
+    ...(values.priority ? { priority: Number(values.priority) } : {}),
+    ...(log === null ? {} : { log }),
+  };
   let first: Lease;
   try {
-    first = await connection.call<Lease>(["resources", "lease"], {
-      holder,
-      job,
-      amounts,
-      pid: process.pid,
-      ...(values.priority ? { priority: Number(values.priority) } : {}),
-      ...(log === null ? {} : { log }),
-    });
+    first = await connection.call<Lease>(["resources", "lease"], request);
   } catch (error) {
-    if (!isNetworkError(error)) throw error;
-    console.error("headroom: the daemon does not answer, so the job runs without a lease.");
-    return (await runEnforced(positionals, enforcement, {}, log)).code;
+    if (!isRestartError(error)) throw error;
+    // The daemon can stop for a planned restart between the discovery and the request.
+    const next = await afterPlannedRestart();
+    if (next === null) {
+      if (!isNetworkError(error)) throw error;
+      console.error("headroom: the daemon does not answer, so the job runs without a lease.");
+      return (await runEnforced(positionals, enforcement, {}, log)).code;
+    }
+    connection = next;
+    first = await next.call<Lease>(["resources", "lease"], request);
   }
   // H26: a session can wait on this id with `headroom job <id>`, also after its shell stops.
   console.error(leaseLine(first));
@@ -648,8 +679,27 @@ async function main(argv: string[]): Promise<number> {
       if (action === "stop") return service.stop();
       if (action === "start") return service.start();
       if (action === "restart") {
-        const { values } = parseArgs({ args, options: { now: { type: "boolean" }, wait: { type: "string" } } });
-        return service.restart({ now: values.now === true, waitMs: values.wait ? parseTime(values.wait) : undefined });
+        const { values } = parseArgs({
+          args,
+          options: {
+            now: { type: "boolean" },
+            wait: { type: "string" },
+            "when-idle": { type: "boolean" },
+            cancel: { type: "boolean" },
+            // The helper of --when-idle: the daemon starts it with the process ID of the daemon and the log file.
+            after: { type: "string" },
+            log: { type: "string" },
+          },
+        });
+        if (values["when-idle"] === true || values.cancel === true) return service.restartWhenIdle({ cancel: values.cancel === true });
+        const after = values.after === undefined ? undefined : Number(values.after);
+        if (after !== undefined && !(Number.isInteger(after) && after > 0)) return (console.error("headroom service restart --after needs a process ID."), 2);
+        return service.restart({
+          now: values.now === true,
+          waitMs: values.wait ? parseTime(values.wait) : undefined,
+          after,
+          log: values.log ? fileLog(values.log) : undefined,
+        });
       }
       if (action === "status") return service.status();
       console.error("Usage: headroom service install | restart | stop | start | uninstall | status");
@@ -662,7 +712,7 @@ async function main(argv: string[]): Promise<number> {
         console.error("headroom does not run. Start it with: headroom serve");
         return 1;
       }
-      const status = await connection.call<Status>(["resources", "status"], {});
+      const status = await connection.call<DaemonStatus>(["resources", "status"], {});
       if (values.json) console.log(JSON.stringify(status, null, 2));
       else printStatus(status);
       return 0;
