@@ -2,14 +2,15 @@
  * The store of headroom: one SQLite file in WAL mode, through `node:sqlite`.
  *
  * It keeps the leases, the capacity of the configured pools, one memory sample each minute and
- * the memory of each owner each minute. It also keeps the snapshots of the pool tags. It removes the samples
- * that are older than the retention.
+ * the memory of each owner each minute. It also keeps the level of each resource instance each minute,
+ * and the snapshots of the pool tags. It removes the samples that are older than the retention.
  */
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
+import type { Measurement } from "./resources.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
@@ -48,7 +49,15 @@ CREATE TABLE IF NOT EXISTS owners (
 CREATE TABLE IF NOT EXISTS pool_tags (
   at INTEGER NOT NULL, tag TEXT NOT NULL, nonpaged_mb REAL, paged_mb REAL, PRIMARY KEY (at, tag)
 );
+CREATE TABLE IF NOT EXISTS resource_samples (
+  at INTEGER NOT NULL, id TEXT NOT NULL, capacity REAL, used REAL, free REAL, PRIMARY KEY (at, id)
+);
 `;
+
+/** One stored measurement of a resource instance, in the unit of its kind. */
+export interface ResourceRow extends Measurement {
+  readonly at: number;
+}
 
 /** The time that the store keeps a snapshot of the pool tags. */
 const POOL_TAGS_KEEP_MS = 2 * 3_600_000;
@@ -137,8 +146,8 @@ export class Store {
     else this.#db.prepare("INSERT INTO mcp_servers VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET spec = excluded.spec").run(name, JSON.stringify(spec));
   }
 
-  /** This function writes one memory sample and the memory of each owner at the same time. */
-  saveSample(at: number, memory: SystemMemory, owners: readonly OwnerUsage[], load?: SessionLoad): void {
+  /** This function writes one memory sample, the memory of each owner and the measurement of each resource instance at the same time. */
+  saveSample(at: number, memory: SystemMemory, owners: readonly OwnerUsage[], load?: SessionLoad, resources: readonly Measurement[] = []): void {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO memory (at, total_mb, available_mb, commit_mb, commit_limit_mb, kernel_paged_mb, kernel_nonpaged_mb,
@@ -150,6 +159,20 @@ export class Store {
       );
     const insert = this.#db.prepare("INSERT OR REPLACE INTO owners VALUES (?, ?, ?, ?, ?, ?)");
     for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes);
+    const level = this.#db.prepare("INSERT OR REPLACE INTO resource_samples VALUES (?, ?, ?, ?, ?)");
+    for (const each of resources) level.run(at, each.id, each.capacity, each.used, each.free);
+  }
+
+  /** This function reads the measurements of the resource instances since a time, the oldest first. */
+  resourcesSince(since: number): ResourceRow[] {
+    const nullable = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
+    return this.#db.prepare("SELECT * FROM resource_samples WHERE at >= ? ORDER BY at, id").all(since).map((row) => ({
+      at: Number(row["at"]),
+      id: String(row["id"]),
+      capacity: nullable(row["capacity"]),
+      used: nullable(row["used"]),
+      free: nullable(row["free"]),
+    }));
   }
 
   /**
@@ -240,6 +263,7 @@ export class Store {
     this.#db.prepare("DELETE FROM memory WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM owners WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
+    this.#db.prepare("DELETE FROM resource_samples WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(before);
   }
 

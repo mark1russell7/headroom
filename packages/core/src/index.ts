@@ -15,7 +15,7 @@ export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeM
 export type { Attribution, OwnerRule } from "./owners.ts";
 export { createJob } from "./enforce.ts";
 export type { Job, JobLimits } from "./enforce.ts";
-export { kindOf, leasesOf, limitOf, measure, RESOURCES, resourceOf, roomOf, rooms } from "./resources.ts";
+export { kindOf, leasesOf, limitOf, measure, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
 export type {
   Admit,
   AlertPart,
@@ -41,6 +41,7 @@ export type {
   Resource,
   ResourceId,
   ResourceKind,
+  ResourceStatus,
   Room,
   Rule,
   RuleBase,
@@ -49,6 +50,6 @@ export type {
 export { createSampler, MB, takeSample } from "./sampler.ts";
 export type { Sampler } from "./sampler.ts";
 export { Store } from "./store.ts";
-export type { MemoryRow, OwnerRow, PoolTagSnapshot } from "./store.ts";
+export type { MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow } from "./store.ts";
 export { MEMORY } from "./types.ts";
 export type { Amounts, DiskSpace, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, ProcessInfo, Sample, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";
