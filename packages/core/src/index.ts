@@ -15,6 +15,23 @@ export { Engine } from "./engine.ts";
 export type { Alerts, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
 export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
+export {
+  DEFAULT_DYNAMIC_PORTS,
+  dynamicUse,
+  inRange,
+  ipv6Text,
+  listeningPorts,
+  netFlows,
+  parseDynamicPorts,
+  parseIfTable,
+  parseNetDev,
+  parsePortRange,
+  parseProcTcp,
+  parseTcpTable,
+  tcpByOwner,
+  tcpSummary,
+} from "./network.ts";
+export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary } from "./network.ts";
 export { createJob } from "./enforce.ts";
 export type { Job, JobLimits } from "./enforce.ts";
 export { kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
@@ -67,4 +84,22 @@ export {
   sweepJobTemp,
 } from "./temp.ts";
 export { MEMORY } from "./types.ts";
-export type { Amounts, DiskSpace, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, ProcessInfo, Sample, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";
+export type {
+  Amounts,
+  DiskSpace,
+  McpServerSpec,
+  NetAdapter,
+  NetRead,
+  OwnerKind,
+  OwnerUsage,
+  PoolTag,
+  PortRange,
+  ProcessInfo,
+  Sample,
+  SessionInfo,
+  SessionLoad,
+  SystemMemory,
+  TcpConnection,
+  TcpState,
+  TcpTable,
+} from "./types.ts";

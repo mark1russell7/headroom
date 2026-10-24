@@ -427,3 +427,59 @@ describe("Engine writes and processor use of the owners", () => {
     }
   });
 });
+
+describe("Engine network and ports", () => {
+  it("measures the network and the dynamic ports, and gives the listening ports with their processes (H24)", () => {
+    let now = 1_000_000;
+    let bytes = 0;
+    const MiB = 1024 * 1024;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [{ pid: 4242, ppid: 1, name: "node.exe", privateMb: 100, workingMb: 100 }],
+      network: () => [{ name: "Wi-Fi", inBytes: (bytes += 10 * MiB), outBytes: bytes / 2, inBitsPerSecond: null, outBitsPerSecond: null }],
+      tcp: () => ({
+        dynamic: { first: 49_152, count: 16_384 },
+        connections: [
+          { localPort: 5173, state: "listen", pid: 4242, address: "::1" },
+          { localPort: 50_000, state: "time-wait", pid: 0 },
+        ],
+      }),
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
+    expect(engine.ports()).toEqual({ at: null, dynamic: null, listening: [] });
+    engine.tick();
+    now += 10_000;
+    engine.tick();
+    const status = engine.status();
+    const network = status.resources.filter((each) => each.kind === "net" || each.kind === "ports");
+    expect(network.map((each) => [each.id, each.unit, each.capacity, each.used])).toEqual([
+      ["net:in", "MB/s", null, 1],
+      ["net:out", "MB/s", null, 0.5],
+      ["ports:tcp", "count", 16_384, 1],
+    ]);
+    expect(status.tcp).toEqual({ connections: 1, timeWait: 1, listening: 1 });
+    expect(engine.ports()).toMatchObject({ at: now, dynamic: { first: 49_152, count: 16_384 }, listening: [{ port: 5173, addresses: ["::1"], pid: 4242, name: "node.exe" }] });
+    engine.close();
+  });
+
+  it("continues the tick when a read of the network fails", () => {
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      network: () => {
+        throw new Error("GetIfTable2 failed");
+      },
+      tcp: () => {
+        throw new Error("GetExtendedTcpTable failed");
+      },
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
+    engine.tick();
+    const status = engine.status();
+    expect(status.tcp).toBeNull();
+    expect(status.resources.some((each) => each.kind === "net" || each.kind === "ports")).toBe(false);
+    engine.close();
+  });
+});

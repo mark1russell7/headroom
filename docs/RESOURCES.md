@@ -29,10 +29,10 @@ The kinds are in one registry. A part that a kind does not have is `null`.
 export type ResourceId = string;
 
 /** The kinds. An id with no known kind is a slot, as today. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "network" | "port" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "gpu";
 
-/** The unit of the amounts of a kind. Disk writes use MB/h. */
-export type Unit = "MB" | "cores" | "count" | "MB/h";
+/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s";
 
 /** One resource kind with its five parts. */
 export interface Resource {
@@ -297,7 +297,7 @@ The broker then has one rule for each id, with no name of a kind in it:
 | `cpu` | `JobObjectCpuRateControlInformation` with `JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP`, with `--limit` | The processor time of the job |
 | `disk` | None. Windows has no space quota for one job. | `TEMP` and `TMP` of the job on the Dev Drive (H19), and the bytes that the job wrote |
 | `desktop` | Later: `JOB_OBJECT_LIMIT_ACTIVE_PROCESS` | The count of processes |
-| `network`, `port` | None | Report only |
+| `net`, `ports` | None | Report only |
 
 - The CPU rate of a job is in cycles for each 10,000 cycles of all the processors. A lease of 2 cores on 16 processors gives a rate of 1250.
 - The job object gives the totals of the job in `JobObjectBasicAndIoAccountingInformation`. This class gives the processor time and the bytes written, also of the processes that exited.
@@ -353,8 +353,8 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `disk:<mount>` (MB) | One instance for each fixed drive. Capacity: the size. Free: the space for this user. | H20: the bytes that each owner writes, in MB/h. The counters do not name the drive. | Level on free: a warning below 20 GB or 20%, critical below 5 GB or 5%. Outlier: an owner writes more than 20 GB in one hour. | Measured. Reserve: the critical limit. Gate: at critical, no job starts. | No quota. H19: `TEMP` and `TMP` of the job on `D:`. Report: the bytes written. |
 | `cpu` (cores) | H23. Capacity: the logical processors. Used: the busy processors, as a 1-minute average. | The processor time of each process tree. | Level: free below 10% for 5 minutes. Outlier: a process above 4 cores for 10 minutes with no lease. | Measured. Reserve: 1 core. A configured pool `cpu` is a cap. | `JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP` with `--limit`. Report: the processor time. |
 | Slots: `browser`, `docker`, each name (count) | Capacity: configured with `headroom pool`, else 1. Used: the granted leases. | The holders of the granted leases. | Later: a lease that waits more than 30 minutes for a slot. | Counted. A command pattern takes a slot by itself, as `browser` does. | None on the job. The lease ends with its process. |
-| `network` (later, MB/s) | The bytes of each interface: `GetIfTable2`, `/proc/net/dev`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | A slot for large downloads. | None. Report only. |
-| `port:<number>` (later, count) | The listening ports and their processes: `GetExtendedTcpTable`, with no admin rights. | The owner of the process of each port. | A port that an orphan holds. | Counted, capacity 1: one lease holds one port. | None. Report only. |
+| `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
+| `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
 | `gpu:<adapter>` (later, MB) | The dedicated memory of each adapter. | The counter `GPU Process Memory` of each process. | Level on free. | Measured, as `memory`. | None. A job object has no GPU limit. |
 
 ## The migration
@@ -494,6 +494,45 @@ All other data goes to Mark first. The report gives Mark the size of each folder
 
 Before step 2, `cpu` was a counted pool with the capacity 1 when no pool set it. Thus `headroom run --cpu 2` without `headroom pool cpu 8` got cancelled. Step 2 corrects this: `cpu` is a counted kind, and its capacity is the count of logical processors. A configured pool `cpu` stays, as a cap. H23 makes `cpu` a measured kind.
 
+### H24: the network and the TCP ports
+
+On 2026-10-24, Mark asked if the model covers more than the disk. H24 puts the network on the model with two kinds: `net` and `ports`.
+
+**Measure of the network.** The kind `net` has two instances, `net:in` and `net:out`, in MB/s for all the adapters together.
+
+- Windows reads `GetIfTable2` of `iphlpapi.dll`, and `FreeMibTable` frees the table. Linux reads `/proc/net/dev`, and keeps each interface with a device in `/sys/class/net`.
+- A row counts when it is up and has the flag `HardwareInterface`. A row with the flag `FilterInterface`, a loopback and a tunnel do not count.
+- Each filter of an adapter has its own row with the bytes of the adapter. Thus the flag `FilterInterface` removes these rows, and no byte counts two times.
+- The used part is the change of `InOctets` and `OutOctets` between two reads, divided by the time between the reads. The first read gives no used part.
+- The capacity is the sum of the link speeds of the adapters. When no adapter tells its speed, the capacity is `null`.
+
+**Measure of the ports.** The kind `ports` has one instance, `ports:tcp`. Its capacity is the dynamic port range: 49152 to 65535 on Windows by default, 16384 ports.
+
+- The Windows sampler reads the range one time, at its first read, with `netsh int ipv4 show dynamicport tcp`. Without an answer, it uses the default.
+- Linux reads the range from `/proc/sys/net/ipv4/ip_local_port_range`.
+- `GetExtendedTcpTable` with `TCP_TABLE_OWNER_PID_ALL` gives each TCP row of IPv4 and of IPv6, with its process. It needs no admin rights.
+- Linux reads `/proc/net/tcp` and `/proc/net/tcp6`. These files give no process, so the rows of Linux have no owner.
+- The used part is the count of rows with a local port in the range, in each state. `TIME_WAIT` and `LISTEN` count. An IPv4 row and an IPv6 row on the same port count two times.
+
+**Attribute.** The owner of a TCP row is the owner of its process.
+
+- The owners of `ports:tcp` give the connections of each owner in the dynamic range, in the unit `count`.
+- `headroom ports` and `resources.ports` give the listening ports with the process and the owner of each port.
+- On Windows, a row in `TIME_WAIT` has no process, so it has no owner.
+- The bytes of each process need ETW, with admin rights or the group `Performance Log Users`. Thus the kind `net` has no attribute part.
+
+**Alert.** The kind `ports` has a level rule on the used part: a warning above 80% of the range, and critical above 95%.
+
+- `portsWarnRatio` and `portsCriticalRatio` of `AlertRules` set the two limits.
+- The message names the 3 owners with the most connections, and the count in `TIME_WAIT`. Thus the reader finds the process that opens many connections.
+- `InstanceFacts` has the owners of the processes. The text of a level rule can then name the owners, and `detect()` has no special case.
+
+**Admit and enforce.** The two kinds have none. Later: a port lease for dev servers.
+
+**Cost.** On this computer on 2026-10-24, the two reads used approximately 2 ms together, every 10 seconds. `netsh` used approximately 280 ms, one time.
+
+**The dashboard.** Each instance gets its panel from the model. A rate in MB/s shows its used part, not its free part.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.
@@ -511,4 +550,8 @@ These were the open questions. The session decided each one as a technical call.
 | Does the daemon clean by itself? | Only the folders of ended leases. Each other class waits for `headroom disk clean --apply`. | headroom deletes nothing that a person did not ask for, except the data of its own leases. |
 | Does a CPU lease get a limit without `--limit`? | No. | A full processor slows the jobs, but it does not stop them. Memory is different: when it is full, jobs stop. |
 | Does a configured pool `cpu` stay? | Yes, as a cap: the capacity is the lower of the pool and the processors. | `headroom pool cpu 8` keeps its meaning. |
+| How does the model show the two directions of the network? | Two instances, `net:in` and `net:out`, in MB/s. | Each direction gets its own history and panel. One instance with the split in a detail field loses the split in the history. |
+| Which network adapters count? | The adapters that are up, with a hardware interface and with no filter interface. | The filter rows and the virtual adapters count the same bytes again. The traffic of Tailscale and of WSL goes through the Wi-Fi adapter. |
+| Does headroom read the network bytes of each process? | No. | Windows gives them only through ETW, with admin rights or the group `Performance Log Users`. |
+| What does `ports:tcp` count? | Each TCP row with a local port in the dynamic range, in each state. | A port in `TIME_WAIT` is not free. When the range is full, new connections fail. |
 | How does the store keep the new data? | New tables `resource_samples` and `owner_use`, and a column `usage` in `leases`. The old tables stay. | The history, the dashboard and the tests of today keep their data and their queries. |

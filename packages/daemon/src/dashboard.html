@@ -254,6 +254,7 @@ function amount(v, unit) {
   if (v == null) return "-";
   if (unit === "MB") return diskSize(v);
   if (unit === "MB/h") return `${diskSize(v)}/h`;
+  if (unit === "MB/s") return `${v >= 10 ? Math.round(v) : v.toFixed(v >= 0.1 ? 1 : 2)} MB/s`;
   const n = Number(v.toFixed(Math.abs(v) < 10 && v % 1 ? 1 : 0));
   return unit === "cores" ? `${n} ${n === 1 ? "core" : "cores"}` : String(n);
 }
@@ -462,8 +463,11 @@ function renderTiles() {
 
 // ---- the resources: one card for each instance of Status.resources, from the model ----
 // The group of each kind, in the order of the page. A kind that the page does not know goes last, with its own name.
-const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"]];
-const NAMES = { memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool" };
+const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["net", "Network"], ["ports", "Network"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"]];
+const NAMES = {
+  memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool",
+  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports",
+};
 function resName(r) {
   const part = r.id.includes(":") ? r.id.slice(r.id.indexOf(":") + 1) : "";
   return NAMES[r.id] || (r.kind === "disk" ? `Drive ${part}` : r.kind === "slot" ? `Slot ${r.id}` : `${r.kind[0].toUpperCase()}${r.kind.slice(1)} ${part}`.trim());
@@ -497,8 +501,8 @@ function resCard(r, st, points) {
   const alerts = (st.alerts || []).filter((a) => alertOf(a) === r.id).sort((a, b) => LEVEL[alertLevel(a)][2] - LEVEL[alertLevel(b)][2]);
   const lv = alerts.length ? alertLevel(alerts[0]) : "";
   const u = (v) => amount(v, r.unit);
-  // A resource with a capacity shows its free part. A kernel pool or the desktop shows its used part.
-  const onFree = r.capacity != null && r.free != null, k = onFree ? 2 : 1, value = onFree ? r.free : r.used;
+  // A resource with a capacity shows its free part. A kernel pool, the desktop or a rate (the network) shows its used part.
+  const onFree = r.capacity != null && r.free != null && r.unit !== "MB/s", k = onFree ? 2 : 1, value = onFree ? r.free : r.used;
   const used = r.capacity != null && r.used != null ? r.used / r.capacity : null;
   const big = onFree ? h("div", { class: "big" }, h("b", { text: u(r.free) }), `free of ${u(r.capacity)}`)
     : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), "in use")

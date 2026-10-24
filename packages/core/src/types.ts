@@ -109,6 +109,52 @@ export interface SessionLoad {
   readonly gdiObjects: number | null;
 }
 
+/**
+ * The byte counters of one network adapter since its start (H24). Only the physical adapters and the Wi-Fi adapters
+ * count. A loopback, a tunnel or a filter of an adapter does not count.
+ */
+export interface NetAdapter {
+  /** The name of the adapter, for example "Ethernet" or "Wi-Fi". */
+  readonly name: string;
+  readonly inBytes: number;
+  readonly outBytes: number;
+  /** The receive speed of the link in bits per second, or `null` when the adapter does not tell it. */
+  readonly inBitsPerSecond: number | null;
+  /** The transmit speed of the link in bits per second, or `null` when the adapter does not tell it. */
+  readonly outBitsPerSecond: number | null;
+}
+
+/** One read of the network adapters: its time, in milliseconds since the epoch, and the counters of each adapter. */
+export interface NetRead {
+  readonly at: number;
+  readonly adapters: readonly NetAdapter[];
+}
+
+/** The state of a TCP connection. Only the states that headroom counts have a name. */
+export type TcpState = "listen" | "established" | "time-wait" | "other";
+
+/** One TCP connection or listening port of IPv4 or IPv6 (H24). */
+export interface TcpConnection {
+  readonly localPort: number;
+  readonly state: TcpState;
+  /** The process that holds the connection, or 0 without a process: TIME_WAIT on Windows, and each row on Linux. */
+  readonly pid: number;
+  /** The local address of a listening port, for example "127.0.0.1" or "::". The other rows have no address, so a read stays small. */
+  readonly address?: string | undefined;
+}
+
+/** The dynamic (ephemeral) TCP ports: the first port and the count of ports. The Windows default is 49152 and 16384. */
+export interface PortRange {
+  readonly first: number;
+  readonly count: number;
+}
+
+/** The TCP connections of IPv4 and IPv6 at one read, and the dynamic port range. */
+export interface TcpTable {
+  readonly dynamic: PortRange;
+  readonly connections: readonly TcpConnection[];
+}
+
 /** The free space of one fixed drive, in MB. A full drive stops the builds, the tests and git for all the sessions. */
 export interface DiskSpace {
   /** The name of the drive, for example "C:" on Windows, or its mount point on Linux. */

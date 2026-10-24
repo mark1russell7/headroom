@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
-import type { OwnerKind, ProcessInfo } from "./types.ts";
+import type { OwnerKind, ProcessInfo, TcpConnection, TcpTable } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb });
 const memory = { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
@@ -126,6 +126,51 @@ describe("detect", () => {
     expect(alerts).toStrictEqual([{ id: "runaway:7", kind: "runaway", subject: "grep.exe (7)", pid: 7, mb: 6000, message: "grep.exe (7) of other holds 5.9 GB with no lease" }]);
     const orphan = detect(input([p(7, 99, "grep.exe", 2000)], { 7: ["other", "other"] }));
     expect(orphan[0]).toStrictEqual({ id: "orphan:7", kind: "orphan", subject: "grep.exe (7)", pid: 7, mb: 2000, message: "grep.exe (7) holds 2.0 GB, and its parent (99) stopped" });
+  });
+
+  describe("ports", () => {
+    /** This function gives a TCP table with this many dynamic connections of each process, and this many in TIME_WAIT with no process. */
+    function tcp(byPid: Record<number, number>, timeWait: number): TcpTable {
+      const connections: TcpConnection[] = [{ localPort: 3000, state: "listen", pid: 1, address: "0.0.0.0" }];
+      let port = 1000;
+      for (const [pid, count] of Object.entries(byPid)) for (let index = 0; index < count; index++) connections.push({ localPort: port++, state: "established", pid: Number(pid) });
+      for (let index = 0; index < timeWait; index++) connections.push({ localPort: port++, state: "time-wait", pid: 0 });
+      // A connection outside the dynamic range does not count.
+      connections.push({ localPort: 999, state: "established", pid: 1 });
+      return { dynamic: { first: 1000, count: 1000 }, connections };
+    }
+    const owners: Record<number, [string, OwnerKind]> = {
+      1: ["session:graph", "session"], 2: ["session:graph", "session"], 3: ["mcp:vex", "mcp"], 4: ["docker", "docker"], 5: ["system", "system"],
+    };
+
+    it("warns above 80% of the dynamic ports, and names the 3 owners with the most connections and the count in TIME_WAIT", () => {
+      const alerts = detect(input([], owners, { tcp: tcp({ 1: 300, 2: 100, 3: 150, 4: 50, 5: 20 }, 190) }));
+      expect(alerts).toStrictEqual([
+        {
+          id: "ports:tcp", kind: "ports", subject: "TCP ports", pid: null, mb: 0, severity: "warning",
+          message:
+            "810 of 1000 dynamic TCP ports are in use (81%), 190 of them in TIME_WAIT. Most connections: session:graph 400, mcp:vex 150, docker 50." +
+            " When no dynamic port is free, new connections fail.",
+        },
+      ]);
+    });
+
+    it("is critical above 95%, and gives no alert at 80% or below", () => {
+      const critical = detect(input([], owners, { tcp: tcp({ 3: 900 }, 51) }));
+      expect(critical.map((alert) => [alert.id, alert.severity])).toEqual([["ports:tcp", "critical"]]);
+      expect(critical[0]?.message).toContain("951 of 1000 dynamic TCP ports are in use (95%), 51 of them in TIME_WAIT. Most connections: mcp:vex 900.");
+      expect(detect(input([], owners, { tcp: tcp({ 1: 600 }, 200) }))).toEqual([]);
+      // With no process, the message names no owner.
+      expect(detect(input([], owners, { tcp: tcp({}, 900) }))[0]?.message).toBe(
+        "900 of 1000 dynamic TCP ports are in use (90%), 900 of them in TIME_WAIT. When no dynamic port is free, new connections fail.",
+      );
+    });
+
+    it("uses the limits of the rules that the caller gives", () => {
+      const strict = { ...DEFAULT_ALERT_RULES, portsWarnRatio: 0.5, portsCriticalRatio: 0.7 };
+      expect(detect(input([], owners, { tcp: tcp({ 1: 600 }, 0) }), strict).map((alert) => alert.severity)).toEqual(["warning"]);
+      expect(detect(input([], owners, { tcp: tcp({ 1: 701 }, 0) }), strict).map((alert) => alert.severity)).toEqual(["critical"]);
+    });
   });
 
   it("uses the limits of the rules that the caller gives, and no commit alert without a commit limit", () => {
