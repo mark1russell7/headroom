@@ -75,7 +75,7 @@ The sessions can continue to work during part A.
    headroom service stop
    ```
 
-3. Close VS Code, and quit Docker Desktop. No program can use `~/git` or `~/jarvis` during the move. A shell whose folder is in `~/git` also blocks the move: the session that moves sets its shell folder to `C:\Users\markt` first.
+3. Close VS Code, and quit Docker Desktop completely: right-click its icon in the notification area, and click `Quit Docker Desktop`. When you only close its window, Docker Desktop continues to hold the folders of the compose projects open. No program can use `~/git` or `~/jarvis` during the move. A shell whose folder is in `~/git` also blocks the move: the session that moves sets its shell folder to `C:\Users\markt` first.
 4. Move each folder. The script makes a copy without `node_modules`, compares it, keeps the old folder as `<name>.before-devdrive`, and makes the junction. Without `-Apply`, it only prints its plan.
 
    ```powershell
@@ -106,6 +106,25 @@ The sessions can continue to work during part A.
 
 7. The organizer starts the sessions from the resume plan. Each session runs one quick check: a typecheck or the tests of one package.
 8. After one day of normal work, headroom lists the old folders and their sizes: `~/git.before-devdrive`, `~/jarvis.before-devdrive` and the old caches. Mark decides if they go.
+
+## Lessons from the move
+
+### The `cue.mod/pkg` junctions
+
+`scripts/dev-drive/move.ps1` copies with `robocopy /XJ`, and `/XJ` skips junctions. In the repositories that use `@mark1russell7/cue`, the folder `cue.mod/pkg/mark1russell7.cue` is a junction to `node_modules/@mark1russell7/cue`. Thus the copy does not have it, and CUE cannot find the package.
+
+After the install, make the junction again in each repository that has a `cue.mod` folder:
+
+```powershell
+New-Item -ItemType Directory -Force cue.mod\pkg | Out-Null
+New-Item -ItemType Junction -Path cue.mod\pkg\mark1russell7.cue -Target (Resolve-Path node_modules\@mark1russell7\cue)
+```
+
+`pnpm exec cue-config generate` also makes this junction. But it also writes `package.json`, `tsconfig.json` and `.gitignore` again. Thus use the two commands above when only the junction is missing.
+
+### Docker Desktop holds folders open
+
+Docker Desktop holds the folders of the compose projects open. Thus the move cannot rename a folder that a compose project uses. A closed window is not sufficient. Before the move, quit Docker Desktop completely: right-click its icon in the notification area, and click `Quit Docker Desktop`.
 
 ## Undo
 

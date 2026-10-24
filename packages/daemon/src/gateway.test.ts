@@ -183,6 +183,22 @@ describe("the stdio bridge", () => {
   });
 });
 
+describe("the warm-up of the servers", () => {
+  it("starts each configured server with no session, and a failed server does not stop the others", async () => {
+    const broken = { command: process.execPath, args: ["-e", "process.exit(3)"] };
+    const warmed = new McpGateway({ specs: () => ({ ...specs, broken }) });
+    try {
+      const states = await warmed.warm();
+      const counter = states.find((state) => state.name === "counter");
+      expect(counter).toMatchObject({ state: "running", sessions: 0 });
+      expect([...warmed.pids()]).toEqual([[counter?.pid, "counter"]]);
+      expect(warmed.list().find((state) => state.name === "broken")).toMatchObject({ state: "waiting", failures: 1 });
+    } finally {
+      await warmed.close();
+    }
+  });
+});
+
 describe("the marks of a server process", () => {
   it("starts a Node server with the title headroom-mcp-<name> and the variable HEADROOM_MCP_SERVER", async () => {
     const marked = new McpGateway({ specs: () => ({ marked: { command: process.execPath, args: [fixture] } }) });

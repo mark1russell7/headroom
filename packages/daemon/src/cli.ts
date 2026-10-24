@@ -6,7 +6,7 @@
  * - `headroom service install`: start the daemon at login, and again when it stops.
  * - `headroom status`: show the memory, the free amounts, the leases and the owners.
  * - `headroom run --mem 2g -- pnpm test`: run a job under a lease.
- * - `headroom mcp list | add | remove | restart | config`: the servers of the MCP gateway.
+ * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge and the kernel pool.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
@@ -30,7 +30,8 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
   headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
   headroom service restart [--now] [--wait 60m] | stop | start | uninstall | status
-  headroom mcp list | add | remove | restart | config   (the MCP gateway)
+  headroom mcp list | add | remove | restart | warm | config   (the MCP gateway)
+  headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
   headroom run [--mem 2g|auto] [--cpu 2] [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] -- <command> [args...]

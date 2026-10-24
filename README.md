@@ -101,6 +101,17 @@ headroom mcp list
 - Use the gateway only for a server that keeps no state for a session. A server with one browser for each session stays a stdio server.
 - The gateway sends the progress of a call to its session. It also sends a question of the server (MCP elicitation) to the session of the call. Stdio does not tell which call asks. Thus, when more than one session waits for the server, the answer is `decline`.
 
+Claude Code waits 30 seconds for each MCP server of a session. When many sessions start at the same time, the first start of a server can take more time. `headroom mcp warm` starts the servers before the sessions start:
+
+```sh
+headroom mcp warm --timeout 120s
+```
+
+- Without names, it starts each configured server. With names, for example `headroom mcp warm loom vex`, it starts only those servers.
+- First, it waits until the daemon answers, because the daemon can still start after a logon. Then it waits until each server answers its `initialize` request.
+- It shows the servers and the time. The exit code is 0 only when each server runs. Otherwise, the exit code is 1.
+- `~/git/start-fleet.ps1` runs it before it starts the sessions of the fleet.
+
 A program that starts only stdio servers, for example the launcher of a plugin, uses the bridge:
 
 ```sh
