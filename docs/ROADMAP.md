@@ -9,6 +9,7 @@ Mark approved the plan on 2026-10-19. The plan follows the design rule of Mark: 
 - A resource is a named pool with an amount: `memory` in MB, `cpu` in processors, or a count of slots, for example `docker` or `npm-publish`.
 - The capacity of `memory` is measured, not configured. It is the available memory of the computer, less a reserve.
 - The capacity of the other resources is configured in the database.
+- `docs/RESOURCES.md` gives the general model (H22): each resource has the same five parts. Memory is its first resource, and disk is the second.
 
 ### The leases
 
@@ -55,6 +56,11 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H15 | The dashboard: a page of the daemon at `http://127.0.0.1:4730/`, and `headroom dashboard` | done |
 | H16 | The Dev Drive: the code and the package caches on a ReFS volume. `docs/DEV-DRIVE.md` gives the plan. | waits for Mark: the plan is ready |
 | H18 | Disk space: alerts for low free space, and headroom run waits on a full disk | done |
+| H19 | Disk: each job gets its own `TEMP` and `TMP` folder on the Dev Drive `D:`. The release removes it. | later |
+| H20 | Disk: who writes. The bytes that each session, MCP server and job writes, from the I/O counters of its processes. | later |
+| H21 | Disk: a report of what uses the space, and a safe cleanup. It removes only data that is disposable by definition. All other data goes to Mark first. The `*.before-devdrive` copies stay. | later |
+| H22 | One resource model: memory, disk, then CPU and more. Each resource has the same five parts: measure, attribute, alert, admit and enforce. | in progress: the design is `docs/RESOURCES.md` |
+| H23 | CPU on the resource model: the processors get the five parts of the model | later |
 
 ## The MCP gateway (H11)
 
