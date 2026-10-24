@@ -15,6 +15,37 @@ export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeM
 export type { Attribution, OwnerRule } from "./owners.ts";
 export { createJob } from "./enforce.ts";
 export type { Job, JobLimits } from "./enforce.ts";
+export { kindOf, leasesOf, limitOf, measure, RESOURCES, resourceOf, roomOf, rooms } from "./resources.ts";
+export type {
+  Admit,
+  AlertPart,
+  AlertText,
+  Attribute,
+  Change,
+  CpuTimes,
+  Enforce,
+  GrowthRule,
+  InstanceFacts,
+  JobSetup,
+  JobUsage,
+  Level,
+  LevelRule,
+  Limit,
+  Measure,
+  Measurement,
+  OutlierRule,
+  Owners,
+  OwnerUse,
+  ProcessFacts,
+  Readings,
+  Resource,
+  ResourceId,
+  ResourceKind,
+  Room,
+  Rule,
+  RuleBase,
+  Unit,
+} from "./resources.ts";
 export { createSampler, MB, takeSample } from "./sampler.ts";
 export type { Sampler } from "./sampler.ts";
 export { Store } from "./store.ts";

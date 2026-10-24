@@ -444,7 +444,7 @@ All other data goes to Mark first. The report gives Mark the size of each folder
 - **Admit**: measured, with a reserve of 1 core. The unspent part of a lease is its amount less the cores of its tree.
 - **Enforce**: with `--limit`, a hard cap of the CPU rate on the job object. Without it, headroom reports the processor time of the job.
 
-Today `cpu` is a counted pool with the capacity 1 when no pool sets it. Thus `headroom run --cpu 2` without `headroom pool cpu 8` gets cancelled. H23 corrects this: the capacity is the count of logical processors. A configured pool `cpu` stays, as a cap.
+Before step 2, `cpu` was a counted pool with the capacity 1 when no pool set it. Thus `headroom run --cpu 2` without `headroom pool cpu 8` got cancelled. Step 2 corrects this: `cpu` is a counted kind, and its capacity is the count of logical processors. A configured pool `cpu` stays, as a cap. H23 makes `cpu` a measured kind.
 
 ## Decisions
 

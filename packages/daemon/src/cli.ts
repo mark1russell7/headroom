@@ -20,6 +20,7 @@ import {
   createSampler,
   diskLevel,
   diskSize,
+  kindOf,
   MB,
   readSessions,
   type Alert,
@@ -109,7 +110,10 @@ function printStatus(status: Status): void {
     });
     console.log(`Disks: ${each.join(", ")}.`);
   }
-  const free = Object.entries(status.free).map(([name, amount]) => `${name} ${name === "memory" ? mb(Math.max(0, amount)) : amount}`);
+  const free = Object.entries(status.free).map(([name, amount]) => {
+    const kind = kindOf(name);
+    return `${name} ${kind === "memory" ? mb(Math.max(0, amount)) : kind === "disk" ? diskSize(Math.max(0, amount)) : amount}`;
+  });
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
   for (const lease of status.leases) {
