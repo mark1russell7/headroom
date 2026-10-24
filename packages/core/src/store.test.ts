@@ -27,6 +27,25 @@ describe("Store", () => {
     expect(store.memorySince(0)).toEqual([]);
     store.close();
   });
+
+  it("keeps the settings, and the usage of an ended lease", () => {
+    const store = new Store(":memory:");
+    expect(store.config()).toEqual({ jobTemp: null });
+    store.setConfig("jobTemp", "D:\\headroom\\tmp");
+    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp" });
+    store.setConfig("jobTemp", null);
+    expect(store.config()).toEqual({ jobTemp: null });
+
+    const broker = new Broker({ now: () => 5000, newId: () => "l1" });
+    const lease = broker.request({ holder: "graph", job: "test", amounts: { "disk:D:": 5120 } });
+    store.saveLease(lease);
+    expect(store.lease("l1")).toEqual(lease);
+    expect(store.lease("l1")?.usage).toBeUndefined();
+    store.saveLease({ ...lease, state: "released", endedAt: 6000, usage: { peakMb: 300, tempMb: 42.5 } });
+    expect(store.lease("l1")?.usage).toEqual({ peakMb: 300, tempMb: 42.5 });
+    expect(store.lease("l2")).toBeNull();
+    store.close();
+  });
 });
 
 describe("Store pool tags", () => {

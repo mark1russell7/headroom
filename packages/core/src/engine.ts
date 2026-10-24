@@ -8,9 +8,22 @@ import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { availableParallelism } from "node:os";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
-import { leasesOf, measure, resourceOf, rooms, withKinds, type Measurement, type Owners, type Readings, type ResourceId, type ResourceStatus } from "./resources.ts";
+import {
+  leasesOf,
+  measure,
+  resourceOf,
+  rooms,
+  withKinds,
+  type JobUsage,
+  type Measurement,
+  type Owners,
+  type Readings,
+  type ResourceId,
+  type ResourceStatus,
+} from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
-import type { MemoryRow, OwnerRow, Store } from "./store.ts";
+import type { Config, MemoryRow, OwnerRow, Store } from "./store.ts";
+import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
 import { MEMORY, type DiskSpace, type McpServerSpec, type OwnerUsage, type ProcessInfo, type SessionInfo, type SessionLoad, type SystemMemory } from "./types.ts";
 
@@ -226,7 +239,8 @@ export class Engine {
       totalMb: this.#memory.totalMb,
       availableMb: this.#memory.availableMb,
       pools: readings.pools,
-      rooms: rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb }),
+      // The reserve of a drive is the critical limit of the disk alert.
+      rooms: rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb }, this.#alertRules),
     };
   }
 
@@ -305,9 +319,9 @@ export class Engine {
     return this.#broker.get(lease.id) ?? lease;
   }
 
-  /** This function ends a lease. Then it grants the waiting leases that fit in the memory that the lease frees. */
-  release(id: string, reason?: string, peakMb?: number | null): Lease | undefined {
-    const lease = this.#broker.release(id, reason, peakMb ?? null);
+  /** This function ends a lease. Then it grants the waiting leases that fit in the amounts that the lease frees. */
+  release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage): Lease | undefined {
+    const lease = this.#broker.release(id, reason, peakMb ?? null, usage);
     if (lease) this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
     return lease ? (this.#broker.get(id) ?? lease) : undefined;
@@ -342,6 +356,30 @@ export class Engine {
   setPool(name: string, capacity: number): void {
     this.#store.setPool(name, capacity);
     this.#persist(this.#broker.tick(this.capacity()));
+  }
+
+  /** This function gives the settings, for example the temp root of the jobs. */
+  config(): Config {
+    return this.#store.config();
+  }
+
+  /** This function changes one setting. `null` removes it. It refuses a temp root that is not an absolute folder. */
+  setConfig(name: keyof Config, value: string | null): Config {
+    this.#store.setConfig(name, value === null ? null : checkJobTemp(value));
+    return this.#store.config();
+  }
+
+  /**
+   * This function removes the temp folders of the ended leases under the temp root (H19). A folder whose name is not a
+   * lease of the store, or whose lease is active, stays. It gives the names of the removed folders.
+   */
+  sweepJobTemp(): string[] {
+    const root = this.#store.config().jobTemp;
+    if (root === null) return [];
+    return sweepJobTemp(root, (id) => {
+      const lease = this.#store.lease(id);
+      return lease !== null && !isActive(lease);
+    });
   }
 
   /** This function reads the servers of the MCP gateway, by name. */

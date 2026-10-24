@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -309,5 +309,50 @@ describe("Engine resources", () => {
     store.prune(6);
     expect(store.resourcesSince(0)).toEqual([]);
     store.close();
+  });
+});
+
+describe("Engine disk leases and temp folders", () => {
+  const sampler: Sampler = {
+    memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: () => [],
+    disks: () => [{ mount: "D:", freeMb: 20_000, totalMb: 200_000 }],
+    close: () => undefined,
+  };
+
+  it("admits a disk lease on the measured free space, less the critical limit of the disk alert", () => {
+    const alertRules = { ...DEFAULT_ALERT_RULES, diskCriticalMb: 8192 };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere", alertRules });
+    engine.tick();
+    expect(engine.status().free["disk:D:"]).toBe(11_808);
+    const fits = engine.request({ holder: "a", job: "trace", amounts: { "disk:D:": 11_000 }, ttlMs: 60_000 });
+    const waits = engine.request({ holder: "b", job: "test", amounts: { "disk:D:": 1000 }, ttlMs: 60_000 });
+    const never = engine.request({ holder: "c", job: "image", amounts: { "disk:Q:": 1000 }, ttlMs: 60_000 });
+    expect(fits.state).toBe("granted");
+    expect(waits.reason).toBe("waits for disk:D:: needs 1000, 808 free");
+    expect(never.state).toBe("cancelled");
+    engine.close();
+  });
+
+  it("removes the temp folders of the ended leases of the store, and keeps each other folder", () => {
+    const root = mkdtempSync(join(tmpdir(), "headroom-sweep-"));
+    try {
+      const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
+      expect(() => engine.setConfig("jobTemp", "relative\\tmp")).toThrow(/absolute path/);
+      expect(engine.sweepJobTemp()).toEqual([]);
+      expect(engine.setConfig("jobTemp", root)).toEqual({ jobTemp: root });
+      const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
+      const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
+      engine.release(ended.id, "the job ended", null, { tempMb: 0 });
+      for (const name of [ended.id, active.id, "not-a-lease-of-the-store"]) mkdirSync(join(root, name));
+      expect(engine.sweepJobTemp()).toEqual([ended.id]);
+      expect(existsSync(join(root, ended.id))).toBe(false);
+      expect(existsSync(join(root, active.id))).toBe(true);
+      expect(existsSync(join(root, "not-a-lease-of-the-store"))).toBe(true);
+      expect(engine.history(0).leases[0]?.usage).toEqual({ tempMb: 0 });
+      engine.close();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

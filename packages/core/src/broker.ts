@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ResourceId, Room } from "./resources.ts";
+import type { JobUsage, ResourceId, Room } from "./resources.ts";
 import { MEMORY, type Amounts } from "./types.ts";
 
 /** The state of a lease. Only `waiting` and `granted` are active. */
@@ -47,6 +47,8 @@ export interface Lease {
   readonly reason: string | null;
   /** The peak memory of the job in MB, from its holder at the release. It is `null` before the job ends and without a job object. */
   readonly peakMb: number | null;
+  /** The use of the job at its release, from its holder, for example the size of its temp folder (H19). */
+  readonly usage?: JobUsage | undefined;
 }
 
 /** The capacity at one time. */
@@ -157,11 +159,12 @@ export class Broker {
     return lease;
   }
 
-  /** This function ends an active lease. It gives the lease, or `undefined` for an unknown id. */
-  release(id: string, reason = "released", peakMb: number | null = null): Lease | undefined {
+  /** This function ends an active lease. It gives the lease, or `undefined` for an unknown id. The usage is the use of the job, from its holder. */
+  release(id: string, reason = "released", peakMb: number | null = null, usage?: JobUsage): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
-    return this.#set({ ...lease, state: lease.state === "waiting" ? "cancelled" : "released", endedAt: this.#now(), reason, peakMb });
+    const state = lease.state === "waiting" ? "cancelled" : "released";
+    return this.#set({ ...lease, state, endedAt: this.#now(), reason, peakMb, ...(usage === undefined ? {} : { usage }) });
   }
 
   /** This function records a heartbeat of an active lease. */

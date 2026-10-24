@@ -53,6 +53,27 @@ On Windows, `headroom run` puts the job into a job object:
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
 
+A job that writes much data asks for space on a drive with `--disk`. `--disk 5g` asks for space on the drive of the current folder, and `--disk D:=5g` names the drive. The lease waits until the drive has the space. The broker keeps the critical limit of the disk alert free: 5 GB, or 5% of a small drive. A disk lease holds its full amount until its release. A lease that is larger than the drive, or that names a drive that does not exist, is cancelled at once.
+
+```sh
+headroom run --disk 5g -- pnpm test
+headroom run --disk D:=20g --mem 2g -- node trace.js
+```
+
+Set a temp root to give each job its own temp folder:
+
+```sh
+headroom config job-temp D:\headroom\tmp
+headroom config
+```
+
+- `headroom run` makes the folder `<temp root>\<lease id>` before the job starts. The job gets it in `TEMP`, `TMP` and `TMPDIR`. Thus the temp files of a test or a trace go to the Dev Drive, not to `C:`.
+- The run removes the folder when the job ends, also when the job fails. The ended lease keeps the size of the folder in `usage.tempMb`.
+- `--keep-temp` keeps the folder for debugging. The folder then contains the file `.headroom-keep`, and the daemon does not remove it. Remove it by hand.
+- With `--keep`, the job uses the `TEMP` of its parent. A service that the job starts can then use its temp folder after the job ends.
+- A client that stops before its release leaves its folder. The daemon removes these folders at its start and every 10 minutes. It removes only a folder directly under the temp root whose name is the id of an ended lease in its store. It does not follow a link or a junction.
+- `headroom config job-temp --clear` removes the setting. Without the setting, each job uses the `TEMP` of its parent, as before.
+
 The alerts tell about a problem before the memory runs out. `headroom status` shows them first, and `headroom alerts --watch` writes one line when an alert starts or ends. The alerts only report. They do not stop a process.
 
 | Alert | The condition |

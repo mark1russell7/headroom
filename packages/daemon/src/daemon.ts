@@ -20,6 +20,9 @@ import { gatewayProcedures, resourceProcedures } from "./procedures.ts";
 /** The default port of the daemon. */
 export const DEFAULT_PORT = 4730;
 
+/** The time between two sweeps of the temp folders of the ended leases (H19). */
+const SWEEP_EVERY_MS = 10 * 60_000;
+
 /** The options of `serve()`. */
 export interface ServeOptions {
   readonly port?: number | undefined;
@@ -103,9 +106,21 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       log(`The tick failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }, options.tickMs ?? 2000);
+  // H19: a client that stopped before its release left the temp folder of its lease.
+  const sweep = (): void => {
+    try {
+      const removed = engine.sweepJobTemp();
+      if (removed.length > 0) log(`Removed the temp folders of ${removed.length} ended leases: ${removed.join(", ")}`);
+    } catch (error) {
+      log(`The sweep of the temp folders failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  sweep();
+  const sweeper = setInterval(sweep, SWEEP_EVERY_MS);
 
   await started.life.done;
   clearInterval(timer);
+  clearInterval(sweeper);
   engine.close();
   removeDiscovery();
   return started.life.errors.length > 0 ? 1 : 0;

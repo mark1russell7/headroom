@@ -54,12 +54,12 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H13 | The resume plan: the command of each live session, for a reboot | done (v0) |
 | H14 | Runaway alerts: a process above 4 GB that has no lease, or a process whose parent stopped. headroom reports to the organizer. It does not stop the process. | done |
 | H15 | The dashboard: a page of the daemon at `http://127.0.0.1:4730/`, and `headroom dashboard` | done |
-| H16 | The Dev Drive: the code and the package caches on a ReFS volume. `docs/DEV-DRIVE.md` gives the plan. | waits for Mark: the plan is ready |
+| H16 | The Dev Drive: the code and the package caches on a ReFS volume. `docs/DEV-DRIVE.md` gives the plan. | done: the move is done, the lessons are in `docs/DEV-DRIVE.md` |
 | H18 | Disk space: alerts for low free space, and headroom run waits on a full disk | done |
-| H19 | Disk: each job gets its own `TEMP` and `TMP` folder on the Dev Drive `D:`. The release removes it. | later |
+| H19 | Disk: each job gets its own `TEMP` and `TMP` folder on the Dev Drive `D:`. The release removes it. | done: `headroom config job-temp`, a temp folder for each lease, `--keep-temp`, and the sweep of the daemon every 10 minutes |
 | H20 | Disk: who writes. The bytes that each session, MCP server and job writes, from the I/O counters of its processes. | later |
 | H21 | Disk: a report of what uses the space, and a safe cleanup. It removes only data that is disposable by definition. All other data goes to Mark first. The `*.before-devdrive` copies stay. | later |
-| H22 | One resource model: memory, disk, then CPU and more. Each resource has the same five parts: measure, attribute, alert, admit and enforce. | in progress: the design is `docs/RESOURCES.md`. Steps 1 to 4 shipped in #29, #30 and #31: the types, the broker on two admit modes, `Status.resources` and the alert rules. `--cpu` uses the count of processors. Next: step 5, disk as a lease resource. |
+| H22 | One resource model: memory, disk, then CPU and more. Each resource has the same five parts: measure, attribute, alert, admit and enforce. | in progress: steps 1 to 6 are done. The design is `docs/RESOURCES.md`. Steps 1 to 4 shipped in #29, #30 and #31: the types, the broker on two admit modes, `Status.resources` and the alert rules. Step 5 makes disk a lease resource (`--disk 5g`, `--disk D:=5g`). Step 6 is H19. Next: step 7, H20. |
 | H23 | CPU on the resource model: the processors get the five parts of the model | later |
 
 ## The MCP gateway (H11)
