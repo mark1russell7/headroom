@@ -1,8 +1,8 @@
 /**
  * The store of headroom: one SQLite file in WAL mode, through `node:sqlite`.
  *
- * It keeps the leases, the capacity of the configured pools, one memory sample each minute and
- * the memory of each owner each minute. It also keeps the level of each resource instance each minute,
+ * It keeps the leases, the capacity of the configured pools and one memory sample each minute. It also keeps
+ * the memory and the written MB of each owner each minute. It also keeps the level of each resource instance each minute,
  * the snapshots of the pool tags and the settings. It removes the samples that are older than the retention.
  */
 
@@ -10,6 +10,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
+import type { CounterRow } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -25,6 +26,8 @@ export interface MemoryRow extends SystemMemory {
 /** One stored owner sample. */
 export interface OwnerRow extends OwnerUsage {
   readonly at: number;
+  /** The MB that the owner wrote in the minute before the sample (H20). A row of an older version has none. */
+  readonly writeMb?: number | undefined;
 }
 
 const SCHEMA = `
@@ -44,7 +47,7 @@ CREATE TABLE IF NOT EXISTS memory (
 );
 CREATE TABLE IF NOT EXISTS owners (
   at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL,
-  private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner)
+  private_mb INTEGER, working_mb INTEGER, processes INTEGER, write_mb REAL, PRIMARY KEY (at, owner)
 );
 CREATE TABLE IF NOT EXISTS pool_tags (
   at INTEGER NOT NULL, tag TEXT NOT NULL, nonpaged_mb REAL, paged_mb REAL, PRIMARY KEY (at, tag)
@@ -96,6 +99,9 @@ export class Store {
     for (const column of ["processes", "user_objects", "gdi_objects"]) {
       if (!memoryColumns.includes(column)) this.#db.exec(`ALTER TABLE memory ADD COLUMN ${column} INTEGER`);
     }
+    // A database of an older version has no column for the writes of an owner (H20).
+    const ownerColumns = this.#db.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
+    if (!ownerColumns.includes("write_mb")) this.#db.exec("ALTER TABLE owners ADD COLUMN write_mb REAL");
   }
 
   /** This function writes a lease, new or changed. */
@@ -178,8 +184,19 @@ export class Store {
     else this.#db.prepare("INSERT INTO mcp_servers VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET spec = excluded.spec").run(name, JSON.stringify(spec));
   }
 
-  /** This function writes one memory sample, the memory of each owner and the measurement of each resource instance at the same time. */
-  saveSample(at: number, memory: SystemMemory, owners: readonly OwnerUsage[], load?: SessionLoad, resources: readonly Measurement[] = []): void {
+  /**
+   * This function writes one memory sample, the memory of each owner and the measurement of each resource instance at the
+   * same time. `writes` gives the MB that each owner wrote in the minute. An owner that wrote with no process at this time
+   * gets a row with no memory.
+   */
+  saveSample(
+    at: number,
+    memory: SystemMemory,
+    owners: readonly OwnerUsage[],
+    load?: SessionLoad,
+    resources: readonly Measurement[] = [],
+    writes: ReadonlyMap<string, { readonly kind: OwnerKind; readonly mb: number }> = new Map(),
+  ): void {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO memory (at, total_mb, available_mb, commit_mb, commit_limit_mb, kernel_paged_mb, kernel_nonpaged_mb,
@@ -189,8 +206,16 @@ export class Store {
         at, memory.totalMb, memory.availableMb, memory.commitMb, memory.commitLimitMb, memory.kernelPagedMb, memory.kernelNonpagedMb,
         load?.processes ?? null, load?.userObjects ?? null, load?.gdiObjects ?? null,
       );
-    const insert = this.#db.prepare("INSERT OR REPLACE INTO owners VALUES (?, ?, ?, ?, ?, ?)");
-    for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes);
+    const insert = this.#db.prepare(
+      "INSERT OR REPLACE INTO owners (at, owner, kind, private_mb, working_mb, processes, write_mb) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    );
+    const mbOf = (owner: string): number | null => {
+      const mb = writes.get(owner)?.mb;
+      return mb === undefined ? null : Math.round(mb * 1000) / 1000;
+    };
+    for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes, mbOf(owner.owner));
+    const listed = new Set(owners.map((owner) => owner.owner));
+    for (const [owner, write] of writes) if (!listed.has(owner)) insert.run(at, owner, write.kind, 0, 0, 0, mbOf(owner));
     const level = this.#db.prepare("INSERT OR REPLACE INTO resource_samples VALUES (?, ?, ?, ?, ?)");
     for (const each of resources) level.run(at, each.id, each.capacity, each.used, each.free);
   }
@@ -250,7 +275,7 @@ export class Store {
     const query =
       step > 60_000
         ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, owner, MAX(kind) AS kind, AVG(private_mb) AS private_mb,
-             AVG(working_mb) AS working_mb, MAX(processes) AS processes
+             AVG(working_mb) AS working_mb, MAX(processes) AS processes, SUM(write_mb) AS write_mb
            FROM owners WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER), owner ORDER BY at, private_mb DESC`
         : "SELECT * FROM owners WHERE at >= ? ORDER BY at, private_mb DESC";
     return this.#db.prepare(query).all(since).map((row) => ({
@@ -260,6 +285,17 @@ export class Store {
       privateMb: Number(row["private_mb"]),
       workingMb: Number(row["working_mb"]),
       processes: Number(row["processes"]),
+      ...(row["write_mb"] == null ? {} : { writeMb: Number(row["write_mb"]) }),
+    }));
+  }
+
+  /** This function reads the MB that each owner wrote in each minute since a time, the oldest first. A minute with no writes is absent. */
+  writesSince(since: number): CounterRow[] {
+    return this.#db.prepare("SELECT at, owner, kind, write_mb FROM owners WHERE at >= ? AND write_mb > 0 ORDER BY at, owner").all(since).map((row) => ({
+      at: Number(row["at"]),
+      owner: String(row["owner"]),
+      kind: String(row["kind"]) as OwnerKind,
+      amount: Number(row["write_mb"]),
     }));
   }
 

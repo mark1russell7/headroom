@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { Broker } from "./broker.ts";
-import { parseMeminfo, parseStat } from "./linux.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { parseBootTime, parseMeminfo, parseStat } from "./linux.ts";
 import { Store } from "./store.ts";
 
 describe("Store", () => {
@@ -123,5 +127,39 @@ describe("the Linux parsers", () => {
   it("reads a stat line whose name has spaces and parentheses", () => {
     expect(parseStat("1234 (my (odd) name) S 99 1234 1234 0 -1")).toEqual({ ppid: 99, name: "my (odd) name" });
     expect(parseStat("garbage")).toBeNull();
+  });
+
+  it("reads the processor time and the start of a stat line, and the start of the computer", () => {
+    const line = "77 (node) S 1 77 77 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 11 0 360000 1000000 5000";
+    expect(parseStat(line)).toEqual({ ppid: 1, name: "node", cpuTicks: 300, startTicks: 360_000 });
+    expect(parseBootTime("cpu  1 2 3\nbtime 1761300000\nprocesses 99\n")).toBe(1_761_300_000_000);
+    expect(parseBootTime("cpu  1 2 3\n")).toBeUndefined();
+  });
+});
+
+describe("Store writes of the owners", () => {
+  it("keeps the MB that each owner wrote each minute, also for an owner with no process, and adds the column to an older database", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-writes-")), "old.db");
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE owners (
+      at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL,
+      private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
+    old.exec("INSERT INTO owners VALUES (1000, 'docker', 'docker', 900, 900, 3)");
+    old.close();
+    const store = new Store(path);
+    const memory = { totalMb: 28000, availableMb: 9000, commitMb: 30000, commitLimitMb: 80000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
+    const owners = [{ owner: "session:graph", kind: "session" as const, privateMb: 800, workingMb: 700, processes: 4 }];
+    const writes = new Map([["session:graph", { kind: "session" as const, mb: 512.25 }], ["mcp:vex", { kind: "mcp" as const, mb: 3 }]]);
+    store.saveSample(61_000, memory, owners, undefined, [], writes);
+    expect(store.ownersSince(0)).toEqual([
+      { at: 1000, owner: "docker", kind: "docker", privateMb: 900, workingMb: 900, processes: 3 },
+      { at: 61_000, owner: "session:graph", kind: "session", privateMb: 800, workingMb: 700, processes: 4, writeMb: 512.25 },
+      { at: 61_000, owner: "mcp:vex", kind: "mcp", privateMb: 0, workingMb: 0, processes: 0, writeMb: 3 },
+    ]);
+    expect(store.writesSince(0)).toEqual([
+      { at: 61_000, owner: "mcp:vex", kind: "mcp", amount: 3 },
+      { at: 61_000, owner: "session:graph", kind: "session", amount: 512.25 },
+    ]);
+    store.close();
   });
 });

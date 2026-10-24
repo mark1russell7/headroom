@@ -77,6 +77,27 @@ describe("detect", () => {
     expect(recent[0]?.message).toContain("38.1 GB less than 12 minutes ago.");
   });
 
+  it("names the 3 owners that wrote most in the last hour above 100 MB in a disk alert, and keeps its id and severity", () => {
+    const disks = [{ mount: "C:", freeMb: 4300, totalMb: 974_848, droppedMb: 39_014, windowMinutes: 60 }];
+    const writes = [
+      { owner: "mcp:vex", kind: "mcp" as const, mbPerMin: 2, mbLastHour: 2150 },
+      { owner: "session:graph", kind: "session" as const, mbPerMin: 500, mbLastHour: 31_949 },
+      { owner: "docker", kind: "docker" as const, mbPerMin: 1, mbLastHour: 400 },
+      { owner: "system", kind: "system" as const, mbPerMin: 1, mbLastHour: 120 },
+      { owner: "editor", kind: "editor" as const, mbPerMin: 0, mbLastHour: 99 },
+    ];
+    const alerts = detect({ ...input([], {}), disks, writes });
+    expect(alerts).toStrictEqual([
+      {
+        id: "disk:C:", kind: "disk", subject: "drive C:", pid: null, mb: 4300, severity: "critical",
+        message: "Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB, docker 400 MB.",
+      },
+    ]);
+    // No owner above 100 MB: the message is the same as before.
+    const quiet = detect({ ...input([], {}), disks, writes: writes.slice(4) });
+    expect(quiet[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago.");
+  });
+
   it("gives no disk alert above the limits, and scales the limits down on a small drive", () => {
     expect(detect({ ...input([], {}), disks: [{ mount: "C:", freeMb: 265_000, totalMb: 774_000 }, { mount: "D:", freeMb: 20_481, totalMb: 200_000 }] })).toEqual([]);
     // A drive of 30 GB warns below 20% (6 GB) and is critical below 5% (1.5 GB).

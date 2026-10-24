@@ -4,7 +4,8 @@
  * - `K32GetPerformanceInfo` gives the physical memory, the commit charge and the kernel pools.
  * - A Toolhelp snapshot gives each process with its parent.
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
- * - `NtQuerySystemInformation` of `ntdll.dll` gives the use of the kernel pools by each pool tag.
+ * - `NtQuerySystemInformation` with `SystemProcessInformation` gives the start, the processor time and the I/O bytes of each process (H20).
+ * - `NtQuerySystemInformation` of `ntdll.dll` also gives the use of the kernel pools by each pool tag.
  * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
  * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
  *
@@ -127,8 +128,9 @@ function memoryOf(pid: number): MemoryCounters | null {
   }
 }
 
-/** This function reads the processes with their parents and their memory. */
+/** This function reads the processes with their parents, their memory, their start, their processor time and their I/O bytes. */
 function processes(): ProcessInfo[] {
+  const totals = processTotals();
   const snapshot = Number(createSnapshot(TH32CS_SNAPPROCESS, 0));
   if (snapshot === -1 || snapshot === 0) throw new Error("CreateToolhelp32Snapshot failed");
   const list: ProcessInfo[] = [];
@@ -136,14 +138,19 @@ function processes(): ProcessInfo[] {
     const entry = { dwSize: entrySize } as ProcessEntry;
     for (let more = processFirst(snapshot, entry); more !== 0; more = processNext(snapshot, entry)) {
       const pid = Number(entry.th32ProcessID);
-      // The counters of a protected process are not readable: its memory counts as 0.
+      // The memory of a protected process is not readable, so it counts as 0. The totals come from the kernel for each process.
       const counters = pid === 0 ? null : memoryOf(pid);
+      const total = totals.get(pid);
       list.push({
         pid,
         ppid: Number(entry.th32ParentProcessID),
         name: String(entry.szExeFile),
         privateMb: counters ? Number(counters.PrivateUsage) / MB : 0,
         workingMb: counters ? Number(counters.WorkingSetSize) / MB : 0,
+        startedAt: total?.startedAt,
+        cpuMs: total?.cpuMs,
+        readBytes: total?.readBytes,
+        writeBytes: total?.writeBytes,
       });
       entry.dwSize = entrySize;
     }
@@ -157,6 +164,65 @@ const ntdll = koffi.load("ntdll.dll");
 const querySystemInformation = ntdll.func("int32 __stdcall NtQuerySystemInformation(uint32 cls, _Out_ uint8_t *buffer, uint32 length, _Out_ uint32 *returned)");
 const SYSTEM_POOL_TAG_INFORMATION = 22;
 const STATUS_INFO_LENGTH_MISMATCH = -1073741820;
+const STATUS_BUFFER_TOO_SMALL = -1073741789;
+
+const SYSTEM_PROCESS_INFORMATION = 5;
+// The offsets in SYSTEM_PROCESS_INFORMATION on 64-bit Windows. The entry of a process is at least 0x100 bytes, and its threads follow it.
+const SPI_CREATE_TIME = 0x20;
+const SPI_USER_TIME = 0x28;
+const SPI_KERNEL_TIME = 0x30;
+const SPI_PROCESS_ID = 0x50;
+const SPI_READ_TRANSFER = 0xe8;
+const SPI_WRITE_TRANSFER = 0xf0;
+const SPI_SIZE = 0x100;
+/** The time between 1601-01-01, the start of a FILETIME, and 1970-01-01, in milliseconds. */
+const FILETIME_EPOCH_MS = 11_644_473_600_000;
+let processBuffer = Buffer.alloc(256 * 1024);
+
+/** The totals of one process since its start. */
+interface ProcessTotals {
+  readonly startedAt: number;
+  readonly cpuMs: number;
+  readonly readBytes: number;
+  readonly writeBytes: number;
+}
+
+/**
+ * This function reads the start, the processor time and the I/O bytes of each process with one call of
+ * `NtQuerySystemInformation(SystemProcessInformation)`. It opens no process, so it also reads the protected processes.
+ * The I/O bytes are `ReadTransferCount` and `WriteTransferCount`: each read and write, also to a pipe or a device.
+ * The idle process (ID 0) is absent, because its processor time is the idle time. A failed read gives no totals.
+ */
+function processTotals(): Map<number, ProcessTotals> {
+  const totals = new Map<number, ProcessTotals>();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const returned = [0];
+    const status = querySystemInformation(SYSTEM_PROCESS_INFORMATION, processBuffer, processBuffer.length, returned);
+    if (status === STATUS_INFO_LENGTH_MISMATCH || status === STATUS_BUFFER_TOO_SMALL) {
+      processBuffer = Buffer.alloc(Math.max(processBuffer.length * 2, (returned[0] ?? 0) + 64 * 1024));
+      continue;
+    }
+    if (status !== 0) return totals;
+    const buffer = processBuffer;
+    for (let at = 0; at + SPI_SIZE <= buffer.length; ) {
+      const pid = Number(buffer.readBigUInt64LE(at + SPI_PROCESS_ID));
+      if (pid !== 0) {
+        // The times count units of 100 nanoseconds. The start counts them from 1601-01-01.
+        totals.set(pid, {
+          startedAt: Math.round(Number(buffer.readBigInt64LE(at + SPI_CREATE_TIME)) / 10_000 - FILETIME_EPOCH_MS),
+          cpuMs: Number(buffer.readBigInt64LE(at + SPI_USER_TIME) + buffer.readBigInt64LE(at + SPI_KERNEL_TIME)) / 10_000,
+          readBytes: Number(buffer.readBigInt64LE(at + SPI_READ_TRANSFER)),
+          writeBytes: Number(buffer.readBigInt64LE(at + SPI_WRITE_TRANSFER)),
+        });
+      }
+      const next = buffer.readUInt32LE(at);
+      if (next === 0) break;
+      at += next;
+    }
+    return totals;
+  }
+  return totals;
+}
 // One entry of SYSTEM_POOLTAG on 64-bit Windows: the tag, the paged counts and size, then the non-paged counts and size.
 const TAG_ENTRY = 40;
 let tagBuffer = Buffer.alloc(512 * 1024);

@@ -125,6 +125,17 @@ function printStatus(status: Status): void {
     });
     console.log(`Disks: ${each.join(", ")}.`);
   }
+  // A daemon of an older version gives no writes and no owners of the resources.
+  if (status.writes !== undefined) {
+    const writers = status.writes.filter((each) => each.mbLastHour >= 10).slice(0, 5);
+    console.log(`Writes (last hour): ${writers.length === 0 ? "none above 10 MB" : writers.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`);
+  }
+  const cpu = (status.resources ?? []).find((each) => each.id === "cpu");
+  if (cpu !== undefined && cpu.used !== null && cpu.capacity !== null) {
+    const most = (cpu.owners ?? []).filter((each) => each.value >= 0.05).slice(0, 3);
+    const named = most.length === 0 ? "" : ` Most: ${most.map((each) => `${each.owner} ${each.value.toFixed(1)}`).join(", ")}.`;
+    console.log(`CPU: ${cpu.used.toFixed(1)} of ${cpu.capacity} cores in use.${named}`);
+  }
   const free = Object.entries(status.free).map(([name, amount]) => `${name} ${amountText(name, amount)}`);
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
