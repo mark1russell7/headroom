@@ -233,3 +233,24 @@ describe("Engine paged pool tags", () => {
     engine.close();
   });
 });
+
+describe("Engine cpu", () => {
+  const sampler: Sampler = {
+    memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: () => [],
+    close: () => undefined,
+  };
+
+  it("grants --cpu 2 with no pool cpu, and a pool cpu of 1 cancels it", () => {
+    const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere", processors: 16 });
+    const lease = engine.request({ holder: "graph", job: "cpu smoke", amounts: { cpu: 2, memory: 100 }, ttlMs: 60_000 });
+    expect(lease.state).toBe("granted");
+    expect(engine.status().free).toMatchObject({ cpu: 14, memory: 20_000 - 1024 - 100 });
+    engine.release(lease.id);
+    engine.setPool("cpu", 1);
+    const capped = engine.request({ holder: "graph", job: "cpu smoke", amounts: { cpu: 2 }, ttlMs: 60_000 });
+    expect(capped.state).toBe("cancelled");
+    expect(capped.reason).toBe("cpu: 2 is more than the capacity of 1");
+    engine.close();
+  });
+});

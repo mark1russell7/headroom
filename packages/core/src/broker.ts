@@ -1,11 +1,13 @@
 /**
- * The lease broker: it grants leases on the memory and on named pools, in the order of their priority.
+ * The lease broker: it grants leases on the resources, in the order of their priority. Each id has a room with an
+ * admit mode. A measured id, for example the memory, uses its measured free part. A counted id, for example `cpu` or a slot, uses its capacity.
  *
  * The broker has no clock, no timer and no input or output of its own. The caller gives the time,
  * the measured capacity and the liveness of the processes, and calls `tick()` after each change.
  */
 
 import { randomUUID } from "node:crypto";
+import type { ResourceId, Room } from "./resources.ts";
 import { MEMORY, type Amounts } from "./types.ts";
 
 /** The state of a lease. Only `waiting` and `granted` are active. */
@@ -55,6 +57,11 @@ export interface Capacity {
   readonly availableMb: number;
   /** The capacity of each configured pool. A pool with no entry has a capacity of 1: a lock. */
   readonly pools: Amounts;
+  /**
+   * The room of each id, from the measurements and the admit part of its kind. Without a room, the memory
+   * fields above give the room of `memory`, and each other id is a slot.
+   */
+  readonly rooms?: Readonly<Record<ResourceId, Room>> | undefined;
 }
 
 /** The options of a broker. Each option has a default. */
@@ -63,8 +70,10 @@ export interface BrokerOptions {
   readonly newId?: (() => string) | undefined;
   /** This function tells if a process runs. The default asks the operating system. */
   readonly isAlive?: ((pid: number) => boolean) | undefined;
-  /** This function gives the memory, in MB, that the processes of a granted lease use at this time. */
+  /** This function gives the memory, in MB, that the processes of a granted lease use at this time. It is the memory case of `used`. */
   readonly usedMb?: ((lease: Lease) => number) | undefined;
+  /** This function gives the part of the amount of an id that a granted lease uses at this time. The default uses `usedMb` for the memory. */
+  readonly used?: ((lease: Lease, id: ResourceId) => number) | undefined;
   /** The memory that the broker keeps free, in MB. The default is 1024. */
   readonly reserveMb?: number | undefined;
   /** A waiting request gains 1 of priority for each period of this length. The default is 1 minute. */
@@ -99,7 +108,7 @@ export class Broker {
   readonly #now: () => number;
   readonly #newId: () => string;
   readonly #isAlive: (pid: number) => boolean;
-  readonly #usedMb: (lease: Lease) => number;
+  readonly #used: (lease: Lease, id: ResourceId) => number;
   readonly #reserveMb: number;
   readonly #agingMs: number;
   readonly #headWaitMs: number;
@@ -109,7 +118,8 @@ export class Broker {
     this.#now = options.now ?? Date.now;
     this.#newId = options.newId ?? randomUUID;
     this.#isAlive = options.isAlive ?? processIsAlive;
-    this.#usedMb = options.usedMb ?? (() => 0);
+    const usedMb = options.usedMb ?? (() => 0);
+    this.#used = options.used ?? ((lease, id) => (id === MEMORY ? usedMb(lease) : 0));
     this.#reserveMb = options.reserveMb ?? 1024;
     this.#agingMs = options.agingMs ?? 60_000;
     this.#headWaitMs = options.headWaitMs ?? 600_000;
@@ -179,20 +189,44 @@ export class Broker {
   }
 
   /**
-   * This function gives the amounts that a new lease can get at this time. For the memory, it is the
-   * available memory less the reserve, less the part of each granted lease that its job does not use yet.
+   * This function gives the amounts that a new lease can get at this time. A measured id gives its free part less
+   * the reserve, less the part of each granted lease that its job does not use yet. A counted id gives its capacity less the granted amounts.
    */
   free(capacity: Capacity): Record<string, number> {
+    return this.#free(capacity, []);
+  }
+
+  #free(capacity: Capacity, more: Iterable<ResourceId>): Record<string, number> {
     const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
-    let memory = capacity.availableMb - this.#reserveMb;
-    const pools: Record<string, number> = { ...capacity.pools };
-    for (const lease of granted) {
-      for (const [name, amount] of Object.entries(lease.amounts)) {
-        if (name === MEMORY) memory -= Math.max(0, amount - this.#usedMb(lease));
-        else pools[name] = (pools[name] ?? 1) - amount;
-      }
+    const base = this.#baseRooms(capacity);
+    const ids = new Set([...Object.keys(capacity.pools), ...Object.keys(capacity.rooms ?? {}), ...granted.flatMap((lease) => Object.keys(lease.amounts)), ...more]);
+    // The ids of the base rooms go last, as before.
+    for (const id of Object.keys(base)) {
+      ids.delete(id);
+      ids.add(id);
     }
-    return { ...pools, [MEMORY]: memory };
+    const free: Record<string, number> = {};
+    for (const id of ids) {
+      const room = this.#room(id, capacity, base);
+      let left = room.mode === "measured" ? (room.free ?? 0) - room.reserve : room.capacity;
+      for (const lease of granted) {
+        const amount = lease.amounts[id];
+        if (amount === undefined) continue;
+        left -= room.mode === "measured" ? Math.max(0, amount - this.#used(lease, id)) : amount;
+      }
+      free[id] = left;
+    }
+    return free;
+  }
+
+  /** This function gives the rooms that each capacity has: the room of the memory, from the memory fields of the capacity. */
+  #baseRooms(capacity: Capacity): Record<ResourceId, Room> {
+    return { [MEMORY]: { mode: "measured", capacity: capacity.totalMb, free: capacity.availableMb, reserve: this.#reserveMb } };
+  }
+
+  /** This function gives the room of an id. An id with no room is a slot, with the capacity of its pool or 1. */
+  #room(id: ResourceId, capacity: Capacity, base: Record<ResourceId, Room> = this.#baseRooms(capacity)): Room {
+    return capacity.rooms?.[id] ?? base[id] ?? { mode: "counted", capacity: capacity.pools[id] ?? 1, free: null, reserve: 0 };
   }
 
   /**
@@ -211,10 +245,10 @@ export class Broker {
       }
     }
 
-    const free = this.free(capacity);
     const waiting = [...this.#leases.values()]
       .filter((lease) => lease.state === "waiting")
       .sort((a, b) => this.#rank(b, now) - this.#rank(a, now) || a.requestedAt - b.requestedAt);
+    const free = this.#free(capacity, waiting.flatMap((lease) => Object.keys(lease.amounts)));
     for (const [index, lease] of waiting.entries()) {
       const never = this.#neverFits(lease, capacity);
       if (never) {
@@ -223,7 +257,7 @@ export class Broker {
       }
       const short = this.#shortOf(lease, free);
       if (short === null) {
-        for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? (name === MEMORY ? 0 : 1)) - amount;
+        for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? 0) - amount;
         changed.push(this.#set({ ...lease, state: "granted", grantedAt: now, reason: null }));
         continue;
       }
@@ -241,7 +275,8 @@ export class Broker {
   /** This function tells why a lease cannot fit at any time, or gives `null` when it can fit. */
   #neverFits(lease: Lease, capacity: Capacity): string | null {
     for (const [name, amount] of Object.entries(lease.amounts)) {
-      const limit = name === MEMORY ? capacity.totalMb - this.#reserveMb : (capacity.pools[name] ?? 1);
+      const room = this.#room(name, capacity);
+      const limit = room.capacity - room.reserve;
       if (amount > limit) return `${name}: ${amount} is more than the capacity of ${limit}`;
     }
     return null;
@@ -250,7 +285,7 @@ export class Broker {
   /** This function tells which amount does not fit at this time, or gives `null` when all fit. */
   #shortOf(lease: Lease, free: Record<string, number>): string | null {
     for (const [name, amount] of Object.entries(lease.amounts)) {
-      const left = free[name] ?? (name === MEMORY ? 0 : 1);
+      const left = free[name] ?? 0;
       if (amount > left) return `waits for ${name}: needs ${amount}, ${Math.max(0, Math.floor(left))} free`;
     }
     return null;

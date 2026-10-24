@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Broker, type Capacity } from "./broker.ts";
+import { rooms } from "./resources.ts";
 
 function setup(options: { alive?: Set<number>; used?: number } = {}) {
   let now = 1_000_000;
@@ -18,6 +19,12 @@ function setup(options: { alive?: Set<number>; used?: number } = {}) {
 }
 
 const cap = (availableMb: number, pools: Record<string, number> = {}): Capacity => ({ totalMb: 16_000, availableMb, pools });
+
+/** A capacity with the room of `cpu` on a computer with 16 logical processors, as the engine gives it. */
+const cpuCap = (pools: Record<string, number>): Capacity => ({
+  ...cap(8000, pools),
+  rooms: rooms(["cpu"], [{ id: "cpu", capacity: 16, used: null, free: null }], pools),
+});
 
 describe("Broker", () => {
   it("grants a request that fits and holds one that does not", () => {
@@ -117,6 +124,38 @@ describe("Broker", () => {
     broker.tick(cap(8000));
     expect(broker.get(lease.id)?.state).toBe("cancelled");
     expect(broker.get(lease.id)?.reason).toMatch(/more than the capacity/);
+  });
+
+  it("grants --cpu 2 with no pool cpu: the capacity is the count of processors", () => {
+    const { broker } = setup();
+    const a = broker.request({ holder: "a", job: "x", amounts: { cpu: 2 } });
+    const b = broker.request({ holder: "b", job: "y", amounts: { cpu: 15 } });
+    broker.tick(cpuCap({}));
+    expect(broker.get(a.id)?.state).toBe("granted");
+    expect(broker.get(b.id)?.state).toBe("waiting");
+    expect(broker.get(b.id)?.reason).toBe("waits for cpu: needs 15, 14 free");
+    expect(broker.free(cpuCap({}))["cpu"]).toBe(14);
+  });
+
+  it("cancels --cpu 2 when the pool cpu is 1, because a configured pool cpu is a cap", () => {
+    const { broker } = setup();
+    const lease = broker.request({ holder: "a", job: "x", amounts: { cpu: 2 } });
+    broker.tick(cpuCap({ cpu: 1 }));
+    expect(broker.get(lease.id)?.state).toBe("cancelled");
+    expect(broker.get(lease.id)?.reason).toBe("cpu: 2 is more than the capacity of 1");
+  });
+
+  it("admits a second measured kind with the same rule, and a disk lease keeps its full amount", () => {
+    const { broker } = setup({ used: 1500 });
+    const disk: Capacity = { ...cap(8000), rooms: { "disk:D:": { mode: "measured", capacity: 200_000, free: 10_000, reserve: 5120 } } };
+    const a = broker.request({ holder: "a", job: "build", amounts: { "disk:D:": 4000 }, pid: 10 });
+    const b = broker.request({ holder: "b", job: "test", amounts: { "disk:D:": 1000 } });
+    const huge = broker.request({ holder: "c", job: "image", amounts: { "disk:D:": 196_000 } });
+    broker.tick(disk);
+    expect(broker.get(a.id)?.state).toBe("granted");
+    // 10000 free - 5120 reserve - 4000 of the granted lease = 880. The job uses no part of the disk amount.
+    expect(broker.get(b.id)?.reason).toBe("waits for disk:D:: needs 1000, 880 free");
+    expect(broker.get(huge.id)?.reason).toBe("disk:D:: 196000 is more than the capacity of 194880");
   });
 
   it("cancels a waiting lease on release, and refuses a negative amount", () => {

@@ -6,10 +6,12 @@
 import { DEFAULT_ALERT_RULES, detect, diskSize, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type Lease, type LeaseRequest } from "./broker.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
+import { availableParallelism } from "node:os";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
+import { leasesOf, measure, resourceOf, rooms, type Owners, type Readings, type ResourceId } from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
 import type { MemoryRow, OwnerRow, Store } from "./store.ts";
-import type { DiskSpace, McpServerSpec, OwnerUsage, ProcessInfo, SessionInfo, SessionLoad, SystemMemory } from "./types.ts";
+import { MEMORY, type DiskSpace, type McpServerSpec, type OwnerUsage, type ProcessInfo, type SessionInfo, type SessionLoad, type SystemMemory } from "./types.ts";
 
 /** The options of an engine. */
 export interface EngineOptions {
@@ -18,6 +20,8 @@ export interface EngineOptions {
   readonly now?: (() => number) | undefined;
   /** The memory that the broker keeps free, in MB. The default is 1024. */
   readonly reserveMb?: number | undefined;
+  /** The count of logical processors: the capacity of `cpu`. The default is `os.availableParallelism()`. */
+  readonly processors?: number | undefined;
   /** The limits of the alerts. The default is `DEFAULT_ALERT_RULES`. */
   readonly alertRules?: AlertRules | undefined;
   /** The time between two reads of the process list. The default is 10 seconds. */
@@ -144,6 +148,13 @@ export class Engine {
   readonly #listeners = new Set<(changed: readonly Lease[]) => void>();
   #memory: SystemMemory;
   #processes: readonly ProcessInfo[] = [];
+  /** The processes of the read before the last read. */
+  #previous: readonly ProcessInfo[] = [];
+  readonly #processors: number;
+  /** The reads of the last call of `capacity()`. The admit parts read them. */
+  #readings: Readings | null = null;
+  /** The owner of each process, from the last read of the processes. */
+  #ownership: Owners = { ownerOf: new Map(), kindOf: new Map(), leaseOf: new Map() };
   #owners: readonly OwnerUsage[] = [];
   #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
   #disks: readonly DiskSpace[] = [];
@@ -170,6 +181,7 @@ export class Engine {
     this.#store = options.store;
     this.#now = options.now ?? Date.now;
     this.#reserveMb = options.reserveMb ?? 1024;
+    this.#processors = options.processors ?? availableParallelism();
     this.#processEveryMs = options.processEveryMs ?? 10_000;
     this.#recordEveryMs = options.recordEveryMs ?? 60_000;
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
@@ -181,7 +193,11 @@ export class Engine {
     this.#broker = new Broker({
       now: this.#now,
       reserveMb: this.#reserveMb,
-      usedMb: (lease) => (lease.pid === null ? 0 : treeMb(lease.pid, this.#processes)),
+      // The admit part of the kind of each id tells the part of a granted lease that its job uses.
+      used: (lease, id) => {
+        const readings = this.#readings;
+        return readings === null ? 0 : (resourceOf(id).admit?.used?.(lease, id, readings, this.#ownership) ?? 0);
+      },
     });
     this.#broker.restore(this.#store.activeLeases());
     // The snapshots of the last hour continue after a restart, so the change of each tag has its full window.
@@ -190,9 +206,43 @@ export class Engine {
     this.#memory = this.#sampler.memory();
   }
 
-  /** This function gives the capacity at this time. */
+  /**
+   * This function gives the capacity at this time. It measures each kind. Each instance with an admit part,
+   * each configured pool and each id of an active lease gets a room.
+   */
   capacity(): Capacity {
-    return { totalMb: this.#memory.totalMb, availableMb: this.#memory.availableMb, pools: this.#store.pools() };
+    const readings = this.#read();
+    const measurements = measure(readings);
+    const ids = new Set<ResourceId>(measurements.filter((each) => resourceOf(each.id).admit !== null).map((each) => each.id));
+    for (const id of Object.keys(readings.pools)) ids.add(id);
+    for (const lease of this.#broker.leases()) if (isActive(lease)) for (const id of Object.keys(lease.amounts)) ids.add(id);
+    return {
+      totalMb: this.#memory.totalMb,
+      availableMb: this.#memory.availableMb,
+      pools: readings.pools,
+      rooms: rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb }),
+    };
+  }
+
+  /** This function gives the reads of this time from the last samples, and keeps them for the admit parts. */
+  #read(): Readings {
+    const granted: Record<ResourceId, number> = {};
+    for (const lease of this.#broker.leases()) {
+      if (lease.state !== "granted") continue;
+      for (const [id, amount] of Object.entries(lease.amounts)) granted[id] = (granted[id] ?? 0) + amount;
+    }
+    this.#readings = {
+      at: this.#now(),
+      memory: this.#memory,
+      processes: this.#processes,
+      previous: this.#previous,
+      disks: this.#disks,
+      load: this.#load,
+      processors: this.#processors,
+      pools: this.#store.pools(),
+      granted,
+    };
+    return this.#readings;
   }
 
   /**
@@ -204,10 +254,16 @@ export class Engine {
     this.#memory = this.#sampler.memory();
     if (now - this.#processesAt >= this.#processEveryMs) {
       this.#processesAt = now;
+      this.#previous = this.#processes;
       this.#processes = this.#sampler.processes();
       this.#sessions = readSessions(this.#sessionsDir);
       const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers());
       this.#owners = owners;
+      this.#ownership = {
+        ownerOf,
+        kindOf: new Map(owners.map((owner) => [owner.owner, owner.kind])),
+        leaseOf: leasesOf(this.#processes, this.#broker.leases()),
+      };
       const gui = this.#sampler.gui?.();
       this.#load = { processes: this.#processes.length, userObjects: gui?.userObjects ?? null, gdiObjects: gui?.gdiObjects ?? null };
       if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
