@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detect, diskLevel, type AlertInput } from "./alerts.ts";
+import { DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { OwnerKind, ProcessInfo } from "./types.ts";
 
@@ -83,5 +83,35 @@ describe("detect", () => {
     expect(diskLevel({ mount: "E:", freeMb: 8000, totalMb: 30_720 })).toBeNull();
     expect(diskLevel({ mount: "E:", freeMb: 5000, totalMb: 30_720 })).toBe("warning");
     expect(diskLevel({ mount: "E:", freeMb: 1000, totalMb: 30_720 })).toBe("critical");
+  });
+
+  it("gives each alert of before with the same fields, and no severity outside the disk alerts", () => {
+    const low = { ...memory, availableMb: 400.4, commitMb: 75_000, kernelNonpagedMb: 3500, kernelPagedMb: 4600 };
+    const alerts = detect({ ...input([], {}), memory: low, poolHourAgoMb: 2800, pagedHourAgoMb: 4700, load: { processes: 1240, userObjects: null, gdiObjects: null } });
+    expect(alerts).toStrictEqual([
+      { id: "memory", kind: "memory", subject: "memory", pid: null, mb: 400, message: "Only 400 MB of memory is available" },
+      { id: "commit", kind: "commit", subject: "commit", pid: null, mb: 75_000, message: "The commit charge is 73.2 GB of its limit 78.1 GB" },
+      { id: "pool", kind: "pool", subject: "non-paged pool", pid: null, mb: 3500, message: "The non-paged kernel pool is 3.4 GB, 700 MB more than one hour ago. A driver can leak it." },
+      { id: "pool:paged", kind: "pool", subject: "paged pool", pid: null, mb: 4600, message: "The paged kernel pool is 4.5 GB. A file system filter can leak it." },
+      {
+        id: "desktop", kind: "desktop", subject: "session", pid: null, mb: 0,
+        message: "1240 processes run in this session. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.",
+      },
+    ]);
+  });
+
+  it("gives one alert for each process: a large orphan with no lease is a runaway", () => {
+    const alerts = detect(input([p(7, 99, "grep.exe", 6000)], { 7: ["other", "other"] }));
+    expect(alerts).toStrictEqual([{ id: "runaway:7", kind: "runaway", subject: "grep.exe (7)", pid: 7, mb: 6000, message: "grep.exe (7) of other holds 5.9 GB with no lease" }]);
+    const orphan = detect(input([p(7, 99, "grep.exe", 2000)], { 7: ["other", "other"] }));
+    expect(orphan[0]).toStrictEqual({ id: "orphan:7", kind: "orphan", subject: "grep.exe (7)", pid: 7, mb: 2000, message: "grep.exe (7) holds 2.0 GB, and its parent (99) stopped" });
+  });
+
+  it("uses the limits of the rules that the caller gives, and no commit alert without a commit limit", () => {
+    const strict = { ...DEFAULT_ALERT_RULES, availableMb: 10_000, diskWarnMb: 300_000 };
+    const alerts = detect({ ...input([], {}), disks: [{ mount: "C:", freeMb: 265_000, totalMb: 1_774_000 }] }, strict);
+    expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["memory", undefined], ["disk:C:", "warning"]]);
+    expect(diskLevel({ mount: "C:", freeMb: 265_000, totalMb: 1_774_000 }, strict)).toBe("warning");
+    expect(detect({ ...input([], {}), memory: { ...memory, commitMb: 9000, commitLimitMb: 0 } })).toEqual([]);
   });
 });

@@ -387,6 +387,22 @@ Each step is one small PR with its tests. Each step works without the next step.
 
 Steps 1 to 4 put memory on the model. Step 5 makes disk the second resource. H19 does not need steps 2 to 5. If the drive fills again before step 5, H19 can go first.
 
+### What steps 1 to 4 changed in the types
+
+Steps 1 to 4 shipped in #29, #30 and #31. The code in `packages/core/src/resources.ts` differs from the types above in these points:
+
+- `AlertPart.rules` is a function of `AlertRules`. Thus a caller that sets `diskWarnMb` changes the limit of the disk rule.
+- Each rule has a function `text`. It gives the subject, the message and the size of the alert, so `detect()` adds no text of its own.
+- A level rule and a growth rule can name one `instance`. The two kernel pools have different limits and messages.
+- A rule with `severity: true` gives its level in `Alert.severity`. Only the disk rule has it, as before.
+- An outlier rule can have a list `only`. The orphan rule examines only the owners of the kind `other`.
+- `Attribute.counter` gives the counter of one process. The outlier rules compare it with their limit.
+- `Measurement.used` can be `null`. The processors have no used part until H23.
+- `Readings` has `processors`, the count of logical processors, and `granted`, the sum of the granted amounts of each id.
+- `cpu` is counted until H23, with the count of processors as its capacity.
+- `detect()` gives at most one alert for each process, and one alert for each alert id. The first rule wins.
+- `explain()` has no implementation yet. The engine still adds the pool tags and the large files to the messages.
+
 ### H19: the temp folder of each job
 
 `headroom run` gives each job its own `TEMP` and `TMP` folder on the Dev Drive. Large test output then goes to `D:`, and a job cannot fill `C:` through its temp folder.

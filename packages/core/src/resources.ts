@@ -10,6 +10,7 @@ import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
 import { treeMb } from "./owners.ts";
 import type { Amounts, DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory } from "./types.ts";
+import { diskSize, gb } from "./units.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
@@ -267,8 +268,21 @@ export interface Resource {
   readonly enforce: Enforce | null;
 }
 
-/** The alert part of a kind with no rules. Step 4 of the migration adds the rules. */
+/** The alert part of a kind with no rules. */
 const NO_ALERTS: AlertPart = { rules: () => [] };
+
+/** The window of the growth rules of the kernel pools. */
+const HOUR_MS = 3_600_000;
+
+/** The text of an alert on a kernel pool: its size, and its growth over the last hour when it grew. */
+function poolText(subject: string, name: string, cause: string): (facts: InstanceFacts) => AlertText {
+  return ({ measurement, change }) => {
+    const used = measurement.used ?? 0;
+    const growth = change?.usedGain ?? 0;
+    const grew = growth > 0 ? `, ${Math.round(growth)} MB more than one hour ago` : "";
+    return { subject, mb: Math.round(used), message: `The ${name} kernel pool is ${gb(used)}${grew}. ${cause}` };
+  };
+}
 
 /** This function gives the attribute part of a kind from the counter of one process. */
 function perProcess(resource: ResourceKind, unit: Unit, counter: (info: ProcessInfo) => number | undefined): Attribute {
@@ -306,7 +320,47 @@ const MEMORY_RESOURCE: Resource = {
     read: ({ memory }) => [{ id: "memory", capacity: memory.totalMb, used: memory.totalMb - memory.availableMb, free: memory.availableMb }],
   },
   attribute: perProcess("memory", "MB", (info) => info.privateMb),
-  alert: NO_ALERTS,
+  alert: {
+    rules: (limits) => [
+      {
+        // Docker and WSL have caps of their own, and the system is not a job.
+        type: "outlier",
+        alert: "runaway",
+        subject: "process",
+        above: limits.runawayMb,
+        skip: ["docker", "system", "kernel"],
+        when: "unleased",
+        text: ({ process, owner, amount }) => {
+          const subject = `${process.name} (${process.pid})`;
+          return { subject, mb: Math.round(amount), message: `${subject} of ${owner} holds ${gb(amount)} with no lease` };
+        },
+      },
+      {
+        // Nothing reads the output of an orphan.
+        type: "outlier",
+        alert: "orphan",
+        subject: "process",
+        above: limits.orphanMb,
+        skip: [],
+        only: ["other"],
+        when: "orphaned",
+        text: ({ process, amount }) => {
+          const subject = `${process.name} (${process.pid})`;
+          return { subject, mb: Math.round(amount), message: `${subject} holds ${gb(amount)}, and its parent (${process.ppid}) stopped` };
+        },
+      },
+      {
+        type: "level",
+        alert: "memory",
+        on: "free",
+        warning: { amount: limits.availableMb },
+        text: ({ measurement }) => {
+          const free = Math.round(measurement.free ?? 0);
+          return { subject: "memory", mb: free, message: `Only ${free} MB of memory is available` };
+        },
+      },
+    ],
+  },
   admit: {
     mode: "measured",
     reserve: { amount: 1024 },
@@ -327,7 +381,20 @@ const COMMIT: Resource = {
     },
   },
   attribute: null,
-  alert: NO_ALERTS,
+  alert: {
+    rules: (limits) => [
+      {
+        type: "level",
+        alert: "commit",
+        on: "used",
+        warning: { ratio: limits.commitRatio },
+        text: ({ measurement }) => {
+          const used = measurement.used ?? 0;
+          return { subject: "commit", mb: Math.round(used), message: `The commit charge is ${gb(used)} of its limit ${gb(measurement.capacity ?? 0)}` };
+        },
+      },
+    ],
+  },
   admit: null,
   enforce: null,
 };
@@ -343,7 +410,26 @@ const POOL: Resource = {
     ],
   },
   attribute: null,
-  alert: NO_ALERTS,
+  alert: {
+    rules: (limits) => {
+      const nonpaged = poolText("non-paged pool", "non-paged", "A driver can leak it.");
+      const paged = poolText("paged pool", "paged", "A file system filter can leak it.");
+      // The rules of the non-paged pool keep the alert id `pool` of before.
+      const pool = (): string => "pool";
+      return [
+        { type: "level", alert: "pool", alertId: pool, instance: "pool:nonpaged", on: "used", warning: { amount: limits.poolMb }, text: nonpaged },
+        {
+          type: "growth", alert: "pool", alertId: pool, instance: "pool:nonpaged", on: "used",
+          windowMs: HOUR_MS, warning: limits.poolGrowthMb, minHistoryMs: 50 * 60_000, text: nonpaged,
+        },
+        { type: "level", alert: "pool", instance: "pool:paged", on: "used", warning: { amount: limits.pagedMb }, text: paged },
+        {
+          type: "growth", alert: "pool", instance: "pool:paged", on: "used",
+          windowMs: HOUR_MS, warning: limits.pagedGrowthMb, minHistoryMs: 50 * 60_000, text: paged,
+        },
+      ];
+    },
+  },
   admit: null,
   enforce: null,
 };
@@ -354,7 +440,24 @@ const DESKTOP: Resource = {
   unit: "count",
   measure: { read: ({ load }) => [{ id: "desktop", capacity: null, used: load.processes, free: null }] },
   attribute: null,
-  alert: NO_ALERTS,
+  alert: {
+    rules: (limits) => [
+      {
+        type: "level",
+        alert: "desktop",
+        on: "used",
+        warning: { amount: limits.processes },
+        text: ({ readings: { load } }) => {
+          const objects = load.userObjects === null ? "" : ` (${load.userObjects} USER and ${load.gdiObjects ?? 0} GDI objects)`;
+          return {
+            subject: "session",
+            mb: 0,
+            message: `${load.processes} processes run in this session${objects}. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.`,
+          };
+        },
+      },
+    ],
+  },
   admit: null,
   enforce: null,
 };
@@ -367,7 +470,28 @@ const DISK: Resource = {
     read: ({ disks }) => disks.map((disk) => ({ id: `disk:${disk.mount}`, capacity: disk.totalMb, used: disk.totalMb - disk.freeMb, free: disk.freeMb })),
   },
   attribute: null,
-  alert: NO_ALERTS,
+  alert: {
+    rules: (limits) => [
+      {
+        // With both limits, the lower one counts. Thus a small drive does not always alert.
+        type: "level",
+        alert: "disk",
+        on: "free",
+        severity: true,
+        warning: { amount: limits.diskWarnMb, ratio: 0.2 },
+        critical: { amount: limits.diskCriticalMb, ratio: 0.05 },
+        text: ({ measurement, change }) => {
+          const mount = measurement.id.slice("disk:".length);
+          const free = measurement.free ?? 0;
+          const dropped = change?.freeLoss ?? 0;
+          const minutes = (change?.windowMs ?? 0) / 60_000;
+          const window = minutes >= 55 ? "one hour ago" : `${Math.round(minutes)} minutes ago`;
+          const drop = dropped >= 100 && minutes >= 1 ? `, ${diskSize(dropped)} less than ${window}` : "";
+          return { subject: `drive ${mount}`, mb: Math.round(free), message: `Drive ${mount} has ${diskSize(free)} free of ${diskSize(measurement.capacity ?? 0)}${drop}.` };
+        },
+      },
+    ],
+  },
   // A disk lease keeps its full amount until its release, because the write counters are larger than the new space.
   admit: { mode: "measured", reserve: { amount: 5120, ratio: 0.05 } },
   enforce: null,
@@ -431,6 +555,26 @@ export function limitOf(limit: Limit, capacity: number | null): number | null {
   if (limit.amount !== undefined) amounts.push(limit.amount);
   if (limit.ratio !== undefined && capacity !== null) amounts.push(limit.ratio * capacity);
   return amounts.length === 0 ? null : Math.min(...amounts);
+}
+
+/** This function gives the level of an instance for a level rule, or `null` when the instance is inside the limits. */
+export function levelOf(rule: LevelRule, measurement: Measurement): Level | null {
+  const value = rule.on === "free" ? measurement.free : measurement.used;
+  if (value === null) return null;
+  for (const level of ["critical", "warning"] as const) {
+    const limit = rule[level];
+    const amount = limit === undefined ? null : limitOf(limit, measurement.capacity);
+    if (amount === null) continue;
+    if (rule.on === "free" ? value < amount : value > amount) return level;
+  }
+  return null;
+}
+
+/** This function tells if the change of an instance passes the limit of a growth rule. A change over a short history does not. */
+export function grows(rule: GrowthRule, change: Change | undefined): boolean {
+  if (change === undefined || change.windowMs < rule.minHistoryMs) return false;
+  const amount = rule.on === "used" ? change.usedGain : change.freeLoss;
+  return amount !== undefined && amount > rule.warning;
 }
 
 /** This function gives the measurements of all the kinds at one tick, in the order of the kinds. */
