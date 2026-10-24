@@ -12,6 +12,7 @@
 - This repository has no `.mcp.json`. Each MCP server costs memory in each session.
 - The scheduled task `headroom` starts the daemon from the folder `~/git/headroom`. Keep that folder on `main`. Make each branch in a `git worktree`.
 - After a merge that changes the daemon, start `git pull` and `pnpm install` in `~/git/headroom`. Then start `headroom service restart`.
+- When leases wait, start `headroom service restart --when-idle`. The daemon then restarts itself when no lease waits.
 
 ## Writing style
 

@@ -34,8 +34,8 @@ export {
   tcpSummary,
 } from "./network.ts";
 export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary } from "./network.ts";
-export { createJob } from "./enforce.ts";
-export type { Job, JobLimits } from "./enforce.ts";
+export { createJob, startOutsideJob } from "./enforce.ts";
+export type { Job, JobLimits, StartedProcess } from "./enforce.ts";
 export { kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
 export type {
   Admit,

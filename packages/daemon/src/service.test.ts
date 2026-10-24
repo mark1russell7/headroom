@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { systemdArg, systemdUnit, windowsArg, windowsTaskXml, type ServiceCommand } from "./service.ts";
+import { helperCommandLine, pendingLine, systemdArg, systemdUnit, windowsArg, windowsTaskXml, type ServiceCommand } from "./service.ts";
 
 const command: ServiceCommand = {
   node: "C:\\Program Files\\nodejs\\node.exe",
@@ -31,6 +31,19 @@ describe("windowsTaskXml", () => {
     expect(text).toContain("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>");
     expect(text).toContain("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>");
   });
+});
+
+describe("helperCommandLine", () => {
+  const line = helperCommandLine(4242, command);
+  it("runs the restart of the CLI after the daemon stops, with its own title", () => {
+    expect(line).toMatch(/^"C:\\Program Files\\nodejs\\node\.exe" --title=headroom-restart "C:\\Users\\a & b\\headroom\\cli\.ts" service restart --after 4242 --log /);
+    expect(line).not.toContain("headroom-daemon");
+  });
+});
+
+describe("pendingLine", () => {
+  it("tells the time of the request in UTC", () =>
+    expect(pendingLine({ askedAt: Date.parse("2026-10-24T21:05:30Z") })).toBe("A restart waits for an idle queue (asked at 21:05 UTC)."));
 });
 
 describe("systemdUnit", () => {
