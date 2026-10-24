@@ -63,6 +63,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H23 | CPU on the resource model: the processors get the five parts of the model | in progress: the measure and the attribute part came with H20. They give the cores in use and the cores of each owner. Next: the CPU alert, then the admit part and the enforce part. |
 | H24 | The network on the resource model: the throughput of the adapters, the dynamic TCP ports and the listening ports | done: `net:in` and `net:out` in MB/s, `ports:tcp` with the connections of each owner, the `ports` alert, `headroom ports` and `resources.ports` |
 | H25 | The dashboard: one panel for each resource, from the model | done |
+| H26 | The state of a job: `headroom job <name\|id>`, for the fleet's typed wait `job:<name>` | done |
 
 ## The MCP gateway (H11)
 

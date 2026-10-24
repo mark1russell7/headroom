@@ -27,6 +27,16 @@ export interface LeaseRequest {
   readonly pid?: number | undefined;
   /** A lease without a process ends when no heartbeat comes for this time. The default is 5 minutes. */
   readonly ttlMs?: number | undefined;
+  /** The absolute path of the log file of the job (`headroom run --log`). */
+  readonly log?: string | undefined;
+}
+
+/** The exit of a job, from its holder at the release (H26). */
+export interface JobExit {
+  /** The exit code of the job. It is `null` when a signal stopped the job. */
+  readonly code: number | null;
+  /** The signal that stopped the job, for example `SIGTERM`, or `null`. */
+  readonly signal: string | null;
 }
 
 /** A lease and its history. */
@@ -49,6 +59,12 @@ export interface Lease {
   readonly peakMb: number | null;
   /** The use of the job at its release, from its holder, for example the size of its temp folder (H19). */
   readonly usage?: JobUsage | undefined;
+  /** The exit code of the job, from its holder at the release (H26). A lease that ended without a job exit has none. */
+  readonly exitCode?: number | undefined;
+  /** The signal that stopped the job, from its holder at the release (H26). */
+  readonly signal?: string | undefined;
+  /** The absolute path of the log file of the job (`headroom run --log`). */
+  readonly log?: string | undefined;
 }
 
 /** The capacity at one time. */
@@ -154,17 +170,30 @@ export class Broker {
       heartbeatAt: now,
       reason: null,
       peakMb: null,
+      ...(request.log === undefined ? {} : { log: request.log }),
     };
     this.#leases.set(lease.id, lease);
     return lease;
   }
 
-  /** This function ends an active lease. It gives the lease, or `undefined` for an unknown id. The usage is the use of the job, from its holder. */
-  release(id: string, reason = "released", peakMb: number | null = null, usage?: JobUsage): Lease | undefined {
+  /**
+   * This function ends an active lease. It gives the lease, or `undefined` for an unknown id. The usage and the exit
+   * are the use and the exit of the job, from its holder.
+   */
+  release(id: string, reason = "released", peakMb: number | null = null, usage?: JobUsage, exit?: JobExit): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
     const state = lease.state === "waiting" ? "cancelled" : "released";
-    return this.#set({ ...lease, state, endedAt: this.#now(), reason, peakMb, ...(usage === undefined ? {} : { usage }) });
+    return this.#set({
+      ...lease,
+      state,
+      endedAt: this.#now(),
+      reason,
+      peakMb,
+      ...(usage === undefined ? {} : { usage }),
+      ...(exit?.code === null || exit?.code === undefined ? {} : { exitCode: exit.code }),
+      ...(exit?.signal === null || exit?.signal === undefined ? {} : { signal: exit.signal }),
+    });
   }
 
   /** This function records a heartbeat of an active lease. */
