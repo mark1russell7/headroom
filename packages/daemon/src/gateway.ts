@@ -7,6 +7,7 @@
  * session of its own, and each request of a session goes to the one copy.
  *
  * - The gateway starts a server at the first request, and stops it after an idle time.
+ * - `warm` starts the servers before the first request, for example before the sessions of the fleet start.
  * - After a server stops, the next request starts it again. After each failure, the wait before the next start is longer.
  * - The checks of the client apply: the token of the daemon, and no request from a web page.
  * - The SDK of MCP loads at the first request. Thus a daemon with no MCP server does not pay its memory.
@@ -416,6 +417,22 @@ export class McpGateway {
     const pids = new Map<number, string>();
     for (const upstream of this.#upstreams.values()) if (upstream.pid !== null) pids.set(upstream.pid, upstream.name);
     return pids;
+  }
+
+  /**
+   * This function starts servers before the first request, and waits until each answers its `initialize` request.
+   * Without names, it starts each configured server. A server that fails does not stop the others.
+   * The function gives the state of each configured server. It ignores a name that has no configuration.
+   */
+  async warm(names?: readonly string[]): Promise<McpServerState[]> {
+    const wanted = names ?? Object.keys(this.#specs());
+    await Promise.allSettled(
+      wanted.map(async (name) => {
+        const upstream = this.#upstream(name);
+        if (upstream) await upstream.client();
+      }),
+    );
+    return this.list();
   }
 
   /** This function stops a server and closes its sessions, for example after a change of its spec or its removal. */

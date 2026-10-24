@@ -230,6 +230,12 @@ type McpAddInput = z.infer<typeof McpAddInput>;
 const McpNameInput = z.object({ name: ServerName });
 type McpNameInput = z.infer<typeof McpNameInput>;
 
+const McpWarmInput = z.object({
+  names: z.array(ServerName).max(100).optional().describe("The servers to start (default: each configured server)"),
+  timeoutMs: z.number().int().min(1000).max(600_000).default(120_000).describe("The longest wait in ms (default: 120000)"),
+});
+type McpWarmInput = z.infer<typeof McpWarmInput>;
+
 /** The state of a server of the gateway, with the memory of its processes. */
 export interface McpServerRow extends McpServerState {
   readonly memoryMb: number;
@@ -303,5 +309,29 @@ export function gatewayProcedures(engine: Engine, gateway: McpGateway): AnyProce
     })
     .build() as AnyProcedure;
 
-  return [list, add, remove, restart];
+  const warm = createProcedure()
+    .path(["mcp", "warm"])
+    .input(zodAdapter<McpWarmInput>(McpWarmInput))
+    .output(anything<McpServerRow[]>())
+    .meta({
+      description: "Start MCP servers of the gateway before the first request, and wait until each answers or the time ends",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["process"], destructive: false, idempotent: true },
+    })
+    .handler(async (input: McpWarmInput): Promise<McpServerRow[]> => {
+      let timer: NodeJS.Timeout | undefined;
+      const timeout = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, input.timeoutMs);
+      });
+      try {
+        await Promise.race([gateway.warm(input.names), timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+      return rows();
+    })
+    .build() as AnyProcedure;
+
+  return [list, add, remove, restart, warm];
 }

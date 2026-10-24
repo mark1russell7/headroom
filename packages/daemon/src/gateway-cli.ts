@@ -4,14 +4,16 @@
  * - `headroom mcp list`: the state, the process, the memory and the sessions of each server.
  * - `headroom mcp add <name> [--cwd dir] [--env KEY=VALUE]... [--idle 30] -- <command> [args...]`
  * - `headroom mcp remove <name>`, `headroom mcp restart <name>`.
+ * - `headroom mcp warm [name...] [--timeout 120s]`: start the servers, and wait until each answers.
  * - `headroom mcp config <name>`: the configuration of the server for Claude Code.
  */
 
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import type { Connection } from "./client.ts";
+import { answers, connectTo, type Connection } from "./client.ts";
 import { DEFAULT_PORT } from "./daemon.ts";
 import { GATEWAY_PATH } from "./gateway.ts";
+import { parseTime } from "./parse.ts";
 import { readDiscovery } from "./paths.ts";
 import type { McpServerRow } from "./procedures.ts";
 
@@ -19,7 +21,11 @@ const USAGE = `headroom mcp list
 headroom mcp add <name> [--cwd dir] [--env KEY=VALUE]... [--idle 30] -- <command> [args...]
 headroom mcp remove <name>
 headroom mcp restart <name>
+headroom mcp warm [name...] [--timeout 120s]
 headroom mcp config <name>`;
+
+/** The longest wait of the procedure `mcp.warm`. */
+const MAX_WARM_MS = 600_000;
 
 function age(at: number | null): string {
   if (at === null) return "-";
@@ -51,9 +57,53 @@ export function claudeConfig(name: string): { readonly type: "http"; readonly ur
   return { type: "http", url: `${origin}${GATEWAY_PATH}${name}`, headersHelper: `node ${helper.includes(" ") ? JSON.stringify(helper) : helper}` };
 }
 
+/** This function waits until the daemon answers, and tries one time each second. The daemon can still start, for example at logon. */
+async function waitForDaemon(deadline: number): Promise<Connection | null> {
+  for (;;) {
+    const discovery = readDiscovery();
+    if (discovery && (await answers(discovery, Math.min(3000, Math.max(1000, deadline - Date.now()))))) return connectTo(discovery);
+    if (Date.now() + 1000 > deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+/**
+ * This function does `headroom mcp warm`. It waits for the daemon, then starts the servers and waits until each answers.
+ * The exit code is 0 only when the state of each requested server is `running`. Without names, this applies to each configured server.
+ */
+async function warmCommand(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args: [...args], allowPositionals: true, options: { timeout: { type: "string" } } });
+  const started = Date.now();
+  const deadline = started + parseTime(values.timeout ?? "120s");
+  const seconds = (): string => ((Date.now() - started) / 1000).toFixed(1);
+  const connection = await waitForDaemon(deadline);
+  if (!connection) {
+    console.error(`headroom did not answer in ${seconds()} s. Start it with: headroom service start`);
+    return 1;
+  }
+  const timeoutMs = Math.min(MAX_WARM_MS, Math.max(1000, deadline - Date.now()));
+  const rows = await connection.call<McpServerRow[]>(["mcp", "warm"], { ...(positionals.length > 0 ? { names: positionals } : {}), timeoutMs });
+  printRows(rows);
+  const wanted = positionals.length > 0 ? positionals : rows.map((row) => row.name);
+  const missing = wanted.filter((name) => !rows.some((row) => row.name === name));
+  const stopped = rows.filter((row) => wanted.includes(row.name) && row.state !== "running");
+  if (missing.length > 0) {
+    console.error(`The gateway has no MCP server ${missing.join(", ")} (${seconds()} s).`);
+    return 1;
+  }
+  if (stopped.length > 0) {
+    console.error(`Not running after ${seconds()} s: ${stopped.map((row) => `${row.name} (${row.state})`).join(", ")}.`);
+    return 1;
+  }
+  console.log(`\nEach MCP server runs (${seconds()} s).`);
+  return 0;
+}
+
 /** This function runs a `headroom mcp` command. It gives the exit code. */
 export async function mcpCommand(argv: readonly string[], connection: Connection | null): Promise<number> {
   const [action, ...rest] = argv;
+  // The daemon can still start: the warm-up waits for it.
+  if (action === "warm") return warmCommand(rest);
   if (action === "config") {
     const name = rest[0];
     if (!name) return (console.error(USAGE), 2);
