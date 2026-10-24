@@ -212,6 +212,11 @@ export interface Admit {
   readonly mode: "measured" | "counted";
   /** The amount that the broker keeps free. Memory: 1024 MB. Disk: the critical limit. */
   readonly reserve: Limit;
+  /**
+   * With this level, the reserve is the limit of this level in the level rule of the kind on the free part. Thus the
+   * reserve follows the configured alert limits. Disk: `critical`.
+   */
+  readonly reserveFrom?: Level | undefined;
   /** The capacity of an instance with no measurement and no configuration. A slot has 1, a lock. */
   readonly defaultCapacity?: number | undefined;
   /** This function gives the part of a granted lease that its job uses at this time. Without it, the lease keeps its full amount. */
@@ -493,8 +498,10 @@ const DISK: Resource = {
     ],
   },
   // A disk lease keeps its full amount until its release, because the write counters are larger than the new space.
-  admit: { mode: "measured", reserve: { amount: 5120, ratio: 0.05 } },
-  enforce: null,
+  // The reserve is the critical limit of the disk alert.
+  admit: { mode: "measured", reserve: { amount: 5120, ratio: 0.05 }, reserveFrom: "critical" },
+  // Windows has no space quota for one job. H19 gives each job its own temp folder, and the release reports its size.
+  enforce: { limit: () => null, report: ["tempMb"] },
 };
 
 /**
@@ -591,28 +598,55 @@ export function withKinds(measurements: readonly Measurement[]): ResourceStatus[
 }
 
 /**
+ * This function gives the reserve of one id for a capacity. With alert limits and `reserveFrom`, the reserve is the limit
+ * of that level in the level rule of the kind. Otherwise, it is the reserve of the admit part.
+ */
+export function reserveOf(id: ResourceId, capacity: number | null, limits?: AlertRules): number {
+  const resource = resourceOf(id);
+  const admit = resource.admit;
+  if (admit === null) return 0;
+  if (admit.reserveFrom !== undefined && limits !== undefined) {
+    const rule = resource.alert
+      .rules(limits)
+      .find((each): each is LevelRule => each.type === "level" && each.on === "free" && (each.instance === undefined || each.instance === id));
+    const limit = rule?.[admit.reserveFrom];
+    if (limit !== undefined) return limitOf(limit, capacity) ?? 0;
+  }
+  return limitOf(admit.reserve, capacity) ?? 0;
+}
+
+/**
  * This function gives the room of one id. A kind with no admit part counts as a slot. A measured instance
  * with no measurement, for example a drive that does not exist, gets the capacity 0.
  */
-export function roomOf(id: ResourceId, measurement: Measurement | undefined, pools: Amounts, reserve?: number): Room {
+export function roomOf(id: ResourceId, measurement: Measurement | undefined, pools: Amounts, reserve?: number, limits?: AlertRules): Room {
   const admit = resourceOf(id).admit;
   const configured = pools[id];
   if (admit === null) return { mode: "counted", capacity: configured ?? 1, free: null, reserve: 0 };
   if (admit.mode === "measured") {
     const capacity = measurement?.capacity ?? 0;
-    return { mode: "measured", capacity, free: measurement?.free ?? 0, reserve: reserve ?? limitOf(admit.reserve, capacity) ?? 0 };
+    return { mode: "measured", capacity, free: measurement?.free ?? 0, reserve: reserve ?? reserveOf(id, capacity, limits) };
   }
   // A counted instance with a measured capacity uses the configured pool as a cap.
   const measured = measurement?.capacity ?? null;
   const capacity = measured === null ? (configured ?? admit.defaultCapacity ?? 1) : Math.min(measured, configured ?? measured);
-  return { mode: "counted", capacity, free: null, reserve: reserve ?? limitOf(admit.reserve, capacity) ?? 0 };
+  return { mode: "counted", capacity, free: null, reserve: reserve ?? reserveOf(id, capacity, limits) };
 }
 
-/** This function gives the room of each id from the measurements, the configured pools and the reserves that the caller sets. */
-export function rooms(ids: Iterable<ResourceId>, measurements: readonly Measurement[], pools: Amounts, reserves: Amounts = {}): Record<ResourceId, Room> {
+/**
+ * This function gives the room of each id from the measurements, the configured pools and the reserves that the caller sets.
+ * With alert limits, the reserve of a drive is the critical limit of the disk alert.
+ */
+export function rooms(
+  ids: Iterable<ResourceId>,
+  measurements: readonly Measurement[],
+  pools: Amounts,
+  reserves: Amounts = {},
+  limits?: AlertRules,
+): Record<ResourceId, Room> {
   const byId = new Map(measurements.map((each) => [each.id, each]));
   const result: Record<ResourceId, Room> = {};
-  for (const id of ids) result[id] = roomOf(id, byId.get(id), pools, reserves[id]);
+  for (const id of ids) result[id] = roomOf(id, byId.get(id), pools, reserves[id], limits);
   return result;
 }
 

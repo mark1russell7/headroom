@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMemory, parseTime } from "./parse.ts";
+import { mountOf, normalizeMount, parseDisk, parseMemory, parseTime } from "./parse.ts";
 
 describe("parseMemory", () => {
   it("reads GB, MB and bare numbers as MB", () => {
@@ -8,6 +8,26 @@ describe("parseMemory", () => {
     expect(parseMemory("1500m")).toBe(1500);
     expect(parseMemory("700")).toBe(700);
     expect(() => parseMemory("lots")).toThrow(/Not a memory amount/);
+  });
+});
+
+describe("parseDisk", () => {
+  it("reads an amount for the drive of the current folder, or for a named drive", () => {
+    expect(parseDisk("5g")).toEqual({ mount: null, mb: 5120 });
+    expect(parseDisk("D:=5g")).toEqual({ mount: "D:", mb: 5120 });
+    expect(parseDisk("d=500m")).toEqual({ mount: "D:", mb: 500 });
+    expect(parseDisk("/home=1g")).toEqual({ mount: "/home", mb: 1024 });
+    expect(() => parseDisk("D:")).toThrow(/Not a disk amount/);
+    expect(() => parseDisk("=5g")).toThrow(/Not a disk amount/);
+  });
+
+  it("gives the drive of a path: the drive letter on Windows, the longest mount point on Linux", () => {
+    expect(normalizeMount("d:\\")).toBe("D:");
+    expect(mountOf("d:\\git\\headroom", [], "win32")).toBe("D:");
+    expect(mountOf("\\\\server\\share", [], "win32")).toBeNull();
+    expect(mountOf("/home/mark/git", ["/", "/home/mark"], "linux")).toBe("/home/mark");
+    expect(mountOf("/home/markus", ["/", "/home/mark"], "linux")).toBe("/");
+    expect(mountOf("/srv", [], "linux")).toBeNull();
   });
 });
 

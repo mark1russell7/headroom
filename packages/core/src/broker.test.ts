@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
 import { Broker, type Capacity } from "./broker.ts";
 import { rooms } from "./resources.ts";
 
@@ -24,6 +25,15 @@ const cap = (availableMb: number, pools: Record<string, number> = {}): Capacity 
 const cpuCap = (pools: Record<string, number>): Capacity => ({
   ...cap(8000, pools),
   rooms: rooms(["cpu"], [{ id: "cpu", capacity: 16, used: null, free: null }], pools),
+});
+
+/**
+ * A capacity with the room of the drive `D:` (200 GB) as the engine gives it: the measured free space, and the critical
+ * limit of the disk alert as the reserve. The other ids get the room of a drive with no measurement.
+ */
+const diskCap = (freeMb: number, limits: AlertRules = DEFAULT_ALERT_RULES, more: readonly string[] = []): Capacity => ({
+  ...cap(8000),
+  rooms: rooms(["disk:D:", ...more], [{ id: "disk:D:", capacity: 200_000, used: 200_000 - freeMb, free: freeMb }], {}, {}, limits),
 });
 
 describe("Broker", () => {
@@ -156,6 +166,52 @@ describe("Broker", () => {
     // 10000 free - 5120 reserve - 4000 of the granted lease = 880. The job uses no part of the disk amount.
     expect(broker.get(b.id)?.reason).toBe("waits for disk:D:: needs 1000, 880 free");
     expect(broker.get(huge.id)?.reason).toBe("disk:D:: 196000 is more than the capacity of 194880");
+  });
+
+  describe("disk leases (step 5)", () => {
+    // 20 GB free on a drive of 200 GB. The reserve is the critical limit of the disk alert: 5120 MB.
+    it("grants a disk lease that fits in the free space less the critical limit, and holds its full amount", () => {
+      const { broker } = setup();
+      const lease = broker.request({ holder: "a", job: "test", amounts: { "disk:D:": 5120 }, pid: 10 });
+      broker.tick(diskCap(20_000));
+      expect(broker.get(lease.id)?.state).toBe("granted");
+      // 20000 free - 5120 reserve - 5120 of the granted lease. The job writes nothing yet, and the lease keeps its amount.
+      expect(broker.free(diskCap(20_000))["disk:D:"]).toBe(9760);
+    });
+
+    it("holds a disk lease that does not fit, and grants it when the space is free", () => {
+      const { broker } = setup();
+      const a = broker.request({ holder: "a", job: "trace", amounts: { "disk:D:": 8000 } });
+      const b = broker.request({ holder: "b", job: "test", amounts: { "disk:D:": 8000 } });
+      broker.tick(diskCap(20_000));
+      expect(broker.get(a.id)?.state).toBe("granted");
+      expect(broker.get(b.id)?.state).toBe("waiting");
+      expect(broker.get(b.id)?.reason).toBe("waits for disk:D:: needs 8000, 6880 free");
+      broker.release(a.id);
+      broker.tick(diskCap(20_000));
+      expect(broker.get(b.id)?.state).toBe("granted");
+    });
+
+    it("cancels a disk lease larger than the drive, and a lease for a drive that does not exist", () => {
+      const { broker } = setup();
+      const huge = broker.request({ holder: "a", job: "image", amounts: { "disk:D:": 300_000 } });
+      const missing = broker.request({ holder: "b", job: "test", amounts: { "disk:Q:": 1024 } });
+      broker.tick(diskCap(20_000, DEFAULT_ALERT_RULES, ["disk:Q:"]));
+      expect(broker.get(huge.id)?.state).toBe("cancelled");
+      expect(broker.get(huge.id)?.reason).toBe("disk:D:: 300000 is more than the capacity of 194880");
+      expect(broker.get(missing.id)?.state).toBe("cancelled");
+      expect(broker.get(missing.id)?.reason).toBe("disk:Q:: 1024 is more than the capacity of 0");
+    });
+
+    it("takes the reserve of a drive from the critical limit of the disk alert", () => {
+      const { broker } = setup();
+      const limits = { ...DEFAULT_ALERT_RULES, diskCriticalMb: 8192 };
+      expect(diskCap(20_000, limits).rooms?.["disk:D:"]?.reserve).toBe(8192);
+      expect(broker.free(diskCap(20_000, limits))["disk:D:"]).toBe(11_808);
+      // On a small drive, 5% of its size is the lower limit.
+      const small: Capacity = { ...cap(8000), rooms: rooms(["disk:E:"], [{ id: "disk:E:", capacity: 30_720, used: 20_720, free: 10_000 }], {}, {}, limits) };
+      expect(small.rooms?.["disk:E:"]?.reserve).toBe(1536);
+    });
   });
 
   it("cancels a waiting lease on release, and refuses a negative amount", () => {

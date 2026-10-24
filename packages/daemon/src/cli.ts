@@ -9,11 +9,13 @@
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
+ * - `headroom config [job-temp <folder>]`: show or change the settings.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   createJob,
@@ -25,8 +27,10 @@ import {
   readSessions,
   type Alert,
   type Alerts,
+  type Config,
   type History,
   type Job,
+  type JobUsage,
   type Lease,
   type PoolTags,
   type Status,
@@ -37,7 +41,8 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
-import { parseMemory, parseTime } from "./parse.ts";
+import { diskAmounts, finishTemp, jobEnv, prepareTemp } from "./job.ts";
+import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import * as service from "./service.ts";
 
@@ -49,11 +54,15 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp list | add | remove | restart | warm | config   (the MCP gateway)
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
-  headroom run [--mem 2g|auto] [--cpu 2] [--slot docker]... [--holder name] [--job name]
-               [--priority 0] [--wait 30m] [--limit] [--keep] [--force-disk] -- <command> [args...]
+  headroom run [--mem 2g|auto] [--cpu 2] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
+               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
+               --disk 5g: space on the drive of the current folder. --disk D:=5g: on the drive D:.
+               With a temp root (headroom config job-temp), the job gets its own TEMP folder,
+               and the run removes it at the end. --keep-temp: keep the folder.
                A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
                A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
+  headroom config [job-temp <folder> | job-temp --clear]   (show or change the settings)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
@@ -94,6 +103,12 @@ function clock(at: number): string {
   return new Date(at).toISOString().slice(11, 16);
 }
 
+/** This function writes an amount in the unit of its kind: MB or GB for the memory and the drives, else a count. */
+function amountText(name: string, amount: number): string {
+  const kind = kindOf(name);
+  return kind === "memory" ? mb(Math.max(0, amount)) : kind === "disk" ? diskSize(Math.max(0, amount)) : String(amount);
+}
+
 function printStatus(status: Status): void {
   const { memory } = status;
   for (const alert of status.alerts ?? []) console.log(`ALERT since ${clock(alert.since)} UTC: ${alert.message}`);
@@ -110,14 +125,11 @@ function printStatus(status: Status): void {
     });
     console.log(`Disks: ${each.join(", ")}.`);
   }
-  const free = Object.entries(status.free).map(([name, amount]) => {
-    const kind = kindOf(name);
-    return `${name} ${kind === "memory" ? mb(Math.max(0, amount)) : kind === "disk" ? diskSize(Math.max(0, amount)) : amount}`;
-  });
+  const free = Object.entries(status.free).map(([name, amount]) => `${name} ${amountText(name, amount)}`);
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
   for (const lease of status.leases) {
-    const amounts = Object.entries(lease.amounts).map(([name, amount]) => `${name} ${name === "memory" ? mb(amount) : amount}`).join(", ");
+    const amounts = Object.entries(lease.amounts).map(([name, amount]) => `${name} ${amountText(name, amount)}`).join(", ");
     console.log(`  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${lease.reason ? `  (${lease.reason})` : ""}`);
   }
   console.log("\nMemory by owner (private, then in RAM now):");
@@ -130,16 +142,17 @@ function quote(arg: string): string {
   return process.platform === "win32" && /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
 }
 
-/** This function runs a command, and gives its exit code. */
-function runCommand(command: readonly string[]): Promise<number> {
+/** This function runs a command, and gives its exit code. `env` adds variables to the environment of the command. */
+function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}): Promise<number> {
   return new Promise((resolve) => {
     const [file, ...args] = command;
     if (!file) return resolve(2);
+    const options = { stdio: "inherit" as const, env: jobEnv(env) };
     // On Windows, pnpm and npm are .cmd files, which only a shell starts. The shell gets one quoted command line.
     const child =
       process.platform === "win32"
-        ? spawn([file, ...args].map(quote).join(" "), { stdio: "inherit", shell: true })
-        : spawn(file, args, { stdio: "inherit" });
+        ? spawn([file, ...args].map(quote).join(" "), { ...options, shell: true })
+        : spawn(file, args, options);
     child.on("error", (error) => {
       console.error(`headroom: the command did not start: ${error.message}`);
       resolve(127);
@@ -166,7 +179,11 @@ interface Enforcement {
  * job that still runs, so no process of the job stays as an orphan. With --limit, the job cannot commit more memory than
  * its lease. The function prints the peak memory of the job, so the holder can size the next lease.
  */
-async function runEnforced(command: readonly string[], enforcement: Enforcement): Promise<{ code: number; peakMb: number | null }> {
+async function runEnforced(
+  command: readonly string[],
+  enforcement: Enforcement,
+  env: Readonly<Record<string, string>> = {},
+): Promise<{ code: number; peakMb: number | null }> {
   let held: Job | null = null;
   if (!enforcement.keep) {
     // The process of headroom is in the job too: the limit adds its memory and a margin.
@@ -179,7 +196,7 @@ async function runEnforced(command: readonly string[], enforcement: Enforcement)
     }
   }
   const base = held?.peakMb() ?? 0;
-  const code = await runCommand(command);
+  const code = await runCommand(command, env);
   if (!held) return { code, peakMb: null };
   const peakMb = Math.max(0, held.peakMb() - base);
   const of = enforcement.leaseMb === null ? "" : ` of its lease of ${mb(enforcement.leaseMb)}`;
@@ -215,15 +232,8 @@ async function waitForGrant(start: Connection, lease: Lease, deadline: number): 
  * This function examines the fixed drives before a job starts, because a full drive stops the builds, the tests and git
  * of all the sessions. It gives 75 when a drive is nearly full and `force` is false. Otherwise, it gives `null`.
  */
-async function checkDisks(connection: Connection, force: boolean): Promise<number | null> {
-  let status: Status;
-  try {
-    status = await connection.call<Status>(["resources", "status"], {});
-  } catch {
-    // The lease request that comes next reports a daemon that does not answer.
-    return null;
-  }
-  for (const disk of status.disks ?? []) {
+function checkDisks(status: Status | null, force: boolean): number | null {
+  for (const disk of status?.disks ?? []) {
     const level = diskLevel(disk);
     if (level === null) continue;
     const free = `headroom: drive ${disk.mount} has only ${diskSize(disk.freeMb)} free.`;
@@ -248,8 +258,10 @@ async function run(argv: string[]): Promise<number> {
       job: { type: "string" },
       priority: { type: "string" },
       wait: { type: "string" },
+      disk: { type: "string", multiple: true },
       limit: { type: "boolean" },
       keep: { type: "boolean" },
+      "keep-temp": { type: "boolean" },
       "no-auto-slot": { type: "boolean" },
       "force-disk": { type: "boolean" },
     },
@@ -275,14 +287,30 @@ async function run(argv: string[]): Promise<number> {
     return 2;
   }
   const keep = values.keep === true;
+  for (const value of values.disk ?? []) {
+    try {
+      parseDisk(value);
+    } catch (error) {
+      console.error(`headroom: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
 
   const connection = connect();
   if (!connection) {
     console.error("headroom: the daemon does not run, so the job runs without a lease.");
     return (await runEnforced(positionals, { keep, limit: false, leaseMb: null })).code;
   }
-  const stopped = await checkDisks(connection, values["force-disk"] === true);
+  // When the daemon does not answer, the lease request that comes next reports it.
+  const status = await connection.call<Status>(["resources", "status"], {}).catch(() => null);
+  const stopped = checkDisks(status, values["force-disk"] === true);
   if (stopped !== null) return stopped;
+  const disks = diskAmounts(values.disk ?? [], (status?.disks ?? []).map((disk) => disk.mount));
+  if (typeof disks === "string") {
+    console.error(`headroom: ${disks}`);
+    return 2;
+  }
+  Object.assign(amounts, disks);
   const holder = values.holder ?? (await holderOf());
   // --mem auto: the peaks of the last runs of this job give the amount.
   if (values.mem === "auto") {
@@ -319,13 +347,25 @@ async function run(argv: string[]): Promise<number> {
     console.error(`headroom: the lease ended before the job started: ${lease.reason ?? lease.state}`);
     return 75;
   }
-  const { code, peakMb } = await runEnforced(positionals, enforcement);
+  // H19: with a temp root, the job writes its temp files under its lease. With --keep, the job keeps the TEMP of its
+  // parent, because a service that it starts on purpose can use its temp folder after the job ends.
+  const temp = keep ? null : await prepareTemp(latest, lease.id);
+  let result: { code: number; peakMb: number | null } = { code: 1, peakMb: null };
+  let tempMb: number | null = null;
+  try {
+    result = await runEnforced(positionals, enforcement, temp?.env ?? {});
+  } finally {
+    if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
+  }
+  const { code, peakMb } = result;
   const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
+  const usage: JobUsage = { ...(peakMb === null ? {} : { peakMb }), ...(tempMb === null ? {} : { tempMb }) };
   try {
     await (connect() ?? latest).call(["resources", "release"], {
       id: lease.id,
       reason: `the job ended with code ${code}${peak}`,
       ...(peakMb === null ? {} : { peakMb }),
+      ...(Object.keys(usage).length === 0 ? {} : { usage }),
     });
   } catch {
     // The daemon ends the lease anyway when this process exits.
@@ -405,6 +445,32 @@ async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
     }
   }
   if (!drivers) console.log("\nTo name the driver of each tag: headroom pool-tags --drivers");
+  return 0;
+}
+
+/** This function prints the settings. */
+function printConfig(config: Config): void {
+  console.log(`job-temp: ${config.jobTemp ?? "(none: each job of headroom run uses the TEMP of its parent)"}`);
+}
+
+/** `headroom config`: show the settings. `headroom config job-temp <folder>` sets the temp root, and `--clear` removes it. */
+async function configCommand(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { clear: { type: "boolean" }, json: { type: "boolean" } } });
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run. Start it with: headroom service install"), 1);
+  const [name, value] = positionals;
+  if (name === undefined) {
+    const config = await connection.call<Config>(["config", "get"], {});
+    if (values.json) console.log(JSON.stringify(config, null, 2));
+    else printConfig(config);
+    return 0;
+  }
+  if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
+    console.error("Usage: headroom config, headroom config job-temp <folder>, or headroom config job-temp --clear");
+    return 2;
+  }
+  // The daemon has its own current folder, so a relative folder resolves here.
+  printConfig(await connection.call<Config>(["config", "set"], { jobTemp: value === undefined ? null : resolve(value) }));
   return 0;
 }
 
@@ -503,6 +569,8 @@ async function main(argv: string[]): Promise<number> {
       console.log(`${lease.id}: ${lease.state}`);
       return 0;
     }
+    case "config":
+      return configCommand(rest);
     case "mcp":
       return mcpCommand(rest, connect());
     case "resume-plan":

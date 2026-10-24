@@ -1,8 +1,8 @@
 /**
- * The procedures of headroom: `resources.*` and `mcp.*`. Each procedure uses one engine.
+ * The procedures of headroom: `resources.*`, `config.*` and `mcp.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Engine, History, Lease, PoolTags, Status, Suggestion } from "@headroom/core";
+import type { Alerts, Config, Engine, History, JobUsage, Lease, PoolTags, Status, Suggestion } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -27,11 +27,31 @@ const WaitInput = IdInput.extend({
 });
 type WaitInput = z.infer<typeof WaitInput>;
 
+const Usage = z
+  .object({
+    peakMb: z.number().min(0).optional().describe("The peak memory of the job in MB"),
+    writtenMb: z.number().min(0).optional().describe("The MB that the job wrote"),
+    cpuMs: z.number().min(0).optional().describe("The processor time of the job in ms"),
+    tempMb: z.number().min(0).optional().describe("The size of the temp folder of the job in MB, before its removal"),
+  })
+  .strict();
+
 const ReleaseInput = IdInput.extend({
   reason: z.string().max(200).optional().describe("Why the lease ends"),
   peakMb: z.number().min(0).optional().describe("The peak memory of the job in MB, from its job object"),
+  usage: Usage.optional().describe("The use of the job at its release, from its holder"),
 });
 type ReleaseInput = z.infer<typeof ReleaseInput>;
+
+const ConfigSetInput = z.object({
+  jobTemp: z
+    .string()
+    .min(1)
+    .max(1000)
+    .nullable()
+    .describe("The temp root of the jobs, for example D:\\headroom\\tmp. null removes it, and each job then keeps the TEMP of its parent."),
+});
+type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
 const HistoryInput = z.object({
   minutes: z.number().int().positive().max(10_080).default(60).describe("The length of the history in minutes (default: 60)"),
@@ -128,7 +148,7 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: ReleaseInput): Promise<Lease> => found(engine.release(input.id, input.reason, input.peakMb), input.id))
+    .handler(async (input: ReleaseInput): Promise<Lease> => found(engine.release(input.id, input.reason, input.peakMb, usageOf(input.usage)), input.id))
     .build() as AnyProcedure;
 
   const renew = createProcedure()
@@ -212,7 +232,41 @@ export function resourceProcedures(engine: Engine): AnyProcedure[] {
     .handler(async (input: SuggestInput): Promise<Suggestion> => engine.suggest(input.job, input.holder))
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, renew, history, pool, alerts, pooltags, suggest];
+  const configGet = createProcedure()
+    .path(["config", "get"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<Config>())
+    .meta({
+      description: "Give the settings of headroom, for example the temp root of the jobs",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<Config> => engine.config())
+    .build() as AnyProcedure;
+
+  const configSet = createProcedure()
+    .path(["config", "set"])
+    .input(zodAdapter<ConfigSetInput>(ConfigSetInput))
+    .output(anything<Config>())
+    .meta({
+      description: "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
+    })
+    .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig("jobTemp", input.jobTemp))
+    .build() as AnyProcedure;
+
+  return [status, lease, wait, release, renew, history, pool, alerts, pooltags, suggest, configGet, configSet];
+}
+
+/** This function gives the usage of a release with only the fields that have a value. */
+function usageOf(input: ReleaseInput["usage"]): JobUsage | undefined {
+  if (input === undefined) return undefined;
+  const usage: Record<string, number> = {};
+  for (const [name, value] of Object.entries(input)) if (typeof value === "number") usage[name] = value;
+  return usage as JobUsage;
 }
 
 const ServerName = z.string().regex(SERVER_NAME, "Use letters, digits, - and _").describe("The name of the server, for example vex");

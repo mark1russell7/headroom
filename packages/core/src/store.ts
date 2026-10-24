@@ -3,14 +3,14 @@
  *
  * It keeps the leases, the capacity of the configured pools, one memory sample each minute and
  * the memory of each owner each minute. It also keeps the level of each resource instance each minute,
- * and the snapshots of the pool tags. It removes the samples that are older than the retention.
+ * the snapshots of the pool tags and the settings. It removes the samples that are older than the retention.
  */
 
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
-import type { Measurement } from "./resources.ts";
+import type { JobUsage, Measurement } from "./resources.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
@@ -52,7 +52,17 @@ CREATE TABLE IF NOT EXISTS pool_tags (
 CREATE TABLE IF NOT EXISTS resource_samples (
   at INTEGER NOT NULL, id TEXT NOT NULL, capacity REAL, used REAL, free REAL, PRIMARY KEY (at, id)
 );
+CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 `;
+
+/** The settings of headroom. The store keeps them, and `headroom config` shows and changes them. */
+export interface Config {
+  /**
+   * The temp root (H19), for example `D:\headroom\tmp`. Each job of `headroom run` gets the folder `<jobTemp>\<lease id>`
+   * for its `TEMP`, `TMP` and `TMPDIR`. Without it, a job keeps the `TEMP` of its parent.
+   */
+  readonly jobTemp: string | null;
+}
 
 /** One stored measurement of a resource instance, in the unit of its kind. */
 export interface ResourceRow extends Measurement {
@@ -81,6 +91,7 @@ export class Store {
     // A database of an older version has no column for the peak memory of a lease.
     const columns = this.#db.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
     if (!columns.includes("peak_mb")) this.#db.exec("ALTER TABLE leases ADD COLUMN peak_mb REAL");
+    if (!columns.includes("usage")) this.#db.exec("ALTER TABLE leases ADD COLUMN usage TEXT");
     const memoryColumns = this.#db.prepare("PRAGMA table_info(memory)").all().map((row) => String(row["name"]));
     for (const column of ["processes", "user_objects", "gdi_objects"]) {
       if (!memoryColumns.includes(column)) this.#db.exec(`ALTER TABLE memory ADD COLUMN ${column} INTEGER`);
@@ -91,20 +102,41 @@ export class Store {
   saveLease(lease: Lease): void {
     this.#db
       .prepare(
-        `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
-           ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb`,
+           ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
+           usage = excluded.usage`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
         lease.state, lease.requestedAt, lease.grantedAt, lease.endedAt, lease.heartbeatAt, lease.reason, lease.peakMb,
+        lease.usage === undefined ? null : JSON.stringify(lease.usage),
       );
   }
 
   /** This function reads the active leases: the waiting and the granted ones. */
   activeLeases(): Lease[] {
     return this.#db.prepare("SELECT * FROM leases WHERE state IN ('waiting', 'granted')").all().map(toLease);
+  }
+
+  /** This function reads one lease, or gives `null` when the store does not have it. */
+  lease(id: string): Lease | null {
+    const row = this.#db.prepare("SELECT * FROM leases WHERE id = ?").get(id);
+    return row === undefined ? null : toLease(row);
+  }
+
+  /** This function reads the settings. A setting that the store does not have is `null`. */
+  config(): Config {
+    const values = new Map<string, string>();
+    for (const row of this.#db.prepare("SELECT name, value FROM settings").all()) values.set(String(row["name"]), String(row["value"]));
+    return { jobTemp: values.get("jobTemp") ?? null };
+  }
+
+  /** This function sets one setting. `null` removes it. */
+  setConfig(name: keyof Config, value: string | null): void {
+    if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
+    else this.#db.prepare("INSERT INTO settings VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(name, value);
   }
 
   /** This function reads the leases that ended after a time, the newest first. */
@@ -290,5 +322,6 @@ function toLease(row: Record<string, unknown>): Lease {
     heartbeatAt: Number(row["heartbeat_at"]),
     reason: row["reason"] === null || row["reason"] === undefined ? null : String(row["reason"]),
     peakMb: nullable(row["peak_mb"]),
+    ...(row["usage"] === null || row["usage"] === undefined ? {} : { usage: JSON.parse(String(row["usage"])) as JobUsage }),
   };
 }

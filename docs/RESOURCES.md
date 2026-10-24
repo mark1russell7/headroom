@@ -403,6 +403,17 @@ Steps 1 to 4 shipped in #29, #30 and #31. The code in `packages/core/src/resourc
 - `detect()` gives at most one alert for each process, and one alert for each alert id. The first rule wins.
 - `explain()` has no implementation yet. The engine still adds the pool tags and the large files to the messages.
 
+### What steps 5 and 6 changed
+
+Steps 5 and 6 differ from the design above in these points:
+
+- `Admit` has the field `reserveFrom`. With it, the reserve is the limit of that level in the level rule of the kind. Disk has `reserveFrom: "critical"`, so its reserve follows `diskCriticalMb`.
+- The gate of the critical level stays in `headroom run`. The client examines each drive before its lease request, as before.
+- The temp root is the setting `jobTemp` in the new table `settings`. The procedures `config.get` and `config.set` read and change it. `headroom config job-temp <folder>` uses them.
+- `Enforce.setup()` has no implementation. The temp root is a setting, not a part of the lease. Thus `jobTempSetup(root, leaseId)` in `temp.ts` gives the setup.
+- `Lease.usage` and the column `usage` of `leases` keep the use of the job. The client reports `peakMb` and `tempMb`. `writtenMb` is not reported yet.
+- The sweep of the daemon removes a folder only when the store has its lease and the lease ended. A folder with another name stays. A folder with the mark of `--keep-temp` stays.
+
 ### H19: the temp folder of each job
 
 `headroom run` gives each job its own `TEMP` and `TMP` folder on the Dev Drive. Large test output then goes to `D:`, and a job cannot fill `C:` through its temp folder.
