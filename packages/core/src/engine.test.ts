@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES } from "./alerts.ts";
 import { Engine } from "./engine.ts";
+import { DEFAULT_HEALTH, type ServiceHealth } from "./services.ts";
 import type { Sampler } from "./sampler.ts";
 import { Store } from "./store.ts";
 import type { PoolTag, ProcessInfo } from "./types.ts";
@@ -367,9 +368,9 @@ describe("Engine disk leases and temp folders", () => {
     const root = mkdtempSync(join(tmpdir(), "headroom-sweep-"));
     try {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
-      expect(() => engine.setConfig("jobTemp", "relative\\tmp")).toThrow(/absolute path/);
+      expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig("jobTemp", root)).toEqual({ jobTemp: root });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });
@@ -498,6 +499,56 @@ describe("Engine network and ports", () => {
     const status = engine.status();
     expect(status.tcp).toBeNull();
     expect(status.resources.some((each) => each.kind === "net" || each.kind === "ports")).toBe(false);
+    engine.close();
+  });
+});
+
+describe("Engine services (H27)", () => {
+  const sampler: Sampler = {
+    memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: () => [],
+    close: () => undefined,
+  };
+  const docker = (state: ServiceHealth["state"], checks: number): ServiceHealth => ({
+    name: "docker", type: "docker", title: "The Docker engine", target: "/var/run/docker.sock", critical: true, needs: null,
+    state, latencyMs: state === "ok" ? 12 : null, checkedAt: 60_000, since: 0, checks, okAt: null, error: null, errorAt: null,
+  });
+
+  it("gives each service as a resource instance, and starts the alert after two checks that are down", () => {
+    let now = 1_000_000;
+    let services = [docker("down", 1)];
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere", services: () => services });
+    engine.tick();
+    const [resource] = engine.status().resources.filter((each) => each.kind === "service");
+    expect(resource).toMatchObject({ id: "service:docker", unit: "state", capacity: null, used: null, free: null, health: { state: "down" } });
+    expect(engine.status().free["service:docker"]).toBeUndefined();
+    expect(engine.alerts().active).toEqual([]);
+    services = [docker("down", 2)];
+    now += 30_000;
+    engine.tick();
+    expect(engine.alerts().active).toMatchObject([{ id: "service:docker", kind: "service", severity: "critical" }]);
+    expect(engine.services()).toEqual(services);
+    services = [docker("ok", 1)];
+    now += 30_000;
+    engine.tick();
+    expect(engine.alerts().active).toEqual([]);
+    expect(engine.status().resources.find((each) => each.id === "service:docker")?.used).toBe(12);
+    engine.close();
+  });
+
+  it("keeps the URLs of the setting health, and refuses a URL that is not http", () => {
+    const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
+    expect(engine.config().health).toEqual(DEFAULT_HEALTH);
+    expect(engine.setConfig({ health: { "fleet-site": "http://127.0.0.1:4731", grafana: "http://localhost:3000/login" } }).health).toEqual({
+      "fleet-site": "http://127.0.0.1:4731/",
+      grafana: "http://localhost:3000/login",
+    });
+    expect(() => engine.setConfig({ health: { ftp: "ftp://example.com/" } })).toThrow(/not http or https/);
+    expect(() => engine.setConfig({ health: { docker: "http://127.0.0.1:2375/" } })).toThrow(/not "docker"/);
+    expect(() => engine.setConfig({ health: { "a:b": "http://127.0.0.1/" } })).toThrow(/not valid/);
+    expect(engine.config().health).toHaveProperty("grafana");
+    expect(engine.setConfig({ health: {} }).health).toEqual({});
+    expect(engine.setConfig({ health: null }).health).toEqual(DEFAULT_HEALTH);
     engine.close();
   });
 });

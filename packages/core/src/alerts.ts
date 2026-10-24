@@ -11,6 +11,8 @@
  *   The message names the owners that wrote most in the last hour (H20).
  * - `ports`: few free dynamic TCP ports (H24). When none is free, new connections fail. The message names the owners
  *   with the most connections, and the count in TIME_WAIT.
+ * - `service`: a shared service that does not answer for 2 checks in a row, or answers slowly for 3 checks (H27).
+ *   Docker and the MCP servers are critical. headroom does not restart the service.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -21,14 +23,28 @@
  */
 
 import type { Lease } from "./broker.ts";
-import { grows, leasesOf, levelOf, RESOURCES, type Change, type Level, type LevelRule, type OutlierRule, type Owners, type Readings, type ResourceId } from "./resources.ts";
+import {
+  grows,
+  healthLevel,
+  leasesOf,
+  levelOf,
+  RESOURCES,
+  type Change,
+  type Level,
+  type LevelRule,
+  type OutlierRule,
+  type Owners,
+  type Readings,
+  type ResourceId,
+} from "./resources.ts";
+import type { ServiceHealth } from "./services.ts";
 import type { DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import type { OwnerWrites } from "./counters.ts";
 
 export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "stop";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "stop";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -78,6 +94,10 @@ export interface AlertRules {
   readonly portsWarnRatio: number;
   /** More connections than this part of the dynamic TCP ports start a critical ports alert. The default is 0.95. */
   readonly portsCriticalRatio: number;
+  /** A service that is down for this count of checks in a row starts an alert (H27). The default is 2, one minute. */
+  readonly serviceDownChecks: number;
+  /** A service that is slow for this count of checks in a row starts a warning. The default is 3. */
+  readonly serviceSlowChecks: number;
 }
 
 /** The default limits. */
@@ -95,6 +115,8 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   diskCriticalMb: 5120,
   portsWarnRatio: 0.8,
   portsCriticalRatio: 0.95,
+  serviceDownChecks: 2,
+  serviceSlowChecks: 3,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -136,6 +158,8 @@ export interface AlertInput {
   readonly writes?: readonly OwnerWrites[] | undefined;
   /** The TCP connections and the dynamic port range (H24). */
   readonly tcp?: TcpTable | undefined;
+  /** The health of each service after the last round of checks (H27). */
+  readonly services?: readonly ServiceHealth[] | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -143,10 +167,10 @@ const NO_LOAD: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null
 const HOUR_MS = 3_600_000;
 
 /** This function gives the reads of one check for the measure parts of the kinds. */
-function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp">): Readings {
+function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services">): Readings {
   return {
     at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
-    processors: 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp,
+    processors: 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services,
   };
 }
 
@@ -211,7 +235,8 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         if (rule.instance !== undefined && rule.instance !== measurement.id) continue;
         const id = rule.alertId?.(measurement.id) ?? measurement.id;
         if (ids.has(id)) continue;
-        const level: Level | null = rule.type === "level" ? levelOf(rule, measurement) : grows(rule, change) ? "warning" : null;
+        const level: Level | null =
+          rule.type === "level" ? levelOf(rule, measurement) : rule.type === "health" ? healthLevel(rule, measurement) : grows(rule, change) ? "warning" : null;
         if (level === null) continue;
         ids.add(id);
         const text = rule.text({ measurement, change, readings, owners });

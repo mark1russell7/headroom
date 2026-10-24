@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
+import type { ServiceHealth } from "./services.ts";
 import type { OwnerKind, ProcessInfo, TcpConnection, TcpTable } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb });
@@ -179,5 +180,45 @@ describe("detect", () => {
     expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["memory", undefined], ["disk:C:", "warning"]]);
     expect(diskLevel({ mount: "C:", freeMb: 265_000, totalMb: 1_774_000 }, strict)).toBe("warning");
     expect(detect({ ...input([], {}), memory: { ...memory, commitMb: 9000, commitLimitMb: 0 } })).toEqual([]);
+  });
+});
+
+describe("detect: services (H27)", () => {
+  const at = Date.UTC(2026, 9, 24, 18, 45);
+  const since = Date.UTC(2026, 9, 24, 18, 42);
+  const health = (name: string, state: ServiceHealth["state"], checks: number, extra: Partial<ServiceHealth> = {}): ServiceHealth => ({
+    name, type: name.startsWith("mcp:") ? "mcp" : name === "docker" ? "docker" : "url",
+    title: name === "docker" ? "The Docker engine" : name.startsWith("mcp:") ? `The MCP server ${name.slice(4)}` : `The service ${name}`,
+    target: null, critical: name === "docker" || name.startsWith("mcp:"), needs: null,
+    state, latencyMs: null, checkedAt: at, since, checks, okAt: null, error: null, errorAt: null, ...extra,
+  });
+  const services = (...list: ServiceHealth[]): AlertInput => input([], {}, { services: list });
+
+  it("gives a critical alert for Docker after two checks that are down, and none after one", () => {
+    expect(detect(services(health("docker", "down", 1)))).toEqual([]);
+    const docker = health("docker", "down", 2, { needs: "Containers such as Mongo and the graph tests need it." });
+    const [alert] = detect(services(docker));
+    expect(alert).toMatchObject({ id: "service:docker", kind: "service", subject: "docker", severity: "critical", pid: null, mb: 0 });
+    expect(alert?.message).toBe(
+      "The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the graph tests need it. headroom does not restart it.",
+    );
+  });
+
+  it("gives a warning for a URL that is down, and names the last error of an MCP server that does not start", () => {
+    const alerts = detect(services(health("fleet-site", "down", 2), health("mcp:vex", "down", 2, { error: "Error: Cannot find module 'zod'." })));
+    expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["service:fleet-site", "warning"], ["service:mcp:vex", "critical"]]);
+    expect(alerts[1]?.message).toBe("The MCP server vex does not start: Error: Cannot find module 'zod'.");
+  });
+
+  it("gives no alert for an idle MCP server, for no Docker engine, or for a good service", () => {
+    expect(detect(services(health("mcp:loom", "idle", 40), health("docker", "absent", 40), health("fleet-site", "ok", 40)))).toEqual([]);
+  });
+
+  it("gives a warning after three slow checks in a row", () => {
+    expect(detect(services(health("docker", "slow", 2, { latencyMs: 1400 })))).toEqual([]);
+    const [alert] = detect(services(health("docker", "slow", 3, { latencyMs: 1400 })));
+    expect(alert).toMatchObject({ id: "service:docker", severity: "warning" });
+    expect(alert?.message).toBe("The Docker engine answers slowly: 1400 ms at the last check, 3 slow checks in a row.");
+    expect(detect(services(health("docker", "down", 2)), { ...DEFAULT_ALERT_RULES, serviceDownChecks: 3 })).toEqual([]);
   });
 });
