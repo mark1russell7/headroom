@@ -29,8 +29,8 @@
  *   the rate, the time and the owners that the model has.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
- * - `drain`: a planned drain for a reboot (H34). The alert `drain` names the running jobs. The alert `drain:ready` tells
- *   that no job runs. The engine keeps them, not `detect()`.
+ * - `drain`: a planned drain or an automatic drain for a reboot (H34). The alert `drain` names the running jobs. The alert
+ *   `drain:ready` tells that no job runs. The event `drain:ended` tells why a drain ended. The engine keeps them, not `detect()`.
  *
  * The alerts only report. headroom does not stop a process for an alert.
  *

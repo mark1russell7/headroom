@@ -914,15 +914,15 @@ Mark approved this item on 2026-10-24. The AMD display driver leaks kernel memor
 **The module.** `reboot.ts` has pure functions. The engine gives them the time and the reads.
 
 - `rebootAdvice()` gives the level and the text of the recommendation. The rules go in this order:
-  1. A pool at its alert level gives `overdue`.
-  2. A forecast to the alert level within 24 hours gives `soon`.
+  1. A pool at its alert level, or the two pools at the automatic level, give `overdue`.
+  2. A forecast to an alert level or to the automatic level within 24 hours gives `soon`.
   3. A growth of 500 MB in one hour gives `plan`.
   4. A waiting update alone gives `update`. Else the level is `none`.
 - `windowsReboot()` reads the two keys of `REBOOT_KEYS` through a probe. The probe of the sampler is `registryKey()`: `RegOpenKeyExW` with the right to read values only. A key that refuses the read exists. A failed read is `unknown`.
 - `drainWait()` gives the reason of a held lease, and `drainStatus()` the state of the drain. `drainLine()` and `drainAlerts()` give its status line and its alerts.
 - `nextClock()` gives the next time of a local clock for `--at` and `--until`.
 
-**The budget.** `Status.reboot` has the type `RebootBudget`: `{ at, advice, pools, windows, bootedAt, uptimeMinutes, drain, resumePlan }`.
+**The budget.** `Status.reboot` has the type `RebootBudget`: `{ at, advice, pools, windows, bootedAt, uptimeMinutes, drain, resumePlan, autoDrain }`.
 
 - Each pool has its level, its alert level, its growth over the last hour, its growth limit and its forecast to the alert level (H32).
 - The growth comes from the same hour as the pool alert. The hour starts after the start of the computer or the last wake, and needs 50 minutes of history.
@@ -935,6 +935,19 @@ Mark approved this item on 2026-10-24. The AMD display driver leaks kernel memor
 - After the admission, the engine records `readyAt` when no lease is granted, and sets the alerts `drain` and `drain:ready`. The check of the alerts does not end them.
 - A start of the daemon reads the drain. A start of the computer after `setAt` ends the drain, because the reboot came. The event alert `drain:ended` tells it.
 - `isConditionWait()` matches the drain reason, so a restart for an idle queue does not wait for such a lease.
+
+**The automatic drain.** On 2026-10-24 the two pools reached approximately 6.3 GB together, and a reboot was necessary. At such a level, new processes fail with 0xC0000142. The rule uses the drain above, with no new timer.
+
+- The setting `autoDrainMb` keeps the level: 0 for off, or 1 GB to 1 TB. The default `AUTO_DRAIN_DEFAULT_MB` is 6144. The command is `headroom config auto-drain <size>|off`.
+- At each tick, before `#drainBefore()`, the engine adds the non-paged pool and the paged pool of the last memory read.
+- Start: the sum stays at or above the level for 2 minutes, with no drain and no hold. The engine then saves a drain `{ at: now, until: null, auto: { levelMb, poolsMb } }`.
+- The tick then starts this drain as a planned drain: `startedAt`, `onDrainStart` and the resume plan, then the alerts.
+- End: the sum of an automatic drain stays under the level less 300 MB for 10 minutes. The event alert `drain:ended` gives `autoDrainEndedText()`.
+- A reboot ends an automatic drain as a planned drain. A cancel ends it too.
+- Hold: a cancel saves its time in the setting `autoDrainHold`. The hold ends when the sum falls under the end level, at a reboot, or at a new level.
+- The rule does not change a drain without `auto`. A sleep starts the two times again.
+- Reason: `drainReason()` gives `waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)`, with the current sum.
+- Budget: `autoDrain` is `{ levelMb, poolsMb, forecast }`. The engine fits the sum of the pool points of each sample (`poolsPoints()`), and gives the forecast to the level.
 
 **Faces.** The commands are `headroom reboot-plan [--json]` and `headroom drain`, and the procedure is `resources.drain`. `headroom status` shows the drain line and the recommendation. The dashboard shows one line under the strip.
 

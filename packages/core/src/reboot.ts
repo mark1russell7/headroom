@@ -8,13 +8,16 @@
  * The drain prepares a planned reboot. From its time, new leases wait, and the running leases finish. headroom does not
  * reboot the computer and does not log off. Only Mark does these actions.
  *
+ * The automatic drain starts when the two kernel pools together stay at or above a level for 2 minutes. At a high pool
+ * level, new processes fail with 0xC0000142. Thus new jobs wait for the reboot and do not crash.
+ *
  * The functions of this module are pure. The engine gives them the time and the reads.
  */
 
 import type { Alert } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import { localClock } from "./conditions.ts";
-import { spanText, type Forecast } from "./forecast.ts";
+import { spanText, type Forecast, type ResourcePoint } from "./forecast.ts";
 import { gb } from "./units.ts";
 
 /** The state of one registry key at a read: it exists, it does not exist, or the read failed. */
@@ -94,12 +97,46 @@ export interface RebootAdvice {
 /** The horizon of the level `soon`: a forecast further away gives no recommendation to reboot. */
 export const REBOOT_HORIZON_MINUTES: number = 24 * 60;
 
+/** The default level of the automatic drain: 6 GB of the non-paged pool and the paged pool together. */
+export const AUTO_DRAIN_DEFAULT_MB: number = 6 * 1024;
+/** The automatic drain starts after the pools stay at or above its level for this time: 2 minutes. */
+export const AUTO_DRAIN_START_MS: number = 2 * 60_000;
+/** An automatic drain ends when the pools stay under its level less this margin for `AUTO_DRAIN_END_MS`. */
+export const AUTO_DRAIN_MARGIN_MB = 300;
+export const AUTO_DRAIN_END_MS: number = 10 * 60_000;
+
+/** The automatic drain in the reboot budget: its level, the two pools together, and the forecast to the level. */
+export interface AutoDrainBudget {
+  /** The level in MB, or 0 when `headroom config auto-drain off` turned the rule off. */
+  readonly levelMb: number;
+  /** The non-paged pool and the paged pool together, in MB. */
+  readonly poolsMb: number;
+  /** The forecast of the two pools to the level (H32), or `null` with no clear trend or with the rule off. */
+  readonly forecast: Forecast | null;
+}
+
 /** The options of `rebootAdvice()`. */
 export interface AdviceOptions {
   /** The horizon of the level `soon`, in minutes. The default is `REBOOT_HORIZON_MINUTES`. */
   readonly horizonMinutes?: number | undefined;
   /** This function writes a time for a person. The default writes the local clock: "07:40". */
   readonly clock?: ((at: number) => string) | undefined;
+  /** The automatic drain. Its level counts as one more limit for the levels `overdue` and `soon`. */
+  readonly auto?: AutoDrainBudget | null | undefined;
+}
+
+/**
+ * This function gives the points of the two kernel pools together, from the points of each pool at the same times. A
+ * time with no value of one pool gives no point.
+ */
+export function poolsPoints(nonpaged: readonly ResourcePoint[], paged: readonly ResourcePoint[]): ResourcePoint[] {
+  const pagedAt = new Map(paged.map((each) => [each[0], each[1]]));
+  const points: ResourcePoint[] = [];
+  for (const [at, used] of nonpaged) {
+    const other = pagedAt.get(at);
+    if (used !== null && other !== undefined && other !== null) points.push([at, used + other, null]);
+  }
+  return points;
 }
 
 /** This function gives the name of a pool in a sentence. */
@@ -123,39 +160,45 @@ function withinText(minutes: number): string {
  * This function gives the recommendation of the reboot budget. The rules go in this order, and the first rule that applies
  * gives the level. A waiting Windows update adds one sentence to each level that is not `update`.
  *
- * - A pool at or above its alert level gives `overdue`.
- * - A forecast to the alert level within the horizon gives `soon`.
+ * - A pool at or above its alert level, or the two pools at or above the automatic level, give `overdue`.
+ * - A forecast to an alert level or to the automatic level within the horizon gives `soon`.
  * - A growth at or above the growth limit gives `plan`.
  * - A Windows update alone gives `update`. Else the level is `none`.
  */
 export function rebootAdvice(pools: readonly PoolBudget[], windows: WindowsReboot | null, options: AdviceOptions = {}): RebootAdvice {
   const clock = options.clock ?? localClock;
   const horizon = options.horizonMinutes ?? REBOOT_HORIZON_MINUTES;
+  const auto = options.auto !== undefined && options.auto !== null && options.auto.levelMb > 0 ? options.auto : null;
   const update = windows?.pending === true;
   const tail = update ? " A Windows update waits for a reboot too." : "";
   const over = pools.filter((pool) => pool.usedMb >= pool.alertMb);
   const first = over[0];
-  if (first !== undefined) {
+  const autoOver =
+    auto !== null && auto.poolsMb >= auto.levelMb ? `the kernel pools are at ${gb(auto.poolsMb)}, at or above the level of the automatic drain (${gb(auto.levelMb)})` : null;
+  if (first !== undefined || autoOver !== null) {
     const what =
-      over.length === 1
-        ? `${poolName(first.id)} is at ${gb(first.usedMb)}, above its alert level of ${gb(first.alertMb)}`
-        : `${over.map((pool) => `${poolName(pool.id)} (${gb(pool.usedMb)})`).join(" and ")} are above their alert levels`;
-    return { level: "overdue", by: null, text: `Reboot soon: ${what}.${tail}` };
+      first === undefined
+        ? null
+        : over.length === 1
+          ? `${poolName(first.id)} is at ${gb(first.usedMb)}, above its alert level of ${gb(first.alertMb)}`
+          : `${over.map((pool) => `${poolName(pool.id)} (${gb(pool.usedMb)})`).join(" and ")} are above their alert levels`;
+    const text = what === null ? `${autoOver ?? ""}.` : `${what}.${autoOver === null ? "" : ` ${capital(autoOver)}.`}`;
+    return { level: "overdue", by: null, text: `Reboot soon: ${text}${tail}` };
   }
-  const forecasts = pools.filter((pool) => pool.forecast !== null).sort((a, b) => (a.forecast?.minutes ?? 0) - (b.forecast?.minutes ?? 0));
-  const nearest = forecasts[0];
-  if (nearest?.forecast && nearest.forecast.minutes <= horizon) {
+  // Each forecast to a limit: the alert level of each pool, and the automatic level of the two pools together.
+  const limits = pools.flatMap((pool) => (pool.forecast === null ? [] : [{ forecast: pool.forecast, what: `${poolName(pool.id)} reaches its alert level` }]));
+  if (auto?.forecast) limits.push({ forecast: auto.forecast, what: `the kernel pools reach the level of the automatic drain (${gb(auto.levelMb)})` });
+  const nearest = limits.sort((a, b) => a.forecast.minutes - b.forecast.minutes)[0];
+  if (nearest !== undefined && nearest.forecast.minutes <= horizon) {
     const { minutes, at } = nearest.forecast;
-    return { level: "soon", by: at, text: `Reboot within ${withinText(minutes)}: ${poolName(nearest.id)} reaches its alert level at ${clock(at)}.${tail}` };
+    return { level: "soon", by: at, text: `Reboot within ${withinText(minutes)}: ${nearest.what} at ${clock(at)}.${tail}` };
   }
   const fast = pools.filter((pool) => (pool.growthMbPerHour ?? 0) >= pool.growthLimitMb).sort((a, b) => (b.growthMbPerHour ?? 0) - (a.growthMbPerHour ?? 0))[0];
   if (fast !== undefined) {
     return { level: "plan", by: null, text: `Plan a reboot: ${poolName(fast.id)} grows ${Math.round(fast.growthMbPerHour ?? 0)} MB an hour.${tail}` };
   }
   if (update) return { level: "update", by: null, text: "Reboot when it suits you: a Windows update waits for a reboot." };
-  if (nearest?.forecast) {
-    return { level: "none", by: null, text: `No reboot needed. ${capital(poolName(nearest.id))} reaches its alert level in ${spanText(nearest.forecast.minutes)}.` };
-  }
+  if (nearest !== undefined) return { level: "none", by: null, text: `No reboot needed. ${capital(nearest.what)} in ${spanText(nearest.forecast.minutes)}.` };
   return { level: "none", by: null, text: "No reboot needed." };
 }
 
@@ -171,6 +214,14 @@ export interface Drain {
   readonly startedAt?: number | null | undefined;
   /** The time since when no lease runs in the drain, or `null`. The alert `drain:ready` starts at it. */
   readonly readyAt?: number | null | undefined;
+  /** The facts of an automatic drain, or `null` for a drain of `headroom drain`. The automatic rule changes only its own drain. */
+  readonly auto?: AutoDrainStart | null | undefined;
+}
+
+/** The facts of an automatic drain at its start, in MB: the level of the rule and the two kernel pools together. */
+export interface AutoDrainStart {
+  readonly levelMb: number;
+  readonly poolsMb: number;
 }
 
 /** The ids of the alerts of a drain. `drain:ended` is an event alert. */
@@ -184,14 +235,32 @@ export function parseDrain(text: string | null | undefined): Drain | null {
   try {
     const value: unknown = JSON.parse(text);
     if (typeof value !== "object" || value === null) return null;
-    const { at, until, setAt, startedAt, readyAt } = value as Record<string, unknown>;
+    const { at, until, setAt, startedAt, readyAt, auto } = value as Record<string, unknown>;
     const time = (each: unknown): each is number => typeof each === "number" && Number.isFinite(each);
     const optional = (each: unknown): number | null => (time(each) ? each : null);
     if (!time(at) || !time(setAt) || !(until === null || until === undefined || time(until))) return null;
-    return { at, until: optional(until), setAt, startedAt: optional(startedAt), readyAt: optional(readyAt) };
+    const drain: Drain = { at, until: optional(until), setAt, startedAt: optional(startedAt), readyAt: optional(readyAt) };
+    if (typeof auto !== "object" || auto === null) return drain;
+    const { levelMb, poolsMb } = auto as Record<string, unknown>;
+    return time(levelMb) && time(poolsMb) ? { ...drain, auto: { levelMb, poolsMb } } : drain;
   } catch {
     return null;
   }
+}
+
+/** This function gives the name of a drain in a sentence: "the drain for the reboot at 02:30", or "the automatic drain of 14:05". */
+export function drainName(drain: Drain, clock: (at: number) => string = localClock): string {
+  return drain.auto ? `the automatic drain of ${clock(drain.at)}` : `the drain for the reboot at ${clock(drain.at)}`;
+}
+
+/** This function tells what ends an automatic drain, in one sentence. */
+function autoEndText(auto: AutoDrainStart): string {
+  return `A reboot or \`headroom drain --cancel\` ends it. It also ends after 10 minutes with the pools under ${gb(auto.levelMb - AUTO_DRAIN_MARGIN_MB)}.`;
+}
+
+/** This function gives the message of the alert `drain:ended` at the automatic end of an automatic drain. */
+export function autoDrainEndedText(auto: AutoDrainStart): string {
+  return `The kernel pools stayed under ${gb(auto.levelMb - AUTO_DRAIN_MARGIN_MB)} for 10 minutes, so the automatic drain ended. New jobs start again.`;
 }
 
 /** This function tells if a drain holds new leases at a time: after its start and before its end. */
@@ -201,16 +270,27 @@ export function isDrainActive(drain: Drain | null, now: number): drain is Drain 
 
 /**
  * This function gives the waiting reason of a lease in a drain: "waits for the planned reboot at 02:30 (headroom drain)".
- * The reason does not start with "waits for memory", because the hook of the plugin counts only memory waits.
+ * The reason does not start with "waits for memory", because the hook of the plugin counts only memory waits. An automatic
+ * drain gives "waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)", with `poolsMb` when known.
  */
-export function drainReason(drain: Drain, clock: (at: number) => string = localClock): string {
+export function drainReason(drain: Drain, clock: (at: number) => string = localClock, poolsMb: number | null = null): string {
+  if (drain.auto) return `waits for a reboot: the kernel pools are at ${gb(poolsMb ?? drain.auto.poolsMb)} (headroom drain, automatic)`;
   return `waits for the planned reboot at ${clock(drain.at)} (headroom drain)`;
 }
 
-/** This function tells why a lease waits for a drain, or gives `null`. A lease of `headroom run --during-drain` does not wait. */
-export function drainWait(lease: Pick<Lease, "conditions">, drain: Drain | null, now: number, clock: (at: number) => string = localClock): string | null {
+/**
+ * This function tells why a lease waits for a drain, or gives `null`. A lease of `headroom run --during-drain` does not wait.
+ * `poolsMb` is the current size of the two kernel pools together, for the reason of an automatic drain.
+ */
+export function drainWait(
+  lease: Pick<Lease, "conditions">,
+  drain: Drain | null,
+  now: number,
+  clock: (at: number) => string = localClock,
+  poolsMb: number | null = null,
+): string | null {
   if (!isDrainActive(drain, now) || lease.conditions?.duringDrain === true) return null;
-  return drainReason(drain, clock);
+  return drainReason(drain, clock, poolsMb);
 }
 
 /** One running job of a drain: the lease id, the job and its holder. */
@@ -253,30 +333,35 @@ export function drainLine(drain: DrainStatus | null, clock: (at: number) => stri
   const when = clock(drain.at);
   const until = drain.until === null ? "" : ` The drain ends at ${clock(drain.until)} if no reboot comes.`;
   if (drain.state === "planned") return `Drain planned for the reboot at ${when}: from ${when}, new jobs wait.${until}`;
-  const waits = drain.waiting === 0 ? "" : ` ${jobsText(drain.waiting)} ${drain.waiting === 1 ? "waits" : "wait"} for the reboot.`;
+  const auto = drain.auto ?? null;
+  const waits = drain.waiting === 0 ? "" : ` ${jobsText(drain.waiting)} ${drain.waiting === 1 ? "waits" : "wait"} for ${auto === null ? "the" : "a"} reboot.`;
   const count = drain.running.length;
   const runs = count === 0 ? "no job runs, ready for the reboot" : `${jobsText(count)} still ${count === 1 ? "runs" : "run"}`;
+  if (auto !== null) return `Automatic drain since ${when} (the kernel pools were at ${gb(auto.poolsMb)}): ${runs}.${waits} ${autoEndText(auto)}`;
   return `Drain for the reboot at ${when}: ${runs}.${waits}${until}`;
 }
 
 /**
  * This function gives the alerts of an active drain (kind `drain`). The alert `drain` names the running jobs and their
- * holders. The alert `drain:ready` starts when no job runs. The organizer reads the alerts at each sweep.
+ * holders. The alert `drain:ready` starts when no job runs. The organizer reads the alerts at each sweep. The alert `drain`
+ * of an automatic drain also tells why it started and what ends it.
  */
 export function drainAlerts(drain: DrainStatus | null, clock: (at: number) => string = localClock): Omit<Alert, "since">[] {
   if (drain === null || drain.state !== "active") return [];
   const when = clock(drain.at);
+  const auto = drain.auto ?? null;
   const count = drain.running.length;
   const jobs = drain.running.map((each) => `${each.job.slice(0, 60)} (${each.holder})`).join(", ");
   const runs = count === 0 ? "No job runs." : `${jobsText(count)} still ${count === 1 ? "runs" : "run"}: ${jobs}.`;
-  const base = { kind: "drain" as const, subject: "planned reboot", pid: null, mb: 0 };
-  const alerts: Omit<Alert, "since">[] = [{ ...base, id: DRAIN_ALERT, message: `The drain for the planned reboot at ${when} started: new jobs wait. ${runs}` }];
+  const base = { kind: "drain" as const, subject: auto === null ? "planned reboot" : "kernel pools", pid: null, mb: auto?.poolsMb ?? 0 };
+  const started =
+    auto === null
+      ? `The drain for the planned reboot at ${when} started: new jobs wait. ${runs}`
+      : `The kernel pools reached ${gb(auto.poolsMb)} and stayed at or above ${gb(auto.levelMb)} for 2 minutes. An automatic drain started at ${when}: new jobs wait for a reboot. ${runs} ${autoEndText(auto)}`;
+  const alerts: Omit<Alert, "since">[] = [{ ...base, id: DRAIN_ALERT, message: started }];
   if (count === 0) {
-    alerts.push({
-      ...base,
-      id: DRAIN_READY_ALERT,
-      message: `Ready for the reboot: no job runs. New jobs wait for the reboot at ${when}. headroom does not reboot the computer: Mark does it.`,
-    });
+    const waits = auto === null ? `New jobs wait for the reboot at ${when}.` : "New jobs wait for a reboot (automatic drain).";
+    alerts.push({ ...base, id: DRAIN_READY_ALERT, message: `Ready for the reboot: no job runs. ${waits} headroom does not reboot the computer: Mark does it.` });
   }
   return alerts;
 }
@@ -318,6 +403,8 @@ export interface RebootBudget {
   readonly drain: DrainStatus | null;
   /** The file of the resume plan, or `null` before its first write or without a file. */
   readonly resumePlan: ResumePlanFile | null;
+  /** The automatic drain: its level and the forecast to it, or `null` when the input gives none. */
+  readonly autoDrain: AutoDrainBudget | null;
 }
 
 /** The inputs of `rebootBudget()`. */
@@ -328,21 +415,24 @@ export interface BudgetInput {
   readonly bootedAt: number | null;
   readonly drain: DrainStatus | null;
   readonly resumePlan: ResumePlanFile | null;
+  readonly autoDrain?: AutoDrainBudget | null | undefined;
   readonly clock?: ((at: number) => string) | undefined;
 }
 
 /** This function gives the reboot budget from its reads. */
 export function rebootBudget(input: BudgetInput): RebootBudget {
   const { at, pools, windows, bootedAt, drain, resumePlan } = input;
+  const autoDrain = input.autoDrain ?? null;
   return {
     at,
-    advice: rebootAdvice(pools, windows, { clock: input.clock }),
+    advice: rebootAdvice(pools, windows, { clock: input.clock, auto: autoDrain }),
     pools,
     windows,
     bootedAt,
     uptimeMinutes: bootedAt === null ? null : Math.max(0, Math.round((at - bootedAt) / 60_000)),
     drain,
     resumePlan,
+    autoDrain,
   };
 }
 
@@ -362,9 +452,24 @@ function poolText(pool: PoolBudget): string {
   return `${pool.id === "pool:nonpaged" ? "non-paged" : "paged"} ${gb(pool.usedMb)} (${parts.join(", ")})`;
 }
 
+/**
+ * This function writes the automatic drain for `headroom reboot-plan`, for example "Automatic drain: at 6.0 GB of the kernel
+ * pools together, now 5.2 GB. The forecast reaches it at 25 Oct 21:40, in 3 h 10 min."
+ */
+function autoDrainText(auto: AutoDrainBudget, clock: (at: number) => string): string {
+  if (auto.levelMb <= 0) return "Automatic drain: off. `headroom config auto-drain 6GB` turns it on.";
+  const head = `Automatic drain: at ${gb(auto.levelMb)} of the kernel pools together, now ${gb(auto.poolsMb)}.`;
+  if (auto.poolsMb >= auto.levelMb) return `${head} After 2 minutes at or above the level, new jobs wait for a reboot.`;
+  if (auto.forecast === null) return `${head} No forecast: the pools show no clear trend.`;
+  return `${head} The forecast reaches it at ${dayText(auto.forecast.at, clock)}, in ${spanText(auto.forecast.minutes)}.`;
+}
+
 /** This function gives the lines of `headroom reboot-plan` for a person. */
 export function rebootLines(budget: RebootBudget, clock: (at: number) => string = localClock): string[] {
   const lines = [`Reboot: ${budget.advice.text}`, `Kernel pools: ${budget.pools.map(poolText).join(", ")}.`];
+  // A daemon of an older version gives no automatic drain.
+  const auto = budget.autoDrain ?? null;
+  if (auto !== null) lines.push(autoDrainText(auto, clock));
   const windows = budget.windows;
   lines.push(
     windows === null

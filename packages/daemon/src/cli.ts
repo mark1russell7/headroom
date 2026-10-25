@@ -14,6 +14,7 @@
  * - `headroom thermal [--json]`: the speed limits, the speed and the thermal zones of the CPU, and the throttle (H35).
  * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
  * - `headroom config [presence on|off] [away-after <time>] [busy-wait <time>] [present-reserve <cores>]`: the presence rules (H33).
+ * - `headroom config auto-drain <size>|off`: the level of the kernel pools that starts an automatic drain (H34).
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
@@ -43,6 +44,8 @@ import {
   powerLine,
   isBrowserLease,
   isSpawnWait,
+  AUTO_DRAIN_DEFAULT_MB,
+  AUTO_DRAIN_MARGIN_MB,
   BATTERY_FLOOR_DEFAULT,
   coresText,
   drainLine,
@@ -163,6 +166,9 @@ const HELP = `headroom: the memory and job broker of this computer
                The longest wait of a heavy job while Mark is busy. The default: ${elapsedText(BUSY_WAIT_DEFAULT_MS)}.
   headroom config present-reserve [<cores> | --clear]
                The cores that the reserve gets while Mark is at the laptop. While away: no reserve. The default: ${PRESENT_RESERVE_DEFAULT}.
+  headroom config auto-drain [<size> | off | --clear]
+               When the two kernel pools stay at or above this size for 2 minutes, an automatic drain
+               starts: new jobs wait for a reboot. off: no automatic drain. The default: ${mb(AUTO_DRAIN_DEFAULT_MB)}.
   headroom presence [--json]                (Mark at the laptop: present, busy or away, and the history)
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
@@ -174,6 +180,7 @@ const HELP = `headroom: the memory and job broker of this computer
                A planned drain for a reboot: from the time, new jobs wait and the running jobs finish.
                An alert tells when no job runs. --until: the drain ends at that time if no reboot came.
                headroom does not reboot the computer. Only Mark does.
+               The kernel pools at the level of headroom config auto-drain start a drain with no end.
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
@@ -1026,6 +1033,30 @@ function printConfig(config: Config): void {
       `present-reserve: ${coresText(config.presentReserve)}${byDefault(config.presentReserve, PRESENT_RESERVE_DEFAULT)} more for Mark while Mark is at the laptop. While Mark is away, the reserve is 0.`,
     );
   }
+  // H34: a daemon of an older version has no automatic drain.
+  if (typeof config.autoDrainMb === "number") {
+    console.log(
+      config.autoDrainMb === 0
+        ? "auto-drain: off. The kernel pools start no drain."
+        : `auto-drain: ${mb(config.autoDrainMb)}${byDefault(config.autoDrainMb, AUTO_DRAIN_DEFAULT_MB)}. When the kernel pools stay at or above it for 2 minutes, new jobs wait for a reboot.`,
+    );
+  }
+}
+
+/** `headroom config auto-drain <size>|off` sets the level of the automatic drain (H34). `--clear` gives the default. */
+async function autoDrainConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  let level: number | null = null;
+  try {
+    level = value === undefined ? null : value.trim().toLowerCase() === "off" ? 0 : parseMemory(value);
+  } catch {
+    level = Number.NaN;
+  }
+  if ((value === undefined) === !clear || extra || (level !== null && !(level === 0 || (Number.isInteger(level) && level >= 1024)))) {
+    console.error(`Usage: headroom config auto-drain <size>, for example 6g, from 1g, or headroom config auto-drain off, or --clear (the default: ${mb(AUTO_DRAIN_DEFAULT_MB)})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { autoDrainMb: level }));
+  return 0;
 }
 
 /** `headroom config presence on|off` turns the presence rules on or off (H33). `--clear` gives the default: on. */
@@ -1175,9 +1206,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "presence") return presenceConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "away-after" || name === "busy-wait") return presenceTimeConfig(connection, name, value, values.clear === true, positionals.length > 2);
   if (name === "present-reserve") return presentReserveConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "auto-drain") return autoDrainConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config cpu-reserve <cores>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }
@@ -1249,7 +1281,12 @@ async function drainCommand(argv: string[]): Promise<number> {
     return 0;
   }
   if (values.cancel === true) {
-    console.log(drain === null ? "No drain was planned." : `The drain for the reboot at ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
+    if (drain === null) console.log("No drain was planned.");
+    else if (drain.auto) {
+      const under = mb(drain.auto.levelMb - AUTO_DRAIN_MARGIN_MB);
+      console.log(`The automatic drain of ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
+      console.log(`The automatic rule starts no new drain until the kernel pools fall under ${under}, or until a reboot.`);
+    } else console.log(`The drain for the reboot at ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
     return 0;
   }
   if (drain === null) {

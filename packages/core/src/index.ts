@@ -146,17 +146,24 @@ export {
 } from "./forecast.ts";
 export type { FitOptions, Forecast, ForecastEntry, ForecastTarget, Part, TargetName, Trend } from "./forecast.ts";
 export {
+  AUTO_DRAIN_DEFAULT_MB,
+  AUTO_DRAIN_END_MS,
+  AUTO_DRAIN_MARGIN_MB,
+  AUTO_DRAIN_START_MS,
+  autoDrainEndedText,
   DRAIN_ALERT,
   DRAIN_ENDED_ALERT,
   DRAIN_READY_ALERT,
   drainAlerts,
   drainLine,
+  drainName,
   drainReason,
   drainStatus,
   drainWait,
   isDrainActive,
   nextClock,
   parseDrain,
+  poolsPoints,
   REBOOT_HORIZON_MINUTES,
   REBOOT_KEYS,
   rebootAdvice,
@@ -166,6 +173,8 @@ export {
 } from "./reboot.ts";
 export type {
   AdviceOptions,
+  AutoDrainBudget,
+  AutoDrainStart,
   BudgetInput,
   Drain,
   DrainJob,

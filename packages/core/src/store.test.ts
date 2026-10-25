@@ -39,11 +39,11 @@ describe("Store", () => {
 
   it("keeps the settings, and the usage of an ended lease", () => {
     const store = new Store(":memory:");
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
     store.setConfig("jobTemp", "D:\\headroom\\tmp");
-    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS });
+    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
     store.setConfig("jobTemp", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
 
     // H27: the setting health. Without it, the list has the fleet site. An empty list checks no URL.
     store.setConfig("health", JSON.stringify({ "fleet-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
@@ -53,7 +53,7 @@ describe("Store", () => {
     store.setConfig("health", "not json");
     expect(store.config().health).toEqual(DEFAULT_HEALTH);
     store.setConfig("health", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
     // H47: the limit of a spawn-heavy job. A value that is not a number above 0 gives the default.
     store.setConfig("spawnHeavy", "1200");
     expect(store.config().spawnHeavy).toBe(1200);
@@ -61,6 +61,22 @@ describe("Store", () => {
     expect(store.config().spawnHeavy).toBe(600);
     store.setConfig("spawnHeavy", null);
     expect(store.config().spawnHeavy).toBe(600);
+    // H34: the level of the automatic drain. 0 turns it off. A value under 1 GB or not a whole number gives the default.
+    store.setConfig("autoDrainMb", "5120");
+    expect(store.config().autoDrainMb).toBe(5120);
+    store.setConfig("autoDrainMb", "0");
+    expect(store.config().autoDrainMb).toBe(0);
+    for (const bad of ["500", "6144.5", "x", ""]) {
+      store.setConfig("autoDrainMb", bad);
+      expect(store.config().autoDrainMb).toBe(6144);
+    }
+    store.setConfig("autoDrainMb", null);
+    // The hold of the automatic drain after a cancel.
+    expect(store.autoDrainHold()).toBeNull();
+    store.setAutoDrainHold(12_345);
+    expect(store.autoDrainHold()).toBe(12_345);
+    store.setAutoDrainHold(null);
+    expect(store.autoDrainHold()).toBeNull();
 
     const broker = new Broker({ now: () => 5000, newId: () => "l1" });
     const lease = broker.request({ holder: "graph", job: "test", amounts: { "disk:D:": 5120 } });
