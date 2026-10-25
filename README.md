@@ -91,7 +91,8 @@ The fleet site serves its procedures as MCP tools to `claude.exe`. Each call nee
 - The output is `{ pid, exe, via, sessionId?, session?, role? }`. `via` gives the process IDs from the peer up to the nearest `claude.exe`.
 - A peer with no `claude.exe` above it is anonymous. It has no session and no role. This is not an error.
 - The errors are `NO_CONNECTION` (no row for the two ports) and `PEER_GONE` (the process ended before the walk). Linux gives `NOT_SUPPORTED`.
-- The role comes from the fleet registry `~/git/fleet/registry/roles.json`: first by the session ID, then by the session name.
+- The role comes from the fleet registry: first by the session ID, then by the session name.
+- The registry has the role files `~/git/fleet/registry/roles/<id>.json` and `roles.json`. The file of a role wins over its entry in `roles.json`.
 
 `headroom peer <localPort> <remotePort>` shows the same answer for a check by hand. `--json` gives the JSON. An error gives the exit code 3.
 

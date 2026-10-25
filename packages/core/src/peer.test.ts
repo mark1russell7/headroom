@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isLoopback, parseRoles, PeerError, PeerResolver, RoleBook, roleOf, type FleetRole, type PeerSources } from "./peer.ts";
+import { isLoopback, mergeRoles, parseRoleFile, parseRoles, PeerError, PeerResolver, RoleBook, roleOf, type FleetRole, type PeerSources } from "./peer.ts";
 import type { ProcessLink, SessionInfo, TcpEndpoints } from "./types.ts";
 
 const SITE = 4731;
@@ -269,6 +269,126 @@ describe("parseRoles and RoleBook", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("reads a roles.json that is a list", () => {
+    expect(parseRoles(JSON.stringify([{ id: "maker" }, [1], null])).map((role) => role.id)).toEqual(["maker"]);
+  });
+});
+
+describe("RoleBook with the role files", () => {
+  const registry = {
+    roles: [
+      { id: "organizer", status: "active", session: { name: "organizer", id: "e283aec6" } },
+      { id: "bubble", status: "parked", session: { name: null, id: "763a6c34" } },
+      { id: "vex", status: "active", session: { name: "vex", id: "aa11" } },
+    ],
+  };
+
+  /** This function makes a temporary registry: `roles.json` and the files of the folder `roles`. A string is the raw text of a file. */
+  function withRegistry(files: Record<string, unknown>, run: (book: RoleBook, dir: string) => void): void {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-role-files-"));
+    try {
+      for (const [path, value] of Object.entries(files)) {
+        const file = join(dir, path);
+        mkdirSync(join(file, ".."), { recursive: true });
+        writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
+      }
+      run(new RoleBook(join(dir, "roles.json")), dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("lets a role file win over the entry of its role in roles.json, at the same place", () => {
+    const file = { id: "organizer", status: "active", session: { name: "organizer", id: "f00d" } };
+    withRegistry({ "roles.json": registry, "roles/organizer.json": file }, (book) => {
+      expect(book.roles().map((role) => [role.id, role.sessionId])).toEqual([["organizer", "f00d"], ["bubble", "763a6c34"], ["vex", "aa11"]]);
+      expect(roleOf({ sessionId: "f00d", name: "renamed" }, book.roles())).toBe("organizer");
+      expect(roleOf({ sessionId: "e283aec6", name: "renamed" }, book.roles())).toBeUndefined();
+    });
+  });
+
+  it("keeps an ID only in roles.json, and puts an ID only in a file after the roles of roles.json, by ID", () => {
+    const files = { "roles.json": registry, "roles/zeta.json": { id: "zeta", status: "active" }, "roles/maker.json": { id: "maker", status: "active", session: { id: "bb22", name: "maker" } } };
+    withRegistry(files, (book) => {
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex", "maker", "zeta"]);
+      expect(roleOf({ sessionId: "bb22", name: "x" }, book.roles())).toBe("maker");
+      expect(roleOf({ sessionId: "aa11", name: "x" }, book.roles())).toBe("vex");
+    });
+  });
+
+  it("reads the role files without roles.json, and roles.json without the folder of the role files", () => {
+    withRegistry({ "roles/maker.json": { id: "maker" } }, (book) => expect(book.roles().map((role) => role.id)).toEqual(["maker"]));
+    withRegistry({ "roles.json": registry }, (book) => expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex"]));
+    withRegistry({}, (book) => expect(book.roles()).toEqual([]));
+  });
+
+  it("skips a bad role file, and the entry in roles.json then applies", () => {
+    const files = {
+      "roles.json": registry,
+      "roles/vex.json": "{ broken",
+      "roles/other.json": { id: "not-other" },
+      "roles/Bad_Name.json": { id: "Bad_Name" },
+      "roles/list.json": [{ id: "list" }],
+      "roles/.hidden.json": { id: "hidden" },
+      "roles/.x.tmp": "temp",
+      "roles/notes.txt": "{}",
+    };
+    withRegistry(files, (book) => {
+      expect(book.roles().map((role) => [role.id, role.sessionId])).toEqual([["organizer", "e283aec6"], ["bubble", "763a6c34"], ["vex", "aa11"]]);
+    });
+  });
+
+  it("reads the role files when roles.json is not JSON", () => {
+    withRegistry({ "roles.json": "{ broken", "roles/maker.json": { id: "maker" } }, (book) => expect(book.roles().map((role) => role.id)).toEqual(["maker"]));
+  });
+
+  it("keeps a role that a file retired, and roleOf() does not match it", () => {
+    const file = { id: "vex", status: "retired", session: { name: "vex", id: "aa11" } };
+    withRegistry({ "roles.json": registry, "roles/vex.json": file }, (book) => {
+      expect(book.roles().find((role) => role.id === "vex")?.status).toBe("retired");
+      expect(roleOf({ sessionId: "aa11", name: "vex" }, book.roles())).toBeUndefined();
+    });
+  });
+
+  it("keeps the roles until a role file changes, and reads them again after a new, changed or removed file", () => {
+    withRegistry({ "roles.json": registry }, (book, dir) => {
+      const first = book.roles();
+      expect(book.roles()).toBe(first);
+      mkdirSync(join(dir, "roles"));
+      writeFileSync(join(dir, "roles", "maker.json"), JSON.stringify({ id: "maker" }));
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex", "maker"]);
+      const second = book.roles();
+      expect(book.roles()).toBe(second);
+      writeFileSync(join(dir, "roles", "maker.json"), JSON.stringify({ id: "maker", status: "paused" }));
+      expect(book.roles().find((role) => role.id === "maker")?.status).toBe("paused");
+      rmSync(join(dir, "roles", "maker.json"));
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex"]);
+    });
+  });
+
+  it("reads the two sources again after a role file that is not JSON", () => {
+    withRegistry({ "roles.json": registry, "roles/vex.json": "{ broken" }, (book) => {
+      const first = book.roles();
+      expect(book.roles()).not.toBe(first);
+      expect(book.roles()).toEqual(first);
+    });
+  });
+});
+
+describe("parseRoleFile and mergeRoles", () => {
+  it("gives the role of a file only when its ID is the name of the file and a fleet role ID", () => {
+    expect(parseRoleFile("maker", JSON.stringify({ id: "maker", session: { id: "bb22" } }))).toEqual({ id: "maker", status: null, sessionId: "bb22", sessionName: null });
+    expect(parseRoleFile("maker", JSON.stringify({ id: "other" }))).toBeUndefined();
+    for (const name of ["Maker", "a--b", "a-", "-a", "1a", "a".repeat(65)]) expect(parseRoleFile(name, JSON.stringify({ id: name }))).toBeUndefined();
+    expect(parseRoleFile("a".repeat(64), JSON.stringify({ id: "a".repeat(64) }))?.id).toBe("a".repeat(64));
+    expect(() => parseRoleFile("maker", "{ broken")).toThrow();
+  });
+
+  it("keeps the first of two entries with the same ID", () => {
+    const role = (id: string, status: string): FleetRole => ({ id, status, sessionId: null, sessionName: null });
+    expect(mergeRoles([role("a", "retired"), role("a", "active")], []).map((entry) => entry.status)).toEqual(["retired"]);
   });
 });
 
