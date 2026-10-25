@@ -278,8 +278,8 @@ export async function listProcesses(platform: NodeJS.Platform = process.platform
     const encoded = Buffer.from(PROCESS_SCRIPT, "utf16le").toString("base64");
     const output = await runProgram("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], { timeoutMs: 30_000 });
     if (output === null) return null;
-    return output.split("\n").flatMap((line) => {
-      const [pid, ppid, name, ...rest] = line.replace("\r", "").split("\t");
+    return output.split(/\r?\n/).flatMap((line) => {
+      const [pid, ppid, name, ...rest] = line.split("\t");
       const id = Number(pid);
       return Number.isInteger(id) && id > 0 && name !== undefined ? [{ pid: id, ppid: Number(ppid), name, command: rest.join("\t") }] : [];
     });
