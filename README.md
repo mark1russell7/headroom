@@ -242,6 +242,53 @@ waits until the computer starts fewer than 700 processes a minute (now 1,108)
 
 `headroom job` gives the conditions of a job and a time when it ran without one of them. The timeline of the dashboard draws the wait for a condition as a dashed line, and the time without a condition as a red line. A restart of the daemon for an idle queue does not wait for a lease that waits for a condition. The new daemon keeps the lease.
 
+### The reboot budget and a planned drain (H34)
+
+The AMD display driver of this laptop leaks kernel memory with each new process. Only a reboot gives the memory back. As the leak grows, process starts fail at smaller bursts (0xC0000142). A reboot works best in a planned window: no job runs, each session wrote its handoff, and the resume plan brings the fleet back.
+
+headroom does not reboot the computer, and it does not log off. Only Mark does these actions.
+
+**The budget.** `headroom reboot-plan` gives the facts and a recommendation. `--json` gives the data, and `Status.reboot` has the same data.
+
+```text
+Reboot: Reboot within 6 hours: the non-paged pool reaches its alert level at 07:40. A Windows update waits for a reboot too.
+Kernel pools: non-paged 2.6 GB (alert level 3.0 GB, +80 MB in the last hour, at its alert level in 6 h 10 min), paged 2.6 GB (alert level 4.0 GB, +10 MB in the last hour).
+Windows: an update waits for a reboot (Windows Update).
+Uptime: 3 days, since 22 Oct 21:10.
+Drain: none. `headroom drain --at 02:30` plans one.
+Resume plan: C:\Users\markt\.headroom\resume-plan.md, written 2 h 10 min ago (25 Oct 00:30). A drain writes it again at its start.
+```
+
+The rules of the recommendation go in this order:
+
+1. A kernel pool at or above its alert level (3 GB non-paged, 4 GB paged): "Reboot soon".
+2. A forecast (H32) of a pool to its alert level within 24 hours: "Reboot within N hours", with the time.
+3. A pool that grows 500 MB or more in one hour, with no forecast: "Plan a reboot".
+4. Only a waiting Windows update: "Reboot when it suits you". With another rule, the update adds one sentence.
+5. Else: "No reboot needed", with the time of a far forecast.
+
+headroom reads two registry keys, and writes none: `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired` and `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending`.
+
+**The drain.** A drain holds new jobs before a reboot:
+
+```sh
+headroom drain --at 02:30 --until 06:00   # from 02:30, new jobs wait. At 06:00, the drain ends if no reboot came.
+headroom drain --at now
+headroom drain                            # the drain and its jobs
+headroom drain --cancel
+headroom run --during-drain -- git status # this job starts also in the drain
+```
+
+- From the time of the drain, a new lease waits with the reason `waits for the planned reboot at 02:30 (headroom drain)`. The running jobs finish.
+- At the start, headroom sends the alert `drain`. It names the running jobs and their holders. The daemon also writes the resume plan again.
+- When the last running job ends, headroom sends the alert `drain:ready`: "Ready for the reboot: no job runs." The organizer reads the alerts at each sweep.
+- The settings keep the drain, so it continues after a restart of the daemon. A start of the computer after the drain ends it, because the reboot came.
+- `--until` ends the drain at its time when no reboot came. The alert `drain:ended` tells it, and the waiting jobs start.
+- `headroom status` shows a line, for example `Drain for the reboot at 02:30: 2 jobs still run.` The dashboard shows the budget in one line under the strip, with a bar for each pool.
+- The reason of a drain does not start with `waits for memory`, so the hook of the plugin does not count it. A restart of the daemon for an idle queue does not wait for it.
+
+**The resume plan (H13).** `headroom resume-plan` prints the command of each live session, the organizer first. It also writes the plan to `~/.headroom/resume-plan.md`. `headroom reboot-plan` tells where the file is and its age.
+
 ### The shared services (H27)
 
 On 2026-10-24, the Docker engine stopped to answer, and an MCP server of the gateway did not start. Nothing told the sessions. Since H27, the daemon checks the shared services every 30 seconds, with a time limit of 3 seconds for each check:

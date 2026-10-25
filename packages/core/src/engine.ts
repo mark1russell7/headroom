@@ -5,7 +5,7 @@
 
 import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
-import { conditionWait, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
+import { conditionWait, localClock, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
 import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TreeUse } from "./cpu.ts";
@@ -33,6 +33,22 @@ import {
   type ResourceStatus,
 } from "./resources.ts";
 import { batteryState, keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
+import {
+  DRAIN_ALERT,
+  DRAIN_ENDED_ALERT,
+  DRAIN_READY_ALERT,
+  drainAlerts,
+  drainStatus,
+  drainWait,
+  rebootBudget,
+  windowsReboot,
+  type Drain,
+  type DrainStatus,
+  type PoolBudget,
+  type RebootBudget,
+  type ResumePlanFile,
+  type WindowsReboot,
+} from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
@@ -92,6 +108,10 @@ export interface EngineOptions {
   readonly rolesFile?: string | undefined;
   /** This function reads the usage file for `usage<N` (H31). The default reads the file. The engine keeps each read for 30 seconds. */
   readonly readUsage?: ((path: string) => UsageFacts) | undefined;
+  /** This function runs when a planned drain starts (H34). The daemon writes the resume plan (H13) in it. */
+  readonly onDrainStart?: (() => void) | undefined;
+  /** This function gives the file of the resume plan and the time of its last write (H34), or `null` without a file. */
+  readonly resumePlan?: (() => ResumePlanFile | null) | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -144,6 +164,11 @@ export interface Status {
   readonly power: PowerStatus;
   /** The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). `free.cpu` is after this reserve. */
   readonly cpuReserve: number;
+  /**
+   * The reboot budget (H34): the kernel pools with their growth and forecast, a waiting Windows update and the uptime. It
+   * also has a recommendation, the planned drain and the file of the resume plan.
+   */
+  readonly reboot: RebootBudget;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -215,6 +240,10 @@ const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
 const FILES_EVERY_MS = 5 * 60_000;
 const FILES_SINCE_MS = 2 * 3_600_000;
+/** The time that the engine keeps a read of the reboot keys of the registry (H34). */
+const REGISTRY_EVERY_MS = 5 * 60_000;
+/** The alerts of a drain that the engine keeps from the state of the drain, not from `detect()` (H34). */
+const DRAIN_IDS: ReadonlySet<string> = new Set([DRAIN_ALERT, DRAIN_READY_ALERT]);
 /** After a resume event, a time between two calls of the engine shorter than this is not a sleep. A tick that came first marked it. */
 const MIN_SLEEP_MS = 5000;
 const round = (mb: number): number => Math.round(mb * 10) / 10;
@@ -343,6 +372,14 @@ export class Engine {
   readonly #trendPoints = new Map<ResourceId, ResourcePoint[]>();
   /** The fit of each instance and part at the last sample, by `<id>|<part>`. A part with no trend is absent. */
   #trends = new Map<string, Trend>();
+  /** The planned drain for a reboot (H34), from the settings. */
+  #drain: Drain | null = null;
+  readonly #onDrainStart: () => void;
+  readonly #resumePlan: () => ResumePlanFile | null;
+  /** The growth of each kernel pool over the last hour, in MB, from the last check of the alerts (H34). */
+  #poolGrowth: { readonly nonpaged: number | null; readonly paged: number | null } = { nonpaged: null, paged: null };
+  /** The last read of the reboot keys of the registry, and its time (H34). */
+  #windowsReboot: { readonly at: number; readonly value: WindowsReboot | null } | null = null;
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -375,13 +412,23 @@ export class Engine {
       // H47: beside a browser test, the sum of the start rates of the other leases stays at or below the limit.
       groupConflict: (lease, granted, before) => startsSumConflict(lease, granted, before, (each) => this.#startRate(each), this.#conditionFacts().spawnHeavy),
       // H31: a lease waits until each of its conditions holds, and a heavy lease waits on a low battery.
+      // H34: in a planned drain, a lease waits for the reboot, unless its job runs with --during-drain.
       condition: (lease) => {
+        const drained = drainWait(lease, this.#drain, this.#now());
+        if (drained !== null) return drained;
         const { facts, floor } = this.#conditionFacts();
         return conditionWait(lease, facts, floor);
       },
     });
     this.#broker.restore(this.#store.activeLeases());
     this.#bootedAt = this.#sampler.bootedAt?.() ?? 0;
+    this.#onDrainStart = options.onDrainStart ?? (() => undefined);
+    this.#resumePlan = options.resumePlan ?? (() => null);
+    // H34: the drain continues after a restart of the daemon. A start of the computer after the drain means that the reboot came.
+    this.#drain = this.#store.drain();
+    if (this.#drain !== null && this.#bootedAt > this.#drain.setAt) {
+      this.#endDrain(this.#startedAt, `The reboot came, so the drain for the reboot at ${localClock(this.#drain.at)} ended. New jobs start again.`);
+    }
     // The snapshots of the last hour continue after a restart, so the change of each tag has its full window. A start of
     // the computer empties the pools, so the snapshots before it do not continue.
     this.#tags = this.#store.poolTagsSince(Math.max(this.#startedAt - POOL_TAGS_KEEP_MS, this.#bootedAt));
@@ -552,8 +599,11 @@ export class Engine {
       this.#readBattery();
       if (this.#checkDue) this.#check(now, this.#ownership.ownerOf);
     }
+    // H34: the end of a drain at its time --until, and its start, come before the admission of this tick.
+    this.#drainBefore(now);
     const changed = this.#broker.tick(this.capacity());
     this.#persist(changed);
+    this.#drainAfter(now);
     this.#recordUnmet();
     this.#keepAwake();
     if (now - this.#recordedAt >= this.#recordEveryMs) {
@@ -745,8 +795,10 @@ export class Engine {
   status(): Status {
     const capacity = this.capacity();
     const attribution = this.#readings === null ? undefined : { readings: this.#readings, owners: this.#ownership };
+    const now = this.#now();
+    const forecasts = this.#forecasts(now);
     return {
-      at: this.#now(),
+      at: now,
       memory: this.#memory,
       reserveMb: this.#reserveMb,
       free: this.#broker.free(capacity),
@@ -757,12 +809,13 @@ export class Engine {
       alerts: [...this.#alerts.values()],
       session: this.#load,
       disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
-      resources: withKinds(this.#measurements, attribution, this.#forecasts(this.#now())),
+      resources: withKinds(this.#measurements, attribution, forecasts),
       writes: this.#writes,
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
       power: this.powerStatus(),
       cpuReserve: this.#cpuReserve,
+      reboot: this.#rebootBudget(now, forecasts),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -885,6 +938,11 @@ export class Engine {
     const hourOld = first !== undefined && now - first.at > 50 * 60_000;
     const poolHourAgoMb = hourOld ? first.kernelNonpagedMb : undefined;
     const pagedHourAgoMb = hourOld ? first.kernelPagedMb : undefined;
+    // H34: the reboot budget gives the growth of each pool over the same hour.
+    this.#poolGrowth = {
+      nonpaged: poolHourAgoMb === undefined ? null : Math.round(this.#memory.kernelNonpagedMb - poolHourAgoMb),
+      paged: pagedHourAgoMb === undefined ? null : Math.round(this.#memory.kernelPagedMb - pagedHourAgoMb),
+    };
     const disks: DiskInput[] = this.#disks.map((disk) => {
       const { droppedMb, windowMinutes } = this.#diskWindow(disk.mount);
       return { ...disk, droppedMb, windowMinutes };
@@ -918,7 +976,8 @@ export class Engine {
     }
     const ids = new Set(found.map((alert) => alert.id));
     for (const [id, alert] of this.#alerts) {
-      if (ids.has(id)) continue;
+      // H34: the state of the drain keeps its alerts, so the check of the alerts does not end them.
+      if (ids.has(id) || DRAIN_IDS.has(id)) continue;
       this.#alerts.delete(id);
       this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
     }
@@ -1227,6 +1286,143 @@ export class Engine {
     } catch {
       // Without the request, Windows can put the computer to sleep. The leases continue after the wake.
     }
+  }
+
+  /** This function gives the planned drain with its running jobs (H34), or `null` without a drain. */
+  drain(): DrainStatus | null {
+    return drainStatus(this.#drain, this.#broker.leases(), this.#now());
+  }
+
+  /**
+   * This function plans a drain for a reboot (H34). From `at`, new leases wait, and the running leases finish. `until` ends
+   * the drain when no reboot came. A second drain replaces the first. It throws a `RangeError` for an end before the start.
+   */
+  setDrain(at: number, until: number | null = null): DrainStatus {
+    const now = this.#clock();
+    if (!Number.isFinite(at)) throw new RangeError("The time of the drain must be a time in milliseconds since the epoch");
+    if (until !== null && !(Number.isFinite(until) && until > at && until > now)) throw new RangeError("The end of the drain must come after its start and after the current time");
+    this.#saveDrain({ at, until, setAt: now, startedAt: null, readyAt: null });
+    this.#drainBefore(now);
+    this.#facts = null;
+    this.#persist(this.#broker.tick(this.capacity()));
+    this.#drainAfter(now);
+    const drain = this.drain();
+    if (drain === null) throw new RangeError("The drain ended at once");
+    return drain;
+  }
+
+  /** This function cancels the planned drain (H34). The waiting leases start when they fit. It gives the drain, or `null` without one. */
+  cancelDrain(): DrainStatus | null {
+    const now = this.#clock();
+    const current = this.drain();
+    if (current === null) return null;
+    this.#endDrain(now, null);
+    this.#persist(this.#broker.tick(this.capacity()));
+    return current;
+  }
+
+  /** This function writes the drain to the store, or removes it with `null`. */
+  #saveDrain(drain: Drain | null): void {
+    this.#drain = drain;
+    this.#store.setDrain(drain);
+  }
+
+  /**
+   * This function ends the drain (H34). Its alerts end. With a message, an event alert `drain:ended` tells why: the reboot
+   * came, or the time of `--until` came with no reboot. A cancel has no message.
+   */
+  #endDrain(now: number, message: string | null): void {
+    this.#saveDrain(null);
+    this.#syncDrainAlerts(now, null);
+    if (message !== null) this.note({ id: DRAIN_ENDED_ALERT, kind: "drain", subject: "planned reboot", pid: null, mb: 0, message });
+  }
+
+  /**
+   * This function handles the drain before the admission of a tick (H34). At the time of `--until`, the drain ends. At its
+   * start, the drain records the time and calls `onDrainStart`, so the daemon writes the resume plan one time.
+   */
+  #drainBefore(now: number): void {
+    const drain = this.#drain;
+    if (drain === null) return;
+    if (drain.until !== null && now >= drain.until) {
+      const message = `The drain for the reboot at ${localClock(drain.at)} ended at ${localClock(drain.until)} with no reboot. New jobs start again.`;
+      this.#endDrain(now, message);
+      return;
+    }
+    if (now < drain.at || (drain.startedAt ?? null) !== null) return;
+    this.#saveDrain({ ...drain, startedAt: now });
+    try {
+      this.#onDrainStart();
+    } catch {
+      // The resume plan is a help for the reboot. The drain continues without it.
+    }
+  }
+
+  /** This function records the time when no job runs in an active drain, and updates the alerts of the drain (H34). */
+  #drainAfter(now: number): void {
+    const drain = this.#drain;
+    const before = drainStatus(drain, this.#broker.leases(), now);
+    if (drain !== null && before !== null && before.state === "active") {
+      const readyAt = before.running.length === 0 ? (drain.readyAt ?? now) : null;
+      if (readyAt !== (drain.readyAt ?? null)) this.#saveDrain({ ...drain, readyAt });
+    }
+    this.#syncDrainAlerts(now, this.drain());
+  }
+
+  /**
+   * This function sets the alerts of the drain from its state (H34). An alert that the state does not give any more ends. The
+   * alert `drain` starts at the start of the drain, and the alert `drain:ready` at the time when no job runs.
+   */
+  #syncDrainAlerts(now: number, drain: DrainStatus | null): void {
+    const found = drainAlerts(drain);
+    const ids = new Set(found.map((alert) => alert.id));
+    for (const id of DRAIN_IDS) {
+      const alert = this.#alerts.get(id);
+      if (alert === undefined || ids.has(id)) continue;
+      this.#alerts.delete(id);
+      this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
+    }
+    for (const alert of found) {
+      const start = alert.id === DRAIN_READY_ALERT ? drain?.readyAt : (drain?.startedAt ?? drain?.at);
+      this.#alerts.set(alert.id, { ...alert, since: this.#alerts.get(alert.id)?.since ?? start ?? now });
+    }
+  }
+
+  /** This function reads the reboot keys of the registry, at most one time in 5 minutes (H34). */
+  #windowsRebootRead(now: number): WindowsReboot | null {
+    const sampler = this.#sampler;
+    if (sampler.registryKey === undefined) return null;
+    if (this.#windowsReboot !== null && now - this.#windowsReboot.at < REGISTRY_EVERY_MS) return this.#windowsReboot.value;
+    const value = windowsReboot((path) => sampler.registryKey?.(path) ?? "unknown");
+    this.#windowsReboot = { at: now, value };
+    return value;
+  }
+
+  /** This function gives the reboot budget at a time (H34), from the memory, the forecasts of the last sample and the drain. */
+  #rebootBudget(now: number, forecasts: ReadonlyMap<ResourceId, readonly Forecast[]>): RebootBudget {
+    const rules = this.#alertRules;
+    const pool = (id: PoolBudget["id"], usedMb: number, alertMb: number, growth: number | null, growthLimitMb: number): PoolBudget => {
+      const list = forecasts.get(id) ?? [];
+      const forecast = list.find((each) => each.target.on === "used" && each.target.amount === alertMb) ?? list[0] ?? null;
+      return { id, usedMb: Math.round(usedMb), alertMb, growthMbPerHour: growth, growthLimitMb, forecast };
+    };
+    let plan: ResumePlanFile | null = null;
+    try {
+      plan = this.#resumePlan();
+    } catch {
+      plan = null;
+    }
+    return rebootBudget({
+      at: now,
+      pools: [
+        pool("pool:nonpaged", this.#memory.kernelNonpagedMb, rules.poolMb, this.#poolGrowth.nonpaged, rules.poolGrowthMb),
+        pool("pool:paged", this.#memory.kernelPagedMb, rules.pagedMb, this.#poolGrowth.paged, rules.pagedGrowthMb),
+      ],
+      windows: this.#windowsRebootRead(now),
+      bootedAt: this.#bootedAt > 0 ? this.#bootedAt : null,
+      drain: this.drain(),
+      resumePlan: plan,
+    });
   }
 
   /** This function closes the store and the sampler. */

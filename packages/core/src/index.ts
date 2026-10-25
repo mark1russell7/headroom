@@ -145,6 +145,41 @@ export {
 } from "./forecast.ts";
 export type { FitOptions, Forecast, ForecastEntry, ForecastTarget, Part, TargetName, Trend } from "./forecast.ts";
 export {
+  DRAIN_ALERT,
+  DRAIN_ENDED_ALERT,
+  DRAIN_READY_ALERT,
+  drainAlerts,
+  drainLine,
+  drainReason,
+  drainStatus,
+  drainWait,
+  isDrainActive,
+  nextClock,
+  parseDrain,
+  REBOOT_HORIZON_MINUTES,
+  REBOOT_KEYS,
+  rebootAdvice,
+  rebootBudget,
+  rebootLines,
+  windowsReboot,
+} from "./reboot.ts";
+export type {
+  AdviceOptions,
+  BudgetInput,
+  Drain,
+  DrainJob,
+  DrainStatus,
+  KeyState,
+  PoolBudget,
+  PoolId,
+  RebootAdvice,
+  RebootBudget,
+  RebootKey,
+  RebootLevel,
+  ResumePlanFile,
+  WindowsReboot,
+} from "./reboot.ts";
+export {
   batteryForecast,
   batteryLevel,
   fitsHistory,

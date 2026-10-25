@@ -15,6 +15,7 @@ import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
+import { parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -258,6 +259,18 @@ export class Store {
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
     else this.#db.prepare("INSERT INTO settings VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(name, value);
+  }
+
+  /** This function reads the planned drain from the settings (H34), or gives `null` without a drain. */
+  drain(): Drain | null {
+    const row = this.#db.prepare("SELECT value FROM settings WHERE name = 'drain'").get();
+    return row === undefined ? null : parseDrain(String(row["value"]));
+  }
+
+  /** This function writes the planned drain to the settings (H34), so it continues after a restart of the daemon. `null` removes it. */
+  setDrain(drain: Drain | null): void {
+    if (drain === null) this.#db.prepare("DELETE FROM settings WHERE name = 'drain'").run();
+    else this.#db.prepare("INSERT INTO settings VALUES ('drain', ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(JSON.stringify(drain));
   }
 
   /** This function reads the leases that ended after a time, the newest first. */

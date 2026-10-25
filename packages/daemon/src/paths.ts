@@ -27,6 +27,11 @@ export function logPath(): string {
   return join(headroomHome(), "daemon.log");
 }
 
+/** The file of the resume plan (H13, H34): the command of each live session, for a reboot. */
+export function resumePlanPath(): string {
+  return join(headroomHome(), "resume-plan.md");
+}
+
 /** The key of the dashboard. Only this user can read it. `headroom dashboard` puts it in the URL of the page. */
 export function dashboardKeyPath(): string {
   return join(headroomHome(), "dashboard.key");

@@ -15,6 +15,8 @@
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
+ * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
+ * - `headroom drain --at <HH:MM|now> [--until <HH:MM>]` and `headroom drain --cancel`: a planned drain for a reboot (H34).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -37,6 +39,10 @@ import {
   isSpawnWait,
   BATTERY_FLOOR_DEFAULT,
   coresText,
+  drainLine,
+  localClock,
+  nextClock,
+  rebootLines,
   CPU_AUTO_DEFAULT,
   CPU_RESERVE_DEFAULT,
   cpuLine,
@@ -53,6 +59,7 @@ import {
   type Alert,
   type Alerts,
   type Config,
+  type DrainStatus,
   type History,
   type Job,
   type JobExit,
@@ -73,6 +80,7 @@ import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOpti
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
+import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { windowsCommand } from "./winshell.mjs";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
@@ -91,7 +99,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g|auto] [--cpu 2|auto] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
                [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
-               [--battery-ok] -- <command> [args...]
+               [--battery-ok] [--during-drain] -- <command> [args...]
                --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
                Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
                --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
@@ -113,6 +121,7 @@ const HELP = `headroom: the memory and job broker of this computer
                --timing: a timing-sensitive job waits for AC power. Timing tests belong in CI.
                On battery below the floor (${BATTERY_FLOOR_DEFAULT}%), a heavy job waits: 2 GB or more, the slot
                browser, or spawn-heavy. --battery-ok: start it anyway.
+               In a planned drain for a reboot, a new job waits. --during-drain: start it anyway.
                A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
   ${JOB_USAGE}
                The state of a job: queued, running or exited, with its exit code. No job: exit 3.
@@ -131,6 +140,11 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom forecast [--json]                (the time of each resource to its nearest limit, from its history)
+  headroom reboot-plan [--json]             (the reboot budget: the kernel pools, a waiting update, the uptime)
+  headroom drain --at <HH:MM|now> [--until <HH:MM>] | --cancel
+               A planned drain for a reboot: from the time, new jobs wait and the running jobs finish.
+               An alert tells when no job runs. --until: the drain ends at that time if no reboot came.
+               headroom does not reboot the computer. Only Mark does.
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   headroom peer <localPort> <remotePort> [--json]
@@ -188,7 +202,12 @@ function printStatus(status: DaemonStatus): void {
   const { memory } = status;
   for (const alert of status.alerts ?? []) console.log(`ALERT since ${clock(alert.since)} UTC: ${alert.message}`);
   if (status.restart) console.log(service.pendingLine(status.restart));
-  if ((status.alerts ?? []).length > 0 || status.restart) console.log("");
+  // H34: the planned drain, and a recommendation to reboot. A daemon of an older version gives no reboot budget.
+  const drain = status.reboot === undefined ? null : drainLine(status.reboot.drain);
+  if (drain !== null) console.log(drain);
+  const advice = status.reboot?.advice;
+  if (advice !== undefined && advice.level !== "none") console.log(`Reboot: ${advice.text}`);
+  if ((status.alerts ?? []).length > 0 || status.restart || drain !== null || (advice !== undefined && advice.level !== "none")) console.log("");
   console.log(`Memory: ${mb(memory.availableMb)} available of ${mb(memory.totalMb)}. Committed ${mb(memory.commitMb)} of ${mb(memory.commitLimitMb)}.`);
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
   const load = status.session;
@@ -527,6 +546,7 @@ async function run(argv: string[]): Promise<number> {
       when: { type: "string", multiple: true },
       timing: { type: "boolean" },
       "battery-ok": { type: "boolean" },
+      "during-drain": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
@@ -543,6 +563,7 @@ async function run(argv: string[]): Promise<number> {
   }
   const timing = values.timing === true;
   const batteryOk = values["battery-ok"] === true;
+  const duringDrain = values["during-drain"] === true;
   if (values["spawn-heavy"] === true && values["no-spawn-heavy"] === true) {
     console.error("headroom run takes --spawn-heavy or --no-spawn-heavy, not both.");
     return 2;
@@ -640,6 +661,7 @@ async function run(argv: string[]): Promise<number> {
     ...(when.length === 0 ? {} : { when }),
     ...(timing ? { timing } : {}),
     ...(batteryOk ? { batteryOk } : {}),
+    ...(duringDrain ? { duringDrain } : {}),
     // H23: the status names the capped jobs. The job object of this process holds the cap.
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
   };
@@ -995,13 +1017,83 @@ async function configCommand(argv: string[]): Promise<number> {
   return 0;
 }
 
+/** `headroom resume-plan` (H13): print the command of each live session, and write the plan to its file (H34). */
 function resumePlan(): void {
-  const sessions = readSessions().sort((a, b) => (a.name === "organizer" ? -1 : b.name === "organizer" ? 1 : a.name.localeCompare(b.name)));
-  console.log("# The resume plan: one line for each live Claude Code session, the organizer first\n");
-  for (const session of sessions) {
-    console.log(`# ${session.name}`);
-    console.log(`Set-Location "${session.cwd ?? "."}"; claude --resume ${session.sessionId}\n`);
+  const sessions = readSessions();
+  for (const line of resumePlanLines(sessions)) console.log(line);
+  try {
+    console.log(`# The plan is also in ${writeResumePlan(undefined, sessions).path}`);
+  } catch (error) {
+    console.error(`headroom: the file of the resume plan was not written: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/** `headroom reboot-plan` (H34): the reboot budget of the daemon, with its recommendation. */
+async function rebootPlan(json: boolean): Promise<number> {
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run. Start it with: headroom service install"), 1);
+  const status = await connection.call<DaemonStatus>(["resources", "status"], {});
+  if (status.reboot === undefined) return (console.error("The daemon is older than the reboot budget (H34). Run headroom service restart."), 1);
+  if (json) console.log(JSON.stringify(status.reboot, null, 2));
+  else for (const line of rebootLines(status.reboot)) console.log(line);
+  return 0;
+}
+
+/** This function writes a time for a person: the local clock, and the day when it is not today. */
+function whenText(at: number, now: number = Date.now()): string {
+  const day = new Date(at).toDateString() === new Date(now).toDateString() ? "" : ` on ${new Date(at).toDateString().slice(0, 10)}`;
+  return `${localClock(at)}${day}`;
+}
+
+/**
+ * `headroom drain --at <HH:MM|now> [--until <HH:MM>]` plans a drain for a reboot, and `--cancel` cancels it (H34). With no
+ * option, it shows the drain. headroom does not reboot the computer.
+ */
+async function drainCommand(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { at: { type: "string" }, until: { type: "string" }, cancel: { type: "boolean" }, json: { type: "boolean" } },
+  });
+  const usage = "Usage: headroom drain --at <HH:MM|now> [--until <HH:MM>], headroom drain --cancel, or headroom drain";
+  if (positionals.length > 0 || (values.cancel === true && (values.at !== undefined || values.until !== undefined)) || (values.until !== undefined && values.at === undefined)) {
+    console.error(usage);
+    return 2;
+  }
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run. Start it with: headroom service install"), 1);
+  const now = Date.now();
+  let input: { at?: number; until?: number | null; cancel?: boolean } = {};
+  try {
+    if (values.cancel === true) input = { cancel: true };
+    else if (values.at !== undefined) {
+      const at = values.at.trim().toLowerCase() === "now" ? now : nextClock(values.at, now);
+      input = { at, until: values.until === undefined ? null : nextClock(values.until, at) };
+    }
+  } catch (error) {
+    console.error(`headroom: ${error instanceof Error ? error.message : String(error)}. ${usage}`);
+    return 2;
+  }
+  const drain = await connection.call<DrainStatus | null>(["resources", "drain"], input);
+  if (values.json === true) {
+    console.log(JSON.stringify(drain, null, 2));
+    return 0;
+  }
+  if (values.cancel === true) {
+    console.log(drain === null ? "No drain was planned." : `The drain for the reboot at ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
+    return 0;
+  }
+  if (drain === null) {
+    console.log("No drain is planned. headroom drain --at 02:30 plans one.");
+    return 0;
+  }
+  if (input.at !== undefined) {
+    const until = drain.until === null ? "" : ` If no reboot comes, it ends at ${whenText(drain.until, now)}.`;
+    console.log(`The drain for the reboot starts at ${whenText(drain.at, now)}: new jobs wait, and the running jobs finish.${until}`);
+    console.log("An alert tells when no job runs. The daemon writes the resume plan at the start. headroom does not reboot the computer.");
+  }
+  console.log(drainLine(drain) ?? "");
+  return 0;
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -1136,6 +1228,12 @@ async function main(argv: string[]): Promise<number> {
     case "resume-plan":
       resumePlan();
       return 0;
+    case "reboot-plan": {
+      const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
+      return rebootPlan(values.json === true);
+    }
+    case "drain":
+      return drainCommand(rest);
     default:
       console.log(HELP);
       return command === undefined || command === "help" || command === "--help" ? 0 : 2;

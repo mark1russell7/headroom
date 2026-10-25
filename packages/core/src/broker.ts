@@ -43,6 +43,8 @@ export interface LeaseRequest {
   readonly timing?: boolean | undefined;
   /** `--battery-ok` (H31): a heavy job starts also on battery below the floor. */
   readonly batteryOk?: boolean | undefined;
+  /** `--during-drain` (H34): the job starts also in a planned drain for a reboot. */
+  readonly duringDrain?: boolean | undefined;
   /** The hard cap of the job in cores, with `--cpu N --limit` (H23). The client of `headroom run` sets it on the job object. */
   readonly cpuCap?: number | undefined;
 }
@@ -245,7 +247,7 @@ export class Broker {
       if (!Number.isFinite(amount) || amount < 0) throw new RangeError(`The amount of ${name} must be a number of 0 or more`);
     }
     if (request.cpuCap !== undefined && !(Number.isFinite(request.cpuCap) && request.cpuCap > 0)) throw new RangeError("The CPU cap must be a number above 0");
-    const conditions = leaseConditions(request.when, request.timing, request.batteryOk);
+    const conditions = leaseConditions(request.when, request.timing, request.batteryOk, request.duringDrain);
     const now = this.#now();
     const lease: Lease = {
       id: this.#newId(),

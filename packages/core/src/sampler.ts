@@ -3,6 +3,7 @@
  */
 
 import type { PowerEvent } from "./power.ts";
+import type { KeyState } from "./reboot.ts";
 import type {
   BatteryRead,
   DiskSpace,
@@ -68,6 +69,11 @@ export interface Sampler {
    * ends the request with `null` (H30). A closed lid still puts a laptop to sleep.
    */
   keepAwake?(reason: string | null): void;
+  /**
+   * This function tells if a key of `HKEY_LOCAL_MACHINE` exists (H34). It only opens the key to read it, and closes it. A
+   * key that refuses the read exists. Only Windows has a registry.
+   */
+  registryKey?(path: string): KeyState;
   /** This function frees the resources of the sampler. */
   close(): void;
 }

@@ -110,6 +110,18 @@ button.lg:hover { border-color: var(--border); background: var(--raise); }
 .svc small { color: var(--muted); font-variant-numeric: tabular-nums; }
 .svc.down { border-color: var(--crit); }
 .svc.slow { border-color: var(--warn); }
+/* H34: the reboot budget in one line under the strip. */
+.rebootline { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
+.rebootline[hidden] { display: none; }
+.rebootline.down { border-color: var(--crit); }
+.rebootline.slow { border-color: var(--warn); }
+.rebootline .rbtext { flex: 1 1 260px; min-width: 0; }
+.rebootline .rbtext small { color: var(--muted); }
+.rbmeter { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.rbmeter .track { position: relative; width: 90px; height: 6px; border-radius: 3px; background: var(--raise); overflow: hidden; }
+.rbmeter .fill { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--good); }
+.rbmeter .fill.slow { background: var(--warn); }
+.rbmeter .fill.down { background: var(--crit); }
 
 .focusing [data-group]:not(.hit) { opacity: 0.25; }
 .focusing .res:not(.has-hit) { opacity: 0.5; }
@@ -230,6 +242,7 @@ div.owner { cursor: default; }
     <div class="urow" id="cpuRow" hidden><div class="lab"><span>Processors</span><span id="cpuText"></span></div><div class="ubar thin" id="cpuBar"></div></div>
     <div class="lgs" id="ownLegend"></div>
     <div class="strip" id="strip"></div>
+    <div class="rebootline" id="reboot" role="status" hidden></div>
   </section>
 
   <section aria-labelledby="resTitle">
@@ -666,6 +679,39 @@ function renderNow() {
       bat.ac ? ICON.good() : ICON.wait(), h("b", { text: bat.ac ? "plugged in" : "on battery" }), h("small", { text: `${bat.percent}%` }))] : []),
     h("span", { class: "lab", text: "Jobs" }),
     h("a", { class: "svc", href: "#jobs" }, ICON.good(), h("b", { text: `${granted} run` }), ICON.wait(), h("b", { text: `${waiting} wait` })));
+  renderReboot(st);
+}
+
+// ---- the reboot budget (H34): the recommendation, the kernel pools against their alert levels, the drain ----
+const REBOOT_STATE = { overdue: "down", soon: "slow", plan: "slow", update: "slow", none: "ok" };
+function drainText(d) {
+  if (!d) return null;
+  const when = clock(d.at), until = d.until ? ` It ends at ${clock(d.until)} if no reboot comes.` : "";
+  if (d.state === "planned") return `Drain planned for the reboot at ${when}: from ${when}, new jobs wait.${until}`;
+  const n = d.running.length;
+  if (n === 0) return `Drain for the reboot at ${when}: no job runs, ready for the reboot.${until}`;
+  return `Drain for the reboot at ${when}: ${n} ${n === 1 ? "job still runs" : "jobs still run"} (${d.running.map((j) => `${j.job.slice(0, 30)} · ${j.holder}`).join(", ")}).${until}`;
+}
+function poolMeter(p) {
+  const part = p.usedMb / p.alertMb, cls = part >= 1 ? "down" : p.forecast && p.forecast.minutes <= 1440 ? "slow" : "";
+  const growth = p.growthMbPerHour == null ? "" : `, ${p.growthMbPerHour >= 0 ? "+" : ""}${Math.round(p.growthMbPerHour)} MB in the last hour`;
+  const fc = p.forecast ? `, at its alert level in ${spanText(p.forecast.minutes)}` : "";
+  const name = p.id === "pool:nonpaged" ? "Non-paged" : "Paged";
+  return h("span", { class: "rbmeter", title: `${name} pool: ${mb(p.usedMb)} of its alert level ${mb(p.alertMb)}${growth}${fc}` },
+    h("span", { text: name }), h("span", { class: "track" }, h("i", { class: `fill ${cls}`, style: `width:${Math.min(100, Math.round(part * 100))}%` })), h("b", { text: mb(p.usedMb) }));
+}
+function renderReboot(st) {
+  const rb = st.reboot, el = $("reboot");
+  // A daemon of an older version gives no reboot budget.
+  el.hidden = !rb;
+  if (!rb) return;
+  const cls = REBOOT_STATE[rb.advice.level] || "ok";
+  const notes = [drainText(rb.drain), rb.uptimeMinutes != null ? `Uptime ${spanText(rb.uptimeMinutes)}.` : null,
+    rb.resumePlan ? `Resume plan written ${ago(rb.resumePlan.at)} ago.` : "No resume plan yet."].filter(Boolean);
+  el.className = `rebootline ${cls}`;
+  el.replaceChildren(stateIcon(cls), h("b", { text: "Reboot" }),
+    h("span", { class: "rbtext" }, h("span", { text: rb.advice.text }), " ", h("small", { text: notes.join(" ") })),
+    ...rb.pools.map(poolMeter));
 }
 
 // ---- the resources: one card for each instance of Status.resources, from the model ----

@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*` and `service.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { Alerts, Config, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
@@ -29,6 +29,7 @@ const LeaseInput = z.object({
     .describe("The conditions of the job (H31), for example ac, battery>=50, usage<80 or starts<700. The lease waits until each one holds."),
   timing: z.boolean().optional().describe("True: the job measures time, so it waits for AC power (H31)"),
   batteryOk: z.boolean().optional().describe("True: a heavy job starts also on battery below the floor (H31)"),
+  duringDrain: z.boolean().optional().describe("True: the job starts also in a planned drain for a reboot (H34)"),
   cpuCap: z
     .number()
     .positive()
@@ -154,6 +155,17 @@ const PeerInput = z.object({
 });
 type PeerInput = z.infer<typeof PeerInput>;
 
+const Time = z.number().int().min(0).max(8_640_000_000_000_000);
+
+const DrainInput = z
+  .object({
+    at: Time.optional().describe("The time of the planned reboot in ms since the epoch. From it, new leases wait (H34)."),
+    until: Time.nullable().optional().describe("The end of the drain when no reboot came, in ms since the epoch. null: no end."),
+    cancel: z.boolean().default(false).describe("True: cancel the drain. The waiting leases start when they fit."),
+  })
+  .strict();
+type DrainInput = z.infer<typeof DrainInput>;
+
 const Empty = z.object({}).strict();
 type Empty = z.infer<typeof Empty>;
 
@@ -219,6 +231,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         when: input.when,
         timing: input.timing,
         batteryOk: input.batteryOk,
+        duringDrain: input.duringDrain,
         cpuCap: input.cpuCap,
       }),
     )
@@ -428,7 +441,28 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     )
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet];
+  const drain = createProcedure()
+    .path(["resources", "drain"])
+    .input(zodAdapter<DrainInput>(DrainInput))
+    .output(anything<DrainStatus | null>())
+    .meta({
+      description:
+        "Plan a drain for a reboot (H34): from at, new leases wait and the running leases finish. until ends it with no reboot. cancel ends it. With no field, give the drain.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
+    })
+    .handler(async (input: DrainInput): Promise<DrainStatus | null> => {
+      if (input.cancel) return engine.cancelDrain();
+      if (input.at === undefined) {
+        if (input.until !== undefined) throw new RangeError("until needs at");
+        return engine.drain();
+      }
+      return engine.setDrain(input.at, input.until ?? null);
+    })
+    .build() as AnyProcedure;
+
+  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain];
 }
 
 const RestartWhenIdleInput = z.object({

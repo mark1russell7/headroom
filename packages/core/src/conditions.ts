@@ -93,6 +93,8 @@ export interface LeaseConditions {
   readonly timing?: boolean | undefined;
   /** `--battery-ok`: a heavy job starts also on a low battery. */
   readonly batteryOk?: boolean | undefined;
+  /** `--during-drain` (H34): the job starts also in a planned drain for a reboot. */
+  readonly duringDrain?: boolean | undefined;
 }
 
 /** The record of a granted lease that runs without one of its conditions (H31). */
@@ -273,10 +275,20 @@ export function parseWhen(values: readonly string[]): ConditionSpec[] {
  * This function gives the conditions of a new lease, or `undefined` for a lease with none. It throws a `ConditionError`
  * for a wrong condition.
  */
-export function leaseConditions(when: readonly string[] | undefined, timing: boolean | undefined, batteryOk: boolean | undefined): LeaseConditions | undefined {
+export function leaseConditions(
+  when: readonly string[] | undefined,
+  timing: boolean | undefined,
+  batteryOk: boolean | undefined,
+  duringDrain?: boolean | undefined,
+): LeaseConditions | undefined {
   const specs = parseWhen(when ?? []);
-  if (specs.length === 0 && timing !== true && batteryOk !== true) return undefined;
-  return { when: specs.map((spec) => spec.text), ...(timing === true ? { timing: true } : {}), ...(batteryOk === true ? { batteryOk: true } : {}) };
+  if (specs.length === 0 && timing !== true && batteryOk !== true && duringDrain !== true) return undefined;
+  return {
+    when: specs.map((spec) => spec.text),
+    ...(timing === true ? { timing: true } : {}),
+    ...(batteryOk === true ? { batteryOk: true } : {}),
+    ...(duringDrain === true ? { duringDrain: true } : {}),
+  };
 }
 
 /** This function tells why a lease is heavy for the battery policy, or gives `null` for a lease that is not heavy. */
@@ -371,9 +383,12 @@ export function nextUnmet(lease: Lease, facts: ConditionFacts): UnmetCondition |
   return { condition: failed.condition, state: failed.state, since: facts.now, until: null };
 }
 
-const CONDITION_WAIT = /^waits (until |for (the|fresh) usage data)/;
+const CONDITION_WAIT = /^waits (until |for (the|fresh) usage data|for the planned reboot)/;
 
-/** This function tells if a waiting reason comes from a condition. A restart for an idle queue does not wait for such a lease. */
+/**
+ * This function tells if a waiting reason comes from a condition or from a planned drain (H34). A restart for an idle queue
+ * does not wait for such a lease.
+ */
 export function isConditionWait(reason: string | null): boolean {
   return reason !== null && CONDITION_WAIT.test(reason);
 }
@@ -389,7 +404,12 @@ export function waitsForRoom(lease: Pick<Lease, "state" | "reason">): boolean {
 /** This function writes the conditions of a lease, for example "when ac, usage<80, --timing", or `null` for a lease with none. */
 export function conditionsText(conditions: LeaseConditions | undefined | null): string | null {
   if (conditions === undefined || conditions === null) return null;
-  const parts = [...conditions.when, ...(conditions.timing === true ? ["--timing"] : []), ...(conditions.batteryOk === true ? ["--battery-ok"] : [])];
+  const parts = [
+    ...conditions.when,
+    ...(conditions.timing === true ? ["--timing"] : []),
+    ...(conditions.batteryOk === true ? ["--battery-ok"] : []),
+    ...(conditions.duringDrain === true ? ["--during-drain"] : []),
+  ];
   return parts.length === 0 ? null : `when ${parts.join(", ")}`;
 }
 

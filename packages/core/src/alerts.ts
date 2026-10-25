@@ -25,6 +25,8 @@
  *   the rate, the time and the owners that the model has.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
+ * - `drain`: a planned drain for a reboot (H34). The alert `drain` names the running jobs. The alert `drain:ready` tells
+ *   that no job runs. The engine keeps them, not `detect()`.
  *
  * The alerts only report. headroom does not stop a process for an alert.
  *
@@ -61,7 +63,7 @@ export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
 export type AlertKind =
-  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "forecast" | "stop";
+  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "forecast" | "stop" | "drain";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";

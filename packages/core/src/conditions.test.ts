@@ -100,6 +100,9 @@ describe("--when (H31)", () => {
     expect(leaseConditions(["ac", "usage < 80"], false, false)).toEqual({ when: ["ac", "usage<80"] });
     expect(leaseConditions([], true, true)).toEqual({ when: [], timing: true, batteryOk: true });
     expect(() => leaseConditions(["night"], false, false)).toThrow(ConditionError);
+    // H34: --during-drain alone gives conditions too.
+    expect(leaseConditions(undefined, false, false, true)).toEqual({ when: [], duringDrain: true });
+    expect(conditionsText({ when: ["ac"], duringDrain: true })).toBe("when ac, --during-drain");
   });
 });
 
