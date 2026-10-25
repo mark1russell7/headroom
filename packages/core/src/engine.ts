@@ -29,6 +29,7 @@ import {
 import { keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
+import { learnSpawn, percentile90, promote, spawnConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import type { Config, MemoryRow, OwnerRow, Sleep, Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
@@ -139,6 +140,8 @@ export interface Status {
 export interface ConfigChange {
   readonly jobTemp?: string | null | undefined;
   readonly health?: Readonly<Record<string, string>> | null | undefined;
+  /** The limit of a spawn-heavy job in starts a minute (H47). `null` gives the default of 600. */
+  readonly spawnHeavy?: number | null | undefined;
 }
 
 /** An alert that ended. */
@@ -328,6 +331,8 @@ export class Engine {
         const readings = this.#readings;
         return readings === null ? 0 : (resourceOf(id).admit?.used?.(lease, id, readings, this.#ownership) ?? 0);
       },
+      // H47: a spawn-heavy lease and a lease with the slot browser do not run at the same time.
+      conflict: spawnConflict,
     });
     this.#broker.restore(this.#store.activeLeases());
     this.#bootedAt = this.#sampler.bootedAt?.() ?? 0;
@@ -453,10 +458,10 @@ export class Engine {
     return changed;
   }
 
-  /** This function adds a request and grants it at once when it fits. */
+  /** This function adds a request and grants it at once when it fits. The past runs of its job give its spawn class (H47). */
   request(request: LeaseRequest): Lease {
     this.#clock();
-    const lease = this.#broker.request(request);
+    const lease = this.#broker.request(request, this.spawnClass(request.job, request.holder, request.spawnHeavy));
     this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
     return this.#broker.get(lease.id) ?? lease;
@@ -468,11 +473,9 @@ export class Engine {
    */
   release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage, exit?: JobExit, processes?: number): Lease | undefined {
     this.#clock();
-    const lease = this.#broker.release(id, reason, peakMb ?? null, usage, exit, processes);
-    if (lease) {
-      this.#count(lease, processes);
-      this.#persist([lease]);
-    }
+    const released = this.#broker.release(id, reason, peakMb ?? null, usage, exit, processes);
+    const lease = released === undefined ? undefined : this.#measureStarts(released, processes);
+    if (lease) this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
     return lease ? (this.#broker.get(id) ?? lease) : undefined;
   }
@@ -484,10 +487,19 @@ export class Engine {
   suggest(job: string, holder?: string): Suggestion {
     const own = holder === undefined ? [] : this.#store.peaksOf(job, holder);
     const peaks = own.length > 0 ? own : this.#store.peaksOf(job);
-    if (peaks.length === 0) return { memoryMb: null, runs: 0, peakMb: null };
-    const sorted = [...peaks].sort((a, b) => a - b);
-    const p90 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))] ?? 0;
-    return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(sorted[sorted.length - 1] ?? 0) };
+    const p90 = percentile90(peaks);
+    if (p90 === null) return { memoryMb: null, runs: 0, peakMb: null };
+    return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(Math.max(...peaks)) };
+  }
+
+  /**
+   * This function gives the spawn class of a job from the peak starts of its last runs (H47). It uses the rule of
+   * `suggest`: the 90th percentile of the last 20 runs, the runs of the same holder first. `override` is the option of the run.
+   */
+  spawnClass(job: string, holder?: string, override?: boolean): SpawnClass {
+    const own = holder === undefined ? [] : this.#store.startPeaksOf(job, holder);
+    const peaks = own.length > 0 ? own : this.#store.startPeaksOf(job);
+    return learnSpawn(peaks, this.#store.config().spawnHeavy, override);
   }
 
   /** This function finds the jobs of a query in the store, the newest first (H26). Without `all`, it gives at most one job. */
@@ -498,20 +510,28 @@ export class Engine {
   /** This function records a heartbeat of a lease. `processes` is the count of processes that its job started so far (H29). */
   renew(id: string, processes?: number): Lease | undefined {
     this.#clock();
-    const lease = this.#broker.renew(id, processes);
-    if (lease) {
-      this.#count(lease, processes);
-      this.#store.saveLease(lease);
-    }
+    const renewed = this.#broker.renew(id, processes);
+    if (renewed === undefined) return undefined;
+    const lease = this.#measureStarts(renewed, processes);
+    this.#store.saveLease(lease);
     return lease;
   }
 
-  /** This function gives a count of the job object of a lease to the start tracker (H29). */
-  #count(lease: Lease, processes: number | undefined): void {
-    if (processes === undefined || lease.processes === undefined) return;
+  /**
+   * This function gives a count of the job object of a lease to the start tracker (H29). Then it measures the starts of
+   * the job over the last 30 seconds, and keeps the peak on the lease (H47). A job above the limit becomes spawn-heavy.
+   */
+  #measureStarts(lease: Lease, processes: number | undefined): Lease {
+    if (processes === undefined || lease.processes === undefined) return lease;
     const now = this.#now();
     this.#startTracker.report(lease, now, lease.processes, this.#ownership);
     this.#starts = this.#startTracker.summary(now);
+    const rate = windowRate(this.#startTracker.points(lease.id));
+    if (rate === null) return lease;
+    const peak = Math.max(lease.peakStartsPerMin ?? 0, Math.round(rate));
+    const spawn = promote(lease.spawn, peak, this.#store.config().spawnHeavy);
+    if (peak === lease.peakStartsPerMin && spawn === lease.spawn) return lease;
+    return this.#broker.update(lease.id, { peakStartsPerMin: peak, ...(spawn === undefined ? {} : { spawn }) }) ?? lease;
   }
 
   /** This function gives one lease. */
@@ -533,13 +553,17 @@ export class Engine {
 
   /**
    * This function changes the settings. `null` removes a setting. It refuses a temp root that is not an absolute folder, and
-   * a URL of `health` that is not http or https. With an error, it changes no setting.
+   * a URL of `health` that is not http or https. It also refuses a limit of `spawnHeavy` that is not a whole number above 0.
+   * With an error, it changes no setting.
    */
   setConfig(change: ConfigChange): Config {
     const jobTemp = change.jobTemp === undefined || change.jobTemp === null ? change.jobTemp : checkJobTemp(change.jobTemp);
     const health = change.health === undefined || change.health === null ? change.health : JSON.stringify(checkHealth(change.health));
+    const limit = change.spawnHeavy;
+    if (typeof limit === "number" && !(Number.isInteger(limit) && limit > 0)) throw new RangeError("The limit of spawn-heavy must be a whole number above 0");
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
+    if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
     return this.#store.config();
   }
 

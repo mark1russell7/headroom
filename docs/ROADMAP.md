@@ -85,6 +85,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H44 | Fix: the Angular completion in `~/.bashrc` starts node in each login shell, 13 times a minute, only from two sessions that run with no shell snapshot. A restart of those sessions stops it. | waits for Mark |
 | H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when it is not in use. If the poll continues, Mark turns off the extension in the workspaces that do not use Docker. | waits for Mark |
 | H46 | The peer of a local connection: `resources.peer` gives the process, the nearest `claude.exe`, the session and the fleet role at the other end of a loopback TCP connection. The fleet site uses it for its MCP face (server-stack fp-mcp). Also `headroom peer`. | done |
+| H47 | Jobs that start many processes do not run beside browser tests. The lease keeps its peak starts in one minute. A job name whose past runs are above 600 a minute is spawn-heavy, and a first run becomes spawn-heavy when it goes above the limit. A spawn-heavy lease and a browser test wait for each other, in the queue order. Also `--spawn-heavy`, `--no-spawn-heavy` and `headroom config spawn-heavy`. | done |
 
 ## The MCP gateway (H11)
 

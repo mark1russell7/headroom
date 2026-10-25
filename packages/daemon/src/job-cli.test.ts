@@ -54,10 +54,12 @@ describe("headroom job", () => {
     expect(calls).toEqual([{ path: ["resources", "job"], input: { query: "graph-e2e", all: false } }]);
     const state = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(state)).toEqual([
-      "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes", "log",
+      "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes",
+      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log",
     ]);
-    // H29: a lease of a job with no count of processes gives null.
+    // H29: a lease of a job with no count of processes gives null. H47: so do its rates and a class of an older version.
     expect(state["processes"]).toBeNull();
+    expect(state).toMatchObject({ peakStartsPerMin: null, averageStartsPerMin: null, spawn: null });
     expect(state).toMatchObject({
       id: BASE.id,
       state: "exited",
@@ -97,8 +99,20 @@ describe("headroom job", () => {
 describe("jobLine", () => {
   const state = {
     id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
-    queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null,
+    queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null, peakStartsPerMin: null, averageStartsPerMin: null, spawn: null,
   } as const;
+
+  it("names the peak starts and the spawn class of a job (H47)", () => {
+    const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
+    const running = { ...state, state: "running", reason: null, startedAt, waitedMs: 0, ranMs: 5 * MINUTE, processes: 9350 } as const;
+    expect(jobLine({ ...running, peakStartsPerMin: 1870, averageStartsPerMin: 1870, spawn: { heavy: true, source: "history", perMinute: 1870, runs: 4 } }, NOW)).toBe(
+      "e2e (3f2a9c1e) of graph: running since 17:55, waited 0 s, ran 5 min so far, 9,350 processes started, at most 1,870 starts a minute, spawn-heavy (about 1,870 a minute in past runs).",
+    );
+    expect(jobLine({ ...running, spawn: { heavy: false, source: "history", perMinute: null, runs: 0 } }, NOW)).toContain("9,350 processes started, normal (no past runs).");
+    expect(jobLine({ ...running, spawn: { heavy: true, source: "live", perMinute: 900, runs: 0 } }, NOW)).toContain("spawn-heavy (about 900 a minute in this run).");
+    expect(jobLine({ ...running, spawn: { heavy: true, source: "declared", perMinute: null, runs: 0 } }, NOW)).toContain("spawn-heavy (--spawn-heavy).");
+    expect(jobLine({ ...running, spawn: { heavy: false, source: "opted-out", perMinute: 2000, runs: 3 } }, NOW)).toContain("normal (--no-spawn-heavy).");
+  });
 
   it("names a queued, a running and a stopped job", () => {
     expect(jobLine({ ...state, state: "queued", reason: "waits for browser: needs 1, 0 free", waitedMs: 20 * MINUTE, ranMs: null }, NOW)).toBe(

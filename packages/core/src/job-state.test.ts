@@ -51,6 +51,10 @@ describe("jobState", () => {
       peakMb: 1843,
       // H29: the processes that the job started, from its job object.
       processes: 9800,
+      // H47: no peak from a lease of an older version, and the average over the 6 minutes of the run.
+      peakStartsPerMin: null,
+      averageStartsPerMin: 1633,
+      spawn: null,
       log: "D:\\logs\\e2e.log",
     });
   });

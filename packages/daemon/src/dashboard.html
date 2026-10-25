@@ -814,7 +814,10 @@ function leaseTip(l, now) {
   const waited = w >= 1000 ? `waited ${dur(w)}` : "no wait";
   const run = l.endedAt == null ? (ran == null ? `Waits for room since ${dur(w)}` : `Runs for ${dur(ran)}, ${waited}`) : `${waited[0].toUpperCase()}${waited.slice(1)}, ${ran == null ? "did not run" : `ran ${dur(ran)}`}`;
   const end = l.endedAt == null ? null : `Ended ${clock(l.endedAt)}${l.exitCode != null ? ` · exit code ${l.exitCode}` : l.signal ? ` · ${l.signal}` : ""}${l.peakMb != null ? ` · peak ${mb(l.peakMb)}` : ""}`;
-  return [`${l.holder} · ${l.job}`, run, end, `Asked for ${amounts(l.amounts)}`];
+  // H47: the peak process starts of the job, and its spawn class.
+  const heavy = l.spawn?.heavy ? "Spawn-heavy: no browser test runs beside it" : null;
+  const starts = l.peakStartsPerMin != null ? `At most ${Math.round(l.peakStartsPerMin).toLocaleString()} process starts a minute` : null;
+  return [`${l.holder} · ${l.job}`, run, end, `Asked for ${amounts(l.amounts)}`, [starts, heavy].filter(Boolean).join(" · ") || null];
 }
 function renderTimeline() {
   const host = $("timeline"), st = state.status;

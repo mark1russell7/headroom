@@ -13,6 +13,7 @@ import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
+import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
@@ -75,6 +76,17 @@ export interface Config {
    * setting, the list has the fleet site only. An empty list checks no URL.
    */
   readonly health: Readonly<Record<string, string>>;
+  /**
+   * The limit of a spawn-heavy job (H47): its peak process starts in one minute. A job above it does not run beside a
+   * browser test. The default is 600.
+   */
+  readonly spawnHeavy: number;
+}
+
+/** This function reads the setting `spawnHeavy`. A value that is not a number above 0 gives the default. */
+function spawnLimitOf(value: string | undefined): number {
+  const limit = Number(value);
+  return value !== undefined && Number.isFinite(limit) && limit > 0 ? limit : SPAWN_HEAVY_DEFAULT;
 }
 
 /** This function reads the setting `health`. A value that is not an object of strings gives the default list. */
@@ -120,7 +132,9 @@ export class Store {
     if (!columns.includes("usage")) this.#db.exec("ALTER TABLE leases ADD COLUMN usage TEXT");
     // A database of an older version has no columns for the exit and the log of a job (H26).
     // A database of an older version has no column for the processes that a job started (H29).
-    for (const [column, type] of [["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"]] as const) {
+    // A database of an older version has no columns for the peak starts and the spawn class of a job (H47).
+    const added = [["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"], ["peak_starts_per_min", "REAL"], ["spawn", "TEXT"]] as const;
+    for (const [column, type] of added) {
       if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
     }
     this.#db.exec("CREATE INDEX IF NOT EXISTS leases_job ON leases (job, requested_at)");
@@ -138,17 +152,19 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log, processes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes, peak_starts_per_min, spawn)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
-           usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes`,
+           usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes,
+           peak_starts_per_min = excluded.peak_starts_per_min, spawn = excluded.spawn`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
         lease.state, lease.requestedAt, lease.grantedAt, lease.endedAt, lease.heartbeatAt, lease.reason, lease.peakMb,
         lease.usage === undefined ? null : JSON.stringify(lease.usage),
         lease.exitCode ?? null, lease.signal ?? null, lease.log ?? null, lease.processes ?? null,
+        lease.peakStartsPerMin ?? null, lease.spawn === undefined ? null : JSON.stringify(lease.spawn),
       );
   }
 
@@ -191,10 +207,10 @@ export class Store {
   config(): Config {
     const values = new Map<string, string>();
     for (const row of this.#db.prepare("SELECT name, value FROM settings").all()) values.set(String(row["name"]), String(row["value"]));
-    return { jobTemp: values.get("jobTemp") ?? null, health: healthOf(values.get("health")) };
+    return { jobTemp: values.get("jobTemp") ?? null, health: healthOf(values.get("health")), spawnHeavy: spawnLimitOf(values.get("spawnHeavy")) };
   }
 
-  /** This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. */
+  /** This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The value of `spawnHeavy` is a number as text. */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
     else this.#db.prepare("INSERT INTO settings VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(name, value);
@@ -211,6 +227,23 @@ export class Store {
       ? this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, limit)
       : this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND holder = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, holder, limit);
     return rows.map((row) => Number(row["peak_mb"]));
+  }
+
+  /**
+   * This function reads the peak process starts in one minute of the last runs of a job, the newest first (H47). With a
+   * holder, only the runs of that holder. A run with no peak, from before H47, gives its average: a lower bound.
+   */
+  startPeaksOf(job: string, holder?: string, limit: number = SPAWN_RUNS): number[] {
+    const columns = "SELECT peak_starts_per_min, processes, granted_at, ended_at FROM leases";
+    const ran = "ended_at IS NOT NULL AND granted_at IS NOT NULL AND (peak_starts_per_min IS NOT NULL OR processes IS NOT NULL)";
+    const rows = holder === undefined
+      ? this.#db.prepare(`${columns} WHERE job = ? AND ${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, limit)
+      : this.#db.prepare(`${columns} WHERE job = ? AND holder = ? AND ${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, holder, limit);
+    return rows.map((row) =>
+      row["peak_starts_per_min"] === null || row["peak_starts_per_min"] === undefined
+        ? averageRate(Number(row["processes"]), Number(row["ended_at"]) - Number(row["granted_at"]))
+        : Number(row["peak_starts_per_min"]),
+    );
   }
 
   /** This function reads the capacity of each configured pool. */
@@ -444,5 +477,7 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["signal"] === null || row["signal"] === undefined ? {} : { signal: String(row["signal"]) }),
     ...(row["log"] === null || row["log"] === undefined ? {} : { log: String(row["log"]) }),
     ...(row["processes"] === null || row["processes"] === undefined ? {} : { processes: Number(row["processes"]) }),
+    ...(row["peak_starts_per_min"] === null || row["peak_starts_per_min"] === undefined ? {} : { peakStartsPerMin: Number(row["peak_starts_per_min"]) }),
+    ...(row["spawn"] === null || row["spawn"] === undefined ? {} : { spawn: JSON.parse(String(row["spawn"])) as SpawnClass }),
   };
 }

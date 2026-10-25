@@ -200,6 +200,11 @@ export class StartTracker {
     entry.points = [...entry.points.slice(Math.max(0, base)), [at, total]];
   }
 
+  /** This function gives the counts of a leased job in the window: `[at, processes]`, the oldest first (H47). The first point can be its grant. */
+  points(id: string): readonly (readonly [at: number, processes: number])[] {
+    return this.#jobs.get(id)?.points ?? [];
+  }
+
   /**
    * This function marks a gap after a sleep of the computer (H30). The next read only keeps the processes and the sequence
    * number, so no rate spans the sleep. The count of each job starts again at the wake, because no process starts in a sleep.

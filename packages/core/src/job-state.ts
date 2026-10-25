@@ -6,6 +6,7 @@
  */
 
 import type { Lease } from "./broker.ts";
+import { averageRate, type SpawnClass } from "./spawn.ts";
 import type { Store } from "./store.ts";
 
 /** The state of a job: `queued` (the lease waits), `running` (granted) or `exited` (released, cancelled or expired). */
@@ -37,6 +38,15 @@ export interface JobState {
   readonly peakMb: number | null;
   /** The processes that the job started so far, from its job object (H29), or `null` for a job with no job object. */
   readonly processes: number | null;
+  /** The highest count of process starts in one minute, over a window of 30 seconds (H47), or `null` without two counts. */
+  readonly peakStartsPerMin: number | null;
+  /**
+   * The average process starts in one minute: the processes over the run time (H47). A run shorter than 30 seconds counts
+   * as 30 seconds. It is `null` for a job with no count or no start.
+   */
+  readonly averageStartsPerMin: number | null;
+  /** The spawn class of the job (H47), or `null` for a lease of an older version. */
+  readonly spawn: SpawnClass | null;
   /** The absolute path of the log file of the job (`headroom run --log`), or `null`. */
   readonly log: string | null;
 }
@@ -79,6 +89,10 @@ export function jobState(lease: Lease, now: number): JobState {
     ranMs: lease.grantedAt === null ? null : Math.max(0, end - lease.grantedAt),
     peakMb: peak === null ? null : Math.round(peak),
     processes: lease.processes ?? null,
+    peakStartsPerMin: lease.peakStartsPerMin ?? null,
+    averageStartsPerMin:
+      lease.processes === undefined || lease.grantedAt === null ? null : Math.round(averageRate(lease.processes, end - lease.grantedAt)),
+    spawn: lease.spawn ?? null,
     log: lease.log ?? null,
   };
 }

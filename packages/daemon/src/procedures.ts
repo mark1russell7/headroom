@@ -18,6 +18,10 @@ const LeaseInput = z.object({
   pid: z.number().int().positive().optional().describe("The process that holds the lease. The lease ends when it exits."),
   ttlMs: z.number().int().positive().max(86_400_000).optional().describe("Without a pid: the heartbeat limit in ms (default: 300000)"),
   log: z.string().min(1).max(1000).optional().describe("The absolute path of the log file of the job"),
+  spawnHeavy: z
+    .boolean()
+    .optional()
+    .describe("True: the job starts many processes, so no browser test runs beside it. False: a normal job. Default: the past runs decide (H47)."),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -73,6 +77,14 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The URLs that the service monitor checks, by name (H27). null gives the default: the fleet site. {} checks no URL."),
+  spawnHeavy: z
+    .number()
+    .int()
+    .positive()
+    .max(1_000_000)
+    .nullable()
+    .optional()
+    .describe("The limit of a spawn-heavy job in process starts a minute (H47). null gives the default: 600."),
 });
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -168,6 +180,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         pid: input.pid,
         ttlMs: input.ttlMs,
         log: input.log,
+        spawnHeavy: input.spawnHeavy,
       }),
     )
     .build() as AnyProcedure;
@@ -357,12 +370,13 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .input(zodAdapter<ConfigSetInput>(ConfigSetInput))
     .output(anything<Config>())
     .meta({
-      description: "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check.",
+      description:
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job.",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig({ jobTemp: input.jobTemp, health: input.health }))
+    .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig({ jobTemp: input.jobTemp, health: input.health, spawnHeavy: input.spawnHeavy }))
     .build() as AnyProcedure;
 
   return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet];
