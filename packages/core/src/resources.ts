@@ -10,10 +10,11 @@ import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
 import { childrenOf, treeMb } from "./owners.ts";
 import { MB } from "./sampler.ts";
-import type { Amounts, DiskSpace, NetRead, OwnerKind, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
+import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
+import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, powerOwners, systemWatts, type BatteryState } from "./power.ts";
 import type { ServiceHealth, ServiceState } from "./services.ts";
 import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "./starts.ts";
 
@@ -21,14 +22,28 @@ import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "
 export type ResourceId = string;
 
 /** The kinds of resource. An id with no known kind is a slot, as before. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "gpu";
+export type ResourceKind =
+  | "memory"
+  | "commit"
+  | "pool"
+  | "desktop"
+  | "disk"
+  | "cpu"
+  | "slot"
+  | "net"
+  | "ports"
+  | "service"
+  | "procs"
+  | "battery"
+  | "power"
+  | "gpu";
 
 /**
  * The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. A kind in the unit `state` has
  * no amount (H27). Its measurement has a `health`, and its used part is the latency of the last check in ms. The process
- * starts use `per minute` (H29).
+ * starts use `per minute` (H29). The battery uses Wh, and the power uses W (H30).
  */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute";
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute" | "Wh" | "W";
 
 /** The processor times of the computer since its start (H23), in milliseconds, for all the processors together. */
 export interface CpuTimes {
@@ -71,6 +86,12 @@ export interface Readings {
   readonly services?: readonly ServiceHealth[] | undefined;
   /** The process starts of the computer, of each owner and of each leased job, from the start tracker of the engine (H29). */
   readonly starts?: ProcessStarts | undefined;
+  /** The battery (H30). A computer with no battery has none. */
+  readonly battery?: BatteryRead | undefined;
+  /** The counter set "Energy Meter" (H30). A computer with no such counters has none. */
+  readonly meters?: PowerMeters | undefined;
+  /** The granted leases. The battery alert names the jobs that run on battery (H30). */
+  readonly leases?: readonly Lease[] | undefined;
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -84,6 +105,8 @@ export interface Measurement {
   readonly free: number | null;
   /** The health of a service (H27). Only a kind in the unit `state` has it. */
   readonly health?: ServiceHealth | undefined;
+  /** The power source, the charge, the rate and the time left of the battery (H30). Only the kind `battery` has it. */
+  readonly battery?: BatteryState | undefined;
 }
 
 /** The use of one owner of an instance, in the unit of the attribute part of its kind. */
@@ -258,8 +281,21 @@ export interface HealthRule extends RuleBase {
   text(facts: InstanceFacts): AlertText;
 }
 
+/**
+ * A rule with its own test of the facts of an instance (H30). The battery uses it, because its alerts need the power
+ * source and the leases, not only a limit. The `--when` conditions of H31 can use the same type.
+ */
+export interface CheckRule extends RuleBase {
+  readonly type: "check";
+  /** The rule examines only this instance. Without it, the rule examines each instance of the kind. */
+  readonly instance?: ResourceId | undefined;
+  /** This function gives the level of the alert, or `null` when the facts give no alert. */
+  level(facts: InstanceFacts): Level | null;
+  text(facts: InstanceFacts): AlertText;
+}
+
 /** One alert rule of a kind. */
-export type Rule = LevelRule | GrowthRule | OutlierRule | HealthRule;
+export type Rule = LevelRule | GrowthRule | OutlierRule | HealthRule | CheckRule;
 
 /** The alert part of a kind. */
 export interface AlertPart {
@@ -830,6 +866,121 @@ const PROCS: Resource = {
   enforce: null,
 };
 
+/** This function gives an amount in mWh in Wh, with 2 decimals. */
+const wh = (mwh: number): number => Math.round(mwh / 10) / 100;
+
+/** This function gives the text of a battery in a sentence, for example "on battery (47%, 21.9 W, 1 h 7 min left)". */
+function batteryPhrase(state: BatteryState): string {
+  const [source, ...rest] = batteryParts(state);
+  return rest.length === 0 ? (source ?? "") : `${source ?? ""} (${rest.join(", ")})`;
+}
+
+/** This function gives the level of the low battery alert: on battery only, from the time left and the charge. */
+export function batteryLevel(state: BatteryState | undefined, limits: AlertRules): Level | null {
+  if (state === undefined || state.ac) return null;
+  const minutes = state.minutesLeft;
+  if (state.percent < limits.batteryCriticalPercent || (minutes !== null && minutes < limits.batteryCriticalMinutes)) return "critical";
+  if (minutes !== null && minutes < limits.batteryWarnMinutes) return "warning";
+  return null;
+}
+
+/** The count of jobs and owners that the text of the battery alert names. */
+const BATTERY_SHOWN = 3;
+
+/** This function gives the text of the low battery alert. */
+function lowBatteryText({ measurement }: InstanceFacts): AlertText {
+  const state = measurement.battery;
+  if (state === undefined) return { subject: "battery", mb: 0, message: "The battery has no data." };
+  const left = state.minutesLeft === null ? `${state.percent}%` : `${state.percent}%, ${minutesText(state.minutesLeft)} left`;
+  return {
+    subject: "battery",
+    mb: 0,
+    message: `The laptop runs on battery: ${left}. Connect the charger. At the critical level, Windows puts the laptop to sleep, and the jobs stop.`,
+  };
+}
+
+/** This function gives the text of the alert on the leased jobs that run on battery, with the owners that use the most power. */
+function batteryJobsText({ measurement, readings }: InstanceFacts): AlertText {
+  const leases = readings.leases ?? [];
+  const named = leases.slice(0, BATTERY_SHOWN).map((lease) => `${lease.job.slice(0, 60)} of ${lease.holder}`).join(", ");
+  const more = leases.length > BATTERY_SHOWN ? ` and ${leases.length - BATTERY_SHOWN} more` : "";
+  const most = ownersWattsText(powerOwners(readings.cores, cpuWatts(readings.meters)), BATTERY_SHOWN);
+  const source = measurement.battery === undefined ? "on battery" : batteryPhrase(measurement.battery);
+  const jobs = `${leases.length} leased ${leases.length === 1 ? "job runs" : "jobs run"}`;
+  return {
+    subject: "battery",
+    mb: 0,
+    message: `The laptop runs ${source}, and ${jobs}: ${named}${more}.${most === "" ? "" : ` Most power (estimate): ${most}.`} The jobs run in efficiency mode. Connect the charger for full speed.`,
+  };
+}
+
+/**
+ * The battery (H30): one instance, `battery`, in Wh. The capacity is the full charge capacity, and the free part is the
+ * charge. The measurement has the power source, the percent, the rate and the time left. A computer with no battery has
+ * no instance. Only Windows reads the battery.
+ */
+const BATTERY: Resource = {
+  kind: "battery",
+  unit: "Wh",
+  measure: {
+    read: ({ battery }) =>
+      battery === undefined
+        ? []
+        : [{ id: "battery", capacity: wh(battery.maxMwh), used: wh(battery.maxMwh - battery.remainingMwh), free: wh(battery.remainingMwh), battery: batteryState(battery) }],
+  },
+  attribute: null,
+  alert: {
+    // Both rules need the battery, so an alert ends when AC power returns.
+    rules: (limits) => [
+      { type: "check", alert: "battery", severity: true, level: ({ measurement }) => batteryLevel(measurement.battery, limits), text: lowBatteryText },
+      {
+        type: "check",
+        alert: "battery",
+        alertId: () => "battery:jobs",
+        severity: true,
+        level: ({ measurement, readings }) => (measurement.battery?.ac === false && (readings.leases ?? []).length > 0 ? "warning" : null),
+        text: batteryJobsText,
+      },
+    ],
+  },
+  // H31 adds the admission rules with the `--when` conditions: heavy jobs wait below a floor of charge, and the timing
+  // tests do not start on battery. They read `Readings.battery`, so this part stays `null` until then.
+  admit: null,
+  // The client of `headroom run` puts its job in efficiency mode (EcoQoS) on battery, from the answer of its heartbeat.
+  enforce: null,
+};
+
+/**
+ * The attribute part of the power (H30): an estimate in watts. The power of an owner is the CPU power times its part of the
+ * cores over the last minute. Windows gives no energy counter for each process without admin rights.
+ */
+const POWER_USE: Attribute = {
+  unit: "W",
+  // A read of a process has no power, so the outlier rules do not examine the power.
+  counter: () => undefined,
+  read: ({ cores, meters }) =>
+    powerOwners(cores, cpuWatts(meters)).map((each) => ({ resource: "power", owner: each.owner, kind: each.kind, amount: each.watts, processes: 0 })),
+};
+
+/**
+ * The power of the computer (H30): one instance, `power`, in watts. The used part is the meter `system power` of the counter
+ * set "Energy Meter". It has no capacity. A computer with no Energy Meter has no instance.
+ */
+const POWER: Resource = {
+  kind: "power",
+  unit: "W",
+  measure: {
+    read: ({ meters }) => {
+      const watts = systemWatts(meters);
+      return watts === null ? [] : [{ id: "power", capacity: null, used: Math.round(watts * 10) / 10, free: null }];
+    },
+  },
+  attribute: POWER_USE,
+  alert: NO_ALERTS,
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -852,7 +1003,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */
@@ -939,7 +1090,18 @@ export function withKinds(measurements: readonly Measurement[], attribution?: { 
   return measurements.map((each) => {
     const resource = resourceOf(each.id);
     const health = each.health === undefined ? {} : { health: each.health };
-    return { id: each.id, kind: resource.kind, unit: resource.unit, capacity: each.capacity, used: each.used, free: each.free, ...health, owners: ownersOf(resource) };
+    const battery = each.battery === undefined ? {} : { battery: each.battery };
+    return {
+      id: each.id,
+      kind: resource.kind,
+      unit: resource.unit,
+      capacity: each.capacity,
+      used: each.used,
+      free: each.free,
+      ...health,
+      ...battery,
+      owners: ownersOf(resource),
+    };
   });
 }
 

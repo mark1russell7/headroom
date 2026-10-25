@@ -200,6 +200,19 @@ export class StartTracker {
     entry.points = [...entry.points.slice(Math.max(0, base)), [at, total]];
   }
 
+  /**
+   * This function marks a gap after a sleep of the computer (H30). The next read only keeps the processes and the sequence
+   * number, so no rate spans the sleep. The count of each job starts again at the wake, because no process starts in a sleep.
+   */
+  gap(at: number): void {
+    this.#lastAt = null;
+    this.#lastSequence = undefined;
+    for (const entry of this.#jobs.values()) {
+      const last = entry.points.at(-1);
+      entry.points = last === undefined ? [] : [[at, last[1]]];
+    }
+  }
+
   /** This function gives the starts of the computer, of each owner and of each leased job over the last 10 minutes. */
   summary(now: number): ProcessStarts {
     const reads = this.#reads.filter((each) => now - each.at < this.#windowMs);

@@ -327,6 +327,15 @@ function dur(ms) {
   return `${(sec / 86400).toFixed(1)} days`;
 }
 const ago = (t) => dur(Date.now() - t);
+// The battery for a person (H30): "On battery · 68% · 18.0 W · 1 h 58 min left", or "Plugged in · charging · 92%".
+const minutesText = (m) => (m < 60 ? `${m} min` : m % 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m / 60} h`);
+function batteryLine(b) {
+  const parts = b.ac ? ["Plugged in", ...(b.charging ? ["charging"] : []), `${b.percent}%`]
+    : ["On battery", `${b.percent}%`, ...(b.rateW ? [`${Math.abs(b.rateW).toFixed(1)} W`] : []), ...(b.minutesLeft != null ? [`${minutesText(b.minutesLeft)} left`] : [])];
+  return parts.join(" · ");
+}
+// A line between two times crosses a sleep of the computer (H30): the charts draw no line across it.
+const slept = (a, b) => (state.history?.sleeps || []).some(([from, to]) => a < to && b > from);
 const fit = (t, n) => (t.length > n ? `${t.slice(0, Math.max(1, n - 1))}…` : t);
 // An amount in the unit of its resource: sizes in MB or GB, processors in cores, slots as counts.
 function amount(v, unit) {
@@ -336,6 +345,7 @@ function amount(v, unit) {
   if (unit === "MB/s") return `${v >= 10 ? Math.round(v) : v.toFixed(v >= 0.1 ? 1 : 2)} MB/s`;
   if (unit === "state") return `${Math.round(v)} ms`;
   if (unit === "per minute") return `${Math.round(v).toLocaleString()} a minute`;
+  if (unit === "W" || unit === "Wh") return `${Math.abs(v).toFixed(1)} ${unit}`;
   const n = Number(v.toFixed(Math.abs(v) < 10 && v % 1 ? 1 : 0));
   return unit === "cores" ? `${n} ${n === 1 ? "core" : "cores"}` : String(n);
 }
@@ -464,6 +474,12 @@ function lineChart(host, tableHost, { times, series, unit, toUnit, digits, refer
     // A halo in the surface color keeps the label legible where a line crosses it.
     svg.append(s("text", { x: padL + pw - 4, y: yy - 5, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", stroke: "var(--surface)", "stroke-width": 4, "paint-order": "stroke" }, reference.label));
   }
+  // A sleep of the computer shows as a band, with no line across it (H30).
+  for (const [from, to] of state.history?.sleeps || []) {
+    if (to <= t0 || from >= t1) continue;
+    const a = x(Math.max(from, t0)), b = x(Math.min(to, t1));
+    svg.append(s("rect", { x: a, y: padT, width: Math.max(1, b - a), height: ph, fill: "var(--grid)", "fill-opacity": 0.6 }, s("title", {}, `The computer slept from ${clock(from)} to ${clock(to)}`)));
+  }
   // A gap in the samples (the daemon did not run) breaks the line. A wash under a single series shows its area.
   const gap = Math.max(3 * (span / Math.max(1, times.length - 1)), 3 * 60_000);
   const ends = [];
@@ -472,7 +488,7 @@ function lineChart(host, tableHost, { times, series, unit, toUnit, digits, refer
     const runs = [];
     sr.values.forEach((v, i) => {
       if (v == null) { prev = null; return; }
-      const join = prev != null && times[i] - times[prev] <= gap;
+      const join = prev != null && times[i] - times[prev] <= gap && !slept(times[prev], times[i]);
       if (!join) runs.push([]);
       runs[runs.length - 1].push([x(times[i]), y(v)]);
       d += `${join ? "L" : "M"}${x(times[i]).toFixed(1)},${y(v).toFixed(1)}`;
@@ -615,20 +631,23 @@ function renderNow() {
     h("span", { class: "lg static" }, h("i", { class: "sw rest" }), "Not counted", h("b", { text: mb(ramRest) })),
     h("span", { class: "lg static" }, h("i", { class: "sw free" }), "Free", h("b", { text: mb(m.availableMb) })));
   const svc = st.resources.filter((r) => r.health);
+  const bat = st.resources.find((r) => r.battery)?.battery;
   $("strip").replaceChildren(
     ...(svc.length ? [h("span", { class: "lab", text: "Services" })] : []),
     ...svc.map((r) => h("button", { type: "button", class: `svc ${r.health.state}`, title: r.health.error || r.health.needs || r.health.title, onclick: () => openRes(r.id, true) },
       stateIcon(r.health.state), h("span", { text: resName(r) }), h("b", { text: r.health.state }), r.health.latencyMs == null ? null : h("small", { text: `${r.health.latencyMs} ms` }))),
+    ...(bat ? [h("span", { class: "lab", text: "Power" }), h("button", { type: "button", class: `svc ${bat.ac ? "ok" : "slow"}`, title: batteryLine(bat), onclick: () => openRes("battery", true) },
+      bat.ac ? ICON.good() : ICON.wait(), h("b", { text: bat.ac ? "plugged in" : "on battery" }), h("small", { text: `${bat.percent}%` }))] : []),
     h("span", { class: "lab", text: "Jobs" }),
     h("a", { class: "svc", href: "#jobs" }, ICON.good(), h("b", { text: `${granted} run` }), ICON.wait(), h("b", { text: `${waiting} wait` })));
 }
 
 // ---- the resources: one card for each instance of Status.resources, from the model ----
 // The group of each kind, in the order of the page. A kind that the page does not know goes last, with its own name.
-const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"], ["procs", "Kernel"]];
+const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["battery", "Power"], ["power", "Power"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"], ["procs", "Kernel"]];
 const NAMES = {
   memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool",
-  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports", procs: "Process starts",
+  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports", procs: "Process starts", battery: "Battery", power: "Power draw",
 };
 function resName(r) {
   if (r.health?.title) { const t = r.health.title.replace(/^The /, ""); return t[0].toUpperCase() + t.slice(1); }
@@ -636,11 +655,11 @@ function resName(r) {
   return NAMES[r.id] || (r.kind === "disk" ? `Drive ${part}` : r.kind === "slot" ? `Slot ${r.id}` : `${r.kind[0].toUpperCase()}${r.kind.slice(1)} ${part}`.trim());
 }
 // The instance of an alert: its id, except the alert "pool" (the non-paged pool), the alert "churn" (the process starts) and the process outliers of the memory.
-const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.id === "churn" ? "procs" : a.kind === "runaway" || a.kind === "orphan" ? "memory" : a.id);
+const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.id === "churn" ? "procs" : a.kind === "battery" ? "battery" : a.kind === "runaway" || a.kind === "orphan" ? "memory" : a.id);
 // A resource with a capacity shows its free part. A kernel pool, the desktop or a rate (the network) shows its used part.
 function viewOf(r) {
   const onFree = r.capacity != null && r.free != null && r.unit !== "MB/s";
-  return { onFree, k: onFree ? 2 : 1, word: onFree ? "free" : "used", value: onFree ? r.free : r.used };
+  return { onFree, k: onFree ? 2 : 1, word: r.kind === "battery" ? "charge" : onFree ? "free" : "used", value: onFree ? r.free : r.used };
 }
 
 /** The change in one hour: from the oldest point of the last hour that is 10 minutes old, else from the first point of the window. */
@@ -660,7 +679,7 @@ function trend(points, k, capacity, label) {
   const x = (t) => (((t - t0) / (t1 - t0 || 1)) * W).toFixed(1), y = (v) => (H - 2 - ((v - lo) / (hi - lo || 1)) * (H - 4)).toFixed(1);
   const gap = Math.max((3 * (t1 - t0)) / (pts.length - 1), 180e3);
   let d = "", prev = null;
-  for (const p of pts) { d += `${prev != null && p[0] - prev <= gap ? "L" : "M"}${x(p[0])},${y(p[k])}`; prev = p[0]; }
+  for (const p of pts) { d += `${prev != null && p[0] - prev <= gap && !slept(prev, p[0]) ? "L" : "M"}${x(p[0])},${y(p[k])}`; prev = p[0]; }
   return s("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none", role: "img", "aria-label": label }, s("title", {}, label),
     s("path", { d, fill: "none", stroke: "var(--s1)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
 }
@@ -694,14 +713,17 @@ function resCard(r, st, points) {
   const lv = alerts.length ? alertLevel(alerts[0]) : "";
   const u = (v) => amount(v, r.unit);
   const { onFree, k, word, value } = viewOf(r);
-  const used = r.capacity != null && r.used != null ? r.used / r.capacity : null;
+  // The battery shows its charge in the meter, and its power source and time left in the text (H30).
+  const bt = r.battery;
+  const used = bt ? bt.percent / 100 : r.capacity != null && r.used != null ? r.used / r.capacity : null;
   // A service (the unit "state") shows its state, and its latency as the used part (H27).
   const hl = r.health;
   const big = hl ? h("div", { class: "big" }, h("b", { text: hl.state }), hl.latencyMs == null ? "" : `${hl.latencyMs} ms`)
+    : bt ? h("div", { class: "big" }, h("b", { text: `${bt.percent}%` }), bt.ac ? (bt.charging ? "charging" : "plugged in") : "on battery")
     : onFree ? h("div", { class: "big" }, h("b", { text: u(r.free) }), `free of ${u(r.capacity)}`)
-    : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), r.unit === "per minute" ? "on average over 10 minutes" : "in use")
+    : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), r.unit === "per minute" ? "on average over 10 minutes" : r.unit === "W" ? "for the whole computer" : "in use")
     : h("div", { class: "big" }, h("b", { text: u(r.capacity) }), "in total");
-  const sub = hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`].filter(Boolean).join(" · ");
+  const sub = bt ? batteryLine(bt) : hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`].filter(Boolean).join(" · ");
   const change = r.unit === "MB" ? hourly(points, k, st.at, value) : null;
   const rate = !change ? null : Math.abs(change.rate) < 1 ? "steady" : `${word} ${change.rate < 0 ? "−" : "+"}${diskSize(Math.abs(change.rate))}/h`;
   const leases = (st.leases || []).filter((l) => (l.amounts?.[r.id] ?? 0) > 0);
@@ -714,10 +736,10 @@ function resCard(r, st, points) {
       lv ? h("span", { class: "chip" }, ICON.alert(LEVEL[lv][0]), LEVEL[lv][1]) : h("span", { class: "chip" }, stateIcon(hl ? hl.state : "ok"), hl ? hl.state : "ok")),
     h("div", { class: "ttl" }, h("h3", { text: resName(r) }), h("button", { type: "button", class: "more", "aria-expanded": String(open), text: open ? "Close" : "History", onclick: () => openRes(open ? null : r.id) })),
     big,
-    used == null ? null : h("div", { class: "meter", role: "meter", "aria-label": `${resName(r)} in use`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(used * 100) },
+    used == null ? null : h("div", { class: "meter", role: "meter", "aria-label": `${resName(r)} ${bt ? "charge" : "in use"}`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(used * 100) },
       h("div", { class: lv === "crit" ? "crit" : lv ? "warn" : "", style: `width:${Math.min(100, used * 100).toFixed(1)}%` })),
     sub ? h("div", { class: "sub", text: sub }) : null,
-    value == null || open ? null : h("div", { class: "trend" }, trend(points, k, r.capacity, `The ${word} part in the window`) || h("span", { class: "sub", text: "No history yet in this window." }),
+    value == null || open ? null : h("div", { class: "trend" }, trend(points, k, r.capacity, word === "charge" ? "The charge in the window" : `The ${word} part in the window`) || h("span", { class: "sub", text: "No history yet in this window." }),
       rate ? h("span", { title: `The change of the ${word} part in one hour, since ${clock(change.since)}`, class: Math.abs(change.rate) >= 1024 ? "up" : "", text: rate }) : null),
     ...alerts.map((a) => h("div", { class: `note ${alertLevel(a)}`, text: a.message })),
     leases.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Leases" }), ...leases.map((l) => h("div", { class: "row", "data-owner": `session:${l.holder}` },
@@ -725,11 +747,12 @@ function resCard(r, st, points) {
       h("span", { class: "clip", title: `${l.holder} · ${l.job}`, text: `${l.holder} · ${l.job}` }),
       h("b", { text: u(l.amounts[r.id]) }),
       r.kind === "disk" && root && l.state === "granted" ? h("span", { class: "path", title: "The TEMP folder of the job", text: `${root.replace(/[\\/]+$/, "")}${sep}${l.id}` }) : null))) : null,
-    owners.length && !open ? usersList(owners.slice(0, 5), false) : null,
+    owners.length && !open ? usersList(owners.slice(0, 5), false, r.kind === "power" ? "Top users (estimate)" : undefined) : null,
   ];
   const card = open
     ? h("article", { class: `card res open ${lv}`, "data-id": r.id }, h("div", { class: "sum" }, ...main),
-      h("div", { class: "det" }, h("div", { class: "dh", text: `The ${word === "free" ? "free" : hl ? "answer time" : "used"} part over the last ${windowLabel()}` }), h("div", { class: "detchart" }), owners.length ? usersList(owners, true) : null))
+      h("div", { class: "det" }, h("div", { class: "dh", text: word === "charge" ? `The charge over the last ${windowLabel()}` : `The ${word === "free" ? "free" : hl ? "answer time" : "used"} part over the last ${windowLabel()}` }), h("div", { class: "detchart" }),
+        owners.length ? usersList(owners, true, r.kind === "power" ? "Users, an estimate from the processor time" : undefined) : null))
     : h("article", { class: `card res ${lv}`, "data-id": r.id }, ...main);
   // A select in the card opens or closes it. A row or a button in it keeps its own action.
   card.addEventListener("click", (ev) => { if (!ev.target.closest("button, a, .det")) openRes(open ? null : r.id); });
@@ -754,11 +777,11 @@ function drawDetail(r, host, points) {
   const values = points.map((p) => p[k]);
   const max = Math.max(0, ...values.filter((v) => v != null));
   const [unit, toUnit, digits] = r.unit === "MB" ? (Math.max(max, r.capacity ?? 0) >= 2048 ? ["GB", (v) => v / 1024, 1] : ["MB", (v) => v, 0])
-    : [r.unit === "state" ? "ms" : r.unit === "count" ? "" : r.unit, (v) => v, r.unit === "MB/s" ? 2 : r.unit === "cores" ? 1 : 0];
+    : [r.unit === "state" ? "ms" : r.unit === "count" ? "" : r.unit, (v) => v, r.unit === "MB/s" ? 2 : r.unit === "cores" || r.unit === "W" || r.unit === "Wh" ? 1 : 0];
   const reference = r.capacity != null && r.unit !== "MB/s" && r.capacity <= max * 1.6 ? { value: r.capacity, label: `capacity ${amount(r.capacity, r.unit)}` } : null;
   host.replaceChildren(h("div", { class: "chart" }), h("div"));
   lineChart(host.firstChild, host.lastChild, { times: points.map((p) => p[0]), unit, toUnit, digits, reference, label: `${resName(r)} over time`,
-    series: [{ name: onFree ? "free" : r.health ? "answer time" : "in use", color: "var(--s1)", values }] });
+    series: [{ name: r.kind === "battery" ? "charge" : onFree ? "free" : r.health ? "answer time" : "in use", color: "var(--s1)", values }] });
 }
 
 const detail = { key: "", node: null };

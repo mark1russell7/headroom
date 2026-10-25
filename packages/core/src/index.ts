@@ -36,13 +36,14 @@ export {
 export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary } from "./network.ts";
 export { createJob, startOutsideJob } from "./enforce.ts";
 export type { Job, JobLimits, StartedProcess } from "./enforce.ts";
-export { healthLevel, kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
+export { batteryLevel, healthLevel, kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
 export type {
   Admit,
   AlertPart,
   AlertText,
   Attribute,
   Change,
+  CheckRule,
   CpuTimes,
   Enforce,
   GrowthRule,
@@ -70,6 +71,30 @@ export type {
   RuleBase,
   Unit,
 } from "./resources.ts";
+export {
+  batteryParts,
+  batteryState,
+  cpuWatts,
+  EcoTracker,
+  guidBytes,
+  guidText,
+  keepAwakeReason,
+  minutesText,
+  modeEvent,
+  NO_POWER,
+  ownersWattsText,
+  parseBatteryState,
+  parseMeters,
+  POWER_MODES,
+  POWER_SETTINGS,
+  powerLine,
+  powerOwners,
+  settingEvent,
+  suspendEvent,
+  systemWatts,
+  wattsText,
+} from "./power.ts";
+export type { BatteryState, OwnerWatts, PowerEvent, PowerMode, PowerStatus } from "./power.ts";
 export { createSampler, MB, takeSample } from "./sampler.ts";
 export {
   CHECK_EVERY_MS,
@@ -87,7 +112,7 @@ export type { Sampler } from "./sampler.ts";
 export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
 export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
 export { Store } from "./store.ts";
-export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow } from "./store.ts";
+export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow, Sleep } from "./store.ts";
 export {
   checkJobTemp,
   folderSizeMb,
@@ -103,6 +128,7 @@ export {
 export { MEMORY } from "./types.ts";
 export type {
   Amounts,
+  BatteryRead,
   DiskSpace,
   McpServerSpec,
   NetAdapter,
@@ -111,6 +137,7 @@ export type {
   OwnerUsage,
   PoolTag,
   PortRange,
+  PowerMeters,
   ProcessInfo,
   Sample,
   SessionInfo,

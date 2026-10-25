@@ -128,6 +128,24 @@ describe("Broker", () => {
     expect(broker.get(renewed.id)?.state).toBe("granted");
   });
 
+  it("moves the heartbeat of each active lease forward by a sleep, so no lease ends because the laptop slept (H30)", () => {
+    const { broker, advance } = setup();
+    const lease = broker.request({ holder: "a", job: "x", amounts: { memory: 100 } });
+    broker.tick(cap(8000));
+    advance(200_000);
+    // The laptop sleeps for 2 hours, with a heartbeat 200 seconds old.
+    advance(7_200_000);
+    expect(broker.resume(7_200_000).map((each) => each.heartbeatAt)).toEqual([8_200_000]);
+    broker.tick(cap(8000));
+    expect(broker.get(lease.id)?.state).toBe("granted");
+    // A heartbeat does not move past the time of the call, and a sleep of 0 changes nothing.
+    expect(broker.resume(999_999_999).map((each) => each.heartbeatAt)).toEqual([8_400_000]);
+    expect(broker.resume(0)).toEqual([]);
+    advance(400_000);
+    broker.tick(cap(8000));
+    expect(broker.get(lease.id)?.state).toBe("expired");
+  });
+
   it("cancels a request that can never fit", () => {
     const { broker } = setup();
     const lease = broker.request({ holder: "a", job: "huge", amounts: { memory: 20_000 } });

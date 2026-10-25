@@ -28,6 +28,7 @@ import {
   diskSize,
   kindOf,
   MB,
+  powerLine,
   readSessions,
   startsLine,
   type Alert,
@@ -53,7 +54,7 @@ import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
 import { windowsCommand } from "./winshell.mjs";
-import type { DaemonStatus } from "./procedures.ts";
+import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
 import * as service from "./service.ts";
@@ -68,8 +69,9 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
   headroom run [--mem 2g|auto] [--cpu 2] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
-               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--log file] -- <command> [args...]
+               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
+               On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
                --log file: the output of the job also goes to the end of the file.
                The run prints the lease id first: headroom job <id> gives the state of the job.
                --disk 5g: space on the drive of the current folder. --disk D:=5g: on the drive D:.
@@ -163,6 +165,9 @@ function printStatus(status: DaemonStatus): void {
     const named = most.length === 0 ? "" : ` Most: ${most.map((each) => `${each.owner} ${each.value.toFixed(1)}`).join(", ")}.`;
     console.log(`CPU: ${cpu.used.toFixed(1)} of ${cpu.capacity} cores in use.${named}`);
   }
+  // H30: the battery and the power. A computer with no battery and no Energy Meter has no line.
+  const power = powerLine(status.resources ?? [], status.power);
+  if (power !== null) console.log(power);
   // H29: the process starts. A daemon of an older version gives none.
   const starts = status.starts === undefined ? null : startsLine(status.starts);
   if (starts !== null) console.log(starts);
@@ -259,10 +264,14 @@ interface Enforcement {
   /** True (--limit): the job cannot commit more memory than its lease. */
   readonly limit: boolean;
   readonly leaseMb: number | null;
+  /** True (--no-eco): the job keeps its full speed on battery (H30). */
+  readonly noEco?: boolean | undefined;
 }
 
 /** The time between two counts of the processes of a job for the daemon (H29). */
 const PROCESS_REPORT_MS = 30_000;
+/** The time from the start of a job to its first heartbeat, so a job on battery gets efficiency mode soon (H30). */
+const FIRST_REPORT_MS = 3000;
 
 /** The end of a job in a job object: the end of its command, its peak memory and the processes that it started (H29). */
 interface EnforcedEnd extends CommandEnd {
@@ -276,14 +285,15 @@ interface EnforcedEnd extends CommandEnd {
  * its lease. The function prints the peak memory of the job, so the holder can size the next lease.
  *
  * Every 30 seconds, `report` gets the count of processes that the job started so far (H29). The count of the job object
- * includes this process, so the count of the job starts after it.
+ * includes this process, so the count of the job starts after it. The answer of `report` tells if the job runs in efficiency
+ * mode (H30). On battery, the processes of the job go into EcoQoS, unless --no-eco. The first report comes after 3 seconds.
  */
 async function runEnforced(
   command: readonly string[],
   enforcement: Enforcement,
   env: Readonly<Record<string, string>> = {},
   log: string | null = null,
-  report?: (processes: number) => void,
+  report?: (processes: number) => Promise<boolean | undefined>,
 ): Promise<EnforcedEnd> {
   let held: Job | null = null;
   if (!enforcement.keep) {
@@ -300,14 +310,33 @@ async function runEnforced(
   const job = held;
   const baseProcesses = job?.processes() ?? 0;
   const started = (): number => Math.max(0, (job?.processes() ?? 0) - baseProcesses);
-  const timer = job === null || report === undefined ? null : setInterval(() => report(started()), PROCESS_REPORT_MS);
-  // The timer does not keep this process alive.
+  let eco = false;
+  const heartbeat = (): void => {
+    if (job === null || report === undefined) return;
+    void report(started()).then((on) => {
+      if (enforcement.noEco === true || on === undefined) return;
+      try {
+        job.eco(on);
+      } catch {
+        return;
+      }
+      if (on !== eco) {
+        console.error(on ? "headroom: the laptop runs on battery, so the job runs in efficiency mode (EcoQoS). --no-eco: full speed." : "headroom: the laptop runs on AC power again, so the job runs at full speed.");
+      }
+      eco = on;
+    });
+  };
+  const timer = job === null || report === undefined ? null : setInterval(heartbeat, PROCESS_REPORT_MS);
+  const first = job === null || report === undefined ? null : setTimeout(heartbeat, FIRST_REPORT_MS);
+  // The timers do not keep this process alive.
   timer?.unref();
+  first?.unref();
   let end: CommandEnd;
   try {
     end = await runCommand(command, env, log);
   } finally {
     if (timer !== null) clearInterval(timer);
+    if (first !== null) clearTimeout(first);
   }
   const { code, exit } = end;
   if (!job) return { code, exit, peakMb: null, processes: null };
@@ -417,6 +446,7 @@ async function run(argv: string[]): Promise<number> {
       "keep-temp": { type: "boolean" },
       "no-auto-slot": { type: "boolean" },
       "force-disk": { type: "boolean" },
+      "no-eco": { type: "boolean" },
       log: { type: "string" },
     },
   });
@@ -482,7 +512,7 @@ async function run(argv: string[]): Promise<number> {
         : `headroom: --mem auto gives ${mb(AUTO_DEFAULT_MB)}, because no run of this job has a peak yet.`,
     );
   }
-  const enforcement: Enforcement = { keep, limit: values.limit === true, leaseMb: amounts["memory"] ?? null };
+  const enforcement: Enforcement = { keep, limit: values.limit === true, leaseMb: amounts["memory"] ?? null, noEco: values["no-eco"] === true };
   const request = {
     holder,
     job,
@@ -524,9 +554,12 @@ async function run(argv: string[]): Promise<number> {
   let result: EnforcedEnd = { code: 1, exit: { code: null, signal: null }, peakMb: null, processes: null };
   let tempMb: number | null = null;
   // H29: the heartbeat gives the daemon the count of processes of the job. A daemon that does not answer misses one count.
-  const report = (processes: number): void => {
-    (connect() ?? latest).call(["resources", "renew"], { id: lease.id, processes }).catch(() => undefined);
-  };
+  // H30: its answer tells if the job runs in efficiency mode. A daemon of an older version gives no answer for it.
+  const report = (processes: number): Promise<boolean | undefined> =>
+    (connect() ?? latest).call<RenewAnswer>(["resources", "renew"], { id: lease.id, processes }).then(
+      (answer) => (typeof answer.eco === "boolean" ? answer.eco : undefined),
+      () => undefined,
+    );
   try {
     result = await runEnforced(positionals, enforcement, temp?.env ?? {}, log, report);
   } finally {

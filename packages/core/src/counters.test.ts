@@ -78,3 +78,18 @@ describe("CounterTracker", () => {
     expect(restarted.writes(30 * 60_000)).toEqual([{ owner: "mcp:vex", kind: "mcp", mbPerMin: 0, mbLastHour: 500 }]);
   });
 });
+
+describe("CounterTracker after a sleep (H30)", () => {
+  it("gives no rate across a gap, and measures again from the next read", () => {
+    const tracker = new CounterTracker();
+    const ownerOf = new Map([[10, "session:graph"]]);
+    tracker.read(0, [p(10, 0, 0)], ownerOf, kinds);
+    tracker.gap();
+    // Two hours of processor time in the sleep: no rate spans the sleep.
+    const wake = 2 * 3_600_000;
+    tracker.read(wake, [p(10, 0, 7_200_000)], ownerOf, kinds);
+    expect(tracker.cores(wake)?.find((each) => each.owner === "session:graph")).toBeUndefined();
+    tracker.read(wake + 60_000, [p(10, 0, 7_230_000)], ownerOf, kinds);
+    expect(tracker.cores(wake + 60_000)?.find((each) => each.owner === "session:graph")?.cores).toBe(0.5);
+  });
+});

@@ -15,6 +15,8 @@
  *   Docker and the MCP servers are critical. headroom does not restart the service.
  * - `churn`: more than 600 process starts in one minute, as an average over 10 minutes (H29). Each new process leaks
  *   kernel memory in the AMD display driver. The message names the owners and the leased jobs with the most starts.
+ * - `battery`: on battery, little time or charge left, or leased jobs that run on battery (H30). The message of the jobs
+ *   alert names the owners that use the most power, as an estimate. Each battery alert ends when AC power returns.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -42,13 +44,13 @@ import {
 import { parentOf } from "./owners.ts";
 import type { ServiceHealth } from "./services.ts";
 import type { ProcessStarts } from "./starts.ts";
-import type { DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
-import type { OwnerWrites } from "./counters.ts";
+import type { BatteryRead, DiskSpace, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
+import type { OwnerCores, OwnerWrites } from "./counters.ts";
 
 export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "stop";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "stop";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -104,6 +106,12 @@ export interface AlertRules {
   readonly serviceSlowChecks: number;
   /** More process starts than this in one minute, as an average over 10 minutes, start a churn warning (H29). The default is 600. */
   readonly churnPerMinute: number;
+  /** On battery, fewer minutes left than this start a battery warning (H30). The default is 30. */
+  readonly batteryWarnMinutes: number;
+  /** On battery, fewer minutes left than this start a critical battery alert. The default is 10. */
+  readonly batteryCriticalMinutes: number;
+  /** On battery, a charge below this percent starts a critical battery alert. The default is 10. */
+  readonly batteryCriticalPercent: number;
 }
 
 /** The default limits. */
@@ -124,6 +132,9 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   serviceDownChecks: 2,
   serviceSlowChecks: 3,
   churnPerMinute: 600,
+  batteryWarnMinutes: 30,
+  batteryCriticalMinutes: 10,
+  batteryCriticalPercent: 10,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -169,6 +180,12 @@ export interface AlertInput {
   readonly services?: readonly ServiceHealth[] | undefined;
   /** The process starts of the computer, of each owner and of each leased job (H29). */
   readonly starts?: ProcessStarts | undefined;
+  /** The battery (H30). The battery alerts need it. */
+  readonly battery?: BatteryRead | undefined;
+  /** The counter set "Energy Meter" (H30). The battery alert names the owners that use the most power. */
+  readonly meters?: PowerMeters | undefined;
+  /** The cores of each owner over the last minute. The power of an owner is an estimate from them (H30). */
+  readonly cores?: readonly OwnerCores[] | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -176,10 +193,15 @@ const NO_LOAD: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null
 const HOUR_MS = 3_600_000;
 
 /** This function gives the reads of one check for the measure parts of the kinds. */
-function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts">): Readings {
+function readingsOf(
+  input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "cores"> & {
+    readonly leases?: readonly Lease[] | undefined;
+  },
+): Readings {
   return {
     at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
     processors: 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
+    battery: input.battery, meters: input.meters, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
   };
 }
 
@@ -256,9 +278,11 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
               : null
             : rule.type === "health"
               ? healthLevel(rule, measurement)
-              : grows(rule, change)
-                ? "warning"
-                : null;
+              : rule.type === "check"
+                ? rule.level({ measurement, change, readings, owners })
+                : grows(rule, change)
+                  ? "warning"
+                  : null;
         if (level === null) continue;
         ids.add(id);
         const text = rule.text({ measurement, change, readings, owners });

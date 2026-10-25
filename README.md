@@ -100,6 +100,24 @@ The line `Process starts` of `headroom status` gives the starts of the last 10 m
 
 On 2026-10-24, this computer started 1,450 processes in one minute. A read every second found only 260 of them, and a read every 10 seconds found 60.
 
+### Battery and power (H30)
+
+On a laptop, the battery is a resource too. headroom reads it with the processes, every 10 seconds. The read starts no process and no timer:
+
+- **The battery** (`battery`, in Wh): the capacity and the charge from `CallNtPowerInformation(SystemBatteryState)`. It also gives the power source, the charge state, the percent, the rate in W and the minutes left.
+- **The power** (`power`, in W): the power of the whole computer from the counter set `Energy Meter` (PDH). The users of the power are an estimate: the CPU power, shared by the processor time of each owner.
+- A computer with no battery has no `battery`, and a computer with no counter set `Energy Meter` has no `power`. The values are absent, not 0. Linux and macOS have neither resource.
+- Windows tells the daemon when the power source, the percent, the lid or the power mode changes, and when the laptop sleeps or wakes. The daemon then reads the battery at once. If an event does not register, the daemon writes one line to its log and reads every 10 seconds.
+
+The line `Power` of `headroom status` gives the state, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:graph 2.4 W.` or `Power: plugged in, charging, 92%.` The dashboard has a panel for each resource and a chip `Power`.
+
+- **Alerts** (kind `battery`): a warning when leased jobs run on battery, with the 3 owners that use the most power. A warning below 30 minutes left. A critical alert below 10 minutes or below 10%. Each alert ends when AC power returns.
+- **Efficiency mode**: on battery, `headroom run` puts the processes of its job in EcoQoS, and takes them out of it when AC power returns. The answer of each heartbeat tells the client the power source. `--no-eco` keeps the full speed.
+- **Keep awake**: on AC power, while a lease is granted, the daemon holds a power request (`headroom: 2 jobs run`). Thus Windows does not put the laptop to sleep for no input. A lid close still puts the laptop to sleep. On battery, the daemon does not hold the request.
+- **Sleep**: after a wake, each lease gets the time of the sleep on its heartbeat. Thus no lease ends because the laptop slept. The rates start again at the wake, and the charts draw no line across the sleep.
+
+The rules that make a job wait on battery come with H31 (`--when`).
+
 ### The shared services (H27)
 
 On 2026-10-24, the Docker engine stopped to answer, and an MCP server of the gateway did not start. Nothing told the sessions. Since H27, the daemon checks the shared services every 30 seconds, with a time limit of 3 seconds for each check:
@@ -128,6 +146,7 @@ On Windows, `headroom run` puts the job into a job object:
 - `--limit` makes the memory of the lease a hard limit: the job cannot commit more. An allocation above the limit fails, and the job stops with its own error.
 - The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak.
 - The run also writes the count of processes that the job started (H29). The lease keeps the count.
+- On battery, the run puts the processes of the job in efficiency mode (EcoQoS), and writes one line when the mode changes (H30). `--no-eco` turns this off.
 - A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` lets two run.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
@@ -209,14 +228,14 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - The top section shows what uses the computer. One bar shows the memory in RAM by owner, and the free memory. A second bar shows the processors by owner.
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
-- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site.
-- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, network, TCP ports, services, slots, kernel pools, desktop and process starts. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
+- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site. On a laptop, a chip gives the power source and the charge.
+- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, network, TCP ports, services, slots, kernel pools, desktop, process starts, battery and power. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
 - The write counters do not name the drive. Thus the drive panels show no users, and one panel "Writes to all drives" follows them with the top writers.
 - Select a panel to open it to the full width. It then shows a chart of its history in the window, a table of the data and all its users.
 - The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
-- The page is one HTML file of approximately 69 KB, with no framework and no build step. The daemon keeps it as one string.
+- The page is one HTML file of approximately 73 KB, with no framework and no build step. The daemon keeps it as one string.
 - The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
 - The page holds the token of the daemon. Thus only a request to `127.0.0.1` or `localhost` with the key of the dashboard gets the page.
 - The key is in `~/.headroom/dashboard.key`, and only this user can read it. `headroom dashboard` opens the page with the key.

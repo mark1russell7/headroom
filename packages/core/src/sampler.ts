@@ -2,7 +2,8 @@
  * The sampler reads the memory of the computer and of its processes. Each platform has its own sampler.
  */
 
-import type { DiskSpace, NetAdapter, PoolTag, ProcessInfo, Sample, SystemMemory, TcpTable } from "./types.ts";
+import type { PowerEvent } from "./power.ts";
+import type { BatteryRead, DiskSpace, NetAdapter, PoolTag, PowerMeters, ProcessInfo, Sample, SystemMemory, TcpTable } from "./types.ts";
 
 /** A sampler of one platform. */
 export interface Sampler {
@@ -30,6 +31,22 @@ export interface Sampler {
    * and no kernel pools across a start, because a start empties the pools.
    */
   bootedAt?(): number;
+  /** This function reads the battery (H30). It gives `null` on a computer with no battery. Only Windows has it. */
+  battery?(): BatteryRead | null;
+  /** This function reads the counter set "Energy Meter" (H30). It gives `null` when the computer has no such counters. Only Windows has it. */
+  power?(): PowerMeters | null;
+  /**
+   * This function registers for the power events of the operating system (H30). The events are the power source, the
+   * charge, the lid, the power mode, the sleep and the wake. The listener runs on the main thread, so it only sets the state and asks
+   * for a sample. A failed registration writes one line to the log, and the sample every 10 seconds continues. The
+   * function gives a function that ends the registrations.
+   */
+  watchPower?(listener: (event: PowerEvent) => void, log: (line: string) => void): () => void;
+  /**
+   * This function holds a power request that keeps the computer out of sleep, with a reason for `powercfg /requests`, or
+   * ends the request with `null` (H30). A closed lid still puts a laptop to sleep.
+   */
+  keepAwake?(reason: string | null): void;
   /** This function frees the resources of the sampler. */
   close(): void;
 }

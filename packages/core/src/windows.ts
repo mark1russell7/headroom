@@ -13,6 +13,7 @@
  * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
  * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
  * - `GetIfTable2` of `iphlpapi.dll` gives the byte counters of the adapters, and `GetExtendedTcpTable` gives the TCP connections (H24).
+ * - `windows-power.ts` gives the battery, the Energy Meter, the power events and the power request (H30).
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
@@ -25,6 +26,7 @@ import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpTable }
 import { programName, titleOf } from "./owners.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, SystemMemory, TcpConnection, TcpTable } from "./types.ts";
+import { closePower, keepAwake, readBattery, readMeters, watchPower } from "./windows-power.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -489,5 +491,20 @@ function tcp(): TcpTable {
 
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, processSequence: () => sequence, poolTags, gui, disks, network, tcp, bootedAt, close: () => {} };
+  return {
+    memory,
+    processes,
+    processSequence: () => sequence,
+    poolTags,
+    gui,
+    disks,
+    network,
+    tcp,
+    bootedAt,
+    battery: readBattery,
+    power: readMeters,
+    watchPower,
+    keepAwake,
+    close: closePower,
+  };
 }

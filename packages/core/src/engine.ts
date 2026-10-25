@@ -25,18 +25,21 @@ import {
   type ResourceId,
   type ResourceStatus,
 } from "./resources.ts";
+import { keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
-import type { Config, MemoryRow, OwnerRow, Store } from "./store.ts";
+import type { Config, MemoryRow, OwnerRow, Sleep, Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
 import {
   MEMORY,
+  type BatteryRead,
   type DiskSpace,
   type McpServerSpec,
   type NetRead,
   type OwnerKind,
   type OwnerUsage,
+  type PowerMeters,
   type ProcessInfo,
   type SessionInfo,
   type SessionLoad,
@@ -72,6 +75,11 @@ export interface EngineOptions {
    * downloads, the temporary folders and the root of each drive. It gives the 3 largest files above 1 GB of the last 2 hours.
    */
   readonly largeFiles?: ((mounts: readonly string[]) => readonly LargeFile[]) | undefined;
+  /**
+   * A time between two calls of the engine that counts as a sleep of the computer, also with no resume event (H30). The
+   * daemon ticks every 2 seconds and sets 60 seconds. The default is no limit: only a resume event marks a sleep.
+   */
+  readonly sleepGapMs?: number | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -117,6 +125,11 @@ export interface Status {
    * leased job. The computer total is exact on Windows. The own commands of an owner are a lower bound.
    */
   readonly starts: ProcessStarts;
+  /**
+   * The power state (H30): the power source, the power mode, the lid and the efficiency mode of the jobs. It also has the
+   * power request that keeps the computer awake, and the last sleep. The battery and the power are entries of `resources`.
+   */
+  readonly power: PowerStatus;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -174,6 +187,8 @@ const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
 const FILES_EVERY_MS = 5 * 60_000;
 const FILES_SINCE_MS = 2 * 3_600_000;
+/** After a resume event, a time between two calls of the engine shorter than this is not a sleep. A tick that came first marked it. */
+const MIN_SLEEP_MS = 5000;
 const round = (mb: number): number => Math.round(mb * 10) / 10;
 
 /** The active alerts and the alerts that ended last. */
@@ -192,6 +207,8 @@ export interface History {
   readonly leases: readonly Lease[];
   /** The points of each resource instance, by id, the oldest first. A step longer than one minute averages each step. */
   readonly resources: Readonly<Record<ResourceId, readonly ResourcePoint[]>>;
+  /** The sleeps of the computer in the window, the oldest first (H30). A chart draws no line across a sleep. */
+  readonly sleeps: readonly Sleep[];
 }
 
 /** This function rounds an amount of a resource to 2 decimals, so a long history stays small. */
@@ -263,6 +280,23 @@ export class Engine {
   #recordedAt = 0;
   #prunedAt = 0;
   readonly #startedAt: number;
+  /** The last read of the battery and of the Energy Meter (H30). */
+  #battery: BatteryRead | undefined;
+  #meters: PowerMeters | undefined;
+  /** The state from the power events: the power source, the lid and the power mode. */
+  readonly #powerState: { ac: boolean | null; lidOpen: boolean | null; powerMode: PowerMode | null } = { ac: null, lidOpen: null, powerMode: null };
+  /** A power event asks for a read of the battery at the next tick. A change of the power source also asks for a check of the alerts. */
+  #batteryDue = false;
+  #checkDue = false;
+  /** The time of the last call of the engine, and a resume event that the next call handles. */
+  #seenAt: number | null = null;
+  #resumePending = false;
+  readonly #sleepGapMs: number;
+  /** The last sleep, and the end of the last sleep: the windows of growth start after it. */
+  #lastSleep: { readonly from: number; readonly to: number } | null = null;
+  #resumedAt = 0;
+  /** The reason of the power request that keeps the computer awake, or `null` without a request. */
+  #awake: string | null = null;
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -278,6 +312,7 @@ export class Engine {
     this.#services = options.services ?? (() => []);
     this.#alertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
     this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
+    this.#sleepGapMs = options.sleepGapMs ?? Number.POSITIVE_INFINITY;
     this.#startedAt = this.#now();
     this.#broker = new Broker({
       now: this.#now,
@@ -323,8 +358,10 @@ export class Engine {
   /** This function gives the reads of this time from the last samples, and keeps them for the admit parts. */
   #read(): Readings {
     const granted: Record<ResourceId, number> = {};
+    const leases: Lease[] = [];
     for (const lease of this.#broker.leases()) {
       if (lease.state !== "granted") continue;
+      leases.push(lease);
       for (const [id, amount] of Object.entries(lease.amounts)) granted[id] = (granted[id] ?? 0) + amount;
     }
     this.#readings = {
@@ -344,6 +381,9 @@ export class Engine {
       tcp: this.#tcp,
       services: this.#services(),
       starts: this.#starts,
+      battery: this.#battery,
+      meters: this.#meters,
+      leases,
     };
     return this.#readings;
   }
@@ -353,7 +393,7 @@ export class Engine {
    * leases, writes the changes to the store, and writes a sample when one is due.
    */
   tick(): Lease[] {
-    const now = this.#now();
+    const now = this.#clock();
     this.#memory = this.#sampler.memory();
     if (now - this.#processesAt >= this.#processEveryMs) {
       this.#processesAt = now;
@@ -384,10 +424,17 @@ export class Engine {
       }
       this.#readDisks(now);
       this.#readNetwork(now);
+      this.#readBattery();
+      this.#readMeters();
       this.#check(now, ownerOf);
+    } else if (this.#batteryDue) {
+      // A power event: the battery is cheap to read, so the tick reads it before the next read of the processes.
+      this.#readBattery();
+      if (this.#checkDue) this.#check(now, this.#ownership.ownerOf);
     }
     const changed = this.#broker.tick(this.capacity());
     this.#persist(changed);
+    this.#keepAwake();
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
       this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, this.#writtenMb(now));
@@ -402,6 +449,7 @@ export class Engine {
 
   /** This function adds a request and grants it at once when it fits. */
   request(request: LeaseRequest): Lease {
+    this.#clock();
     const lease = this.#broker.request(request);
     this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
@@ -413,6 +461,7 @@ export class Engine {
    * is the count of processes that the job started, from its job object (H29).
    */
   release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage, exit?: JobExit, processes?: number): Lease | undefined {
+    this.#clock();
     const lease = this.#broker.release(id, reason, peakMb ?? null, usage, exit, processes);
     if (lease) {
       this.#count(lease, processes);
@@ -442,6 +491,7 @@ export class Engine {
 
   /** This function records a heartbeat of a lease. `processes` is the count of processes that its job started so far (H29). */
   renew(id: string, processes?: number): Lease | undefined {
+    this.#clock();
     const lease = this.#broker.renew(id, processes);
     if (lease) {
       this.#count(lease, processes);
@@ -465,6 +515,7 @@ export class Engine {
 
   /** This function sets the capacity of a pool. A capacity below 0 removes it. */
   setPool(name: string, capacity: number): void {
+    this.#clock();
     this.#store.setPool(name, capacity);
     this.#persist(this.#broker.tick(this.capacity()));
   }
@@ -538,6 +589,7 @@ export class Engine {
       writes: this.#writes,
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
+      power: this.powerStatus(),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -555,6 +607,7 @@ export class Engine {
       owners: this.#store.ownersSince(since, stepMs),
       leases: this.#store.endedLeases(since),
       resources,
+      sleeps: this.#store.sleepsSince(since),
     };
   }
 
@@ -588,10 +641,10 @@ export class Engine {
   /**
    * This function gives the non-paged pool by tag: the largest tags, and the change of each tag over the
    * snapshots of the last hour. A driver that leaks shows as a tag that grows. Only Windows has tags.
-   * The window starts at the start of the computer or later, so it compares no snapshots across a start.
+   * The window starts at the start of the computer or at the last wake, so it compares no snapshots across a start or a sleep.
    */
   poolTags(limit = 20): PoolTags {
-    const window = this.#tags.filter((snapshot) => snapshot.at >= this.#bootedAt);
+    const window = this.#tags.filter((snapshot) => snapshot.at >= Math.max(this.#bootedAt, this.#resumedAt));
     const last = window.at(-1);
     const first = window[0];
     if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [] };
@@ -626,10 +679,12 @@ export class Engine {
 
   /** This function checks the conditions of the alerts. A condition that continues keeps its start time. */
   #check(now: number, ownerOf: ReadonlyMap<number, string>): void {
+    this.#checkDue = false;
     const kindOf = new Map(this.#owners.map((owner) => [owner.owner, owner.kind]));
     // The growth of the pool is measured over one hour. A history shorter than 50 minutes gives no growth. A start of the
-    // computer empties the pools, so the history starts at the start of the computer or later.
-    const first = this.#store.memorySince(Math.max(now - 3_600_000, this.#bootedAt))[0];
+    // computer empties the pools, so the history starts at the start of the computer or later. A sleep stops the growth,
+    // so the history also starts at the last wake (H30).
+    const first = this.#store.memorySince(Math.max(now - 3_600_000, this.#bootedAt, this.#resumedAt))[0];
     const hourOld = first !== undefined && now - first.at > 50 * 60_000;
     const poolHourAgoMb = hourOld ? first.kernelNonpagedMb : undefined;
     const pagedHourAgoMb = hourOld ? first.kernelPagedMb : undefined;
@@ -641,6 +696,7 @@ export class Engine {
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
         load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
+        battery: this.#battery, meters: this.#meters, cores: this.#cores,
       },
       this.#alertRules,
     );
@@ -761,9 +817,117 @@ export class Engine {
     }
   }
 
+  /**
+   * This function takes one power event (H30). It only sets the state. The caller then asks for a tick, which reads the
+   * battery, or makes a full read of the computer after a wake.
+   */
+  powerEvent(event: PowerEvent): void {
+    switch (event.type) {
+      case "source":
+        // The alerts on the battery start or end with the power source, so the tick also checks the alerts.
+        if (this.#powerState.ac !== event.ac) this.#checkDue = true;
+        this.#powerState.ac = event.ac;
+        this.#batteryDue = true;
+        break;
+      case "percent":
+        this.#batteryDue = true;
+        break;
+      case "lid":
+        this.#powerState.lidOpen = event.open;
+        break;
+      case "mode":
+        this.#powerState.powerMode = event.mode;
+        break;
+      case "suspend":
+        // The next call of the engine after the wake measures the sleep from its last call.
+        break;
+      case "resume":
+        this.#resumePending = true;
+        this.#processesAt = 0;
+        break;
+    }
+  }
+
+  /** This function gives the power state (H30). On battery, the clients of `headroom run` put their jobs in efficiency mode. */
+  powerStatus(): PowerStatus {
+    const ac = this.#battery?.ac ?? this.#powerState.ac;
+    return { ac, powerMode: this.#powerState.powerMode, lidOpen: this.#powerState.lidOpen, eco: ac === false, keepAwake: this.#awake, lastSleep: this.#lastSleep };
+  }
+
+  /**
+   * This function gives the time of this call, and marks a sleep that ended since the last call (H30). A resume event, or a
+   * time between two calls longer than `sleepGapMs`, marks the sleep. The tick, a request, a heartbeat and a release call it.
+   */
+  #clock(): number {
+    const now = this.#now();
+    const last = this.#seenAt;
+    const resumed = this.#resumePending;
+    this.#seenAt = now;
+    this.#resumePending = false;
+    if (last !== null && ((resumed && now - last >= MIN_SLEEP_MS) || now - last >= this.#sleepGapMs)) this.#wake(last, now);
+    return now;
+  }
+
+  /**
+   * This function handles the end of a sleep (H30). The leases get the time of the sleep on their heartbeat, so a lease does
+   * not end for no heartbeat. The rates do not span the sleep: the processor time, the process starts, the network and the
+   * drives start again. The growth of the kernel pools starts again at the wake. The store keeps the sleep for the history.
+   */
+  #wake(from: number, to: number): void {
+    for (const lease of this.#broker.resume(to - from)) this.#store.saveLease(lease);
+    this.#counters.gap();
+    this.#startTracker.gap(to);
+    this.#network = undefined;
+    this.#previousNetwork = undefined;
+    this.#diskReadings.clear();
+    this.#resumedAt = to;
+    this.#lastSleep = { from, to };
+    // The next tick reads the whole computer again.
+    this.#processesAt = 0;
+    this.#store.saveSleep(from, to);
+  }
+
+  /** This function reads the battery. A failed read gives no battery, and the tick continues. */
+  #readBattery(): void {
+    this.#batteryDue = false;
+    if (!this.#sampler.battery) return;
+    try {
+      this.#battery = this.#sampler.battery() ?? undefined;
+    } catch {
+      this.#battery = undefined;
+    }
+  }
+
+  /** This function reads the counter set "Energy Meter". A failed read gives no meters, and the tick continues. */
+  #readMeters(): void {
+    if (!this.#sampler.power) return;
+    try {
+      this.#meters = this.#sampler.power() ?? undefined;
+    } catch {
+      this.#meters = undefined;
+    }
+  }
+
+  /** This function holds the power request while a lease is granted on AC power, and ends it otherwise (H30). */
+  #keepAwake(): void {
+    const jobs = this.#broker.leases().filter((lease) => lease.state === "granted").length;
+    const reason = keepAwakeReason(this.#battery?.ac ?? this.#powerState.ac, jobs);
+    if (reason !== this.#awake) this.#setAwake(reason);
+  }
+
+  #setAwake(reason: string | null): void {
+    this.#awake = reason;
+    try {
+      this.#sampler.keepAwake?.(reason);
+    } catch {
+      // Without the request, Windows can put the computer to sleep. The leases continue after the wake.
+    }
+  }
+
   /** This function closes the store and the sampler. */
   close(): void {
     this.#listeners.clear();
+    if (this.#awake !== null) this.#setAwake(null);
     this.#store.close();
     this.#sampler.close();
   }

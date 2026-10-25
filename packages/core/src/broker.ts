@@ -215,6 +215,23 @@ export class Broker {
     return this.#set({ ...lease, heartbeatAt: this.#now(), ...processesOf(lease, processes) });
   }
 
+  /**
+   * This function moves the heartbeat of each active lease forward by the time that the computer slept (H30). Thus a lease
+   * does not end for no heartbeat because of a sleep. A heartbeat does not move past the time of the call. It gives the
+   * leases that changed.
+   */
+  resume(sleptMs: number): Lease[] {
+    if (!(sleptMs > 0)) return [];
+    const now = this.#now();
+    const changed: Lease[] = [];
+    for (const lease of this.#leases.values()) {
+      if (!isActive(lease)) continue;
+      const heartbeatAt = Math.min(now, lease.heartbeatAt + sleptMs);
+      if (heartbeatAt !== lease.heartbeatAt) changed.push(this.#set({ ...lease, heartbeatAt }));
+    }
+    return changed;
+  }
+
   /** This function gives one lease. */
   get(id: string): Lease | undefined {
     return this.#leases.get(id);
