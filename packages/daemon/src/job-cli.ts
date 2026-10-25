@@ -6,7 +6,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { diskSize, type JobState } from "@headroom/core";
+import { countText, diskSize, type JobState } from "@headroom/core";
 import type { Connection } from "./client.ts";
 
 /** The exit code of `headroom job` when no job matches the query. */
@@ -57,6 +57,8 @@ export function jobLine(state: JobState, now: number): string {
     parts.push(how, `waited ${span(state.waitedMs)}`, state.ranMs === null ? "did not start" : `ran ${span(state.ranMs)}`);
   }
   if (state.peakMb !== null) parts.push(`peak ${diskSize(state.peakMb)}`);
+  // H29: the processes that the job started, from its job object. A daemon of an older version gives none.
+  if (typeof state.processes === "number") parts.push(`${countText(state.processes)} ${state.processes === 1 ? "process" : "processes"} started`);
   const log = state.log === null ? "" : ` Log: ${state.log}`;
   return `${state.job} (${state.id.slice(0, 8)}) of ${state.holder}: ${parts.join(", ")}.${log}`;
 }

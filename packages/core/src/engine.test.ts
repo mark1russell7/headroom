@@ -34,6 +34,39 @@ describe("Engine stop alerts", () => {
   });
 });
 
+describe("Engine process starts (H29)", () => {
+  it("measures the starts, keeps the count of a job from its heartbeat, and gives the instance procs", () => {
+    let now = 1_000_000;
+    let sequence = 5000;
+    const process = (pid: number, ppid: number, name: string, startedAt: number): ProcessInfo => ({ pid, ppid, name, privateMb: 1, workingMb: 1, startedAt });
+    let list: ProcessInfo[] = [process(4, 0, "System", 0)];
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => list,
+      processSequence: () => sequence,
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
+    engine.tick();
+    expect(engine.status().resources.find((each) => each.id === "procs")).toBeUndefined();
+    const lease = engine.request({ holder: "client", job: "coeval-063-test-compiler", amounts: {}, ttlMs: 600_000 });
+    now += 10_000;
+    sequence += 250;
+    list = [...list, process(77, 4, "bash.exe", now - 1000)];
+    engine.tick();
+    expect(engine.renew(lease.id, 120)?.processes).toBe(120);
+    const status = engine.status();
+    expect(status.starts).toMatchObject({ perMinute: 1500, exact: true, spanMs: 10_000 });
+    // The lease has no process in the read, so the session of its holder owns the job.
+    expect(status.starts.jobs[0]).toMatchObject({ job: "coeval-063-test-compiler", owner: "session:client", processes: 120, perMinute: 720 });
+    expect(status.resources.find((each) => each.id === "procs")).toMatchObject({ kind: "procs", unit: "per minute", used: 1500, capacity: null });
+    expect(engine.jobs({ query: lease.id })[0]?.processes).toBe(120);
+    expect(engine.release(lease.id, "the job ended with code 0", null, undefined, { code: 0, signal: null }, 300)?.processes).toBe(300);
+    expect(engine.jobs({ query: lease.id })[0]).toMatchObject({ state: "exited", processes: 300 });
+    engine.close();
+  });
+});
+
 describe("Engine suggest", () => {
   const sampler: Sampler = {
     memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
@@ -343,10 +376,12 @@ describe("Engine resources", () => {
     expect(store.resourcesSince(0)).toHaveLength(rows.length);
     now += 31_000;
     engine.tick();
-    expect(store.resourcesSince(now)).toHaveLength(rows.length);
+    // H29: the process starts get their instance after two reads of the processes.
+    expect(store.resourcesSince(now)).toHaveLength(rows.length + 1);
+    expect(store.resourcesSince(now).find((row) => row.id === "procs")).toEqual({ at: now, id: "procs", capacity: null, used: 0, free: null });
     // The history gives the points of each instance by id. The fields of before stay.
     const history = engine.history(0);
-    expect(Object.keys(history.resources).sort()).toEqual(status.resources.map((each) => each.id).sort());
+    expect(Object.keys(history.resources).sort()).toEqual([...status.resources.map((each) => each.id), "procs"].sort());
     expect(history.resources["disk:D:"]).toEqual([
       [now - 61_000, 75_000, 125_000],
       [now, 75_000, 125_000],

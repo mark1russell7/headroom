@@ -13,6 +13,8 @@
  *   with the most connections, and the count in TIME_WAIT.
  * - `service`: a shared service that does not answer for 2 checks in a row, or answers slowly for 3 checks (H27).
  *   Docker and the MCP servers are critical. headroom does not restart the service.
+ * - `churn`: more than 600 process starts in one minute, as an average over 10 minutes (H29). Each new process leaks
+ *   kernel memory in the AMD display driver. The message names the owners and the leased jobs with the most starts.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -37,14 +39,16 @@ import {
   type Readings,
   type ResourceId,
 } from "./resources.ts";
+import { parentOf } from "./owners.ts";
 import type { ServiceHealth } from "./services.ts";
+import type { ProcessStarts } from "./starts.ts";
 import type { DiskSpace, OwnerKind, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import type { OwnerWrites } from "./counters.ts";
 
 export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "stop";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "stop";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -98,6 +102,8 @@ export interface AlertRules {
   readonly serviceDownChecks: number;
   /** A service that is slow for this count of checks in a row starts a warning. The default is 3. */
   readonly serviceSlowChecks: number;
+  /** More process starts than this in one minute, as an average over 10 minutes, start a churn warning (H29). The default is 600. */
+  readonly churnPerMinute: number;
 }
 
 /** The default limits. */
@@ -117,6 +123,7 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   portsCriticalRatio: 0.95,
   serviceDownChecks: 2,
   serviceSlowChecks: 3,
+  churnPerMinute: 600,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -160,6 +167,8 @@ export interface AlertInput {
   readonly tcp?: TcpTable | undefined;
   /** The health of each service after the last round of checks (H27). */
   readonly services?: readonly ServiceHealth[] | undefined;
+  /** The process starts of the computer, of each owner and of each leased job (H29). */
+  readonly starts?: ProcessStarts | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -167,10 +176,10 @@ const NO_LOAD: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null
 const HOUR_MS = 3_600_000;
 
 /** This function gives the reads of one check for the measure parts of the kinds. */
-function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services">): Readings {
+function readingsOf(input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts">): Readings {
   return {
     at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
-    processors: 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services,
+    processors: 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
   };
 }
 
@@ -183,14 +192,19 @@ function changesOf(input: AlertInput): Map<ResourceId, Change> {
   if (input.poolHourAgoMb !== undefined) changes.set("pool:nonpaged", { windowMs: HOUR_MS, usedGain: input.memory.kernelNonpagedMb - input.poolHourAgoMb });
   if (input.pagedHourAgoMb !== undefined) changes.set("pool:paged", { windowMs: HOUR_MS, usedGain: input.memory.kernelPagedMb - input.pagedHourAgoMb });
   for (const disk of input.disks ?? []) changes.set(`disk:${disk.mount}`, { windowMs: (disk.windowMinutes ?? 0) * 60_000, freeLoss: disk.droppedMb ?? 0 });
+  // The rate of the process starts is an average over the time that the reads cover (H29).
+  if (input.starts !== undefined) changes.set("procs", { windowMs: input.starts.spanMs });
   return changes;
 }
 
-/** This function tells if an outlier rule examines a process with this owner kind. */
-function examines(rule: OutlierRule, info: ProcessInfo, kind: OwnerKind, owners: Owners, pids: ReadonlySet<number>): boolean {
+/**
+ * This function tells if an outlier rule examines a process with this owner kind. A process is an orphan when its parent
+ * ended, also when a new process has the ID of the parent (H29).
+ */
+function examines(rule: OutlierRule, info: ProcessInfo, kind: OwnerKind, owners: Owners, byPid: ReadonlyMap<number, ProcessInfo>): boolean {
   if (rule.skip.includes(kind) || (rule.only !== undefined && !rule.only.includes(kind))) return false;
   if (rule.when === "unleased") return !owners.leaseOf.has(info.pid);
-  if (rule.when === "orphaned") return info.ppid > 0 && !pids.has(info.ppid);
+  if (rule.when === "orphaned") return info.ppid > 0 && parentOf(info, byPid) === undefined;
   return true;
 }
 
@@ -206,7 +220,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
   const kinds = [...RESOURCES.values()].map((resource) => ({ resource, rules: resource.alert.rules(rules) }));
 
   // The rules on one process. Only the process subject has rules at this time (H20 adds the owners).
-  const pids = new Set(input.processes.map((info) => info.pid));
+  const byPid = new Map(input.processes.map((info) => [info.pid, info]));
   for (const info of input.processes) {
     const owner = input.ownerOf.get(info.pid) ?? "other";
     const kind = input.kindOf.get(owner) ?? "other";
@@ -215,7 +229,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       const amount = resource.attribute?.counter(info);
       if (amount === undefined) return false;
       for (const rule of each) {
-        if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, pids)) continue;
+        if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, byPid)) continue;
         const text = rule.text({ process: info, owner, amount });
         alerts.push({ id: `${rule.alert}:${info.pid}`, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
         return true;
@@ -236,7 +250,15 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         const id = rule.alertId?.(measurement.id) ?? measurement.id;
         if (ids.has(id)) continue;
         const level: Level | null =
-          rule.type === "level" ? levelOf(rule, measurement) : rule.type === "health" ? healthLevel(rule, measurement) : grows(rule, change) ? "warning" : null;
+          rule.type === "level"
+            ? (change?.windowMs ?? 0) >= (rule.minHistoryMs ?? 0)
+              ? levelOf(rule, measurement)
+              : null
+            : rule.type === "health"
+              ? healthLevel(rule, measurement)
+              : grows(rule, change)
+                ? "warning"
+                : null;
         if (level === null) continue;
         ids.add(id);
         const text = rule.text({ measurement, change, readings, owners });

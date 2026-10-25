@@ -145,7 +145,8 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 .res { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-content: start; border-top: 3px solid var(--lv, transparent); cursor: pointer; transition: opacity 0.15s, box-shadow 0.15s; }
 .res:hover { box-shadow: 0 0 0 1px var(--axis); }
 .res.open { grid-column: 1 / -1; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 10px 28px; cursor: default; }
-.res.open:hover { box-shadow: none; }
+.res.open:hover, .res.static:hover { box-shadow: none; }
+.res.static { cursor: default; }
 .res .sum { display: grid; gap: 6px; align-content: start; cursor: pointer; }
 .res .det { display: grid; gap: 10px; align-content: start; min-width: 0; }
 .res .det .dh { font-size: 12px; color: var(--ink-2); }
@@ -326,6 +327,7 @@ function amount(v, unit) {
   if (unit === "MB/h") return `${diskSize(v)}/h`;
   if (unit === "MB/s") return `${v >= 10 ? Math.round(v) : v.toFixed(v >= 0.1 ? 1 : 2)} MB/s`;
   if (unit === "state") return `${Math.round(v)} ms`;
+  if (unit === "per minute") return `${Math.round(v).toLocaleString()} a minute`;
   const n = Number(v.toFixed(Math.abs(v) < 10 && v % 1 ? 1 : 0));
   return unit === "cores" ? `${n} ${n === 1 ? "core" : "cores"}` : String(n);
 }
@@ -615,18 +617,18 @@ function renderNow() {
 
 // ---- the resources: one card for each instance of Status.resources, from the model ----
 // The group of each kind, in the order of the page. A kind that the page does not know goes last, with its own name.
-const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"]];
+const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"], ["procs", "Kernel"]];
 const NAMES = {
   memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool",
-  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports",
+  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports", procs: "Process starts",
 };
 function resName(r) {
   if (r.health?.title) { const t = r.health.title.replace(/^The /, ""); return t[0].toUpperCase() + t.slice(1); }
   const part = r.id.includes(":") ? r.id.slice(r.id.indexOf(":") + 1) : "";
   return NAMES[r.id] || (r.kind === "disk" ? `Drive ${part}` : r.kind === "slot" ? `Slot ${r.id}` : `${r.kind[0].toUpperCase()}${r.kind.slice(1)} ${part}`.trim());
 }
-// The instance of an alert: its id, except the alert "pool" (the non-paged pool) and the process outliers of the memory.
-const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.kind === "runaway" || a.kind === "orphan" ? "memory" : a.id);
+// The instance of an alert: its id, except the alert "pool" (the non-paged pool), the alert "churn" (the process starts) and the process outliers of the memory.
+const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.id === "churn" ? "procs" : a.kind === "runaway" || a.kind === "orphan" ? "memory" : a.id);
 // A resource with a capacity shows its free part. A kernel pool, the desktop or a rate (the network) shows its used part.
 function viewOf(r) {
   const onFree = r.capacity != null && r.free != null && r.unit !== "MB/s";
@@ -656,12 +658,12 @@ function trend(points, k, capacity, label) {
 }
 
 /** The users of a resource: one row for each owner, in the color of its group. A row marks its owner on the page. */
-function usersList(owners, full) {
+function usersList(owners, full, title) {
   const top = Math.max(...owners.map((o) => o.value), 1e-9);
   const hist = new Map();
   if (full) for (const r of state.history?.owners || []) { if (!hist.has(r.owner)) hist.set(r.owner, new Map()); hist.get(r.owner).set(r.at, r.privateMb); }
   const times = (state.history?.memory || []).map((r) => r.at);
-  return h("div", { class: "list" }, h("div", { class: "t", text: full ? "Users, the largest first" : "Top users" }), ...owners.map((o) => h("button", {
+  return h("div", { class: "list" }, h("div", { class: "t", text: title || (full ? "Users, the largest first" : "Top users") }), ...owners.map((o) => h("button", {
     type: "button", class: `row own${full ? " full" : ""}`, "data-owner": o.owner, "data-group": groupOf(o.kind), title: `Mark ${o.owner}`, onclick: () => setFocus({ owner: o.owner }),
   },
   h("span", { class: "clip", text: ownerLabel(o.owner) }),
@@ -689,7 +691,7 @@ function resCard(r, st, points) {
   const hl = r.health;
   const big = hl ? h("div", { class: "big" }, h("b", { text: hl.state }), hl.latencyMs == null ? "" : `${hl.latencyMs} ms`)
     : onFree ? h("div", { class: "big" }, h("b", { text: u(r.free) }), `free of ${u(r.capacity)}`)
-    : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), "in use")
+    : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), r.unit === "per minute" ? "on average over 10 minutes" : "in use")
     : h("div", { class: "big" }, h("b", { text: u(r.capacity) }), "in total");
   const sub = hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`].filter(Boolean).join(" · ");
   const change = r.unit === "MB" ? hourly(points, k, st.at, value) : null;
@@ -697,7 +699,8 @@ function resCard(r, st, points) {
   const leases = (st.leases || []).filter((l) => (l.amounts?.[r.id] ?? 0) > 0);
   const root = state.config?.jobTemp;
   const sep = root && !root.includes("\\") ? "/" : "\\";
-  const owners = r.owners || [];
+  // The write counters do not name the drive, so the writers show one time, in the card "Writes to all drives".
+  const owners = r.kind === "disk" ? [] : r.owners || [];
   const main = [
     h("div", { class: "eye" }, h("span", { text: (GROUPS.find(([kind]) => kind === r.kind) || [0, r.kind])[1] }),
       lv ? h("span", { class: "chip" }, ICON.alert(LEVEL[lv][0]), LEVEL[lv][1]) : h("span", { class: "chip" }, stateIcon(hl ? hl.state : "ok"), hl ? hl.state : "ok")),
@@ -725,6 +728,18 @@ function resCard(r, st, points) {
   return card;
 }
 
+/**
+ * The writers of all the drives, in one card after the cards of the drives (H20). The write counters of a process do not
+ * name the drive, so a list on each drive card repeats the same owners.
+ */
+function writesCard(owners) {
+  return h("article", { class: "card res static", "data-id": "writes" },
+    h("div", { class: "eye" }, h("span", { text: "Disk" })),
+    h("div", { class: "ttl" }, h("h3", { text: "Writes to all drives" })),
+    h("div", { class: "sub", text: "The data that each owner wrote in the last hour. The write counters do not name the drive, so this list is for all the drives together." }),
+    owners.length ? usersList(owners.slice(0, 8), false, "Top writers") : h("div", { class: "sub", text: "No owner wrote data in the last hour." }));
+}
+
 /** The history of one resource, in a larger chart. A size in MB shows in GB from 2 GB. */
 function drawDetail(r, host, points) {
   const { k, onFree } = viewOf(r);
@@ -745,7 +760,11 @@ function renderResources() {
   const rank = (r) => { const i = GROUPS.findIndex(([kind]) => kind === r.kind); return i < 0 ? GROUPS.length : i; };
   const hist = state.history?.resources || {};
   const grid = $("resources");
-  grid.replaceChildren(...st.resources.map((r, i) => [r, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([r]) => resCard(r, st, hist[r.id] || [])));
+  const cards = st.resources.map((r, i) => [r, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([r]) => resCard(r, st, hist[r.id] || []));
+  // The writers go once, after the last drive.
+  const drives = st.resources.filter((r) => r.kind === "disk");
+  if (drives.length) cards.splice(cards.findLastIndex((c) => drives.some((r) => r.id === c.dataset.id)) + 1, 0, writesCard(drives[0].owners || []));
+  grid.replaceChildren(...cards);
   // The chart of the open card stays between two reads of the status, so its crosshair stays under the pointer.
   const r = st.resources.find((x) => x.id === state.open), slot = grid.querySelector(".res.open .detchart");
   if (!r || !slot) return;

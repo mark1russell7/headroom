@@ -7,6 +7,7 @@
  * - With a memory limit, the processes of the job cannot commit more memory than the limit together.
  *   An allocation above the limit fails, and the job stops with an error of its own.
  * - The job records its peak memory, so the holder can see what the job used.
+ * - The job counts each process that it held, also the processes that ended (H29). The holder reports the count.
  *
  * Windows nests jobs. Thus a process that is in a job already, for example a shell of a terminal, can
  * also go into the job of headroom. Only `createJob()` and `startOutsideJob()` on Windows load this file.
@@ -53,6 +54,12 @@ const extendedSize = koffi.sizeof(EXTENDED_LIMIT);
 const createJobObject = kernel32.func("intptr_t __stdcall CreateJobObjectW(void *attributes, const char16_t *name)");
 const setInformation = kernel32.func("int __stdcall SetInformationJobObject(intptr_t job, int cls, _In_ HEADROOM_JOB_EXTENDED_LIMIT *info, uint32_t length)");
 const queryInformation = kernel32.func("int __stdcall QueryInformationJobObject(intptr_t job, int cls, _Out_ HEADROOM_JOB_EXTENDED_LIMIT *info, uint32_t length, void *returned)");
+// JobObjectBasicAccountingInformation (class 1): four times of 8 bytes, then TotalPageFaultCount, TotalProcesses,
+// ActiveProcesses and TotalTerminatedProcesses of 4 bytes each.
+const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
+const ACCOUNTING_SIZE = 48;
+const ACCOUNTING_TOTAL_PROCESSES = 36;
+const queryAccounting = kernel32.func("int __stdcall QueryInformationJobObject(intptr_t job, int cls, _Out_ uint8_t *info, uint32_t length, void *returned)");
 const assignProcess = kernel32.func("int __stdcall AssignProcessToJobObject(intptr_t job, intptr_t process)");
 const getCurrentProcess = kernel32.func("intptr_t __stdcall GetCurrentProcess()");
 const getLastError = kernel32.func("uint32_t __stdcall GetLastError()");
@@ -113,6 +120,11 @@ export interface Job {
   /** This function gives the peak of the memory that the processes of the job committed together, in MB. */
   peakMb(): number;
   /**
+   * This function gives the count of processes that the job held since its start, also the processes that ended (H29). The
+   * count includes the current process. It is `TotalProcesses` of `JobObjectBasicAccountingInformation`.
+   */
+  processes(): number;
+  /**
    * This function closes the job: Windows stops each process that is still in it, the current process too.
    * The holder does not need it. The job closes when the current process exits.
    */
@@ -145,6 +157,11 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
       const out = {} as ExtendedLimit;
       if (!open || queryInformation(handle, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, out, extendedSize, null) === 0) return 0;
       return Number(out.PeakJobMemoryUsed) / MB;
+    },
+    processes: () => {
+      const out = Buffer.alloc(ACCOUNTING_SIZE);
+      if (!open || queryAccounting(handle, JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION, out, ACCOUNTING_SIZE, null) === 0) return 0;
+      return out.readUInt32LE(ACCOUNTING_TOTAL_PROCESSES);
     },
     close: () => {
       if (!open) return;

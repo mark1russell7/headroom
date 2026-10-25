@@ -29,6 +29,7 @@ import {
   kindOf,
   MB,
   readSessions,
+  startsLine,
   type Alert,
   type Alerts,
   type Config,
@@ -161,6 +162,9 @@ function printStatus(status: DaemonStatus): void {
     const named = most.length === 0 ? "" : ` Most: ${most.map((each) => `${each.owner} ${each.value.toFixed(1)}`).join(", ")}.`;
     console.log(`CPU: ${cpu.used.toFixed(1)} of ${cpu.capacity} cores in use.${named}`);
   }
+  // H29: the process starts. A daemon of an older version gives none.
+  const starts = status.starts === undefined ? null : startsLine(status.starts);
+  if (starts !== null) console.log(starts);
   // H24: the network needs two reads of the adapters, so its first status after a start has no rate.
   const usedOf = (id: string): number | null => (status.resources ?? []).find((each) => each.id === id)?.used ?? null;
   const received = usedOf("net:in");
@@ -262,17 +266,30 @@ interface Enforcement {
   readonly leaseMb: number | null;
 }
 
+/** The time between two counts of the processes of a job for the daemon (H29). */
+const PROCESS_REPORT_MS = 30_000;
+
+/** The end of a job in a job object: the end of its command, its peak memory and the processes that it started (H29). */
+interface EnforcedEnd extends CommandEnd {
+  readonly peakMb: number | null;
+  readonly processes: number | null;
+}
+
 /**
  * This function runs a command in a job object (H6, Windows). When this process exits, Windows stops each process of the
  * job that still runs, so no process of the job stays as an orphan. With --limit, the job cannot commit more memory than
  * its lease. The function prints the peak memory of the job, so the holder can size the next lease.
+ *
+ * Every 30 seconds, `report` gets the count of processes that the job started so far (H29). The count of the job object
+ * includes this process, so the count of the job starts after it.
  */
 async function runEnforced(
   command: readonly string[],
   enforcement: Enforcement,
   env: Readonly<Record<string, string>> = {},
   log: string | null = null,
-): Promise<CommandEnd & { peakMb: number | null }> {
+  report?: (processes: number) => void,
+): Promise<EnforcedEnd> {
   let held: Job | null = null;
   if (!enforcement.keep) {
     // The process of headroom is in the job too: the limit adds its memory and a margin.
@@ -285,15 +302,28 @@ async function runEnforced(
     }
   }
   const base = held?.peakMb() ?? 0;
-  const { code, exit } = await runCommand(command, env, log);
-  if (!held) return { code, exit, peakMb: null };
-  const peakMb = Math.max(0, held.peakMb() - base);
+  const job = held;
+  const baseProcesses = job?.processes() ?? 0;
+  const started = (): number => Math.max(0, (job?.processes() ?? 0) - baseProcesses);
+  const timer = job === null || report === undefined ? null : setInterval(() => report(started()), PROCESS_REPORT_MS);
+  // The timer does not keep this process alive.
+  timer?.unref();
+  let end: CommandEnd;
+  try {
+    end = await runCommand(command, env, log);
+  } finally {
+    if (timer !== null) clearInterval(timer);
+  }
+  const { code, exit } = end;
+  if (!job) return { code, exit, peakMb: null, processes: null };
+  const peakMb = Math.max(0, job.peakMb() - base);
+  const processes = started();
   const of = enforcement.leaseMb === null ? "" : ` of its lease of ${mb(enforcement.leaseMb)}`;
-  console.error(`headroom: the job used at most ${mb(peakMb)}${of}.`);
-  if (held.limitMb !== null && held.peakMb() >= held.limitMb * 0.97) {
+  console.error(`headroom: the job used at most ${mb(peakMb)}${of}. It started ${processes} ${processes === 1 ? "process" : "processes"}.`);
+  if (job.limitMb !== null && job.peakMb() >= job.limitMb * 0.97) {
     console.error(`headroom: the job reached its memory limit. Ask for a larger lease, for example --mem ${Math.ceil((enforcement.leaseMb ?? 0) * 1.5 / 1024)}g.`);
   }
-  return { code, exit, peakMb };
+  return { code, exit, peakMb, processes };
 }
 
 /** This function opens a log file of `headroom run --log` to append, with its folder. It gives the absolute path, or an error text. */
@@ -496,14 +526,18 @@ async function run(argv: string[]): Promise<number> {
   // H19: with a temp root, the job writes its temp files under its lease. With --keep, the job keeps the TEMP of its
   // parent, because a service that it starts on purpose can use its temp folder after the job ends.
   const temp = keep ? null : await prepareTemp(latest, lease.id);
-  let result: CommandEnd & { peakMb: number | null } = { code: 1, exit: { code: null, signal: null }, peakMb: null };
+  let result: EnforcedEnd = { code: 1, exit: { code: null, signal: null }, peakMb: null, processes: null };
   let tempMb: number | null = null;
+  // H29: the heartbeat gives the daemon the count of processes of the job. A daemon that does not answer misses one count.
+  const report = (processes: number): void => {
+    (connect() ?? latest).call(["resources", "renew"], { id: lease.id, processes }).catch(() => undefined);
+  };
   try {
-    result = await runEnforced(positionals, enforcement, temp?.env ?? {}, log);
+    result = await runEnforced(positionals, enforcement, temp?.env ?? {}, log, report);
   } finally {
     if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
   }
-  const { code, exit, peakMb } = result;
+  const { code, exit, peakMb, processes } = result;
   const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
   const ended = exit.code === null && exit.signal !== null ? `the job ended with signal ${exit.signal}` : `the job ended with code ${code}`;
   const usage: JobUsage = { ...(peakMb === null ? {} : { peakMb }), ...(tempMb === null ? {} : { tempMb }) };
@@ -516,6 +550,7 @@ async function run(argv: string[]): Promise<number> {
       // H26: the exit of the job, for `headroom job`. A job that a signal stopped has no exit code.
       ...(exit.code === null ? {} : { exitCode: exit.code }),
       ...(exit.signal === null ? {} : { signal: exit.signal }),
+      ...(processes === null ? {} : { processes }),
     });
   } catch {
     // The daemon ends the lease anyway when this process exits.

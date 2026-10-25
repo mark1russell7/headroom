@@ -29,10 +29,10 @@ The kinds are in one registry. A part that a kind does not have is `null`.
 export type ResourceId = string;
 
 /** The kinds. An id with no known kind is a slot, as today. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "gpu";
 
-/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state";
+/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). The process starts use "per minute" (H29). */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute";
 
 /** One resource kind with its five parts. */
 export interface Resource {
@@ -355,6 +355,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | Slots: `browser`, `docker`, each name (count) | Capacity: configured with `headroom pool`, else 1. Used: the granted leases. | The holders of the granted leases. | Later: a lease that waits more than 30 minutes for a slot. | Counted. A command pattern takes a slot by itself, as `browser` does. | None on the job. The lease ends with its process. |
 | `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
 | `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
+| `procs` (per minute) | H29. The process starts in one minute, as an average over the last 10 minutes. Windows: exact, from the sequence number of the newest process. Elsewhere: a lower bound. Capacity: `null`. | The starts of each owner: its leased jobs (exact, from the job objects) and its own commands (a lower bound, the new processes of each read). | Level on used: a warning above 600 for 10 minutes (`churn`). | None. | None. Report only: the lease keeps `processes`. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
 | `gpu:<adapter>` (later, MB) | The dedicated memory of each adapter. | The counter `GPU Process Memory` of each process. | Level on free. | Measured, as `memory`. | None. A job object has no GPU limit. |
 
@@ -596,6 +597,45 @@ On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its t
 
 **Status and the command.** `headroom status` gives one line, for example `Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.` `headroom services` and the procedure `resources.services` give the health of each service. The dashboard shows each service as a panel with its state.
 
+### H29: process starts by owner
+
+On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`: two file objects of approximately 0.9 KB for each new process. The non-paged pool grew approximately 800 MB each hour. Git Bash starts one process for each stage of a pipeline, so a test that starts `gh | tr | base64` starts many processes. Until Mark updates the driver (hub ask `amd-driver`), the fleet must see who starts the most processes.
+
+**Measure.** The kind `procs` has one instance, `procs`, in the unit `per minute`. Its capacity is `null`.
+
+- Windows gives each new process the next sequence number. `NtQueryInformationProcess(ProcessSequenceNumber)` gives the number of one process with `PROCESS_QUERY_LIMITED_INFORMATION`.
+- At each read of the processes, the sampler reads the number of the newest process. It tries at most 4 processes, because a short process can end before the read.
+- The change of the number between two reads is the exact count of starts. The number keeps its highest value, so an ended newest process gives no negative count.
+- On 2026-10-24, two processes that started one after the other had numbers with a difference of 1.
+- `UniqueProcessKey` of `SYSTEM_PROCESS_INFORMATION` is 0 with `SystemProcessInformation`, and the process ID with `SystemExtendedProcessInformation`. Thus it is not a count.
+- Linux gives no cheap exact count of processes. The `processes` line of `/proc/stat` counts each fork, also each thread. Thus Linux uses the lower bound.
+
+**Attribute.** The start tracker in `starts.ts` gives the starts of each owner over the last 10 minutes.
+
+- A new process is an ID that the previous read did not have, or an ID with a different start.
+- The owner of a new process is its owner from `attribute()`. A new process in the tree of a lease counts for its lease, and the other new processes are the own commands of the owner. These counts are lower bounds.
+- The job object of `headroom run` gives `TotalProcesses` of `JobObjectBasicAccountingInformation`. The client sends the count with `resources.renew` every 30 seconds and with `resources.release`. The count of the job object includes the client, so the client starts its count after itself.
+- The lease keeps the count in the column `processes`. `headroom job` and its JSON give it.
+- The owner of a job is the owner of the process of its lease, from the process tree. Without that process, the new processes of the lease or the session of the holder decide. The name of the job does not decide.
+- The starts of an owner are its jobs and its own commands. A lease with no count, for example with `--keep`, gives the new processes of its tree, a lower bound.
+
+**The parents.** Windows gives the ID of an ended process to a new process. A child keeps the ID of its ended parent, so a new process with that ID looks like its parent.
+
+- `parentOf()` in `owners.ts` gives a parent only when the parent started at or before the child.
+- `attribute()`, `leasesOf()`, `treeMb()` and the orphan rule use this rule. A child with a parent ID that is in use again goes to the owner of its own part of the tree. The orphan rule examines it.
+
+**Alert.** A level rule on the used part of `procs`: a warning above 600 starts in one minute. The alert has the kind and the id `churn`.
+
+- The rate is an average over 10 minutes. A level rule has the new field `minHistoryMs`: with a shorter window of the change, the rule gives no alert. The window is the time that the reads cover.
+- `churnPerMinute` of `AlertRules` sets the limit.
+- The message names the 3 owners with the most starts, with their jobs and their own commands. It also names the 3 leased jobs with the most starts. It ends with the reason: "Each new process leaks kernel memory in the AMD display driver until it is updated (hub ask amd-driver)."
+
+**Status and the dashboard.** `Status.starts` gives the rate of the computer, the flag `exact`, the window, the owners and the jobs. `headroom status` gives one line, for example `Process starts: 1,450 a minute. Most (at least): session:client 410 (jobs 12, own commands 398, job e2e: 9,800 so far), session:organizer 120.` The dashboard gets the panel `Process starts` from the model.
+
+**Cost.** One more `OpenProcess` and one more `NtQueryInformationProcess` at each read. The tracker keeps the start of each live process, the reads of 10 minutes and the counts of the jobs of 10 minutes.
+
+**The numbers on 2026-10-24.** The computer started 1,450 processes in one minute. A read every second found 260 of them, and a read every 10 seconds found 60. Thus the owners show a small part of the starts, and the leased jobs give the exact part.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.
@@ -623,4 +663,6 @@ These were the open questions. The session decided each one as a technical call.
 | How does the store keep the new data? | New tables `resource_samples` and `owner_use`, and a column `usage` in `leases`. The old tables stay. | The history, the dashboard and the tests of today keep their data and their queries. |
 | What is the name of the owner of the kernel pools? | `kernel`, as before. The file cache and the drivers are new owners `kernel:cache` and `kernel:drivers`. | The history of `kernel` stays comparable: its private memory is still the size of the two pools. Only its memory in RAM changes, to the part in RAM. |
 | What is the private memory of the file cache and of the drivers? | The same as their memory in RAM. | They have no commit charge. With 0, the list sorts the largest owner of RAM last, and the dashboard shows no bar. |
+| How does headroom count the process starts of the computer? | The change of the sequence number of the newest process on Windows. Elsewhere, the new processes of each read, a lower bound. | The sequence number is exact and costs one open of one process. ETW is exact too, but it needs admin rights. |
+| Does a session get the starts of its jobs? | Yes, with a split: its jobs (exact) and its own commands (a lower bound). The holder and the process tree decide the owner of a job. | A lease can have the name of the job of another project. The session that runs the lease starts its processes. |
 | Which processes are services? | A Node process with a title under the rule `system`, with its descendants. | The title names the program. An orphan with a title stays `other`, so the orphan rule still finds it. |

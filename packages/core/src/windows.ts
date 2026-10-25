@@ -6,6 +6,7 @@
  * - A Toolhelp snapshot gives each process with its parent.
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
  * - `NtQueryInformationProcess` gives the command line of each new `node.exe`, for its `--title` (the owner `service:<name>`).
+ * - `NtQueryInformationProcess` with `ProcessSequenceNumber` gives the sequence number of the newest process (H29).
  * - `GetTickCount64` gives the start of the computer.
  * - `NtQuerySystemInformation` with `SystemProcessInformation` gives the start, the processor time and the I/O bytes of each process (H20).
  * - `NtQuerySystemInformation` of `ntdll.dll` also gives the use of the kernel pools by each pool tag.
@@ -183,6 +184,8 @@ function memoryOf(pid: number): MemoryCounters | null {
 /** This function reads the processes with their parents, their memory, their start, their processor time and their I/O bytes. */
 function processes(): ProcessInfo[] {
   const totals = processTotals();
+  // The newest process can end in a moment, so its sequence number comes first.
+  sequence = newestSequence(totals);
   const snapshot = Number(createSnapshot(TH32CS_SNAPPROCESS, 0));
   if (snapshot === -1 || snapshot === 0) throw new Error("CreateToolhelp32Snapshot failed");
   const list: ProcessInfo[] = [];
@@ -258,6 +261,39 @@ function commandLine(pid: number): string | null {
   } finally {
     closeHandle(handle);
   }
+}
+
+const PROCESS_SEQUENCE_NUMBER = 92;
+/** The count of the newest processes that `newestSequence()` tries. A short process can end before its read. */
+const SEQUENCE_TRIES = 4;
+const sequenceBuffer = Buffer.alloc(8);
+/** The sequence number of the newest process at the last read of the processes (H29). */
+let sequence: number | undefined;
+
+/** This function reads the sequence number of a process, or gives `undefined` when the process is protected or ended. */
+function sequenceOf(pid: number): number | undefined {
+  const handle = Number(openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
+  if (handle === 0) return undefined;
+  try {
+    const status = queryInformationProcess(handle, PROCESS_SEQUENCE_NUMBER, sequenceBuffer, sequenceBuffer.length, [0]);
+    return status === 0 ? Number(sequenceBuffer.readBigUInt64LE(0)) : undefined;
+  } finally {
+    closeHandle(handle);
+  }
+}
+
+/**
+ * This function gives the sequence number of the newest process (H29). Windows gives each new process the next number,
+ * so the change between two reads is the exact count of starts. It tries the newest processes first, and it opens at
+ * most 4 processes. On 2026-10-24, two processes that started one after the other had numbers with a difference of 1.
+ */
+function newestSequence(totals: ReadonlyMap<number, ProcessTotals>): number | undefined {
+  const newest = [...totals].sort((a, b) => b[1].startedAt - a[1].startedAt).slice(0, SEQUENCE_TRIES);
+  for (const [pid] of newest) {
+    const value = sequenceOf(pid);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 const SYSTEM_POOL_TAG_INFORMATION = 22;
@@ -453,5 +489,5 @@ function tcp(): TcpTable {
 
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, poolTags, gui, disks, network, tcp, bootedAt, close: () => {} };
+  return { memory, processes, processSequence: () => sequence, poolTags, gui, disks, network, tcp, bootedAt, close: () => {} };
 }

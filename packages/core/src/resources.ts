@@ -8,25 +8,27 @@
 import type { Alert, AlertKind, AlertRules } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
-import { treeMb } from "./owners.ts";
+import { childrenOf, treeMb } from "./owners.ts";
 import { MB } from "./sampler.ts";
 import type { Amounts, DiskSpace, NetRead, OwnerKind, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
 import type { ServiceHealth, ServiceState } from "./services.ts";
+import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "./starts.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
 
 /** The kinds of resource. An id with no known kind is a slot, as before. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "gpu";
 
 /**
  * The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. A kind in the unit `state` has
- * no amount (H27). Its measurement has a `health`, and its used part is the latency of the last check in ms.
+ * no amount (H27). Its measurement has a `health`, and its used part is the latency of the last check in ms. The process
+ * starts use `per minute` (H29).
  */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state";
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute";
 
 /** The processor times of the computer since its start (H23), in milliseconds, for all the processors together. */
 export interface CpuTimes {
@@ -67,6 +69,8 @@ export interface Readings {
   readonly tcp?: TcpTable | undefined;
   /** The health of each service after the last round of checks (H27). */
   readonly services?: readonly ServiceHealth[] | undefined;
+  /** The process starts of the computer, of each owner and of each leased job, from the start tracker of the engine (H29). */
+  readonly starts?: ProcessStarts | undefined;
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -97,6 +101,7 @@ export interface ResourceStatus extends Measurement {
   /**
    * The 10 owners that use the instance most, from the attribute part of its kind. A kind with no attribute part has none.
    * Memory: the private MB. Disk: the MB written in the last hour, for all the drives together. CPU: the cores. Ports: the connections.
+   * Process starts: the starts in one minute (H29).
    */
   readonly owners: readonly ResourceOwner[];
 }
@@ -201,6 +206,11 @@ export interface LevelRule extends RuleBase {
   readonly critical?: Limit | undefined;
   /** The condition must continue for this time (H23). CPU uses it, because short peaks are normal. */
   readonly forMs?: number | undefined;
+  /**
+   * With less history than this, the rule gives no alert (H29). The history is the window of the change of the instance.
+   * The churn rule uses it, because its rate is an average over 10 minutes.
+   */
+  readonly minHistoryMs?: number | undefined;
   text(facts: InstanceFacts): AlertText;
 }
 
@@ -762,6 +772,64 @@ const SERVICE: Resource = {
   enforce: null,
 };
 
+/** The count of owners and jobs that the text of the churn alert names. */
+const CHURN_SHOWN = 3;
+
+/** The reason of the churn alert, for the reader. */
+const CHURN_CAUSE = "Each new process leaks kernel memory in the AMD display driver until it is updated (hub ask amd-driver).";
+
+/**
+ * The attribute part of the process starts (H29): the starts of each owner in one minute, its jobs and its own commands
+ * together. The own commands are a lower bound, because a read every 10 seconds misses most short processes.
+ */
+const PROCESS_STARTS: Attribute = {
+  unit: "per minute",
+  // A read of a process has no count of starts, so the outlier rules do not examine the starts.
+  counter: () => undefined,
+  read: ({ starts }) =>
+    (starts?.owners ?? []).map((each) => ({ resource: "procs", owner: each.owner, kind: each.kind, amount: each.perMinute, processes: 0 })),
+};
+
+/** This function gives the text of the churn alert: the rate, the owners and the leased jobs with the most starts, and the reason. */
+function churnText({ measurement, readings }: InstanceFacts): AlertText {
+  const starts = readings.starts;
+  const rate = countText(measurement.used ?? 0);
+  const minutes = Math.round((starts?.spanMs ?? STARTS_WINDOW_MS) / 60_000);
+  const most = starts === undefined ? "" : topStartsText(starts, CHURN_SHOWN);
+  const jobs = (starts?.jobs ?? []).filter((each) => each.processes > 0).slice(0, CHURN_SHOWN);
+  const named = most === "" ? "" : ` Most: ${most}.`;
+  const leased = jobs.length === 0 ? "" : ` Leased jobs with the most starts: ${jobs.map((each) => `${each.job} of ${each.holder} ${countText(each.processes)} so far`).join(", ")}.`;
+  return { subject: "process starts", mb: 0, message: `Processes start at ${rate} a minute over the last ${minutes} minutes.${named}${leased} ${CHURN_CAUSE}` };
+}
+
+/**
+ * The process starts (H29): one instance, `procs`, in starts per minute over the last 10 minutes. It has no capacity.
+ * On Windows, the sequence numbers of the processes give the exact count. Elsewhere, the count is a lower bound.
+ */
+const PROCS: Resource = {
+  kind: "procs",
+  unit: "per minute",
+  measure: { read: ({ starts }) => (starts === undefined || starts.spanMs <= 0 ? [] : [{ id: "procs", capacity: null, used: starts.perMinute, free: null }]) },
+  attribute: PROCESS_STARTS,
+  alert: {
+    rules: (limits) => [
+      {
+        // The rate is an average over 10 minutes, so the rule waits for the full window.
+        type: "level",
+        alert: "churn",
+        alertId: () => "churn",
+        on: "used",
+        severity: true,
+        warning: { amount: limits.churnPerMinute },
+        minHistoryMs: STARTS_WINDOW_MS * 0.95,
+        text: churnText,
+      },
+    ],
+  },
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -784,7 +852,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */
@@ -928,13 +996,13 @@ export function rooms(
   return result;
 }
 
-/** This function gives the lease of each process under a granted lease: the lease process and its descendants. */
+/**
+ * This function gives the lease of each process under a granted lease: the lease process and its descendants. A child
+ * that started before its parent ID is not a descendant, because the ID is in use again (H29).
+ */
 export function leasesOf(processes: readonly ProcessInfo[], leases: readonly Lease[]): Map<number, string> {
   const children = new Map<number, number[]>();
-  for (const info of processes) {
-    if (info.pid === info.ppid) continue;
-    children.set(info.ppid, [...(children.get(info.ppid) ?? []), info.pid]);
-  }
+  for (const [ppid, list] of childrenOf(processes)) children.set(ppid, list.map((info) => info.pid));
   const result = new Map<number, string>();
   for (const lease of leases) {
     if (lease.state !== "granted" || lease.pid === null) continue;

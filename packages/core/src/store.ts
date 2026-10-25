@@ -115,7 +115,8 @@ export class Store {
     if (!columns.includes("peak_mb")) this.#db.exec("ALTER TABLE leases ADD COLUMN peak_mb REAL");
     if (!columns.includes("usage")) this.#db.exec("ALTER TABLE leases ADD COLUMN usage TEXT");
     // A database of an older version has no columns for the exit and the log of a job (H26).
-    for (const [column, type] of [["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"]] as const) {
+    // A database of an older version has no column for the processes that a job started (H29).
+    for (const [column, type] of [["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"]] as const) {
       if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
     }
     this.#db.exec("CREATE INDEX IF NOT EXISTS leases_job ON leases (job, requested_at)");
@@ -133,17 +134,17 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
-           usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log`,
+           usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
         lease.state, lease.requestedAt, lease.grantedAt, lease.endedAt, lease.heartbeatAt, lease.reason, lease.peakMb,
         lease.usage === undefined ? null : JSON.stringify(lease.usage),
-        lease.exitCode ?? null, lease.signal ?? null, lease.log ?? null,
+        lease.exitCode ?? null, lease.signal ?? null, lease.log ?? null, lease.processes ?? null,
       );
   }
 
@@ -424,5 +425,6 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["exit_code"] === null || row["exit_code"] === undefined ? {} : { exitCode: Number(row["exit_code"]) }),
     ...(row["signal"] === null || row["signal"] === undefined ? {} : { signal: String(row["signal"]) }),
     ...(row["log"] === null || row["log"] === undefined ? {} : { log: String(row["log"]) }),
+    ...(row["processes"] === null || row["processes"] === undefined ? {} : { processes: Number(row["processes"]) }),
   };
 }

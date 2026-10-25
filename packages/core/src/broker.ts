@@ -65,6 +65,11 @@ export interface Lease {
   readonly signal?: string | undefined;
   /** The absolute path of the log file of the job (`headroom run --log`). */
   readonly log?: string | undefined;
+  /**
+   * The processes that the job started so far, from its job object (H29). The client reports the count with its heartbeat
+   * and its release. A job with no job object has none.
+   */
+  readonly processes?: number | undefined;
 }
 
 /** The capacity at one time. */
@@ -103,6 +108,12 @@ export interface BrokerOptions {
 }
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
+
+/** This function gives the field `processes` of a report. A count only grows, so a smaller count keeps the count of the lease. */
+function processesOf(lease: Lease, processes: number | undefined): { processes?: number } {
+  if (processes === undefined) return {};
+  return { processes: Math.max(processes, lease.processes ?? 0) };
+}
 
 /** This function tells if a lease is active: waiting or granted. */
 export function isActive(lease: Lease): boolean {
@@ -178,9 +189,9 @@ export class Broker {
 
   /**
    * This function ends an active lease. It gives the lease, or `undefined` for an unknown id. The usage and the exit
-   * are the use and the exit of the job, from its holder.
+   * are the use and the exit of the job, from its holder. `processes` is the count of processes that the job started.
    */
-  release(id: string, reason = "released", peakMb: number | null = null, usage?: JobUsage, exit?: JobExit): Lease | undefined {
+  release(id: string, reason = "released", peakMb: number | null = null, usage?: JobUsage, exit?: JobExit, processes?: number): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
     const state = lease.state === "waiting" ? "cancelled" : "released";
@@ -193,14 +204,15 @@ export class Broker {
       ...(usage === undefined ? {} : { usage }),
       ...(exit?.code === null || exit?.code === undefined ? {} : { exitCode: exit.code }),
       ...(exit?.signal === null || exit?.signal === undefined ? {} : { signal: exit.signal }),
+      ...processesOf(lease, processes),
     });
   }
 
-  /** This function records a heartbeat of an active lease. */
-  renew(id: string): Lease | undefined {
+  /** This function records a heartbeat of an active lease. `processes` is the count of processes that its job started so far (H29). */
+  renew(id: string, processes?: number): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
-    return this.#set({ ...lease, heartbeatAt: this.#now() });
+    return this.#set({ ...lease, heartbeatAt: this.#now(), ...processesOf(lease, processes) });
   }
 
   /** This function gives one lease. */
