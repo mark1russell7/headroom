@@ -13,7 +13,7 @@ const hook = join(import.meta.dirname, "..", "..", "..", "plugins", "headroom", 
 describe("the hook of the plugin", () => {
   let server: Server;
   let home = "";
-  let status = { free: { memory: 8000 }, leases: [] as { state: string }[] };
+  let status = { free: { memory: 8000 }, leases: [] as { state: string; reason?: string }[] };
 
   beforeAll(async () => {
     server = createServer((req, res) => {
