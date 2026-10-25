@@ -20,6 +20,9 @@
  * - `cpu`: the cores in use stay above 85% of the processors for 5 minutes, or critical above 95% (H23). The message
  *   names the 3 owners with the most cores and their leased jobs. The alert ends after 2 minutes below the limit.
  * - `runaway` also covers a process tree with no lease that uses more than 4 cores for 10 minutes (H23).
+ * - `forecast`: the fit of the history of an instance reaches a limit soon (H32). A drive reaches its critical level within
+ *   24 hours, a kernel pool its alert level within 2 hours, or the commit charge 90% within 30 minutes. The message names
+ *   the rate, the time and the owners that the model has.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -31,6 +34,7 @@
 
 import type { Lease } from "./broker.ts";
 import type { TrailPoint, TreeUse } from "./cpu.ts";
+import type { Forecast } from "./forecast.ts";
 import {
   grows,
   healthLevel,
@@ -56,7 +60,8 @@ import type { OwnerCores, OwnerWrites } from "./counters.ts";
 export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "stop";
+export type AlertKind =
+  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "forecast" | "stop";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -130,6 +135,12 @@ export interface AlertRules {
   readonly runawayCores: number;
   /** The tree must stay above `runawayCores` for this time, in ms. The default is 600000, 10 minutes. */
   readonly runawayCoresMs: number;
+  /** A forecast of a drive at its critical level within this time, in ms, starts a forecast warning (H32). The default is 24 hours. */
+  readonly forecastDiskMs: number;
+  /** A forecast of a kernel pool at its alert level within this time, in ms, starts a forecast warning. The default is 2 hours. */
+  readonly forecastPoolMs: number;
+  /** A forecast of the commit charge at 90% of its limit within this time, in ms, starts a forecast warning. The default is 30 minutes. */
+  readonly forecastCommitMs: number;
 }
 
 /** The default limits. */
@@ -159,6 +170,9 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   cpuClearMs: 120_000,
   runawayCores: 4,
   runawayCoresMs: 600_000,
+  forecastDiskMs: 24 * 3_600_000,
+  forecastPoolMs: 2 * 3_600_000,
+  forecastCommitMs: 30 * 60_000,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -222,6 +236,8 @@ export interface AlertInput {
   readonly trees?: readonly TreeUse[] | undefined;
   /** The cores of each granted lease over the last minute, by lease id (H23). */
   readonly leaseCores?: ReadonlyMap<string, number> | undefined;
+  /** The forecasts of each instance, the nearest first (H32). The forecast rules read them. */
+  readonly forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]> | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -233,7 +249,7 @@ function readingsOf(
   input: Pick<
     AlertInput,
     | "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "cores" | "at" | "processors"
-    | "trails" | "trees" | "leaseCores"
+    | "trails" | "trees" | "leaseCores" | "forecasts"
   > & {
     readonly leases?: readonly Lease[] | undefined;
   },
@@ -242,7 +258,7 @@ function readingsOf(
     at: input.at ?? 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
     processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
-    trails: input.trails, trees: input.trees, leaseCores: input.leaseCores,
+    trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts,
   };
 }
 
@@ -341,7 +357,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
             : rule.type === "health"
               ? healthLevel(rule, measurement)
               : rule.type === "check"
-                ? rule.level({ measurement, change, readings, owners })
+                ? rule.level({ measurement, change, readings, owners, active: activeLevel.get(id) ?? null })
                 : grows(rule, change)
                   ? "warning"
                   : null;

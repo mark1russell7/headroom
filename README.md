@@ -178,6 +178,23 @@ The line `Power` of `headroom status` gives the state, for example `Power: on ba
 
 On battery below a floor, a heavy job waits. The next section gives this rule and the other conditions of a job (H31).
 
+### Forecasts (H32)
+
+headroom tells the time until each resource reaches a limit, so the fleet acts before the limit. The forecast comes from the history of the last hour:
+
+- **The fit**: the daemon fits a robust line to the points of each instance at each sample, one time each minute. The slope is the median of the slopes of all the pairs of points (Theil–Sen), so one outlier does not move it.
+- **The confidence**: Kendall's tau of the points, from 0 to 1. A fit below 0.5 gives no forecast. A fit also needs 30 minutes of points. A sleep, a restart of the computer or a gap of more than 5 minutes starts the fit again.
+- **The targets**: the limits of the alerts. A drive gets 20 GB free, 5 GB free and full. A kernel pool gets its alert level. The commit charge gets 90% of its limit. The memory gets 1 GB available. The TCP ports get 80% and 95%.
+- **The battery**: on battery, the forecast is the time left that Windows estimates, with no fit.
+- The processors, the network, the process starts and the slots have no forecast. A target more than 30 days away gives no forecast.
+
+`headroom forecast` lists the forecast of each instance to its nearest limit, for example `Drive D: 20 GB free in 4 days (at 1.1 GB an hour, confidence 0.65).` `--json` gives the data. `headroom status` adds the line `Forecast (24 h)` with the forecasts under 24 hours. Each card of the dashboard shows its forecast in one line, and `Status.resources` gives the field `forecast`.
+
+- **Alerts** (kind `forecast`): a warning before a limit. A drive reaches its critical level within 24 hours, a kernel pool its alert level within 2 hours, or the commit charge 90% within 30 minutes.
+- The message names the rate and the time, for example `Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB.`
+- A pool alert names the owners with the most process starts and the pool tags that grow. A commit alert names the owners with the most private memory.
+- An active forecast alert ends past 1.25 times its horizon, so a small change of the rate does not end it and start it again.
+
 ### Conditions for a job (H31)
 
 Some jobs need a fact of the computer, not an amount. A benchmark needs AC power, because its numbers on battery are wrong. A fan-out of `claude -p` needs room in the usage window. `--when` makes the lease wait until each condition holds:

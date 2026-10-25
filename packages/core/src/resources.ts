@@ -14,6 +14,7 @@ import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, 
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
 import { coresText, cpuRateOf, CPU_RESERVE_DEFAULT, heldMs, type TrailPoint, type TreeUse } from "./cpu.ts";
+import { forecastFrom, rateText, spanText, type Forecast, type ForecastTarget, type Part, type TargetName, type Trend } from "./forecast.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
 import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, powerOwners, systemWatts, type BatteryState } from "./power.ts";
 import type { ServiceHealth, ServiceState } from "./services.ts";
@@ -102,6 +103,8 @@ export interface Readings {
   readonly trees?: readonly TreeUse[] | undefined;
   /** The cores of each granted lease over the last minute, by lease id (H23). The CPU alert names the leased jobs. */
   readonly leaseCores?: ReadonlyMap<string, number> | undefined;
+  /** The forecasts of each instance, the nearest first (H32). The forecast rules read them. */
+  readonly forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]> | undefined;
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -137,6 +140,8 @@ export interface ResourceStatus extends Measurement {
    * Process starts: the starts in one minute (H29).
    */
   readonly owners: readonly ResourceOwner[];
+  /** The forecast to the nearest target (H32). An instance with no trend toward a target has none. */
+  readonly forecast?: Forecast | undefined;
 }
 
 /** The measure part of a kind. */
@@ -211,6 +216,8 @@ export interface InstanceFacts {
   readonly owners: Owners;
   /** The level of the alert. The text of the CPU alert names the limit of its level (H23). */
   readonly level?: Level | undefined;
+  /** The level of the active alert of the rule before this check, or `null`. A forecast rule keeps its alert with it (H32). */
+  readonly active?: Level | null | undefined;
 }
 
 /** The facts of an alert on one process, or on one process tree (H23). */
@@ -392,6 +399,17 @@ export interface Enforce {
   readonly report: readonly (keyof JobUsage)[];
 }
 
+/**
+ * The forecast part of a kind (H32). The targets of an instance are the limits of the level rules of its kind, and the
+ * targets of `more`. A kind with no forecast part has no forecast: the processors, the network, the starts and the slots.
+ */
+export interface ForecastPart {
+  /** This function gives more targets of an instance, for example an empty drive. */
+  more?(measurement: Measurement): readonly ForecastTarget[];
+  /** This function gives the forecast of an instance with no fit, for example the time left of the battery. */
+  given?(measurement: Measurement, now: number): Forecast | null;
+}
+
 /** One resource kind with its five parts. A part that a kind does not have is `null`. */
 export interface Resource {
   readonly kind: ResourceKind;
@@ -401,6 +419,8 @@ export interface Resource {
   readonly alert: AlertPart;
   readonly admit: Admit | null;
   readonly enforce: Enforce | null;
+  /** The forecast part (H32), or absent when the kind has no forecast. */
+  readonly forecast?: ForecastPart | undefined;
 }
 
 /** The alert part of a kind with no rules. */
@@ -480,6 +500,89 @@ export function writersText(writes: readonly OwnerWrites[] | undefined): string 
   return top.length === 0 ? "" : ` Most writes in the last hour: ${top.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`;
 }
 
+/** An active forecast alert ends only past this part of its horizon. Thus a small change of the rate does not end it and start it again. */
+const FORECAST_CLEAR = 1.25;
+
+/** This function gives the clock time of a forecast in UTC, as the other alerts give it: "06:40". */
+const utcClock = (at: number): string => new Date(at).toISOString().slice(11, 16);
+
+/** This function gives the forecast of the instance of the facts to a target, from a fit. */
+function forecastTo(facts: InstanceFacts, name: TargetName): Forecast | undefined {
+  return facts.readings.forecasts?.get(facts.measurement.id)?.find((each) => each.source === "fit" && each.target.name === name);
+}
+
+/**
+ * This function gives a forecast rule (H32): a warning when the fit of an instance reaches a target within the horizon.
+ * The alert id is `forecast:<instance>`. The text names the rate, the time, and the owners that the model has.
+ */
+function forecastRule(name: TargetName, horizonMs: number, text: (facts: InstanceFacts, forecast: Forecast) => AlertText): CheckRule {
+  return {
+    type: "check",
+    alert: "forecast",
+    alertId: (id) => `forecast:${id}`,
+    severity: true,
+    level: (facts) => {
+      const forecast = forecastTo(facts, name);
+      const limit = facts.active === undefined || facts.active === null ? horizonMs : horizonMs * FORECAST_CLEAR;
+      return forecast !== undefined && forecast.minutes * 60_000 <= limit ? "warning" : null;
+    },
+    text: (facts) => {
+      const forecast = forecastTo(facts, name);
+      return forecast === undefined ? { subject: facts.measurement.id, mb: 0, message: `${facts.measurement.id} has no forecast.` } : text(facts, forecast);
+    },
+  };
+}
+
+/** This function gives "in 3 h 10 min, at 06:40 UTC" for a forecast. */
+const whenText = (forecast: Forecast): string => `in ${spanText(forecast.minutes)}, at ${utcClock(forecast.at)} UTC`;
+
+/** The text of the forecast alert of a drive: the loss in one hour, the time of the critical level, and the top writers. */
+function diskForecastText({ measurement, readings }: InstanceFacts, forecast: Forecast): AlertText {
+  const mount = measurement.id.slice("disk:".length);
+  return {
+    subject: `drive ${mount}`,
+    mb: Math.round(measurement.free ?? 0),
+    message: `Drive ${mount} loses ${rateText(forecast.rate, "MB")}. At this rate, it has ${diskSize(forecast.target.amount)} free ${whenText(forecast)}.${writersText(readings.writes)}`,
+  };
+}
+
+/** The count of owners that the text of a forecast alert names. */
+const FORECAST_OWNERS_SHOWN = 3;
+
+/**
+ * The text of the forecast alert of a kernel pool. Each new process leaks non-paged pool in the AMD display driver. Thus the
+ * text of the non-paged pool names the owners with the most process starts. The engine adds the pool tags that grow.
+ */
+function poolForecastText(name: string, cause: string): (facts: InstanceFacts, forecast: Forecast) => AlertText {
+  return ({ measurement, readings }, forecast) => {
+    const starts = name === "non-paged" && readings.starts !== undefined ? topStartsText(readings.starts, FORECAST_OWNERS_SHOWN) : "";
+    const most = starts === "" ? "" : ` Most process starts: ${starts}.`;
+    return {
+      subject: `${name} pool`,
+      mb: Math.round(measurement.used ?? 0),
+      message: `The ${name} kernel pool grows ${rateText(forecast.rate, "MB")}. At this rate, it reaches its alert level of ${gb(forecast.target.amount)} ${whenText(forecast)}. ${cause}${most}`,
+    };
+  };
+}
+
+/** The text of the forecast alert of the commit charge, with the owners that hold the most private memory. */
+function commitForecastText({ measurement, readings, owners }: InstanceFacts, forecast: Forecast): AlertText {
+  const capacity = measurement.capacity ?? 0;
+  const percent = capacity > 0 ? Math.round((forecast.target.amount / capacity) * 100) : 0;
+  const top = byOwner("memory", readings.processes, owners, (info) => info.privateMb)
+    .filter((each) => each.kind !== "lease" && each.amount > 0)
+    .slice(0, FORECAST_OWNERS_SHOWN);
+  const most = top.length === 0 ? "" : ` Most private memory: ${top.map((each) => `${each.owner} ${gb(each.amount)}`).join(", ")}.`;
+  return {
+    subject: "commit",
+    mb: Math.round(measurement.used ?? 0),
+    message: `The commit charge grows ${rateText(forecast.rate, "MB")}. At this rate, it reaches ${percent}% of its limit (${gb(forecast.target.amount)}) ${whenText(forecast)}.${most} At the limit, new allocations fail.`,
+  };
+}
+
+/** The forecast part of a kind whose targets are only the limits of its level rules. */
+const LEVEL_TARGETS: ForecastPart = {};
+
 /** The memory: one instance. The capacity is the physical memory, and the free part is the available memory. */
 const MEMORY_RESOURCE: Resource = {
   kind: "memory",
@@ -536,6 +639,8 @@ const MEMORY_RESOURCE: Resource = {
     used: (lease, _id, readings) => (lease.pid === null ? 0 : treeMb(lease.pid, readings.processes)),
   },
   enforce: { limit: (amount) => ({ memoryMb: amount }), report: ["peakMb"] },
+  // The target is the limit of the memory alert: 1 GB available.
+  forecast: LEVEL_TARGETS,
 };
 
 /** The commit charge. Its capacity is the commit limit. A memory lease covers it, so it has no admit part. */
@@ -561,10 +666,13 @@ const COMMIT: Resource = {
           return { subject: "commit", mb: Math.round(used), message: `The commit charge is ${gb(used)} of its limit ${gb(measurement.capacity ?? 0)}` };
         },
       },
+      forecastRule("warning", limits.forecastCommitMs, commitForecastText),
     ],
   },
   admit: null,
   enforce: null,
+  // The target is the limit of the commit alert: 90% of the commit limit.
+  forecast: LEVEL_TARGETS,
 };
 
 /** The kernel pools. Windows tells no capacity, so only the used part counts. */
@@ -595,11 +703,15 @@ const POOL: Resource = {
           type: "growth", alert: "pool", instance: "pool:paged", on: "used",
           windowMs: HOUR_MS, warning: limits.pagedGrowthMb, minHistoryMs: 50 * 60_000, text: paged,
         },
+        { ...forecastRule("warning", limits.forecastPoolMs, poolForecastText("non-paged", "A driver can leak it.")), instance: "pool:nonpaged" },
+        { ...forecastRule("warning", limits.forecastPoolMs, poolForecastText("paged", "A file system filter can leak it.")), instance: "pool:paged" },
       ];
     },
   },
   admit: null,
   enforce: null,
+  // The targets are the limits of the level rules of each pool: 3 GB non-paged and 4 GB paged.
+  forecast: LEVEL_TARGETS,
 };
 
 /** The desktop of the session. Its used part is the count of the processes of the session. */
@@ -664,6 +776,7 @@ const DISK: Resource = {
           };
         },
       },
+      forecastRule("critical", limits.forecastDiskMs, diskForecastText),
     ],
   },
   // A disk lease keeps its full amount until its release, because the write counters are larger than the new space.
@@ -671,6 +784,8 @@ const DISK: Resource = {
   admit: { mode: "measured", reserve: { amount: 5120, ratio: 0.05 }, reserveFrom: "critical" },
   // Windows has no space quota for one job. H19 gives each job its own temp folder, and the release reports its size.
   enforce: { limit: () => null, report: ["tempMb"] },
+  // The targets are the warning and the critical limits of the disk alert, and a full drive.
+  forecast: { more: () => [{ on: "free", amount: 0, name: "empty" }] },
 };
 
 /** The count of owners that the text of the CPU alert names. */
@@ -865,6 +980,8 @@ const PORTS: Resource = {
   // Later: a port lease for the dev servers.
   admit: null,
   enforce: null,
+  // The targets are the limits of the ports alert: 80% and 95% of the dynamic ports.
+  forecast: LEVEL_TARGETS,
 };
 
 /** This function gives a time span for a person: "30 s", "3 min" or "1.5 h". */
@@ -995,6 +1112,23 @@ export function batteryLevel(state: BatteryState | undefined, limits: AlertRules
   return null;
 }
 
+/**
+ * This function gives the forecast of the battery (H32): the time left that Windows estimates, on battery only. The rate is
+ * the rate of the battery in W, the change of the charge in Wh in one hour.
+ */
+export function batteryForecast(measurement: Measurement, now: number): Forecast | null {
+  const state = measurement.battery;
+  if (state === undefined || state.ac || state.minutesLeft === null) return null;
+  return {
+    minutes: state.minutesLeft,
+    at: now + state.minutesLeft * 60_000,
+    target: { on: "free", amount: 0, name: "empty" },
+    rate: state.rateW ?? 0,
+    confidence: 1,
+    source: "windows",
+  };
+}
+
 /** The count of jobs and owners that the text of the battery alert names. */
 const BATTERY_SHOWN = 3;
 
@@ -1059,6 +1193,8 @@ const BATTERY: Resource = {
   admit: null,
   // The client of `headroom run` puts its job in efficiency mode (EcoQoS) on battery, from the answer of its heartbeat.
   enforce: null,
+  // H32: Windows estimates the time left on battery from its own rate, so the battery has no fit.
+  forecast: { given: batteryForecast },
 };
 
 /**
@@ -1200,6 +1336,53 @@ export function grows(rule: GrowthRule, change: Change | undefined): boolean {
   return amount !== undefined && amount > rule.warning;
 }
 
+/** This function tells if the forecast of an id comes from a fit of its history (H32). The battery has a forecast with no fit. */
+export function fitsHistory(id: ResourceId): boolean {
+  const part = resourceOf(id).forecast;
+  return part !== undefined && part.given === undefined;
+}
+
+/**
+ * This function gives the targets of the forecast of an instance (H32). They are the warning and the critical limit of each
+ * level rule of its kind, and the targets of its forecast part. A rule with a duration does not count, because a level of
+ * one read does not start its alert. A kind with no forecast part, or with a forecast with no fit, has no targets.
+ */
+export function forecastTargets(measurement: Measurement, limits: AlertRules): ForecastTarget[] {
+  const resource = resourceOf(measurement.id);
+  const part = resource.forecast;
+  if (part === undefined || part.given !== undefined) return [];
+  const targets: ForecastTarget[] = [];
+  for (const rule of resource.alert.rules(limits)) {
+    if (rule.type !== "level" || rule.forMs !== undefined || (rule.instance !== undefined && rule.instance !== measurement.id)) continue;
+    for (const name of ["warning", "critical"] as const) {
+      const limit = rule[name];
+      const amount = limit === undefined ? null : limitOf(limit, measurement.capacity);
+      if (amount !== null) targets.push({ on: rule.on, amount: Math.round(amount * 100) / 100, name });
+    }
+  }
+  return [...targets, ...(part.more?.(measurement) ?? [])];
+}
+
+/**
+ * This function gives the forecasts of an instance to each of its targets, the nearest first (H32). `trendOf` gives the
+ * fit of one part of the instance. The start of each forecast is the measurement at `now`.
+ */
+export function forecastsOf(measurement: Measurement, trendOf: (part: Part) => Trend | null, limits: AlertRules, now: number): Forecast[] {
+  const part = resourceOf(measurement.id).forecast;
+  if (part === undefined) return [];
+  if (part.given !== undefined) {
+    const given = part.given(measurement, now);
+    return given === null ? [] : [given];
+  }
+  const list: Forecast[] = [];
+  for (const target of forecastTargets(measurement, limits)) {
+    const trend = trendOf(target.on);
+    const forecast = trend === null ? null : forecastFrom(trend, target, now, measurement[target.on]);
+    if (forecast !== null) list.push(forecast);
+  }
+  return list.sort((a, b) => a.minutes - b.minutes);
+}
+
 /** This function gives the measurements of all the kinds at one tick, in the order of the kinds. */
 export function measure(readings: Readings): Measurement[] {
   return [...RESOURCES.values()].flatMap((resource) => resource.measure.read(readings));
@@ -1217,8 +1400,13 @@ function roundFor(unit: Unit, value: number): number {
 /**
  * This function adds the kind, the unit and the owners to each measurement. The owners come from the attribute part of the
  * kind, with the reads and the owners of the processes. The rows of the leases are absent, because they are parts of their owners.
+ * With the forecasts of the instances, each instance gets its nearest forecast (H32).
  */
-export function withKinds(measurements: readonly Measurement[], attribution?: { readonly readings: Readings; readonly owners: Owners }): ResourceStatus[] {
+export function withKinds(
+  measurements: readonly Measurement[],
+  attribution?: { readonly readings: Readings; readonly owners: Owners },
+  forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]>,
+): ResourceStatus[] {
   const byKind = new Map<ResourceKind, readonly ResourceOwner[]>();
   const ownersOf = (resource: Resource): readonly ResourceOwner[] => {
     const attribute = resource.attribute;
@@ -1238,6 +1426,7 @@ export function withKinds(measurements: readonly Measurement[], attribution?: { 
     const resource = resourceOf(each.id);
     const health = each.health === undefined ? {} : { health: each.health };
     const battery = each.battery === undefined ? {} : { battery: each.battery };
+    const nearest = forecasts?.get(each.id)?.[0];
     return {
       id: each.id,
       kind: resource.kind,
@@ -1248,6 +1437,7 @@ export function withKinds(measurements: readonly Measurement[], attribution?: { 
       ...health,
       ...battery,
       owners: ownersOf(resource),
+      ...(nearest === undefined ? {} : { forecast: nearest }),
     };
   });
 }

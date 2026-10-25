@@ -16,7 +16,10 @@ import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
+import { fitTrend, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
 import {
+  fitsHistory,
+  forecastsOf,
   leasesOf,
   measure,
   resourceOf,
@@ -222,8 +225,7 @@ export interface Alerts {
   readonly ended: readonly EndedAlert[];
 }
 
-/** One point of the history of a resource instance: the time, the used part and the free part, in the unit of its kind. */
-export type ResourcePoint = readonly [at: number, used: number | null, free: number | null];
+export type { ResourcePoint } from "./forecast.ts";
 
 /** The history since a time. */
 export interface History {
@@ -334,6 +336,13 @@ export class Engine {
   readonly #usage: UsageReader;
   /** The facts of the conditions at one time, so one tick reads the settings one time (H31). */
   #facts: { readonly at: number; readonly facts: ConditionFacts; readonly floor: number } | null = null;
+  /**
+   * The points of the last hour of each instance with a fit forecast (H32), one for each sample of the store, the oldest
+   * first. A start of the daemon reads them from the store. A wake empties them, because a fit does not span a sleep.
+   */
+  readonly #trendPoints = new Map<ResourceId, ResourcePoint[]>();
+  /** The fit of each instance and part at the last sample, by `<id>|<part>`. A part with no trend is absent. */
+  #trends = new Map<string, Trend>();
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -380,6 +389,62 @@ export class Engine {
     this.#writes = this.#counters.writes(this.#startedAt);
     this.#cpuReserve = this.#store.config().cpuReserve;
     this.#memory = this.#sampler.memory();
+    this.#seedTrends();
+  }
+
+  /**
+   * This function reads the points of the last hour of each instance with a fit forecast from the store (H32). The points
+   * start after the start of the computer and after the last sleep, so a fit does not span either.
+   */
+  #seedTrends(): void {
+    const from = this.#startedAt - FORECAST_WINDOW_MS;
+    const since = Math.max(from, this.#bootedAt, this.#store.sleepsSince(from).at(-1)?.[1] ?? 0);
+    for (const row of this.#store.resourcesSince(since)) {
+      if (!fitsHistory(row.id)) continue;
+      const list = this.#trendPoints.get(row.id) ?? [];
+      list.push([row.at, point(row.used), point(row.free)]);
+      this.#trendPoints.set(row.id, list);
+    }
+    this.#fitTrends();
+  }
+
+  /** This function adds the measurements of a sample to the points of the forecasts, removes the old points, and fits again (H32). */
+  #recordTrends(now: number): void {
+    for (const each of this.#measurements) {
+      if (!fitsHistory(each.id)) continue;
+      const list = this.#trendPoints.get(each.id) ?? [];
+      list.push([now, point(each.used), point(each.free)]);
+      this.#trendPoints.set(each.id, list);
+    }
+    for (const [id, list] of this.#trendPoints) {
+      const old = list.findIndex((each) => now - each[0] <= FORECAST_WINDOW_MS);
+      if (old < 0) this.#trendPoints.delete(id);
+      else if (old > 0) list.splice(0, old);
+    }
+    this.#fitTrends();
+  }
+
+  /** This function fits the used part and the free part of each instance with points. The fit starts after the last wake. */
+  #fitTrends(): void {
+    const since = Math.max(this.#bootedAt, this.#resumedAt);
+    const trends = new Map<string, Trend>();
+    for (const [id, list] of this.#trendPoints) {
+      for (const part of ["used", "free"] as const) {
+        const trend = fitTrend(list, part, { since });
+        if (trend !== null) trends.set(`${id}|${part}`, trend);
+      }
+    }
+    this.#trends = trends;
+  }
+
+  /** This function gives the forecasts of each instance at a time, the nearest first, from the fits of the last sample (H32). */
+  #forecasts(now: number): Map<ResourceId, Forecast[]> {
+    const forecasts = new Map<ResourceId, Forecast[]>();
+    for (const each of this.#measurements) {
+      const list = forecastsOf(each, (part) => this.#trends.get(`${each.id}|${part}`) ?? null, this.#alertRules, now);
+      if (list.length > 0) forecasts.set(each.id, list);
+    }
+    return forecasts;
   }
 
   /**
@@ -490,6 +555,7 @@ export class Engine {
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
       this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, this.#writtenMb(now));
+      this.#recordTrends(now);
     }
     if (now - this.#prunedAt >= 3_600_000) {
       this.#prunedAt = now;
@@ -674,6 +740,7 @@ export class Engine {
   /** This function gives the state at this time. */
   status(): Status {
     const capacity = this.capacity();
+    const attribution = this.#readings === null ? undefined : { readings: this.#readings, owners: this.#ownership };
     return {
       at: this.#now(),
       memory: this.#memory,
@@ -686,7 +753,7 @@ export class Engine {
       alerts: [...this.#alerts.values()],
       session: this.#load,
       disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
-      resources: withKinds(this.#measurements, this.#readings === null ? undefined : { readings: this.#readings, owners: this.#ownership }),
+      resources: withKinds(this.#measurements, attribution, this.#forecasts(this.#now())),
       writes: this.#writes,
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
@@ -826,6 +893,8 @@ export class Engine {
         // H23: the CPU rules read the trails of the counter tracker, and an active alert ends only after its clear time.
         at: now, processors: this.#processors, active: [...this.#alerts.values()], leaseCores: this.#leaseCores,
         trails: this.#cores === undefined ? new Map() : new Map([["cpu", this.#counters.coresTrail(now)]]), trees: this.#trees(now),
+        // H32: the forecast rules read the forecasts from the fits of the last sample.
+        forecasts: this.#forecasts(now),
       },
       this.#alertRules,
     );
@@ -836,8 +905,8 @@ export class Engine {
     const pagedGrowing = this.poolTags(3).pagedGrowing.filter((row) => row.growthMb >= 1);
     const pagedNamed = pagedGrowing.length === 0 ? "" : ` The tags that grow: ${pagedGrowing.map((row) => `${row.tag.trim()} +${row.growthMb} MB`).join(", ")}.`;
     for (const [index, alert] of found.entries()) {
-      if (alert.id === "pool" && named) found[index] = { ...alert, message: `${alert.message}${named}` };
-      if (alert.id === "pool:paged" && pagedNamed) found[index] = { ...alert, message: `${alert.message}${pagedNamed}` };
+      if ((alert.id === "pool" || alert.id === "forecast:pool:nonpaged") && named) found[index] = { ...alert, message: `${alert.message}${named}` };
+      if ((alert.id === "pool:paged" || alert.id === "forecast:pool:paged") && pagedNamed) found[index] = { ...alert, message: `${alert.message}${pagedNamed}` };
     }
     for (const [id, event] of this.#events) {
       if (event.until <= now) this.#events.delete(id);
@@ -1055,6 +1124,9 @@ export class Engine {
     this.#network = undefined;
     this.#previousNetwork = undefined;
     this.#diskReadings.clear();
+    // H32: a fit does not span the sleep, so the forecasts start again with the points after the wake.
+    this.#trendPoints.clear();
+    this.#trends = new Map();
     this.#resumedAt = to;
     this.#lastSleep = { from, to };
     // The next tick reads the whole computer again.

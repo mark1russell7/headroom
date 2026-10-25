@@ -765,3 +765,62 @@ describe("Engine battery, power and sleep (H30)", () => {
     engine.close();
   });
 });
+
+describe("Engine forecasts (H32)", () => {
+  function setup(path: string, start: number) {
+    let now = start;
+    let free = 30_000;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      disks: () => [{ mount: "C:", freeMb: free, totalMb: 974_848 }],
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    return {
+      engine,
+      now: () => now,
+      /** One minute: 100 MB less on the drive, and a tick. */
+      minute: () => {
+        now += 60_000;
+        free -= 100;
+        engine.tick();
+      },
+      setFree: (mb: number) => (free = mb),
+    };
+  }
+
+  it("fits the samples of the last hour, gives the nearest forecast, warns before the critical level, and starts again after a wake", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-forecast-"));
+    try {
+      const path = join(dir, "headroom.db");
+      const first = setup(path, 1_000_000);
+      first.minute();
+      expect(first.engine.status().resources.find((each) => each.id === "disk:C:")?.forecast).toBeUndefined();
+      for (let i = 0; i < 40; i += 1) first.minute();
+      const status = first.engine.status();
+      const drive = status.resources.find((each) => each.id === "disk:C:");
+      // 25 900 MB free, 6000 MB less each hour: 20 GB free in 54 minutes.
+      expect(drive?.forecast).toMatchObject({ minutes: 54, target: { on: "free", amount: 20_480, name: "warning" }, rate: -6000, confidence: 1, source: "fit" });
+      // The memory and the kernel pools stay flat, so they have no forecast.
+      expect(status.resources.filter((each) => each.forecast !== undefined).map((each) => each.id)).toEqual(["disk:C:"]);
+      const alert = first.engine.alerts().active.find((each) => each.kind === "forecast");
+      expect(alert).toMatchObject({ id: "forecast:disk:C:", severity: "warning" });
+      expect(alert?.message).toContain("Drive C: loses 5.9 GB an hour. At this rate, it has 5 GB free in 3 h");
+      first.engine.close();
+
+      // A start of the daemon reads the points of the last hour from the store.
+      const second = setup(path, first.now() + 60_000);
+      second.setFree(25_800);
+      second.engine.tick();
+      expect(second.engine.status().resources.find((each) => each.id === "disk:C:")?.forecast?.target.name).toBe("warning");
+      // A wake starts the fit again: the points before the sleep do not count.
+      second.engine.powerEvent({ type: "resume" });
+      second.minute();
+      expect(second.engine.status().resources.find((each) => each.id === "disk:C:")?.forecast).toBeUndefined();
+      second.engine.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

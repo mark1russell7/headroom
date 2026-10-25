@@ -10,6 +10,7 @@
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
+ * - `headroom forecast [--json]`: the time of each resource to its nearest limit, from the fit of its history (H32).
  * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
@@ -27,6 +28,8 @@ import {
   createSampler,
   diskLevel,
   diskSize,
+  forecastLine,
+  forecastText,
   kindOf,
   MB,
   powerLine,
@@ -124,6 +127,7 @@ const HELP = `headroom: the memory and job broker of this computer
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
+  headroom forecast [--json]                (the time of each resource to its nearest limit, from its history)
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   headroom peer <localPort> <remotePort> [--json]
@@ -205,6 +209,9 @@ function printStatus(status: DaemonStatus): void {
   // H30: the battery and the power. A computer with no battery and no Energy Meter has no line.
   const power = powerLine(status.resources ?? [], status.power);
   if (power !== null) console.log(power);
+  // H32: the forecasts under 24 hours, the nearest first. A daemon of an older version gives none.
+  const forecasts = forecastLine(status.resources ?? []);
+  if (forecasts !== null) console.log(forecasts);
   // H29: the process starts. A daemon of an older version gives none.
   const starts = status.starts === undefined ? null : startsLine(status.starts);
   if (starts !== null) console.log(starts);
@@ -743,6 +750,24 @@ async function watchAlerts(): Promise<number> {
   }
 }
 
+/**
+ * `headroom forecast`: the forecast of each instance to its nearest target, the nearest first (H32). The daemon fits the
+ * history of the last hour at each sample. The battery gives the time left that Windows estimates.
+ */
+async function showForecasts(json: boolean): Promise<number> {
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  const status = await connection.call<DaemonStatus>(["resources", "status"], {});
+  const list = (status.resources ?? []).filter((each) => each.forecast !== undefined).sort((a, b) => (a.forecast?.minutes ?? 0) - (b.forecast?.minutes ?? 0));
+  if (json) {
+    console.log(JSON.stringify(list.map(({ id, kind, unit, capacity, used, free, forecast }) => ({ id, kind, unit, capacity, used, free, forecast })), null, 2));
+    return 0;
+  }
+  if (list.length === 0) console.log("No resource moves toward a limit. A forecast needs 30 minutes of history with a clear trend.");
+  for (const each of list) console.log(forecastText(each));
+  return 0;
+}
+
 async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
   const connection = connect();
   if (!connection) return (console.error("headroom does not run."), 1);
@@ -1064,6 +1089,10 @@ async function main(argv: string[]): Promise<number> {
     case "alerts": {
       const { values } = parseArgs({ args: rest, options: { watch: { type: "boolean" }, json: { type: "boolean" } } });
       return values.watch ? watchAlerts() : showAlerts(values.json === true);
+    }
+    case "forecast": {
+      const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
+      return showForecasts(values.json === true);
     }
     case "history": {
       const { values } = parseArgs({ args: rest, options: { minutes: { type: "string" }, json: { type: "boolean" } } });
