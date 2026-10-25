@@ -55,9 +55,14 @@ describe("the hook of the plugin", () => {
     expect(output.hookSpecificOutput["permissionDecisionReason"]).toContain("Send it again as: cd packages/core && headroom run --mem auto -- pnpm exec vitest run");
   });
 
-  it("refuses a heavy command when other jobs wait", async () => {
-    status = { free: { memory: 9000 }, leases: [{ state: "granted" }, { state: "waiting" }] };
+  it("refuses a heavy command when other jobs wait for memory", async () => {
+    status = { free: { memory: 9000 }, leases: [{ state: "granted" }, { state: "waiting", reason: "waits for memory: needs 2048, 900 free" }] };
     expect(await run("npx playwright test e2e")).toContain("1 job already wait");
+  });
+
+  it("lets a heavy command go on when the other jobs wait only for a slot", async () => {
+    status = { free: { memory: 9000 }, leases: [{ state: "waiting", reason: "waits for browser: needs 1, 0 free" }] };
+    expect(await run("pnpm test")).toBe("");
   });
 
   it("lets a command under headroom run go on, and lets each command go on without a daemon", async () => {
