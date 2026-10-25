@@ -32,18 +32,21 @@
  *   the command line. The alert ends when the process ends, or after 2 minutes under the line.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
+ * - `docker`: the Docker build cache above 20 GB, or the images with no container above 10 GB (H38). The message names the size and
+ *   the prune commands. headroom does not run them.
  * - `drain`: a planned drain or an automatic drain for a reboot (H34). The alert `drain` names the running jobs. The alert
  *   `drain:ready` tells that no job runs. The event `drain:ended` tells why a drain ended. The engine keeps them, not `detect()`.
  *
  * The alerts only report. headroom does not stop a process for an alert.
  *
  * The rules of each kind are in the alert part of its resource (`resources.ts`). `detect()` examines them in the
- * order of the kinds, and adds no text of its own.
+ * order of the kinds, and adds no text of its own. The Docker alerts come last, from `dockerAlerts()` in `docker.ts`.
  */
 
 import type { Lease } from "./broker.ts";
 import type { TrailPoint, TreeUse } from "./cpu.ts";
 import type { Forecast } from "./forecast.ts";
+import { dockerAlerts, type DockerStatus } from "./docker.ts";
 import type { GpuRead } from "./gpu.ts";
 import {
   grows,
@@ -78,7 +81,8 @@ export { diskSize } from "./units.ts";
 /** The kind of an alert. */
 export type AlertKind =
   | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain"
-  | "handles";
+  | "handles"
+  | "docker";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -178,6 +182,10 @@ export interface AlertRules {
   readonly handlesGainMs: number;
   /** An active handles alert ends after this time under its line, in ms. The default is 120000, 2 minutes. */
   readonly handlesClearMs: number;
+  /** A Docker build cache above this size, in MB, starts a Docker warning (H38). The default is 20480. */
+  readonly dockerBuildCacheMb: number;
+  /** Docker images with no container above this size, in MB, start a Docker warning (H38). The default is 10240. */
+  readonly dockerUnusedImagesMb: number;
 }
 
 /** The default limits. */
@@ -220,6 +228,8 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   handlesGain: 20_000,
   handlesGainMs: 300_000,
   handlesClearMs: 120_000,
+  dockerBuildCacheMb: 20_480,
+  dockerUnusedImagesMb: 10_240,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -293,6 +303,8 @@ export interface AlertInput {
   readonly handles?: readonly ProcessTrail[] | undefined;
   /** This function gives the owner record of a process (H48). The handles alert names its command line. */
   readonly recordOf?: ((info: ProcessInfo) => ProcessRecord | undefined) | undefined;
+  /** The containers and the disk use of Docker (H38). The Docker alerts read the disk use. */
+  readonly docker?: DockerStatus | null | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -442,6 +454,8 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       }
     }
   }
+  // H38: Docker is not a resource kind, because the id `docker` is a slot. Its alerts read the last disk read of the engine.
+  alerts.push(...dockerAlerts(input.docker?.disk, rules));
   return alerts;
 }
 

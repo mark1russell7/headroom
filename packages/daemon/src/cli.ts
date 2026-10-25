@@ -18,6 +18,7 @@
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
+ * - `headroom docker [--json]`: each container with its owner, its memory and its cores, the VM and the disk use of Docker (H38).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
@@ -39,6 +40,7 @@ import {
   forecastText,
   gpuLines,
   handlesLines,
+  dockerLine,
   leaseGpuText,
   kindOf,
   MB,
@@ -95,6 +97,7 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
+import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
@@ -185,6 +188,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
+  ${DOCKER_USAGE}                  (each container: its owner, memory and cores; the VM and the disk use)
   headroom peer <localPort> <remotePort> [--json]
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
@@ -279,6 +283,9 @@ function printStatus(status: DaemonStatus): void {
   if (heat !== null) console.log(heat);
   // H36: the GPU memory and use of each adapter. A daemon of an older version and a computer with no GPU counters give none.
   for (const line of gpuLines(status.gpu)) console.log(line);
+  // H38: the containers of Docker and the disk use. No Docker engine and a daemon of an older version give none.
+  const docker = dockerLine(status.docker);
+  if (docker !== null) console.log(docker);
   // H32: the forecasts under 24 hours, the nearest first. A daemon of an older version gives none.
   const forecasts = forecastLine(status.resources ?? []);
   if (forecasts !== null) console.log(forecasts);
@@ -1432,6 +1439,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gpu":
       return gpuCommand(rest, connect());
+    case "docker":
+      return dockerCommand(rest, connect());
     case "peer":
       return showPeer(rest);
     case "config":

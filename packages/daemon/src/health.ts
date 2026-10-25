@@ -1,5 +1,6 @@
 /**
  * The checks of the service monitor (H27): the Docker engine, the URLs of the setting `health` and the MCP servers of the gateway.
+ * This file also gives the transport of the Docker reader (H38).
  *
  * - Docker: a GET of `/_ping` on the pipe of the engine. No pipe gives `absent`, not an alert. headroom starts no `docker` process.
  * - A URL: a GET. An answer with a status below 500 is `ok`.
@@ -8,7 +9,7 @@
 
 import { request as httpRequest, type ClientRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { errorText, type ServiceCheck, type ServiceProbe } from "@headroom/core";
+import { errorText, type DockerAnswer, type DockerGet, type ServiceCheck, type ServiceProbe } from "@headroom/core";
 import type { McpServerState } from "./gateway.ts";
 
 /** The pipe of the Docker engine: a named pipe on Windows, a Unix socket on Linux. */
@@ -53,6 +54,39 @@ export function httpProbe(options: RequestOptions & { readonly url?: string | un
     req.on("error", (error) => resolve(failedProbe(error, absentOnMissing)));
     req.end();
   });
+}
+
+/** The largest answer of the Docker engine that the reader of H38 takes. `GET /system/df` gave 322 KB on this computer. */
+export const DOCKER_ANSWER_LIMIT: number = 16 * 1024 * 1024;
+
+/**
+ * This function gives the transport of the Docker reader (H38): one GET on the pipe of the engine, with no `docker` process.
+ * Each request has its own connection. An answer above the limit gives an error. The signal aborts the request.
+ */
+export function dockerGet(pipe: string = DOCKER_PIPE, limit: number = DOCKER_ANSWER_LIMIT): DockerGet {
+  return (path, signal) =>
+    new Promise<DockerAnswer>((resolve, reject) => {
+      const answer = (res: IncomingMessage): void => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > limit) res.destroy(new Error(`The answer of the Docker engine is larger than ${Math.round(limit / 1024 / 1024)} MB`));
+          else chunks.push(chunk);
+        });
+        res.on("error", reject);
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString("utf8") }));
+      };
+      let req: ClientRequest;
+      try {
+        req = httpRequest({ socketPath: pipe, path, method: "GET", agent: false, signal, headers: { accept: "application/json" } }, answer);
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      req.on("error", reject);
+      req.end();
+    });
 }
 
 /** This function gives the check of the Docker engine: a GET of `/_ping` on its pipe. */

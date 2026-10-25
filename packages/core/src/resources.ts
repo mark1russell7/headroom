@@ -14,6 +14,7 @@ import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, 
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
 import { coresText, cpuRateOf, CPU_RESERVE_DEFAULT, heldMs, type TrailPoint, type TreeUse } from "./cpu.ts";
+import { splitUses, type DockerStatus } from "./docker.ts";
 import { forecastFrom, rateText, spanText, type Forecast, type ForecastTarget, type Part, type TargetName, type Trend } from "./forecast.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
 import { gpuOwners, gpuOwnersText, type GpuAdapter, type GpuRead } from "./gpu.ts";
@@ -120,6 +121,8 @@ export interface Readings {
    * Only a process above 20,000 handles in a read of the window has a trail.
    */
   readonly handles?: readonly ProcessTrail[] | undefined;
+  /** The containers of Docker and their owners (H38). The attribute part of the memory gives the Docker VM to them. */
+  readonly docker?: DockerStatus | null | undefined;
 }
 
 /** One process with the trail of one of its counters (H48): for example its handles at each read, the oldest first. */
@@ -531,10 +534,6 @@ function byOwner(resource: ResourceKind, processes: readonly ProcessInfo[], owne
     .sort((a, b) => b.amount - a.amount);
 }
 
-/** This function gives the attribute part of a kind from the counter of one process. */
-function perProcess(resource: ResourceKind, unit: Unit, counter: (info: ProcessInfo) => number | undefined): Attribute {
-  return { unit, counter, read: (readings, owners) => byOwner(resource, readings.processes, owners, counter) };
-}
 
 /**
  * The attribute part of the disk (H20). The counter of a process is the MB that it wrote since its start. The use of an
@@ -653,6 +652,27 @@ function commitForecastText({ measurement, readings, owners }: InstanceFacts, fo
 /** The forecast part of a kind whose targets are only the limits of its level rules. */
 const LEVEL_TARGETS: ForecastPart = {};
 
+/** This function gives the attribute part of a kind from the counter of one process. */
+function perProcess(resource: ResourceKind, unit: Unit, counter: (info: ProcessInfo) => number | undefined): Attribute {
+  return { unit, counter, read: (readings, owners) => byOwner(resource, readings.processes, owners, counter) };
+}
+
+/** The private bytes of a process, in MB: the counter of the memory. */
+const privateOf = (info: ProcessInfo): number => info.privateMb;
+
+/**
+ * The attribute part of the memory: the private bytes of each owner. With a read of the Docker engine (H38), the owners of
+ * the containers get their part of the owner `docker`, and the rest is `docker (VM)`.
+ */
+const MEMORY_USE: Attribute = {
+  unit: "MB",
+  counter: privateOf,
+  read: (readings, owners) => {
+    const uses = byOwner("memory", readings.processes, owners, privateOf);
+    return readings.docker === undefined || readings.docker === null ? uses : splitUses(uses, readings.docker.owners);
+  },
+};
+
 /** The memory: one instance. The capacity is the physical memory, and the free part is the available memory. */
 const MEMORY_RESOURCE: Resource = {
   kind: "memory",
@@ -660,7 +680,7 @@ const MEMORY_RESOURCE: Resource = {
   measure: {
     read: ({ memory }) => [{ id: "memory", capacity: memory.totalMb, used: memory.totalMb - memory.availableMb, free: memory.availableMb }],
   },
-  attribute: perProcess("memory", "MB", (info) => info.privateMb),
+  attribute: MEMORY_USE,
   alert: {
     rules: (limits) => [
       {

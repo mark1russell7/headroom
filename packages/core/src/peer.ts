@@ -60,6 +60,11 @@ export interface FleetRole {
   readonly sessionId: string | null;
   /** The name of the session that holds the role. */
   readonly sessionName: string | null;
+  /**
+   * The folders of the repositories of the role, from the field `repos`, for example `~/git/Graph`. The first folder is the
+   * main repository. A role with no folders has no field. Docker uses them for the owner of a compose project (H38).
+   */
+  readonly repos?: readonly string[] | undefined;
 }
 
 /** The old file of the fleet registry of the roles: `~/git/fleet/registry/roles.json`. */
@@ -90,7 +95,9 @@ function roleOfEntry(item: unknown): FleetRole | undefined {
   const id = text(item["id"]);
   if (id === null) return undefined;
   const session = isRecord(item["session"]) ? item["session"] : {};
-  return { id, status: text(item["status"]), sessionId: text(session["id"]), sessionName: text(session["name"]) };
+  const repos = Array.isArray(item["repos"]) ? (item["repos"] as unknown[]).flatMap((repo) => (typeof repo === "string" && repo.trim() !== "" ? [repo] : [])) : [];
+  const role: FleetRole = { id, status: text(item["status"]), sessionId: text(session["id"]), sessionName: text(session["name"]) };
+  return repos.length === 0 ? role : { ...role, repos };
 }
 
 /**
