@@ -55,7 +55,7 @@ describe("headroom job", () => {
     const state = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(state)).toEqual([
       "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes",
-      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log", "conditions", "unmet", "peakCores", "cpuCap",
+      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log", "conditions", "unmet", "peakCores", "peakGpuMb", "cpuCap",
     ]);
     // H29: a lease of a job with no count of processes gives null. H47: so do its rates and a class of an older version.
     expect(state["processes"]).toBeNull();
@@ -102,7 +102,7 @@ describe("jobLine", () => {
   const state = {
     id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
     queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null, peakStartsPerMin: null, averageStartsPerMin: null, spawn: null,
-    conditions: null, unmet: null, peakCores: null, cpuCap: null,
+    conditions: null, unmet: null, peakCores: null, peakGpuMb: null, cpuCap: null,
   } as const;
 
   it("names the conditions of a job, and a time when it ran without one of them (H31)", () => {

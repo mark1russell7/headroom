@@ -22,6 +22,8 @@
  * - `runaway` also covers a process tree with no lease that uses more than 4 cores for 10 minutes (H23).
  * - `heat`: a power or heat limit throttles the CPU for 5 minutes (H35). The message names the speed, the cause and the 3
  *   owners with the most cores, with their power and their leased jobs. The alert ends after 2 minutes with no throttle.
+ * - `gpu`: the GPU memory of an adapter stays above 90% of its limits for 2 minutes (H36). The message names the 3 owners
+ *   with the most GPU memory, and the shared part in the RAM. The alert ends after one minute below the limit.
  * - `forecast`: the fit of the history of an instance reaches a limit soon (H32). A drive reaches its critical level within
  *   24 hours, a kernel pool its alert level within 2 hours, or the commit charge 90% within 30 minutes. The message names
  *   the rate, the time and the owners that the model has.
@@ -39,6 +41,7 @@
 import type { Lease } from "./broker.ts";
 import type { TrailPoint, TreeUse } from "./cpu.ts";
 import type { Forecast } from "./forecast.ts";
+import type { GpuRead } from "./gpu.ts";
 import {
   grows,
   healthLevel,
@@ -66,7 +69,7 @@ export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
 export type AlertKind =
-  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "forecast" | "stop" | "drain";
+  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -150,6 +153,12 @@ export interface AlertRules {
   readonly forecastPoolMs: number;
   /** A forecast of the commit charge at 90% of its limit within this time, in ms, starts a forecast warning. The default is 30 minutes. */
   readonly forecastCommitMs: number;
+  /** GPU memory above this part of the limits of its adapter starts a GPU warning (H36). The default is 0.9. */
+  readonly gpuWarnRatio: number;
+  /** The GPU memory must stay above its limit for this time, in ms. The default is 120000, 2 minutes. */
+  readonly gpuForMs: number;
+  /** An active GPU alert ends after this time below its limit, in ms. The default is 60000, one minute. */
+  readonly gpuClearMs: number;
 }
 
 /** The default limits. */
@@ -184,6 +193,9 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   forecastDiskMs: 24 * 3_600_000,
   forecastPoolMs: 2 * 3_600_000,
   forecastCommitMs: 30 * 60_000,
+  gpuWarnRatio: 0.9,
+  gpuForMs: 120_000,
+  gpuClearMs: 60_000,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -237,6 +249,8 @@ export interface AlertInput {
   readonly cores?: readonly OwnerCores[] | undefined;
   /** The speed and the heat of the CPU, with the throttle rule (H35). The heat alert needs it. */
   readonly thermal?: ThermalState | undefined;
+  /** The GPU adapters and processes (H36). The GPU alert names the owners with the most GPU memory. */
+  readonly gpu?: GpuRead | undefined;
   /** The time of the check (H23). The rules with a duration need it. Without it, each trail ends at its last point. */
   readonly at?: number | undefined;
   /** The count of logical processors: the capacity of `cpu` (H23). Without it, the CPU has no capacity, and its level rule gives no alert. */
@@ -261,7 +275,7 @@ const HOUR_MS = 3_600_000;
 function readingsOf(
   input: Pick<
     AlertInput,
-    | "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "cores" | "at" | "processors"
+    | "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
     | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal"
   > & {
     readonly leases?: readonly Lease[] | undefined;
@@ -270,7 +284,7 @@ function readingsOf(
   return {
     at: input.at ?? 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
     processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
-    battery: input.battery, meters: input.meters, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
+    battery: input.battery, meters: input.meters, gpu: input.gpu, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
     trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal,
   };
 }

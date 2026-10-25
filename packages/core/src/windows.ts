@@ -14,6 +14,7 @@
  * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
  * - `GetIfTable2` of `iphlpapi.dll` gives the byte counters of the adapters, and `GetExtendedTcpTable` gives the TCP connections (H24).
  * - `windows-power.ts` gives the battery, the Energy Meter, the power events and the power request (H30).
+ * - `windows-gpu.ts` gives the GPU memory of each adapter and of each process, and the use of the engines (H36).
  * - For `resources.peer` (H46), `GetExtendedTcpTable` gives the rows of one connection, and `GetProcessTimes` gives the start of one process.
  * - `RegOpenKeyExW` of `advapi32.dll` tells if a key of the registry exists (H34). The reboot budget reads two keys, and writes none.
  * - `windows-presence.ts` gives the time since the last input, the notification state and the camera and the microphone (H33).
@@ -30,6 +31,7 @@ import { fileTimeMs, programName, titleOf } from "./owners.ts";
 import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
+import { readGpu } from "./windows-gpu.ts";
 import { closePower, keepAwake, readBattery, readMeters, readThermal, watchPower } from "./windows-power.ts";
 import { readCalls, readPresence } from "./windows-presence.ts";
 
@@ -600,6 +602,7 @@ export function windowsSampler(): Sampler {
     battery: readBattery,
     power: readMeters,
     thermal: readThermal,
+    gpu: readGpu,
     watchPower,
     keepAwake,
     registryKey,

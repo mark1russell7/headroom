@@ -259,6 +259,21 @@ export {
   wattsText,
 } from "./power.ts";
 export type { BatteryState, OwnerWatts, PowerEvent, PowerMode, PowerStatus } from "./power.ts";
+export { engineFamily, GPU_OWNERS_SHOWN, gpuLines, gpuOwners, gpuOwnersText, gpuRead, gpuStatus, leaseGpuMb, leaseGpuText, parseGpuInstance } from "./gpu.ts";
+export type {
+  EngineUse,
+  GpuAdapter,
+  GpuAdapterInfo,
+  GpuAdapterStatus,
+  GpuCounters,
+  GpuEngine,
+  GpuInstance,
+  GpuOwnerUse,
+  GpuProcess,
+  GpuRead,
+  GpuSample,
+  GpuStatus,
+} from "./gpu.ts";
 export {
   causeOf,
   celsiusText,

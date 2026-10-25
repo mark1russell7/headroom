@@ -60,6 +60,7 @@ describe("jobState", () => {
       conditions: null,
       unmet: null,
       peakCores: null,
+      peakGpuMb: null,
       cpuCap: null,
     });
   });

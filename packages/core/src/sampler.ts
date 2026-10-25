@@ -2,6 +2,7 @@
  * The sampler reads the memory of the computer and of its processes. Each platform has its own sampler.
  */
 
+import type { GpuSample } from "./gpu.ts";
 import type { PowerEvent } from "./power.ts";
 import type { CallRead, PresenceRead } from "./presence.ts";
 import type { KeyState } from "./reboot.ts";
@@ -64,6 +65,11 @@ export interface Sampler {
    * the Energy Meter, so a read in the same second uses one collection. It gives `null` when the computer has none of them.
    */
   thermal?(): ThermalRead | null;
+  /**
+   * This function reads the GPU counters of PDH and, at its first call, the adapters of DXGI (H36). It uses the collection of
+   * the read of the Energy Meter. It gives `null` when the computer has no GPU counters. Only Windows has it.
+   */
+  gpu?(): GpuSample | null;
   /**
    * This function registers for the power events of the operating system (H30). The events are the power source, the
    * charge, the lid, the power mode, the sleep and the wake. The listener runs on the main thread, so it only sets the state and asks

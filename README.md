@@ -181,6 +181,24 @@ The line `Power` of `headroom status` gives the state, for example `Power: on ba
 
 On battery below a floor, a heavy job waits. The next section gives this rule and the other conditions of a job (H31).
 
+### GPU (H36)
+
+The GPU of this laptop, a Radeon 860M, uses the main memory. headroom reads the GPU with the processes, every 10 seconds. The read starts no process and no timer:
+
+- **The GPU** (`gpu:<n>`, in MB): one instance for each adapter. The used part is the dedicated and the shared GPU memory, from the counter set `GPU Adapter Memory` (PDH).
+- **The limits** come from DXGI, one time at the start: the dedicated memory and the shared limit, as Task Manager shows them. On this laptop, they are 4.0 GB and 13.8 GB.
+- **The owners.** The counters `GPU Process Memory` and `GPU Engine` give the GPU memory and the engine use of each process. Each process goes to its owner, as for the memory.
+- **The use** is the use of the busiest engine, as Task Manager shows it. `headroom gpu` also gives the use of each family: 3D, compute, copy and video.
+- **The leases.** The status gives the GPU memory of each leased job. The lease keeps its peak, and `headroom job` gives it, for example `peak GPU 900 MB`.
+- An adapter that DXGI does not list, for example an NPU, gets its LUID as its name. Its shared limit is half of the RAM, the default of Windows.
+- A computer with no GPU counters has no `gpu` instance. Linux and macOS have none.
+
+The line `GPU` of `headroom status` gives the state, for example `GPU: 1.3 of 17.8 GB (0.3 GB in RAM), 34% busy. Most: session:graph chrome.exe 820 MB.` `headroom gpu` gives each adapter, its owners and the leased jobs, and `--json` gives `Status.gpu`. The dashboard has a panel for each adapter.
+
+- **The alert** (kind `gpu`): a warning when the GPU memory of an adapter stays above 90% of its limits for 2 minutes. The alert names the 3 owners with the most GPU memory. It ends after one minute below the line.
+- **No amount.** A job object has no GPU limit, so a lease has no GPU amount.
+- **The memory.** Shared GPU memory is in the RAM. Windows already counts it in the available memory and in the commit charge, so `memory` does not subtract it again. `docs/RESOURCES.md` gives the measurement.
+
 ### Forecasts (H32)
 
 headroom tells the time until each resource reaches a limit, so the fleet acts before the limit. The forecast comes from the history of the last hour:
@@ -462,7 +480,7 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
 - A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site. On a laptop, a chip gives the power source and the charge. The chip `Heat` gives the speed of the CPU and its hottest zone (H35).
-- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, CPU speed and heat, network, TCP ports, services, slots, kernel pools, desktop, process starts, battery and power. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
+- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, CPU speed and heat, and the GPU adapters. The other panels are network, TCP ports, services, slots, kernel pools, desktop, process starts, battery and power. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
 - The write counters do not name the drive. Thus the drive panels show no users, and one panel "Writes to all drives" follows them with the top writers.

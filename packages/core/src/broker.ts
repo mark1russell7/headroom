@@ -110,11 +110,14 @@ export interface Lease {
    * time at the release. `--cpu auto` learns from it.
    */
   readonly peakCores?: number | undefined;
+  /** The highest GPU memory of the job in MB (H36): the dedicated and the shared GPU memory of its processes at one read. */
+  readonly peakGpuMb?: number | undefined;
 }
 
-/** The fields of a lease that the engine measures while its job runs (H47, H23), and the record of a condition that stops (H31). */
+/** The fields of a lease that the engine measures while its job runs (H47, H23, H36), and the record of a condition that stops (H31). */
 export interface LeaseMeasures {
   readonly peakCores?: number | undefined;
+  readonly peakGpuMb?: number | undefined;
   readonly peakStartsPerMin?: number | undefined;
   readonly spawn?: SpawnClass | undefined;
   readonly unmet?: UnmetCondition | undefined;
