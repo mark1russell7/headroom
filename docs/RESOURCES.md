@@ -707,7 +707,7 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 - `GetProcessTimes` gives the live start of the peer. A peer that ended before the walk gives the error `PEER_GONE`.
 - The walk uses the process snapshot of the daemon. A peer that is younger than the snapshot, or an entry with a different start, starts one fresh read.
 - The fresh read is a Toolhelp snapshot and one call of `NtQuerySystemInformation`. It reads no memory and opens no process.
-- The walk goes up at most 8 parents to the nearest `claude.exe`. Each parent must start at or before its child. A parent with no start stops the walk.
+- The walk goes up at most 16 parents to the nearest `claude.exe`. Each parent must start at or before its child. A parent with no start stops the walk.
 - `via` gives the process IDs from the peer up to `claude.exe`, with the two ends.
 - Without a live `claude.exe` above it, the peer is anonymous. Then `via` has only the peer, and the answer has no session and no role. This is not an error.
 
@@ -731,7 +731,7 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 - A process of that user can choose its parent with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. It can also write a session file or change the registry.
 - Thus a role from `resources.peer` names the caller. It does not prove the identity of the caller.
 
-**The depth.** On 2026-10-24, the Bash tool put 3 `bash.exe` processes between `claude.exe` and its command. A `timeout` and a pipe put more processes in the chain. In one check, a walk of 8 parents did not get to `claude.exe`.
+**The depth.** On 2026-10-24, the Bash tool put 3 `bash.exe` processes between `claude.exe` and its command. A `timeout` and a pipe put more processes in the chain. In one check, a walk of 8 parents did not get to `claude.exe`. Thus the limit is 16 parents.
 
 **Linux.** `/proc/net/tcp` gives no process for a row, so Linux gives the error `NOT_SUPPORTED`. A read of the socket inodes of each process is a later step.
 

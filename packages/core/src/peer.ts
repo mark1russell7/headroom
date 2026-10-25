@@ -162,7 +162,7 @@ interface Chain {
 }
 
 /** The most steps of a walk from the peer up to a `claude.exe`. */
-export const PEER_MAX_DEPTH = 8;
+export const PEER_MAX_DEPTH = 16;
 /** The most walks in the cache. A full cache removes its oldest walk. */
 const MAX_CHAINS = 256;
 
@@ -230,7 +230,7 @@ export class PeerResolver {
    * 1. It finds the client row in the IPv4 and the IPv6 table: loopback at the two ends, with a process. No row gives
    *    `NO_CONNECTION`. Rows of two processes also give `NO_CONNECTION`, because the call fails closed.
    * 2. It finds the peer process with its live start. A peer that ended gives `PEER_GONE`.
-   * 3. It walks up at most 8 parents to the nearest `claude.exe`. Each parent must start at or before its child.
+   * 3. It walks up at most 16 parents to the nearest `claude.exe`. Each parent must start at or before its child.
    * 4. It gives the session of that `claude.exe` and the role of the session. Without a `claude.exe`, the peer is anonymous.
    *
    * A platform with no read of the TCP processes gives `NOT_SUPPORTED`. Linux gives no process in `/proc/net/tcp`.

@@ -110,12 +110,15 @@ describe("PeerResolver", () => {
     expect(new PeerResolver(sources).resolve(input).via).toEqual([12]);
   });
 
-  it("walks at most 8 parents", () => {
+  it("walks at most 16 parents", () => {
     const deep = [proc(10, 1, "claude.exe", 200)];
-    for (let pid = 30; pid <= 38; pid++) deep.push(proc(pid, pid === 30 ? 10 : pid - 1, "node.exe", 300 + pid));
-    // The peer 38 has 8 node.exe parents (37 to 30) before claude.exe.
-    expect(new PeerResolver(fake({ tcp: rows(38), snapshot: deep }).sources).resolve(input).session).toBeUndefined();
-    expect(new PeerResolver(fake({ tcp: rows(37), snapshot: deep }).sources).resolve(input)).toMatchObject({ via: [37, 36, 35, 34, 33, 32, 31, 30, 10], session: "headroom" });
+    for (let pid = 30; pid <= 46; pid++) deep.push(proc(pid, pid === 30 ? 10 : pid - 1, "node.exe", 300 + pid));
+    // The peer 46 has 16 node.exe parents (45 to 30) before claude.exe.
+    expect(new PeerResolver(fake({ tcp: rows(46), snapshot: deep }).sources).resolve(input).session).toBeUndefined();
+    expect(new PeerResolver(fake({ tcp: rows(45), snapshot: deep }).sources).resolve(input)).toMatchObject({
+      via: [45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 32, 31, 30, 10],
+      session: "headroom",
+    });
   });
 
   it("gives NO_CONNECTION without a client row with a process on the loopback", () => {
