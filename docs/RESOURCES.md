@@ -378,6 +378,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `power` (W) | H30. Used: the power of the whole computer, from the counter `\Energy Meter(*)\Power` (PDH). Capacity: `null`. No counter set: no instance. Linux and macOS: no instance. | An estimate: the CPU power, shared by the processor time of each owner. | None. The battery alert names the 3 owners with the most power. | None. | A power request keeps the computer awake on AC power while a lease is granted. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
 | `handles` (count) | H48. Used: the sum of the handles of all the processes. Capacity: `null`. No count of handles: no instance. | The handles of each owner. An orphan keeps the owner of its record, with the label `(orphan)`. | Trail: a process above 100,000 handles or with a gain of 20,000 in 5 minutes (warning), above 500,000 (critical). | None. | None. headroom does not stop the process. |
+| `Status.docker` (MB, cores) | H38. Not a kind, because the id `docker` is a slot. The containers of the Docker engine: the memory of each one less its inactive file cache, and its cores between two reads. The VM process and the disk use: images, unused images, build cache, volumes. No engine: `null`. | The session of the compose project of each container. The containers get their part of the owner `docker` in the memory and the CPU. The rest is `docker (VM)`. | A warning when the build cache is above 20 GB, or the images with no container are above 10 GB. | None. The slot `docker` stays a slot. | None. headroom does not prune, stop or start a container. |
 | `gpu:<n>` (MB) | H36. One instance for each adapter. Used: the dedicated and the shared GPU memory, from `\GPU Adapter Memory(*)`. Capacity: the dedicated limit and the shared limit from DXGI. The measurement also has the use of the busiest engine. No GPU counters: no instance. | The dedicated and the shared GPU memory of each owner and of each leased job, from `\GPU Process Memory(*)`. Each adapter has its own owners. `Status.gpu` also gives the engine use of each owner. | Level on used: a warning above 90% for 2 minutes, clear after one minute below. | None. A job object has no GPU limit. The shared part is already in the available memory. | None. Report: the peak GPU memory of a lease. |
 
 ## The migration
@@ -1203,6 +1204,52 @@ H48 shipped in one change. These parts are as built:
 
 `headroom status` gives the sum of the handles, for example `Handles: 200,020 in all`. When one process is above 100,000 handles, it also names the 3 processes with the most handles. Each one has its owner and its command line. `Status.handles` gives the same data.
 
+### H38: Docker inside
+
+Docker Desktop keeps the containers in the WSL 2 VM. Windows shows the VM as one process, `vmmemWSL`, with the owner `docker`. H38 asks the Docker engine for each container and gives each container to the session of its compose project. H38 shipped in one change. These parts are as built:
+
+- **The client**: `DockerReader` in `docker.ts`, with a transport in `health.ts`. Each request is a GET on the pipe `\\.\pipe\docker_engine`, with its own connection. The daemon starts no process.
+- **The API version** comes from `GET /version`. The reader uses it in each path, for example `/v1.56/containers/json`. The parameter `one-shot` of the stats exists from API 1.41, so an older engine gets the stats without it.
+- **The tick**: the tick of the daemon uses `poll()` every 2 seconds. A read starts each 30 seconds, and only when no other read is active. The daemon has no new timer.
+- **The containers**: `GET /containers/json?all=true`, and `GET /containers/{id}/stats?stream=false&one-shot=true` for each running container. A container that stops between the two requests has no stats.
+- **The memory** of a container is its use less `inactive_file` (cgroup v2) or `total_inactive_file` (cgroup v1), as `docker stats` gives it.
+- **The cores** are the change of `cpu_stats.cpu_usage.total_usage` between two reads of the reader, at the times that the engine gives. The first read of a container gives no cores.
+- **The disk use**: `GET /system/df` every 10 minutes, with its own time limit of 30 seconds. API 1.52 and later give a summary of each type with its total and its reclaimable part. An older engine gives only the lists, so the reader adds them up as `docker system df` does.
+- **No engine**: no pipe gives the state `absent`, and another failure gives `down`. The reader then has no read, so `Status.docker` is `null`, and the owner `docker` stays as it is. The log gets one line for each change of the state.
+
+**The owner of a container.** `ContainerOwners` reads the field `repos` of each role of the fleet registry. A retired role does not count.
+
+1. The label `com.docker.compose.project.working_dir` in a folder of a role gives `session:<role>`. The match compares the path and its real path, in lower case. On this laptop, `~/git` is a link to `D:\git`.
+2. A folder `<repo>-<name>` next to a repository, for example a worktree, counts for that repository.
+3. Two roles with the same folder: the role with the name of the folder wins. Then the main repository of a role, then an active role, then the first role.
+4. Else the label `com.docker.compose.project` with the ID of a role gives `session:<project>`.
+5. Else the owner is `docker:<project>`, or `docker:<name>` for a container with no compose project.
+
+**The split.** `splitOwners()` gives each owner of a running container its part of the owner `docker`. The parts are the memory of the containers. When the containers have more than the owner `docker`, each part gets the same scale.
+
+- The rest is `docker (VM)`: the VM, its kernel and cache, the other WSL distributions and the Docker programs of Windows. The processes keep the owner `docker`, so the alert rules see no change.
+- The private memory and the memory in RAM split the same way. The cores of `docker` split by the cores of the containers.
+- The memory resource and the processors resource give the same owners. With an engine and no running container, the owner `docker` is `docker (VM)`.
+
+**The memory of the VM.** `vmmemWSL` is a minimal process. `K32GetProcessMemoryInfo` gives it no counters, so its memory was 0 before H38. The sampler reads `WorkingSetSize` and `PagefileUsage` of the VM process from `SystemProcessInformation`. On this laptop on 2026-10-25, the VM had 1.3 GB in RAM and 2.2 GB committed.
+
+The other protected processes still count as 0. The daemon has no admin rights, so it cannot open many services. On 2026-10-25, they held approximately 7.5 GB of working set. A sum of their working sets also counts the shared pages again, so the top bar of the dashboard goes above the RAM. Their memory needs the private working set, in a later item.
+
+**The alerts** (kind `docker`, level warning): `docker:build-cache` above 20 GB of build cache, and `docker:images` above 10 GB of images with no container. The limits are `dockerBuildCacheMb` and `dockerUnusedImagesMb` of `AlertRules`. `detect()` adds them after the rules of the kinds.
+
+**The read on this laptop on 2026-10-25.** Docker 29.9.2 with API 1.56 had 4 containers. Only `graph-mongo-1` was `running`, with 566 MB.
+
+| Container | State | Owner | Rule |
+|---|---|---|---|
+| `graph-mongo-1` | `running` | `session:graph` | The folder `D:\git\Graph` is the main repository of `graph`. |
+| `minimongo-db` | `exited` | `session:server-stack` | The folder is in `~/git/MiniMongo`, a repository of `server-stack`. |
+| `mongo-db` | `created` | `docker:mongo` | The folder `~/git/docker/mongo` is in no role. |
+| `dynamodb-local` | `exited` | `docker:dynamodb-local` | No compose project. |
+
+- The disk use: images 33.1 GB (102), images with no container 26.2 GB (99), build cache 17.1 GB (6.6 GB not in use), volumes 2.4 GB (34). The alert `docker:images` starts.
+- The cost: the version, the list and one stats request took 45 to 65 ms. The CPU of the read in the daemon was below the resolution of the counter, 16 ms.
+- `GET /system/df` took 4.6 to 5.0 s in the engine, and 322 KB. The sizes of the images took 3.8 s of it. The parse took approximately 15 ms of CPU in the daemon, one time each 10 minutes.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.
@@ -1255,3 +1302,10 @@ These were the open questions. The session decided each one as a technical call.
 | What is the capacity of a GPU adapter? | The dedicated limit and the shared limit from DXGI, as Task Manager shows them. | The limits do not change while Windows runs. The DXGI budget changes with the pressure on the memory, and it is for one process. |
 | What is the use of a GPU adapter? | The use of its busiest engine, as Task Manager shows it. | A sum of all the engines goes above 100% when the 3D engine and the video engine both work. |
 | What is the id of a GPU adapter? | `gpu:<n>`, with the order of DXGI. An adapter that DXGI does not list comes after them. | The LUID changes at each start of Windows, so an id from it breaks the history. |
+| Is Docker a resource kind (H38)? | No. It is `Status.docker`, with the alert kind `docker`. | The id `docker` is a slot, and `kindOf()` gives a kind from the start of an id. A kind `docker` changes the slot of each `--slot docker` lease. |
+| How does headroom read the containers? | GET requests on the pipe of the engine, from the tick of the daemon: the containers every 30 seconds, the disk use every 10 minutes. | The engine API gives the memory and the processor time of each container with no new process. `GET /system/df` takes some seconds in the engine. |
+| What is the memory of a container? | Its use less its inactive file cache, as `docker stats` gives it. | The inactive file cache is free when the VM needs memory. The number agrees with the number that Mark sees in `docker stats`. |
+| Who owns a container? | The fleet role of the folder of its compose project, else the role with its project name, else `docker:<project>`. | The compose label gives the folder, and the role files give the folders of each session. A container has no process on Windows, so a process tree cannot tell. |
+| Who gets the memory of the Docker VM? | The owners of the containers, by their memory. The rest is `docker (VM)`. | The VM is one process. Its memory is the memory of the containers, of the VM kernel and cache, and of the other distributions. |
+| Does headroom prune Docker? | No. The alert gives the size and the commands. | A prune removes the images and the cache of all the sessions. The owner of the work decides. |
+| Does the sampler read the memory of each protected process? | Only of the VM process (H38). | The daemon has no admin rights, so many services are protected for it. Their working sets with the shared pages add up to more than the RAM. |

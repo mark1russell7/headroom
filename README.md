@@ -216,6 +216,24 @@ The line `GPU` of `headroom status` gives the state, for example `GPU: 1.3 of 17
 - **No amount.** A job object has no GPU limit, so a lease has no GPU amount.
 - **The memory.** Shared GPU memory is in the RAM. Windows already counts it in the available memory and in the commit charge, so `memory` does not subtract it again. `docs/RESOURCES.md` gives the measurement.
 
+### Docker inside (H38)
+
+Docker Desktop keeps its containers in one VM. Windows shows the VM as one process, `vmmemWSL`. Thus headroom asks the Docker engine for each container:
+
+- **The read.** Every 30 seconds, the daemon sends GET requests to the pipe of the engine: the list of the containers and one-shot stats of each running container. It starts no `docker` process and no timer.
+- **The memory** of a container is its use less its inactive file cache, as `docker stats` gives it. **The cores** come from the change of its processor time between two reads.
+- **The disk use**: every 10 minutes, `GET /system/df` gives the images, the images with no container, the build cache, the volumes and the writable layers.
+- **The owner** of a container is the session of its compose project. The folder of the project in a folder of a fleet role gives `session:<role>`. A project with the name of a role also gives that role. Else the owner is `docker:<project>` or `docker:<name>`.
+- **The split.** In the memory and the CPU of the owners, the containers get their part of the owner `docker`. The rest is `docker (VM)`: the VM, its cache and the Docker programs of Windows.
+- **The VM memory.** `vmmemWSL` gives no memory counters to `K32GetProcessMemoryInfo`. The sampler reads its memory from `SystemProcessInformation`.
+- No pipe or no answer: no Docker read and no split. The log of the daemon gets one line for each change of the state of the engine.
+
+The line `Docker` of `headroom status` gives the state, for example `Docker: 1 container, 0.6 GB, 0.55 cores. Most: session:graph graph-mongo-1 0.6 GB. Build cache 17.1 GB. Unused images 26.2 GB`. `headroom docker` gives each container with its owner, memory, cores and state, the VM, the disk use and the cost of the reads. `--json` gives `Status.docker`. The dashboard has one card, after the card of the Docker engine.
+
+- **The alerts** (kind `docker`): a warning when the build cache is above 20 GB, or the images with no container are above 10 GB. The message gives the size and the prune commands.
+- headroom does not prune, stop or start a container, an image or Docker. `docker builder prune` or `docker image prune` frees the space.
+- **The cost** on this laptop: the list and the stats take approximately 60 ms, with no measurable CPU in the daemon. The disk read takes approximately 5 s in the engine and 15 ms of CPU in the daemon, one time each 10 minutes.
+
 ### Forecasts (H32)
 
 headroom tells the time until each resource reaches a limit, so the fleet acts before the limit. The forecast comes from the history of the last hour:
@@ -520,6 +538,7 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
 - The write counters do not name the drive. Thus the drive panels show no users, and one panel "Writes to all drives" follows them with the top writers.
+- The panel "Docker containers" follows the panel of the Docker engine (H38). It gives the running containers with their owners, the VM, the disk use and the Docker alerts.
 - Select a panel to open it to the full width. It then shows a chart of its history in the window, a table of the data and all its users.
 - The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
 - The page is one HTML file of approximately 73 KB, with no framework and no build step. The daemon keeps it as one string.

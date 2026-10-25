@@ -10,6 +10,17 @@ import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
 import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { gpuRead, gpuStatus, leaseGpuMb, type GpuRead, type GpuStatus } from "./gpu.ts";
+import {
+  ContainerOwners,
+  dockerShares,
+  dockerStatus,
+  splitCores,
+  splitOwners,
+  type DockerContainerStatus,
+  type DockerRead,
+  type DockerShare,
+  type DockerStatus,
+} from "./docker.ts";
 import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
@@ -136,6 +147,11 @@ export interface EngineOptions {
   readonly readUsage?: ((path: string) => UsageFacts) | undefined;
   /** This function runs when a planned drain starts (H34). The daemon writes the resume plan (H13) in it. */
   readonly onDrainStart?: (() => void) | undefined;
+  /**
+   * This function gives the last read of the Docker engine (H38), or `undefined` when the engine does not answer. The daemon
+   * reads the engine every 30 seconds. The default gives no read.
+   */
+  readonly docker?: (() => DockerRead | undefined) | undefined;
   /** This function gives the file of the resume plan and the time of its last write (H34), or `null` without a file. */
   readonly resumePlan?: (() => ResumePlanFile | null) | undefined;
 }
@@ -215,6 +231,11 @@ export interface Status {
    * handles. Each of the 3 has its owner. It is `null` on a computer with no count of handles.
    */
   readonly handles: HandleStatus | null;
+  /**
+   * Docker (H38): each container with its owner, its memory and its cores, the VM and the disk use of Docker. It is `null`
+   * when the Docker engine does not answer.
+   */
+  readonly docker: DockerStatus | null;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -477,6 +498,14 @@ export class Engine {
   readonly #records = new OwnerRecords();
   /** The handles of each process with many handles over the last 7 minutes (H48). */
   readonly #handles = new HandleTracker();
+  /** The fleet registry of the roles: `resources.peer` (H46) and the owners of the containers (H38) read it. */
+  readonly #roles: RoleBook;
+  /** The source of the reads of the Docker engine (H38), the owners of the containers, and the last read with its owners. */
+  readonly #dockerSource: () => DockerRead | undefined;
+  readonly #containerOwners = new ContainerOwners();
+  #dockerFacts: { readonly read: DockerRead; readonly containers: readonly DockerContainerStatus[]; readonly shares: readonly DockerShare[] } | null = null;
+  /** The Docker resource of the status, from the last read of the processes (H38). */
+  #docker: DockerStatus | null = null;
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -494,7 +523,9 @@ export class Engine {
     this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
     this.#sleepGapMs = options.sleepGapMs ?? Number.POSITIVE_INFINITY;
     this.#startedAt = this.#now();
-    this.#peers = this.#peerResolver(new RoleBook(options.rolesFile));
+    this.#roles = new RoleBook(options.rolesFile);
+    this.#peers = this.#peerResolver(this.#roles);
+    this.#dockerSource = options.docker ?? (() => undefined);
     this.#usage = new UsageReader(options.readUsage);
     this.#broker = new Broker({
       now: this.#now,
@@ -656,8 +687,31 @@ export class Engine {
       thermal: this.#thermal.state(this.#now()) ?? undefined,
       gpu: this.#gpu,
       leases,
+      docker: this.#docker,
     };
     return this.#readings;
+  }
+
+  /**
+   * This function gives the last read of the Docker engine with the owner of each container (H38), or `null` with no read.
+   * The owners come from the fleet roles, one time for each new read.
+   */
+  #readDocker(): { readonly read: DockerRead; readonly containers: readonly DockerContainerStatus[]; readonly shares: readonly DockerShare[] } | null {
+    let read: DockerRead | undefined;
+    try {
+      read = this.#dockerSource();
+    } catch {
+      read = undefined;
+    }
+    if (read === undefined) {
+      this.#dockerFacts = null;
+      return null;
+    }
+    if (this.#dockerFacts?.read !== read) {
+      const containers = this.#containerOwners.attribute(read.containers, this.#roles.roles());
+      this.#dockerFacts = { read, containers, shares: dockerShares(containers) };
+    }
+    return this.#dockerFacts;
   }
 
   /**
@@ -676,17 +730,23 @@ export class Engine {
       const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
       this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#sampler.commandLine?.(pid) ?? null));
       this.#handles.read(now, this.#processes);
-      this.#owners = owners;
+      // H38: the containers of Docker get their part of the owner `docker`. The rest is `docker (VM)`. The processes of
+      // Docker keep the owner `docker`, so the kinds keep it too.
+      const docker = this.#readDocker();
+      this.#owners = docker === null ? owners : splitOwners(owners, docker.shares);
       this.#ownership = {
         ownerOf,
-        kindOf: new Map(owners.map((owner) => [owner.owner, owner.kind])),
+        kindOf: new Map([...owners, ...this.#owners].map((owner) => [owner.owner, owner.kind])),
         leaseOf: leasesOf(this.#processes, this.#broker.leases()),
       };
       // H23: the tracker keeps the processor time of each leased job and of each process tree.
       this.#groups = cpuGroups(this.#processes, this.#ownership);
       this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf, this.#groups);
       this.#writes = this.#counters.writes(now);
-      this.#cores = this.#counters.cores(now);
+      const cores = this.#counters.cores(now);
+      this.#cores = docker === null ? cores : splitCores(cores, docker.shares);
+      this.#docker =
+        docker === null ? null : dockerStatus({ ...docker, processes: this.#processes, owners: this.#owners, cores: this.#cores });
       this.#leaseCores = new Map([...this.#counters.groupCores(now, LEASE_GROUP)].map(([group, cores]) => [group.slice(LEASE_GROUP.length), cores]));
       this.#recordPeakCores();
       this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
@@ -965,6 +1025,7 @@ export class Engine {
       thermal: this.thermalStatus(),
       gpu: gpuStatus(this.#gpu, this.#ownership, new Map(this.#processes.map((info) => [info.pid, info.name]))),
       handles: handleStatus(this.#processes, this.#ownership.ownerOf, (info) => this.#records.get(info), this.#alertRules.handlesWarn),
+      docker: this.#docker,
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -1079,7 +1140,8 @@ export class Engine {
   /** This function checks the conditions of the alerts. A condition that continues keeps its start time. */
   #check(now: number, ownerOf: ReadonlyMap<number, string>): void {
     this.#checkDue = false;
-    const kindOf = new Map(this.#owners.map((owner) => [owner.owner, owner.kind]));
+    // The kinds of the owners of the processes: the split of Docker (H38) does not change the owner `docker` of a process.
+    const kindOf = this.#ownership.kindOf;
     // The growth of the pool is measured over one hour. A history shorter than 50 minutes gives no growth. A start of the
     // computer empties the pools, so the history starts at the start of the computer or later. A sleep stops the growth,
     // so the history also starts at the last wake (H30).
@@ -1111,6 +1173,8 @@ export class Engine {
         // H48: only a process above the lower line of the handles rule in the window needs its trail.
         handles: this.#handles.trails(this.#processes, Math.min(this.#alertRules.handlesWarn, this.#alertRules.handlesGain)),
         recordOf: (info) => this.#records.get(info),
+        // H38: the Docker alerts read the last disk read of the engine.
+        docker: this.#docker,
       },
       this.#alertRules,
     );

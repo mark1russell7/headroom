@@ -883,6 +883,33 @@ function writesCard(owners) {
     owners.length ? usersList(owners.slice(0, 8), false, "Top writers") : h("div", { class: "sub", text: "No owner wrote data in the last hour." }));
 }
 
+/**
+ * Docker (H38): the running containers with their owners, the VM and the disk use, in one card after the card of the
+ * Docker engine. A row marks the owner of its container on the page.
+ */
+function dockerCard(d, alerts) {
+  const running = d.containers.filter((c) => c.state === "running");
+  const top = Math.max(...running.map((c) => c.memoryMb ?? 0), 1e-9);
+  const lv = alerts.length ? alertLevel(alerts[0]) : "";
+  const dk = d.disk;
+  const cores = d.cores == null ? "" : `${d.cores.toFixed(2)} cores`;
+  const vm = d.vm ? `VM ${diskSize(d.vm.workingMb)} in RAM` : "";
+  const rest = d.rest ? `docker (VM) keeps ${diskSize(d.rest.workingMb)}` : "";
+  return h("article", { class: `card res static ${lv}`, "data-id": "docker" },
+    h("div", { class: "eye" }, h("span", { text: "Services" }), lv ? h("span", { class: "chip" }, ICON.alert(LEVEL[lv][0]), LEVEL[lv][1]) : h("span", { class: "chip" }, ICON.good(), `${d.running} running`)),
+    h("div", { class: "ttl" }, h("h3", { text: "Docker containers" })),
+    h("div", { class: "big" }, h("b", { text: diskSize(d.memoryMb) }), `in ${d.running} ${d.running === 1 ? "container" : "containers"}`),
+    h("div", { class: "sub", text: [cores, vm, rest].filter(Boolean).join(" · ") }),
+    dk ? h("div", { class: "sub", title: `The disk use at ${clock(dk.at)}. headroom does not prune.`, text: `Build cache ${diskSize(dk.buildCacheMb)} · unused images ${diskSize(dk.unusedImagesMb)} · volumes ${diskSize(dk.volumesMb)}` }) : null,
+    ...alerts.map((a) => h("div", { class: `note ${alertLevel(a)}`, text: a.message })),
+    running.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Containers, the most memory first" }), ...running.slice(0, 6).map((c) => h("button", {
+      type: "button", class: "row own", "data-owner": c.owner, "data-group": groupOf(c.ownerKind), title: `Mark ${c.owner}`, onclick: () => setFocus({ owner: c.owner }),
+    },
+    h("span", { class: "clip", title: `${c.name} · ${c.owner}${c.project ? ` · project ${c.project}` : ""}`, text: `${c.name} · ${ownerLabel(c.owner)}` }),
+    h("span", {}, h("span", { class: "bar", style: `width:${(((c.memoryMb ?? 0) / top) * 100).toFixed(1)}%;background:${GROUP[groupOf(c.ownerKind)].color}` })),
+    h("b", { text: c.memoryMb == null ? "-" : diskSize(c.memoryMb) })))) : h("div", { class: "sub", text: "No container runs." }));
+}
+
 /** The history of one resource, in a larger chart. A size in MB shows in GB from 2 GB. */
 function drawDetail(r, host, points) {
   const { k, onFree } = viewOf(r);
@@ -907,6 +934,11 @@ function renderResources() {
   // The writers go once, after the last drive.
   const drives = st.resources.filter((r) => r.kind === "disk");
   if (drives.length) cards.splice(cards.findLastIndex((c) => drives.some((r) => r.id === c.dataset.id)) + 1, 0, writesCard(drives[0].owners || []));
+  // H38: the containers go after the card of the Docker engine. A daemon of an older version and no engine give none.
+  if (st.docker) {
+    const at = cards.findIndex((c) => c.dataset.id === "service:docker");
+    cards.splice(at < 0 ? cards.length : at + 1, 0, dockerCard(st.docker, (st.alerts || []).filter((a) => a.kind === "docker")));
+  }
   grid.replaceChildren(...cards);
   // The chart of the open card stays between two reads of the status, so its crosshair stays under the pointer.
   const r = st.resources.find((x) => x.id === state.open), slot = grid.querySelector(".res.open .detchart");

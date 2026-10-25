@@ -5,6 +5,7 @@
  * - `NtQuerySystemInformation` with `SystemPerformanceInformation` gives the file cache, the paged pool and the drivers in RAM.
  * - A Toolhelp snapshot gives each process with its parent.
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
+ * - The VM process `vmmemWSL` is a minimal process with no such counters. `SystemProcessInformation` gives its memory (H38).
  * - `NtQueryInformationProcess` gives the command line of each new `node.exe`, for its `--title` (the owner `service:<name>`).
  * - `NtQueryInformationProcess` with `ProcessSequenceNumber` gives the sequence number of the newest process (H29).
  * - `GetTickCount64` gives the start of the computer.
@@ -33,6 +34,7 @@ import { fileTimeMs, programName, titleOf } from "./owners.ts";
 import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
+import { VM_PROCESSES } from "./docker.ts";
 import { readGpu } from "./windows-gpu.ts";
 import { closePower, keepAwake, readBattery, readMeters, readThermal, watchPower } from "./windows-power.ts";
 import { readCalls, readPresence } from "./windows-presence.ts";
@@ -208,13 +210,16 @@ function processes(): ProcessInfo[] {
       // The memory of a protected process is not readable, so it counts as 0. The totals come from the kernel for each process.
       const counters = pid === 0 ? null : memoryOf(pid);
       const total = totals.get(pid);
-      const title = programName(name) === "node" ? titleOfProcess(pid, total?.startedAt) : null;
+      const program = programName(name);
+      const title = program === "node" ? titleOfProcess(pid, total?.startedAt) : null;
+      // H38: the memory of the VM of Docker and WSL comes from the kernel, because the VM process gives no counters.
+      const vm = counters === null && VM_PROCESSES.has(program) ? total : undefined;
       list.push({
         pid,
         ppid: Number(entry.th32ParentProcessID),
         name,
-        privateMb: counters ? Number(counters.PrivateUsage) / MB : 0,
-        workingMb: counters ? Number(counters.WorkingSetSize) / MB : 0,
+        privateMb: counters ? Number(counters.PrivateUsage) / MB : vm ? vm.privateBytes / MB : 0,
+        workingMb: counters ? Number(counters.WorkingSetSize) / MB : vm ? vm.workingBytes / MB : 0,
         startedAt: total?.startedAt,
         cpuMs: total?.cpuMs,
         readBytes: total?.readBytes,
@@ -317,6 +322,8 @@ const SPI_USER_TIME = 0x28;
 const SPI_KERNEL_TIME = 0x30;
 const SPI_PROCESS_ID = 0x50;
 const SPI_HANDLE_COUNT = 0x60;
+const SPI_WORKING_SET = 0x90;
+const SPI_PAGEFILE_USAGE = 0xb8;
 const SPI_READ_TRANSFER = 0xe8;
 const SPI_WRITE_TRANSFER = 0xf0;
 const SPI_SIZE = 0x100;
@@ -330,6 +337,10 @@ interface ProcessTotals {
   readonly writeBytes: number;
   /** The count of the open handles of the process at the read (H48). */
   readonly handles: number;
+  /** The working set: `WorkingSetSize`. */
+  readonly workingBytes: number;
+  /** The private memory: `PagefileUsage`, the same value as `PrivateUsage` of `K32GetProcessMemoryInfo`. */
+  readonly privateBytes: number;
 }
 
 /**
@@ -359,6 +370,8 @@ function processTotals(): Map<number, ProcessTotals> {
           readBytes: Number(buffer.readBigInt64LE(at + SPI_READ_TRANSFER)),
           writeBytes: Number(buffer.readBigInt64LE(at + SPI_WRITE_TRANSFER)),
           handles: buffer.readUInt32LE(at + SPI_HANDLE_COUNT),
+          workingBytes: Number(buffer.readBigUInt64LE(at + SPI_WORKING_SET)),
+          privateBytes: Number(buffer.readBigUInt64LE(at + SPI_PAGEFILE_USAGE)),
         });
       }
       const next = buffer.readUInt32LE(at);

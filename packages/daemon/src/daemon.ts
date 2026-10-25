@@ -6,14 +6,14 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { createSampler, Engine, ServiceMonitor, Store, waitsForRoom } from "@headroom/core";
+import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom } from "@headroom/core";
 import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
-import { serviceChecks } from "./health.ts";
+import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
 import { announceDaemon, databasePath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
 import { gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
@@ -62,6 +62,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
   // H27: Docker, the URLs of the setting health and the MCP servers of the gateway, every 30 seconds.
   const monitor = new ServiceMonitor({ checks: () => serviceChecks(store.config().health, gateway.list()) });
+  // H38: the containers of Docker every 30 seconds, and the disk use of Docker every 10 minutes. The tick starts each read.
+  const docker = new DockerReader({ get: dockerGet(), log });
   const sampler = await createSampler();
   const engine = new Engine({
     sampler,
@@ -69,6 +71,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     reserveMb: options.reserveMb,
     servers: () => gateway.pids(),
     services: () => monitor.list(),
+    docker: () => docker.last(),
     sleepGapMs: SLEEP_GAP_MS,
     // H34: at the start of a planned drain, the daemon writes the resume plan (H13) again, for the reboot.
     onDrainStart: () => {
@@ -146,6 +149,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     try {
       engine.tick();
       idle.tick();
+      // A read of Docker is due every 30 seconds. The reader skips the poll while a read runs.
+      docker.poll();
     } catch (error) {
       log(`The tick failed: ${error instanceof Error ? error.message : String(error)}`);
     }
