@@ -11,6 +11,7 @@
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
  * - `headroom forecast [--json]`: the time of each resource to its nearest limit, from the fit of its history (H32).
+ * - `headroom thermal [--json]`: the speed limits, the speed and the thermal zones of the CPU, and the throttle (H35).
  * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
  * - `headroom config [presence on|off] [away-after <time>] [busy-wait <time>] [present-reserve <cores>]`: the presence rules (H33).
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
@@ -64,6 +65,8 @@ import {
   spawnClassText,
   spawnLine,
   startsLine,
+  thermalLine,
+  thermalLines,
   SUM_WAIT_START,
   type Alert,
   type Alerts,
@@ -161,6 +164,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom forecast [--json]                (the time of each resource to its nearest limit, from its history)
+  headroom thermal [--json]                 (the speed limits, the speed and the heat of the CPU, and the throttle)
   headroom reboot-plan [--json]             (the reboot budget: the kernel pools, a waiting update, the uptime)
   headroom drain --at <HH:MM|now> [--until <HH:MM>] | --cancel
                A planned drain for a reboot: from the time, new jobs wait and the running jobs finish.
@@ -255,6 +259,9 @@ function printStatus(status: DaemonStatus): void {
   // H30: the battery and the power. A computer with no battery and no Energy Meter has no line.
   const power = powerLine(status.resources ?? [], status.power);
   if (power !== null) console.log(power);
+  // H35: a line only while the CPU is throttled or hot. A daemon of an older version gives no state.
+  const heat = thermalLine(status.thermal);
+  if (heat !== null) console.log(heat);
   // H32: the forecasts under 24 hours, the nearest first. A daemon of an older version gives none.
   const forecasts = forecastLine(status.resources ?? []);
   if (forecasts !== null) console.log(forecasts);
@@ -835,6 +842,23 @@ async function showForecasts(json: boolean): Promise<number> {
   return 0;
 }
 
+/**
+ * `headroom thermal`: the reads of the speed and the heat of the CPU, the throttle and the condition `cool` (H35). While the
+ * CPU is throttled, it also names the owners with the most cores.
+ */
+async function showThermal(json: boolean): Promise<number> {
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  const status = await connection.call<DaemonStatus>(["resources", "status"], {});
+  if (json) {
+    console.log(JSON.stringify(status.thermal ?? null, null, 2));
+    return 0;
+  }
+  if (status.thermal === undefined) return (console.error("headroom: the daemon is older than the heat reads (H35). Run headroom service restart."), 1);
+  for (const line of thermalLines(status.thermal)) console.log(line);
+  return 0;
+}
+
 async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
   const connection = connect();
   if (!connection) return (console.error("headroom does not run."), 1);
@@ -1325,6 +1349,10 @@ async function main(argv: string[]): Promise<number> {
     case "forecast": {
       const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
       return showForecasts(values.json === true);
+    }
+    case "thermal": {
+      const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
+      return showThermal(values.json === true);
     }
     case "history": {
       const { values } = parseArgs({ args: rest, options: { minutes: { type: "string" }, json: { type: "boolean" } } });

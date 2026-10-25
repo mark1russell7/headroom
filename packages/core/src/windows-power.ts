@@ -3,6 +3,7 @@
  *
  * - `CallNtPowerInformation(SystemBatteryState)` of `powrprof.dll` gives the battery. It needs no admin rights.
  * - PDH gives the counter set "Energy Meter": one query, opened at the first read, and one collection for each read.
+ * - The same query has the speed limits, the speed and the thermal zones of the CPU (H35). The reads of one second share one collection.
  * - `PowerSettingRegisterNotification` gives the power source, the charge and the lid.
  * - `PowerRegisterForEffectivePowerModeNotifications` gives the power mode: battery saver, balanced or performance.
  * - `PowerRegisterSuspendResumeNotification` gives the sleep and the wake.
@@ -15,6 +16,7 @@
 
 import koffi, { type LibraryHandle } from "koffi";
 import { BATTERY_STATE_SIZE, guidBytes, guidText, modeEvent, parseBatteryState, parseMeters, POWER_SETTINGS, settingEvent, suspendEvent, type PowerEvent } from "./power.ts";
+import { parseThermal, type CounterItem, type ThermalRead } from "./thermal.ts";
 import type { BatteryRead, PowerMeters } from "./types.ts";
 
 const powrprof = koffi.load("powrprof.dll");
@@ -43,25 +45,56 @@ const ITEM_VALUE = 16;
 /** `PDH_CSTATUS_VALID_DATA` and `PDH_CSTATUS_NEW_DATA`. */
 const VALID_STATUS: ReadonlySet<number> = new Set([0, 1]);
 
+/** `PDH_FMT_COUNTERVALUE` on 64-bit Windows: the status and its padding, and the double. */
+const VALUE_SIZE = 16;
+const VALUE_DOUBLE = 8;
+/** The reads within this time use the same collection. The engine reads the power and the heat in the same tick. */
+const COLLECT_REUSE_MS = 1000;
+
+/**
+ * The counters of the speed and the heat of the CPU (H35). A counter of `_Total` has one value. A counter of the thermal
+ * zones has one value for each zone. The English names work in each language of Windows.
+ */
+const THERMAL_PATHS = {
+  performanceLimit: "\\Processor Information(_Total)\\% Performance Limit",
+  performance: "\\Processor Information(_Total)\\% Processor Performance",
+  frequency: "\\Processor Information(_Total)\\Processor Frequency",
+  temperature: "\\Thermal Zone Information(*)\\Temperature",
+  passiveLimit: "\\Thermal Zone Information(*)\\% Passive Limit",
+  throttleReasons: "\\Thermal Zone Information(*)\\Throttle Reasons",
+} as const;
+type ThermalKey = keyof typeof THERMAL_PATHS;
+
 /** A function of a library of Windows. */
 type NativeFunction = ReturnType<LibraryHandle["func"]>;
 
-/** The query of the Energy Meter, with the functions of PDH. */
+/** The query of the Energy Meter and of the counters of H35, with the functions of PDH. */
 interface MeterQuery {
   readonly query: unknown;
+  /** The counter of the Energy Meter, or `null` on a computer with no Energy Meter. */
   readonly counter: unknown;
+  /** The counters of H35 that the computer has. A counter that PDH does not add is absent. */
+  readonly thermal: Partial<Record<ThermalKey, unknown>>;
   readonly collect: NativeFunction;
   readonly array: NativeFunction;
+  readonly value: NativeFunction;
   readonly close: NativeFunction;
-  /** True after the first collection. The power is a rate, so the first collection gives only the base of the next one. */
-  primed: boolean;
+  /** The count of collections. A rate needs two, so the first collection gives only the base of the next one. */
+  collections: number;
+  /** The time of the last collection, and its result. */
+  collectedAt: number;
+  collected: boolean;
 }
 
-/** The query: `undefined` before the first read, `null` when the computer has no Energy Meter. */
+/** The query: `undefined` before the first read, `null` when the computer has none of the counters. */
 let meterQuery: MeterQuery | null | undefined;
 let meterBuffer = Buffer.alloc(4096);
+const valueBuffer = Buffer.alloc(VALUE_SIZE);
 
-/** This function opens the query of the Energy Meter, or gives `null` when PDH or the counter set is absent. */
+/**
+ * This function opens the query of the Energy Meter and of the counters of H35. It gives `null` when PDH is absent or the
+ * computer has none of the counters. A counter that PDH does not add is absent, and the other counters stay.
+ */
 function openMeters(): MeterQuery | null {
   try {
     const pdh = koffi.load("pdh.dll");
@@ -71,18 +104,44 @@ function openMeters(): MeterQuery | null {
     const array = pdh.func(
       "uint32 __stdcall PdhGetFormattedCounterArrayW(void *counter, uint32 format, _Inout_ uint32 *size, _Out_ uint32 *count, _Out_ uint8_t *buffer)",
     );
+    const value = pdh.func("uint32 __stdcall PdhGetFormattedCounterValue(void *counter, uint32 format, uint32 *type, _Out_ uint8_t *value)");
     const close = pdh.func("uint32 __stdcall PdhCloseQuery(void *query)");
     const query: unknown[] = [null];
     if (open(null, 0, query) !== 0) return null;
-    const counter: unknown[] = [null];
-    if (add(query[0], ENERGY_METER_PATH, 0, counter) !== 0) {
+    const added = (path: string): unknown => {
+      const counter: unknown[] = [null];
+      return add(query[0], path, 0, counter) === 0 ? counter[0] : null;
+    };
+    const counter = added(ENERGY_METER_PATH);
+    const thermal: Partial<Record<ThermalKey, unknown>> = {};
+    for (const [key, path] of Object.entries(THERMAL_PATHS) as [ThermalKey, string][]) {
+      const each = added(path);
+      if (each !== null) thermal[key] = each;
+    }
+    if (counter === null && Object.keys(thermal).length === 0) {
       close(query[0]);
       return null;
     }
-    return { query: query[0], counter: counter[0], collect, array, close, primed: false };
+    return { query: query[0], counter, thermal, collect, array, value, close, collections: 0, collectedAt: Number.NEGATIVE_INFINITY, collected: false };
   } catch {
     return null;
   }
+}
+
+/** This function gives the query. It opens the query at the first read. */
+function meters(): MeterQuery | null {
+  if (meterQuery === undefined) meterQuery = openMeters();
+  return meterQuery;
+}
+
+/** This function collects the query, or gives the result of the collection of the last second. */
+function collected(query: MeterQuery): boolean {
+  const now = Date.now();
+  if (now - query.collectedAt >= 0 && now - query.collectedAt < COLLECT_REUSE_MS) return query.collected;
+  query.collectedAt = now;
+  query.collected = query.collect(query.query) === 0;
+  if (query.collected) query.collections += 1;
+  return query.collected;
 }
 
 /** This function reads a string of UTF-16 code units that ends with 0, from an offset in a buffer. */
@@ -94,41 +153,76 @@ function wideAt(buffer: Buffer, offset: number): string {
 }
 
 /**
- * This function reads the counter set "Energy Meter", with one collection of the query. It gives `null` on a computer with
- * no such counters, at the first read, and when the read fails. The names of the items point into the buffer of the read.
- * On this computer on 2026-10-24, the query cost approximately 4 MB of private memory and 1 second at its start. Each
- * collection cost 5 to 25 ms.
+ * This function reads the values of a counter with instances from the last collection. It skips an item with no valid
+ * value. It gives `null` when the read fails. The names of the items point into the buffer of the read.
  */
-export function readMeters(): PowerMeters | null {
-  if (meterQuery === undefined) meterQuery = openMeters();
-  const meters = meterQuery;
-  if (meters === null) return null;
-  if (meters.collect(meters.query) !== 0) return null;
-  if (!meters.primed) {
-    meters.primed = true;
-    return null;
-  }
+function readItems(query: MeterQuery, counter: unknown): CounterItem[] | null {
   for (let attempt = 0; attempt < 3; attempt++) {
     const size = [meterBuffer.length];
     const count = [0];
-    const status = Number(meters.array(meters.counter, PDH_FORMAT, size, count, meterBuffer)) >>> 0;
+    const status = Number(query.array(counter, PDH_FORMAT, size, count, meterBuffer)) >>> 0;
     if (status === PDH_MORE_DATA) {
       meterBuffer = Buffer.alloc((size[0] ?? meterBuffer.length) + 1024);
       continue;
     }
     if (status !== 0) return null;
     const base = koffi.address(meterBuffer);
-    const items: { name: string; milliwatts: number }[] = [];
+    const items: CounterItem[] = [];
     for (let index = 0; index < (count[0] ?? 0); index++) {
       const at = index * ITEM_SIZE;
       if (at + ITEM_SIZE > meterBuffer.length) break;
       if (!VALID_STATUS.has(meterBuffer.readUInt32LE(at + ITEM_STATUS))) continue;
       const name = wideAt(meterBuffer, Number(meterBuffer.readBigUInt64LE(at) - base));
-      if (name !== "") items.push({ name, milliwatts: meterBuffer.readDoubleLE(at + ITEM_VALUE) });
+      if (name !== "") items.push({ name, value: meterBuffer.readDoubleLE(at + ITEM_VALUE) });
     }
-    return parseMeters(items);
+    return items;
   }
   return null;
+}
+
+/** This function reads the value of a counter with one instance from the last collection, or gives `null` with no valid value. */
+function readValue(query: MeterQuery, counter: unknown): number | null {
+  const status = Number(query.value(counter, PDH_FORMAT, null, valueBuffer)) >>> 0;
+  if (status !== 0 || !VALID_STATUS.has(valueBuffer.readUInt32LE(0))) return null;
+  return valueBuffer.readDoubleLE(VALUE_DOUBLE);
+}
+
+/**
+ * This function reads the counter set "Energy Meter", with one collection of the query. It gives `null` on a computer with
+ * no such counters, at the first read, and when the read fails. On this computer on 2026-10-24, the query cost approximately
+ * 4 MB of private memory and 1 second at its start. Each collection cost 5 to 25 ms.
+ */
+export function readMeters(): PowerMeters | null {
+  const query = meters();
+  if (query === null || query.counter === null || !collected(query) || query.collections < 2) return null;
+  const items = readItems(query, query.counter);
+  return items === null ? null : parseMeters(items.map((item) => ({ name: item.name, milliwatts: item.value })));
+}
+
+/**
+ * This function reads the speed limits, the speed and the thermal zones of the CPU (H35) from the collection of the query.
+ * A read in the same second as `readMeters()` uses the same collection. A counter that the computer does not have gives
+ * `null`. `% Processor Performance` is a rate, so the first collection gives no value for it.
+ */
+export function readThermal(): ThermalRead | null {
+  const query = meters();
+  if (query === null || Object.keys(query.thermal).length === 0 || !collected(query)) return null;
+  const one = (key: ThermalKey): number | null => {
+    const counter = query.thermal[key];
+    return counter === undefined ? null : readValue(query, counter);
+  };
+  const each = (key: ThermalKey): CounterItem[] | null => {
+    const counter = query.thermal[key];
+    return counter === undefined ? null : readItems(query, counter);
+  };
+  return parseThermal({
+    performanceLimit: one("performanceLimit"),
+    performance: one("performance"),
+    frequency: one("frequency"),
+    temperature: each("temperature"),
+    passiveLimit: each("passiveLimit"),
+    throttleReasons: each("throttleReasons"),
+  });
 }
 
 /** This function closes the query of the Energy Meter. */

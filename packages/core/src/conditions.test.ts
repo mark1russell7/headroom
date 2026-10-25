@@ -53,14 +53,14 @@ function lease(id: string, fields: Partial<Lease> = {}): Lease {
 
 describe("the registry of the conditions (H31)", () => {
   it("knows ac, battery>=N, usage<N, starts<N and away, each with a reason in STE", () => {
-    expect(CONDITIONS.map((each) => each.name)).toEqual(["ac", "battery", "usage", "starts", "away"]);
+    expect(CONDITIONS.map((each) => each.name)).toEqual(["ac", "battery", "usage", "starts", "away", "cool"]);
     expect(parseCondition("Away")).toEqual({ name: "away", value: null, text: "away" });
     expect(parseCondition("starts < 700")).toEqual({ name: "starts", value: 700, text: "starts<700" });
     expect(parseCondition("ac")).toEqual({ name: "ac", value: null, text: "ac" });
     expect(parseCondition(" Battery >= 50 ")).toEqual({ name: "battery", value: 50, text: "battery>=50" });
     expect(parseCondition("usage<80")).toEqual({ name: "usage", value: 80, text: "usage<80" });
     expect(knownConditionsText()).toBe(
-      "The known conditions: ac (the laptop is plugged in), battery>=N (the battery is at N% or more, or the laptop is plugged in), usage<N (the five-hour usage window of Claude is under N%), starts<N (the computer starts fewer than N processes a minute), away (Mark is away from the laptop). Planned: cool (H35), unmetered (H39), night (H42).",
+      "The known conditions: ac (the laptop is plugged in), battery>=N (the battery is at N% or more, or the laptop is plugged in), usage<N (the five-hour usage window of Claude is under N%), starts<N (the computer starts fewer than N processes a minute), away (Mark is away from the laptop), cool (the CPU runs at full speed, with no power or heat limit for 2 minutes). Planned: unmetered (H39), night (H42).",
     );
   });
 
@@ -71,8 +71,7 @@ describe("the registry of the conditions (H31)", () => {
   });
 
   it("names the item that adds a planned condition", () => {
-    expect(() => parseCondition("cool")).toThrow(/^"cool" is a planned condition: H35 adds it\. The known conditions:/);
-    expect(() => parseCondition("unmetered")).toThrow(/H39 adds it/);
+    expect(() => parseCondition("unmetered")).toThrow(/^"unmetered" is a planned condition: H39 adds it\. The known conditions:/);
     expect(() => parseCondition("night")).toThrow(/H42 adds it/);
   });
 
@@ -92,7 +91,8 @@ describe("--when (H31)", () => {
   it("reads lists with commas and repeated options, and removes a condition that comes twice", () => {
     expect(parseWhen(["ac,usage<80", "battery>=50", "AC", " "]).map((spec) => spec.text)).toEqual(["ac", "usage<80", "battery>=50"]);
     expect(parseWhen([])).toEqual([]);
-    expect(() => parseWhen(["ac,cool"])).toThrow(/H35/);
+    expect(() => parseWhen(["ac,night"])).toThrow(/H42/);
+    expect(parseWhen(["ac,cool"]).map((spec) => spec.text)).toEqual(["ac", "cool"]);
     expect(parseWhen(["ac,away"]).map((spec) => spec.text)).toEqual(["ac", "away"]);
   });
 
@@ -209,16 +209,16 @@ describe("the battery policy (H31)", () => {
     expect(checksOf(ok, 25)).toEqual([]);
   });
 
-  it("makes --timing wait for AC power, with a reason that points to CI", () => {
+  it("makes --timing wait for AC power and a cool CPU, with a reason that points to CI", () => {
     const timing = lease("t", { conditions: { when: [], timing: true } });
-    expect(checksOf(timing, 25).map((check) => [check.spec.text, check.source])).toEqual([["ac", "timing"]]);
+    expect(checksOf(timing, 25).map((check) => [check.spec.text, check.source])).toEqual([["ac", "timing"], ["cool", "timing"]]);
     expect(conditionWait(timing, facts({ ac: false, percent: 80 }), 25)).toBe(
-      "waits until the laptop is plugged in (--timing): timing numbers on battery are wrong, so run timing tests in CI",
+      "waits until the laptop is plugged in (--timing): timing numbers on battery or on a throttled CPU are wrong, so run timing tests in CI",
     );
     expect(conditionWait(timing, facts(), 25)).toBeNull();
     // --when ac with --timing gives one check, with the reason of --timing.
     const both = lease("t2", { conditions: { when: ["ac", "usage<80"], timing: true } });
-    expect(checksOf(both, null).map((check) => `${check.spec.text}:${check.source}`)).toEqual(["ac:timing", "usage<80:when"]);
+    expect(checksOf(both, null).map((check) => `${check.spec.text}:${check.source}`)).toEqual(["ac:timing", "usage<80:when", "cool:timing"]);
     expect(conditionsText(both.conditions)).toBe("when ac, usage<80, --timing");
     expect(conditionsText(undefined)).toBeNull();
     expect(conditionsText({ when: [] })).toBeNull();
@@ -305,7 +305,7 @@ describe("Broker conditions (H31)", () => {
 
   it("refuses an unknown condition at the request", () => {
     const { broker } = setup();
-    expect(() => broker.request({ holder: "graph", job: "bench", amounts: {}, when: ["cool"] })).toThrow(/H35/);
+    expect(() => broker.request({ holder: "graph", job: "bench", amounts: {}, when: ["night"] })).toThrow(/H42/);
     expect(broker.leases()).toEqual([]);
   });
 
@@ -435,7 +435,7 @@ describe("Engine conditions (H31)", () => {
 
   it("refuses an unknown or a planned condition at the request", () => {
     const { engine } = setup();
-    expect(() => engine.request({ holder: "graph", job: "x", amounts: {}, ...ttl, when: ["cool"] })).toThrow(/"cool" is a planned condition: H35 adds it/);
+    expect(() => engine.request({ holder: "graph", job: "x", amounts: {}, ...ttl, when: ["night"] })).toThrow(/"night" is a planned condition: H42 adds it/);
     expect(() => engine.request({ holder: "graph", job: "x", amounts: {}, ...ttl, when: ["plugged"] })).toThrow(/not a known condition/);
     expect(engine.status().leases).toEqual([]);
   });
@@ -468,7 +468,7 @@ describe("Engine conditions (H31)", () => {
     engine.tick();
     const timing = engine.request({ holder: "server-stack", job: "pnpm bench", amounts: {}, ...ttl, timing: true });
     expect(timing).toMatchObject({ state: "waiting", conditions: { when: [], timing: true } });
-    expect(timing.reason).toBe("waits until the laptop is plugged in (--timing): timing numbers on battery are wrong, so run timing tests in CI");
+    expect(timing.reason).toBe("waits until the laptop is plugged in (--timing): timing numbers on battery or on a throttled CPU are wrong, so run timing tests in CI");
   });
 
   it("records a granted lease that runs without its condition, and closes the record when AC power returns", () => {

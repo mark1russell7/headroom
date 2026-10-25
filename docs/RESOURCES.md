@@ -29,10 +29,10 @@ The kinds are in one registry. A part that a kind does not have is `null`.
 export type ResourceId = string;
 
 /** The kinds. An id with no known kind is a slot, as today. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "battery" | "power" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "battery" | "power" | "thermal" | "gpu";
 
-/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). The process starts use "per minute" (H29). The battery uses Wh, and the power uses W (H30). */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute" | "Wh" | "W";
+/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). The process starts use "per minute" (H29). The battery uses Wh, and the power uses W (H30). The speed of the CPU uses % (H35). */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute" | "Wh" | "W" | "%";
 
 /** One resource kind with its five parts. */
 export interface Resource {
@@ -746,9 +746,10 @@ export interface Condition {
 | `usage<N` | Fresh usage data, and the five-hour window is under N%. N is 1 to 100. | `waits until the five-hour usage window is under 80% (now 91%, resets at 02:10)` |
 | `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. N is 1 to 100,000. | `waits until the computer starts fewer than 700 processes a minute (now 1,108)` |
 | `away` | Mark is away from the laptop (H33). No read of the presence counts as away. | `waits until Mark is away from the laptop (now at the laptop)` |
+| `cool` | No throttle of the CPU in the last 2 minutes (H35). No read of the speed counters counts as cool. | `waits until the CPU runs at full speed (now 62%, a power or heat limit)` |
 
 - `parseWhen()` reads `--when`. A value can have a list with commas, and the option can come more than one time. A condition that comes twice counts one time.
-- An unknown name gives a `ConditionError` with the list of the known conditions. A planned name also names its item: `cool` (H35), `unmetered` (H39) and `night` (H42).
+- An unknown name gives a `ConditionError` with the list of the known conditions. A planned name also names its item: `unmetered` (H39) and `night` (H42).
 - `headroom run` reads the conditions before it connects, so a wrong name stops the run with exit code 2. The broker reads them again at the request.
 - A later item adds a condition with one entry in `CONDITIONS` and one field in `ConditionFacts`. It removes the name from `PLANNED_CONDITIONS`.
 
@@ -757,7 +758,7 @@ export interface Condition {
 **Admit.** At each tick, the broker asks the engine for the reason of each waiting lease. `conditionWait()` examines the checks of the lease in this order:
 
 1. The conditions of `--when`.
-2. The conditions of `--timing`: `ac`, and `cool` when H35 comes. The reason adds `(--timing): timing numbers on battery are wrong, so run timing tests in CI`.
+2. The conditions of `--timing`: `ac` and `cool` (H35). The reason adds `(--timing): timing numbers on battery or on a throttled CPU are wrong, so run timing tests in CI`.
 3. The battery floor, for a heavy lease without `--battery-ok`: `battery>=<floor>`. The reason names why the lease is heavy and tells about `--battery-ok`.
 
 The first check that does not hold gives the reason. Each reason starts with "waits until" or "waits for", but not with "waits for memory". Thus the hook of the plugin does not count it.
@@ -938,6 +939,55 @@ Mark approved this item on 2026-10-24. The AMD display driver leaks kernel memor
 **Faces.** The commands are `headroom reboot-plan [--json]` and `headroom drain`, and the procedure is `resources.drain`. `headroom status` shows the drain line and the recommendation. The dashboard shows one line under the strip.
 
 **The numbers on 2026-10-25.** A one-time run on a copy of the live store at 04:18 local time gave this budget. The non-paged pool was at 2.5 GB and the paged pool at 2.6 GB. Both were lower than one hour before. No update waited, and the uptime was 8 h 41 min. The recommendation was "No reboot needed."
+
+### H35: heat and throttling
+
+Mark approved this item on 2026-10-24. When heat or a power limit slows the CPU, timing tests and benchmarks give wrong numbers. They wait for a cool CPU, and headroom names the owners that make the heat. `thermal.ts` has the pure functions, and `windows-power.ts` has the reads.
+
+**Measure.** PDH reads six counters in the query of the Energy Meter (H30). The engine reads them after the meters, at each read of the processes. A read in the same second uses the same collection, so the daemon has no new process and no new timer.
+
+| Counter | Field | On this laptop on 2026-10-25 |
+|---|---|---|
+| `\Processor Information(_Total)\% Performance Limit` | `performanceLimit`: the speed that the CPU can give, in percent of its nominal speed | 100 (no limit) |
+| `\Processor Information(_Total)\% Processor Performance` | `performance`: the speed in percent of the nominal speed. A boost goes above 100. | 190 to 214. A rate, so the first collection gives `null`. |
+| `\Processor Information(_Total)\Processor Frequency` | `nominalMhz`: the nominal frequency | 2000 |
+| `\Thermal Zone Information(*)\Temperature` | `celsius` of each zone, from kelvin | `\_TZ.THM0`: 359 K to 373 K (86 °C to 100 °C) |
+| `\Thermal Zone Information(*)\% Passive Limit` | `passiveLimit` of each zone | 100 |
+| `\Thermal Zone Information(*)\Throttle Reasons` | `throttleReasons` of each zone, a bit mask | 0 |
+
+- All six counters gave real values on this laptop. The one-off read used `Get-Counter` for 10 seconds, then the code of `readThermal()` for 4 seconds.
+- `% Performance Limit` and `Processor Frequency` have one value, so `PdhGetFormattedCounterValue` reads them. The zone counters use `PdhGetFormattedCounterArrayW`, as the meters do.
+- A counter that PDH does not add, or a value with no valid status, gives `null`. The other counters stay. A computer with none of them gives no read, and Linux has no reader.
+- The frequency of the CPU is the nominal frequency times the speed: 2000 MHz × 204% gives 4.1 GHz.
+
+**The rule.** The CPU is limited when `performanceLimit` is under 90 (a limit over 10%), or a zone has a passive limit under 100. A limit that holds for 30 seconds is a throttle.
+
+- The trail of `ThermalTracker` keeps the reads of the last 11 minutes, one each 10 seconds, as the trail of the CPU (H23). Each point has the speed, the limit and the throttle.
+- The start of a limit stays past the trail, so a long throttle keeps its start. A short break starts the hold of 30 seconds again.
+- A wake empties the trail, so a limit does not span a sleep. A read older than one minute gives no state.
+- The store keeps the measurement each minute in `resource_samples`, so `History.resources.thermal` gives the speed over time.
+- **Hot**: a zone at 98 °C or more, or a zone with a passive limit. The processor of this laptop has a limit of 100 °C, and the zone was at 86 °C to 100 °C at full speed.
+
+**The resource.** One instance, `thermal`, in `%`. The capacity is 100, the free part is the speed that the limits permit, and the used part is the part that a limit takes. The measurement has the field `thermal` with the reads and the throttle. It has no admit part and no enforce part.
+
+**Attribute.** While the CPU is throttled, the attribute part gives the cores of each owner over the last minute. `heatOwners()` gives the 3 owners with the most cores, with their power and their leased jobs. The power is the estimate of H30, so the order by power is the order by cores.
+
+**Alert `heat`.** A check rule in the alert part of `thermal`:
+
+- A warning when the limit holds for 5 minutes (`heatForMs`). An active alert stays until 2 minutes with no throttle (`heatClearMs`), so a short break does not end it.
+- The message names the speed, the cause and the owners, for example `The CPU runs at 62% of its speed for 5 min: a power or heat limit. Most CPU: session:graph 6.1 cores, 7.6 W (leased: vitest).`
+- A passive limit names its zone: `a heat limit of the thermal zone \_TZ.THM0`.
+
+**Admit.** The condition `cool` of H31 holds when no read of the last 2 minutes was a throttle (`COOL_MS`). `--timing` waits for `ac` and `cool`. A computer with no read counts as cool.
+
+- A wait while the CPU is limited gives `waits until the CPU runs at full speed (now 62%, a power or heat limit)`.
+- A wait after a throttle gives `waits until the CPU runs at full speed for 2 minutes (the last throttle was at 14:05)`.
+- A granted lease with `cool` gets the record `unmet`, for example `the CPU at 62% of its speed: a power or heat limit`.
+- Each read sets new facts, so the admission of the same tick tests `cool` on the new read.
+
+**Faces.** `Status.thermal` gives the state with the owners, or `null` with no counters. `headroom status` adds a line only when the CPU is throttled or hot. `headroom thermal [--json]` prints the reads, the state, `cool` and the owners. The dashboard has a chip `Heat` in the strip and the panel "CPU speed and heat".
+
+**Cost.** The read of the six counters took approximately 0.1 ms after the collection. The first collection of the query took 200 ms with the meters, and each later collection took 2 ms. The test process grew by 4.6 MB with the meters and the six counters, near the 4 MB of the meters alone.
 
 ### H46: the peer of a local connection
 

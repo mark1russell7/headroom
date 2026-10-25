@@ -5,6 +5,7 @@
 import type { PowerEvent } from "./power.ts";
 import type { CallRead, PresenceRead } from "./presence.ts";
 import type { KeyState } from "./reboot.ts";
+import type { ThermalRead } from "./thermal.ts";
 import type {
   BatteryRead,
   DiskSpace,
@@ -58,6 +59,11 @@ export interface Sampler {
   battery?(): BatteryRead | null;
   /** This function reads the counter set "Energy Meter" (H30). It gives `null` when the computer has no such counters. Only Windows has it. */
   power?(): PowerMeters | null;
+  /**
+   * This function reads the speed limits, the speed and the thermal zones of the CPU (H35). The counters are in the query of
+   * the Energy Meter, so a read in the same second uses one collection. It gives `null` when the computer has none of them.
+   */
+  thermal?(): ThermalRead | null;
   /**
    * This function registers for the power events of the operating system (H30). The events are the power source, the
    * charge, the lid, the power mode, the sleep and the wake. The listener runs on the main thread, so it only sets the state and asks

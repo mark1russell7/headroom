@@ -60,6 +60,7 @@ export type { SpawnClass, SpawnSource } from "./spawn.ts";
 export {
   BATTERY_FLOOR_DEFAULT,
   checksOf,
+  COOL_MS,
   ConditionError,
   conditionOf,
   CONDITIONS,
@@ -258,6 +259,28 @@ export {
   wattsText,
 } from "./power.ts";
 export type { BatteryState, OwnerWatts, PowerEvent, PowerMode, PowerStatus } from "./power.ts";
+export {
+  causeOf,
+  celsiusText,
+  ghzText,
+  heatHolds,
+  heatMessage,
+  heatOwners,
+  heatOwnersText,
+  hottestZone,
+  HOT_CELSIUS,
+  isLimited,
+  parseThermal,
+  speedOf,
+  THERMAL_KEEP_MS,
+  THERMAL_STALE_MS,
+  thermalLine,
+  thermalLines,
+  ThermalTracker,
+  THROTTLE_HOLD_MS,
+  THROTTLE_SPEED,
+} from "./thermal.ts";
+export type { CounterItem, HeatLimits, HeatOwner, ThermalCounters, ThermalPoint, ThermalRead, ThermalState, ThermalStatus, ThermalZone } from "./thermal.ts";
 export {
   AWAY_AFTER_DEFAULT_MS,
   BUSY_WAIT_DEFAULT_MS,
