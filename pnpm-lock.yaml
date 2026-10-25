@@ -213,14 +213,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.28.1
-        version: 0.28.1(express@5.3.0)
+        specifier: ^0.29.0
+        version: 0.29.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.28.1
-        version: 0.28.1(express@5.3.0)
+        specifier: ^0.29.0
+        version: 0.29.0(express@5.3.0)
       '@procedures/server':
-        specifier: ^0.28.1
-        version: 0.28.1(express@5.3.0)
+        specifier: ^0.29.0
+        version: 0.29.0(express@5.3.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -520,20 +520,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@mark1russell7/algebra@0.7.1':
-    resolution: {integrity: sha512-+nimxDO9pEOwNxVJ7/F4vOAba8CnytN/DbRJKN7FxF/Q+g5Yy2u6e+3bbjiuq0eH9vCWwc3WlIuyDJhSFfuNow==}
-    engines: {node: '>=22.19'}
-    peerDependencies:
-      zod: ^4.1.0
-
   '@mark1russell7/algebra@0.7.3':
     resolution: {integrity: sha512-XTxoC51fc4x/EXKGfJd0AlVULOyJvn+EMlbkvOdyQ2didbIjKURNoHmDx0BpmujHErIMocQ7Z0Ojc2xZ5GP9dg==}
     engines: {node: '>=22.19'}
     peerDependencies:
       zod: ^4.1.0
 
-  '@mark1russell7/coeval@0.6.3':
-    resolution: {integrity: sha512-S04sXaDE0l+ZPDazQa4o/zdRQ2IAfIzJekKPIEOdBtsh3uGFP/AvK+46HNzW5w2rxUYPeznGj0HA68am4TDolw==}
+  '@mark1russell7/coeval@0.7.0':
+    resolution: {integrity: sha512-PLJXG5raA1Kb0QqBL7uEoEP7IPLZay1Gk/FuLXJNNorgC0WKOGNCcTA9E0dQ13mGQQjiE8hCkdGh1sJX8BdO4A==}
 
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7':
     resolution: {gitHosted: true, integrity: sha512-328oeIz1/QtCaK5wXO18E7eZPohVGh3lO+cpjkHFNl1vEL48FEUqTiXLHWDEiHjqnsogmCKyrCs9ssWTEaPV7A==, tarball: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7}
@@ -586,8 +580,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.28.1':
-    resolution: {integrity: sha512-zfmxpbvYyof7f5EJ9bX3d68YFY/mTj6t2+OG+OmJrwznNLP9Extu7StKcQsaCcUsPllMvNk9AP39oNKT3oAURw==}
+  '@procedures/client@0.29.0':
+    resolution: {integrity: sha512-eJyjmF+oVlGg9voyr4m7pxaWFN1lYhCIBhP17l1XogeIUH2XbUEWyJWybZaCVNTvpKqfak7LTv5OJjIM/3spBA==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -595,12 +589,12 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.28.1':
-    resolution: {integrity: sha512-cv1tG0i9svyycl+n7LOsH0W+Hr+PzUDBLqI8wBRem55iWKWql9+a/WFC+4j7aX36ImLp707jBx6ZDcEgn1a2Eg==}
+  '@procedures/peer@0.29.0':
+    resolution: {integrity: sha512-chCCa5C4psrsdRwy4wcn9GPZtK5nMDppA0FkyptV/zqa63TjePu9NUqbGQ76OCnqtHVelXCESZPiTPSV0Jt/lw==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.28.1':
-    resolution: {integrity: sha512-lE2OJjxafpWyVM+yztSI/cv8rx+UA9ou9PBU0isYuF7m39gVugZPka/aKYWaJ8fG343BZo6qPn71V/RmMG31/w==}
+  '@procedures/server@0.29.0':
+    resolution: {integrity: sha512-fYCs6sQA+0wLkRYZkXhgh29M/Ho2w93PdS1qHTYB+d23IGK7wyC4DGN/maIBVds4EVjr2CiRY/b63wn8pALHyA==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -1682,17 +1676,12 @@ snapshots:
   '@koromix/koffi-win32-x64@3.3.3':
     optional: true
 
-  '@mark1russell7/algebra@0.7.1(zod@4.6.7)':
-    dependencies:
-      '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
-      zod: 4.6.7
-
   '@mark1russell7/algebra@0.7.3(zod@4.6.7)':
     dependencies:
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
       zod: 4.6.7
 
-  '@mark1russell7/coeval@0.6.3': {}
+  '@mark1russell7/coeval@0.7.0': {}
 
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7': {}
 
@@ -1739,10 +1728,10 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.28.1(express@5.3.0)':
+  '@procedures/client@0.29.0(express@5.3.0)':
     dependencies:
-      '@mark1russell7/algebra': 0.7.1(zod@4.6.7)
-      '@mark1russell7/coeval': 0.6.3
+      '@mark1russell7/algebra': 0.7.3(zod@4.6.7)
+      '@mark1russell7/coeval': 0.7.0
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
       '@types/ws': 8.18.2
@@ -1755,10 +1744,10 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/peer@0.28.1(express@5.3.0)':
+  '@procedures/peer@0.29.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.28.1(express@5.3.0)
+      '@procedures/client': 0.29.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
@@ -1766,11 +1755,11 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/server@0.28.1(express@5.3.0)':
+  '@procedures/server@0.29.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.28.1(express@5.3.0)
-      '@procedures/peer': 0.28.1(express@5.3.0)
+      '@procedures/client': 0.29.0(express@5.3.0)
+      '@procedures/peer': 0.29.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
