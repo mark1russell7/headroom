@@ -226,6 +226,7 @@ The alerts of today go onto the rules with no change to their ids, kinds, messag
 | Alert of today | Kind | Rule |
 |---|---|---|
 | `memory` | `memory` | Level on free: below 1024 MB. |
+| `cache` | `memory` | Check (H50): the system file cache at 4096 MB or more, with less than 6144 MB available. Critical below 1024 MB available. Clear below 3072 MB of cache, or above 8192 MB available. |
 | `commit` | `commit` | Level on used: above 90% of the commit limit. |
 | `pool` | `pool` (`pool:nonpaged`) | Level on used: above 3072 MB. Growth of used: more than 500 MB in one hour. |
 | `pool:paged` | `pool` (`pool:paged`) | Level on used: above 4096 MB. Growth of used: more than 500 MB in one hour. |
@@ -374,7 +375,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 
 | Resource | Measure | Attribute | Alert | Admit | Enforce |
 |---|---|---|---|---|---|
-| `memory` (MB) | Capacity: the physical memory. Free: the available memory. | The private bytes of each process tree. | Level: free below 1 GB. Outliers: `runaway` and `orphan`. | Measured. Reserve: 1024 MB. A lease keeps its amount less the private bytes of its tree. | `JOB_OBJECT_LIMIT_JOB_MEMORY` with `--limit`. Report: the peak. |
+| `memory` (MB) | Capacity: the physical memory. Free: the available memory. | The private bytes of each process tree. | Level: free below 1 GB. Outliers: `runaway` and `orphan`. Check: `cache`, a large system file cache with little available memory (H50). | Measured. Reserve: 1024 MB. A lease keeps its amount less the private bytes of its tree. | `JOB_OBJECT_LIMIT_JOB_MEMORY` with `--limit`. Report: the peak. |
 | `commit` (MB) | Capacity: the commit limit. Used: the commit charge. | The private bytes of `memory`. They are the commit of each process. | Level: used above 90%. | None. A memory lease covers it. | The memory limit of a job is a commit limit. |
 | `pool:nonpaged`, `pool:paged` (MB) | Used only. Windows tells no capacity. | By pool tag, not by process. A tag names its driver. | Level: used above 3 GB or 4 GB. Growth: 500 MB in one hour. | None. | None. Report only. |
 | `desktop` (count) | Used: the processes of the session, and the USER and GDI objects. | The processes of each owner. | Level: used above 1000 processes. | None. The `browser` slot limits the largest cause. | Later: `JOB_OBJECT_LIMIT_ACTIVE_PROCESS`. |
@@ -1353,6 +1354,36 @@ Before H49, the sampler opened each process for `K32GetProcessMemoryInfo`. The d
 - The private memory of `system` went from 1.5 GB to 4.8 GB. The services that the daemon cannot open held 3.3 GB of it.
 - The three kernel owners of H49 held 0.9 GB: the locked pages 410 MB, the PFN database 336 MB and the page tables 147 MB.
 - The system read of all the processes took 22 ms.
+
+### H50: the system file cache
+
+On 2026-10-25, the available memory fell two times, and the reaper of Claude Code stopped jobs. No job used much memory. These are the numbers from the samples of headroom:
+
+| Event | System file cache | Kernel pools | Available memory |
+|---|---|---|---|
+| First, 12:17 to 12:38 | 0.3 GB to 4.6 GB in one minute, then 7.5 GB | Paged 1.4 GB to 2.6 GB, non-paged 1.6 GB to 2.9 GB | 12.4 GB to 3.9 GB, the lowest 0.7 GB |
+| Second, 13:03 to 13:34 | 0.5 GB to 10.1 GB in 8 minutes | No large change | Near 1 GB from 13:09 to 13:31 |
+
+- After the reap at 13:32, the cache fell to 0.9 GB in 2 minutes, and 7.7 GB was available.
+- The cache also went above 9 GB at 08:35 and at 10:28, but more memory was available then.
+- At 14:15, Windows Search (`SearchIndexer`) read 350 MB to 390 MB each second (`\Process(SearchIndexer)\IO Read Bytes/sec`), with 1.2 to 2 cores. The indexer has all of `C:` and `D:` in its scope. Defender scans each file that a process opens.
+
+**The counter.** `kernel:cache` is `System Cache Resident Bytes`: the working set of the system cache. It holds the mapped views of the open files and the metadata streams of ReFS and NTFS. These pages are in use, not on the standby list, so they are not available memory. headroom counted them correctly before H50. Windows trims this working set only under pressure, and slowly: in the second event, it gave back approximately 2 GB in 20 minutes. The reaper of Claude Code stops jobs at approximately 1 GB available.
+
+**What H50 adds.**
+
+- The owners `system:search` (`SearchIndexer`, `SearchProtocolHost`, `SearchFilterHost`) and `system:defender` (`MsMpEng`, `MpDefenderCoreService`, `NisSrv`, `MpCmdRun`). Before H50, they were in `system`.
+- The counter tracker of the engine also counts `readBytes` (`ReadTransferCount`). `CounterTracker.reads()` gives the owners that read most in the last hour.
+- The alert `cache`, a check rule of the kind `memory`. `cacheLevel()` in `resources.ts` gives its level. The limits are `cacheMb` (4096) and `cacheAvailableMb` (6144) of `AlertRules`.
+- The dashboard shows the alert on the memory card.
+
+**What headroom does not do.** headroom does not trim or flush the cache. `SetSystemFileCacheSize` needs `SeIncreaseQuotaPrivilege`, and a flush of the memory lists needs `SeProfileSingleProcessPrivilege`. The daemon has the least privilege, and has neither of the two.
+
+**The commands for an admin shell.** Mark uses these commands. The daemon does not.
+
+1. Examine the Dev Drive: `fsutil devdrv query D:`. A trusted Dev Drive has Defender in performance mode.
+2. Remove the drive `D:` from the scope of Windows Search. Open Indexing Options with `control.exe srchadmin.dll`, and clear `D:` in the indexed locations. The service stays on for `C:`.
+3. To see the parts of the cache, run RAMMap of Sysinternals: the tab "Use Counts" gives `Metafile` and `Mapped File`. `RAMMap64.exe -Ew` empties the working sets, and `-Es` empties the system working set.
 
 ## Decisions
 

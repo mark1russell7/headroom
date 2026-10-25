@@ -22,6 +22,10 @@ export interface OwnerRule {
  * `system:memory compression` holds the compressed pages of the other processes. `system:registry` holds the registry.
  * `system:secure system` holds the memory of the secure kernel. The VM processes go to `docker`, and the split of H38
  * gives that memory to the containers and to `docker (VM)`.
+ *
+ * The file readers of Windows have their own owners (H50). `system:search` is the indexer of Windows Search and its
+ * filter hosts. `system:defender` is the scanner of Microsoft Defender. Both read each file that a job writes. On
+ * 2026-10-25 they filled the system file cache to 10 GB, and the reaper of Claude Code stopped jobs.
  */
 export const DEFAULT_RULES: readonly OwnerRule[] = [
   { owner: "docker", kind: "docker", names: ["vmmem", "vmmemwsl", "com.docker.backend", "com.docker.build", "docker desktop", "dockerd", "containerd"] },
@@ -31,7 +35,9 @@ export const DEFAULT_RULES: readonly OwnerRule[] = [
   { owner: "system:memory compression", kind: "system", names: ["memory compression"] },
   { owner: "system:registry", kind: "system", names: ["registry"] },
   { owner: "system:secure system", kind: "system", names: ["secure system"] },
-  { owner: "system", kind: "system", names: ["system", "msmpeng", "searchindexer", "svchost", "explorer", "dwm"] },
+  { owner: "system:search", kind: "system", names: ["searchindexer", "searchprotocolhost", "searchfilterhost"] },
+  { owner: "system:defender", kind: "system", names: ["msmpeng", "mpdefendercoreservice", "nissrv", "mpcmdrun"] },
+  { owner: "system", kind: "system", names: ["system", "svchost", "explorer", "dwm"] },
 ];
 
 /** The folder where Claude Code writes one file for each live session. */

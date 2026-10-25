@@ -12,7 +12,7 @@ import { childrenOf, orphanName, treeMb } from "./owners.ts";
 import { MB } from "./sampler.ts";
 import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
-import type { OwnerCores, OwnerWrites } from "./counters.ts";
+import type { OwnerCores, OwnerReads, OwnerWrites } from "./counters.ts";
 import { coresText, cpuRateOf, CPU_RESERVE_DEFAULT, heldMs, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { splitUses, type DockerStatus } from "./docker.ts";
 import { forecastFrom, rateText, spanText, type Forecast, type ForecastTarget, type Part, type TargetName, type Trend } from "./forecast.ts";
@@ -73,6 +73,8 @@ export interface Readings {
    * disk gives them, and the disk alert names them.
    */
   readonly writes?: readonly OwnerWrites[] | undefined;
+  /** The owners that read most in the last hour, from the counter tracker of the engine (H50). The cache alert names them. */
+  readonly reads?: readonly OwnerReads[] | undefined;
   /** The cores of each owner, as an average over the last minute, from the counter tracker of the engine. The cpu kind uses them. */
   readonly cores?: readonly OwnerCores[] | undefined;
   readonly disks: readonly DiskSpace[];
@@ -569,6 +571,15 @@ export function writersText(writes: readonly OwnerWrites[] | undefined): string 
   return top.length === 0 ? "" : ` Most writes in the last hour: ${top.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`;
 }
 
+/** This function gives the text of the owners that read most in the last hour, or "" when no owner read 100 MB (H50). */
+export function readersText(reads: readonly OwnerReads[] | undefined): string {
+  const top = [...(reads ?? [])]
+    .filter((each) => each.mbLastHour >= WRITERS_ABOVE_MB)
+    .sort((a, b) => b.mbLastHour - a.mbLastHour)
+    .slice(0, WRITERS_SHOWN);
+  return top.length === 0 ? "" : ` Most reads in the last hour: ${top.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`;
+}
+
 /** The last sentence of the disk alerts (H21). It tells the reader the command that shows what uses the space. */
 export const DISK_HINT = "Run `headroom disk report` to see what uses the space.";
 
@@ -723,6 +734,15 @@ const MEMORY_RESOURCE: Resource = {
           return { subject: "memory", mb: free, message: `Only ${free} MB of memory is available` };
         },
       },
+      {
+        // H50: the system file cache is not available memory. Windows Search and Defender fill it when jobs touch many files.
+        type: "check",
+        alert: "cache",
+        alertId: () => "cache",
+        severity: true,
+        level: ({ readings, active }) => cacheLevel(readings.memory, limits, active ?? null),
+        text: cacheText,
+      },
     ],
   },
   admit: {
@@ -735,6 +755,41 @@ const MEMORY_RESOURCE: Resource = {
   // The target is the limit of the memory alert: 1 GB available.
   forecast: LEVEL_TARGETS,
 };
+
+/** An active cache alert ends only below this part of its cache limit, or above its available limit divided by this part (H50). */
+const CACHE_CLEAR = 0.75;
+
+/**
+ * This function gives the level of the cache alert (H50), or `null`. A warning starts when the system file cache holds
+ * `cacheMb` or more and less than `cacheAvailableMb` is available. The alert is critical below `availableMb`.
+ */
+export function cacheLevel(
+  memory: SystemMemory,
+  limits: Pick<AlertRules, "cacheMb" | "cacheAvailableMb" | "availableMb">,
+  active: Level | null = null,
+): Level | null {
+  const cache = memory.cacheMb;
+  if (cache === undefined) return null;
+  const cacheLimit = active === null ? limits.cacheMb : limits.cacheMb * CACHE_CLEAR;
+  const availableLimit = active === null ? limits.cacheAvailableMb : limits.cacheAvailableMb / CACHE_CLEAR;
+  if (cache < cacheLimit || memory.availableMb >= availableLimit) return null;
+  return memory.availableMb < limits.availableMb ? "critical" : "warning";
+}
+
+/** This function gives the text of the cache alert (H50). The text names the owners that read and wrote most. */
+function cacheText({ readings }: InstanceFacts): AlertText {
+  const cache = readings.memory.cacheMb ?? 0;
+  return {
+    subject: "cache",
+    mb: Math.round(cache),
+    message:
+      `The system file cache holds ${gb(cache)}, and only ${gb(readings.memory.availableMb)} of memory is available. ` +
+      "Windows does not count these pages as available memory, and it trims them slowly." +
+      readersText(readings.reads) +
+      writersText(readings.writes) +
+      " Run jobs that read many files with `headroom run --slot files`, so that they do not run at the same time.",
+  };
+}
 
 /** The commit charge. Its capacity is the commit limit. A memory lease covers it, so it has no admit part. */
 const COMMIT: Resource = {

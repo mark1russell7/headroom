@@ -77,6 +77,24 @@ describe("CounterTracker", () => {
     ]);
     expect(restarted.writes(30 * 60_000)).toEqual([{ owner: "mcp:vex", kind: "mcp", mbPerMin: 0, mbLastHour: 500 }]);
   });
+
+  it("gives the reads of each owner with the counter readBytes, and no reads without it (H50)", () => {
+    const reader = (pid: number, readMb: number): ProcessInfo => ({ ...p(pid, 0, 0), readBytes: readMb * MB });
+    const ownerOf = new Map([[10, "system:search"], [20, "session:graph"]]);
+    const searchKinds = new Map<string, OwnerKind>([["system:search", "system"], ["session:graph", "session"]]);
+    const tracker = new CounterTracker(["cpuMs", "writeBytes", "readBytes"]);
+    const plain = new CounterTracker();
+    for (const each of [tracker, plain]) {
+      each.read(0, [reader(10, 1000), reader(20, 5)], ownerOf, searchKinds);
+      each.read(60_000, [reader(10, 4000), reader(20, 105)], ownerOf, searchKinds);
+    }
+    expect(tracker.reads(60_000)).toEqual([
+      { owner: "system:search", kind: "system", mbPerMin: 3000, mbLastHour: 3000 },
+      { owner: "session:graph", kind: "session", mbPerMin: 100, mbLastHour: 100 },
+    ]);
+    expect(tracker.writes(60_000)).toEqual([]);
+    expect(plain.reads(60_000)).toEqual([]);
+  });
 });
 
 describe("CounterTracker after a sleep (H30)", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
+import { cacheLevel } from "./resources.ts";
 import type { ServiceHealth } from "./services.ts";
 import type { BatteryRead, OwnerKind, ProcessInfo, TcpConnection, TcpTable } from "./types.ts";
 
@@ -389,5 +390,47 @@ describe("runaway process trees (H23)", () => {
     expect(treeAlerts(dip(1.5))).toEqual([]);
     expect(treeAlerts(trailOf(8, 11), 30)).toEqual([]);
     expect(treeAlerts(trailOf(8, 11), 10, [], { leases: [lease(10)] })).toEqual([]);
+  });
+});
+
+describe("cache alerts (H50)", () => {
+  // The values of the second event on 2026-10-25: the system file cache held 10.1 GB, and 1.0 GB was available.
+  const full = { ...memory, availableMb: 1000, cacheMb: 10_342 };
+  const reads = [
+    { owner: "system:search", kind: "system" as const, mbPerMin: 900, mbLastHour: 52_000 },
+    { owner: "session:graph", kind: "session" as const, mbPerMin: 20, mbLastHour: 1200 },
+    { owner: "mcp:vex", kind: "mcp" as const, mbPerMin: 0, mbLastHour: 40 },
+  ];
+
+  it("gives a critical cache alert that names the top readers and writers, next to the memory alert", () => {
+    const writes = [{ owner: "session:graph", kind: "session" as const, mbPerMin: 10, mbLastHour: 600 }];
+    const alerts = detect({ ...input([], {}), memory: full, reads, writes });
+    expect(alerts.map((alert) => alert.id)).toEqual(["memory", "cache"]);
+    expect(alerts[1]).toStrictEqual({
+      id: "cache", kind: "cache", subject: "cache", pid: null, mb: 10_342, severity: "critical",
+      message:
+        "The system file cache holds 10.1 GB, and only 1.0 GB of memory is available. Windows does not count these pages as available memory, " +
+        "and it trims them slowly. Most reads in the last hour: system:search 50.8 GB, session:graph 1.2 GB. Most writes in the last hour: " +
+        "session:graph 600 MB. Run jobs that read many files with `headroom run --slot files`, so that they do not run at the same time.",
+    });
+  });
+
+  it("warns when the cache is large and less than 6 GB is available, and gives no alert without the cache read", () => {
+    // The first event: the cache held 7.5 GB, and 4.8 GB was available.
+    expect(detect({ ...input([], {}), memory: { ...memory, availableMb: 4800, cacheMb: 7650 } })[0]).toMatchObject({ id: "cache", severity: "warning" });
+    expect(detect({ ...input([], {}), memory: { ...memory, availableMb: 4800, cacheMb: 2000 } })).toEqual([]);
+    expect(detect({ ...input([], {}), memory: { ...memory, availableMb: 7000, cacheMb: 7650 } })).toEqual([]);
+    expect(detect({ ...input([], {}), memory: { ...memory, availableMb: 4800 } })).toEqual([]);
+  });
+
+  it("keeps an active cache alert until the cache falls below 75% of its limit or the available memory rises past the limit", () => {
+    const limits = DEFAULT_ALERT_RULES;
+    const at = (availableMb: number, cacheMb: number) => ({ ...memory, availableMb, cacheMb });
+    expect(cacheLevel(at(5000, 3500), limits)).toBeNull();
+    expect(cacheLevel(at(5000, 3500), limits, "warning")).toBe("warning");
+    expect(cacheLevel(at(5000, 3000), limits, "warning")).toBeNull();
+    expect(cacheLevel(at(7000, 5000), limits, "warning")).toBe("warning");
+    expect(cacheLevel(at(8200, 5000), limits, "warning")).toBeNull();
+    expect(cacheLevel(at(900, 5000), limits, "warning")).toBe("critical");
   });
 });
