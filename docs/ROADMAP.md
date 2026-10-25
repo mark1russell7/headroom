@@ -83,7 +83,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H42 | Quiet hours and the overnight window: a CPU cap at night for quiet fans, or big test suites that wait for the night. Mark picks the hours. | later |
 | H43 | Clean-grid timing: jobs that can wait run when the New England grid is cleanest. The effect is small, so this item is last. | later |
 | H44 | Fix: the Angular completion in `~/.bashrc` starts node in each new shell, and each node process leaks kernel memory. Mark runs the two commands of the hub ask. | waits for Mark |
-| H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when he does not use it. If the poll continues, he turns off the extension in the workspaces that do not use Docker. | waits for Mark |
+| H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when it is not in use. If the poll continues, Mark turns off the extension in the workspaces that do not use Docker. | waits for Mark |
 
 ## The MCP gateway (H11)
 
