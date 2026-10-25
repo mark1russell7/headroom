@@ -761,7 +761,7 @@ function resName(r) {
 }
 // The instance of an alert: its id, except the alert "pool" (the non-paged pool), the alert "churn" (the process starts) and the process outliers of the memory.
 // A forecast alert (H32) goes to the card of its instance.
-const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.id === "churn" ? "procs" : a.kind === "battery" ? "battery" : a.kind === "heat" ? "thermal" : a.kind === "handles" ? "handles" : a.kind === "runaway" || a.kind === "orphan" ? "memory"
+const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.id === "churn" ? "procs" : a.kind === "battery" ? "battery" : a.kind === "heat" ? "thermal" : a.kind === "handles" ? "handles" : a.kind === "runaway" || a.kind === "orphan" || a.kind === "cache" ? "memory"
   : a.kind === "forecast" ? a.id.slice("forecast:".length) : a.id);
 // A resource with a capacity shows its free part. A kernel pool, the desktop or a rate (the network) shows its used part.
 function viewOf(r) {

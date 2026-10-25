@@ -4,6 +4,8 @@
  * - `runaway`: one process above a size that holds no lease, outside Docker and the system.
  * - `orphan`: a large process with no owner whose parent stopped. Nothing reads its output.
  * - `memory`: little available memory.
+ * - `cache`: a large system file cache while little memory is available (H50). Windows does not count the cache as
+ *   available memory. The message names the owners that read and wrote most in the last hour.
  * - `commit`: a commit charge near its limit.
  * - `pool`: a large kernel pool (non-paged or paged), or a pool that grows fast. A driver leak shows here.
  * - `desktop`: many processes in the session. The desktop heap can run out, and new processes then fail at their start.
@@ -74,7 +76,7 @@ import type { ServiceHealth } from "./services.ts";
 import type { ProcessStarts } from "./starts.ts";
 import type { ThermalState } from "./thermal.ts";
 import type { BatteryRead, DiskSpace, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
-import type { OwnerCores, OwnerWrites } from "./counters.ts";
+import type { OwnerCores, OwnerReads, OwnerWrites } from "./counters.ts";
 
 export { diskSize } from "./units.ts";
 
@@ -82,6 +84,7 @@ export { diskSize } from "./units.ts";
 export type AlertKind =
   | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain"
   | "handles"
+  | "cache"
   | "docker";
 
 /** The level of an alert. Only some kinds set it. */
@@ -112,6 +115,10 @@ export interface AlertRules {
   readonly orphanMb: number;
   /** Less available memory than this, in MB, starts an alert. The default is 1024. */
   readonly availableMb: number;
+  /** A system file cache of this size or more, in MB, starts a cache alert when little memory is available (H50). The default is 4096. */
+  readonly cacheMb: number;
+  /** A large system file cache with less available memory than this, in MB, starts a cache warning (H50). The default is 6144. */
+  readonly cacheAvailableMb: number;
   /** A commit charge above this part of its limit starts an alert. The default is 0.9. */
   readonly commitRatio: number;
   /** A non-paged pool above this size, in MB, starts an alert. The default is 3072. */
@@ -193,6 +200,8 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   runawayMb: 4096,
   orphanMb: 1024,
   availableMb: 1024,
+  cacheMb: 4096,
+  cacheAvailableMb: 6144,
   commitRatio: 0.9,
   poolMb: 3072,
   poolGrowthMb: 500,
@@ -269,6 +278,8 @@ export interface AlertInput {
   readonly disks?: readonly DiskInput[] | undefined;
   /** The owners that wrote most in the last hour (H20). A disk alert names the first 3 above 100 MB. */
   readonly writes?: readonly OwnerWrites[] | undefined;
+  /** The owners that read most in the last hour (H50). A cache alert names the first 3 above 100 MB. */
+  readonly reads?: readonly OwnerReads[] | undefined;
   /** The TCP connections and the dynamic port range (H24). */
   readonly tcp?: TcpTable | undefined;
   /** The health of each service after the last round of checks (H27). */
@@ -315,7 +326,7 @@ const HOUR_MS = 3_600_000;
 function readingsOf(
   input: Pick<
     AlertInput,
-    | "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
+    | "memory" | "processes" | "load" | "disks" | "writes" | "reads" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
     | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles"
   > & {
     readonly leases?: readonly Lease[] | undefined;
@@ -323,7 +334,7 @@ function readingsOf(
 ): Readings {
   return {
     at: input.at ?? 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
-    processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
+    processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, reads: input.reads, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, gpu: input.gpu, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
     trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal, handles: input.handles,
   };

@@ -17,7 +17,10 @@ import type { OwnerKind, ProcessInfo } from "./types.ts";
 /** A total of a process since its start: the processor time in milliseconds, or the bytes that it read or wrote. */
 export type Counter = "cpuMs" | "readBytes" | "writeBytes";
 
-/** The writes of one owner over the last hour. `Status.writes` gives the owners that wrote most. */
+/**
+ * The writes of one owner over the last hour. `Status.writes` gives the owners that wrote most. The reads of an owner
+ * (H50) have the same fields: the MB that the owner read.
+ */
 export interface OwnerWrites {
   /** The owner: `session:graph`, `mcp:vex`, `docker` or `system`. */
   readonly owner: string;
@@ -27,6 +30,9 @@ export interface OwnerWrites {
   /** The MB that the owner wrote in the last hour. */
   readonly mbLastHour: number;
 }
+
+/** The reads of one owner over the last hour (H50). */
+export type OwnerReads = OwnerWrites;
 
 /** The processor use of one owner: the cores that it used, as an average over the last minute. */
 export interface OwnerCores {
@@ -228,9 +234,22 @@ export class CounterTracker {
 
   /** This function gives the owners that wrote most in the last hour, at most `limit`. An owner with less than 0.1 MB is absent. */
   writes(now: number, limit = 10): OwnerWrites[] {
-    const { sums: recent, spanMs } = this.recent("writeBytes", now, WRITES_RATE_MS);
+    return this.#transfers("writeBytes", now, limit);
+  }
+
+  /**
+   * This function gives the owners that read most in the last hour, at most `limit` (H50). The count includes the reads
+   * from the file cache and from pipes. A tracker without the counter `readBytes` gives an empty list.
+   */
+  reads(now: number, limit = 10): OwnerReads[] {
+    return this.#transfers("readBytes", now, limit);
+  }
+
+  /** This function gives the owners with the most bytes of one counter in the last hour, at most `limit`. */
+  #transfers(counter: "readBytes" | "writeBytes", now: number, limit: number): OwnerWrites[] {
+    const { sums: recent, spanMs } = this.recent(counter, now, WRITES_RATE_MS);
     const minutes = spanMs / MINUTE_MS;
-    return [...this.hour("writeBytes", now)]
+    return [...this.hour(counter, now)]
       .map(([owner, bytes]) => ({
         owner,
         kind: this.kindOf(owner),

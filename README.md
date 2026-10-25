@@ -50,6 +50,7 @@ The list "Memory by owner" gives the private memory and the memory in RAM of eac
 - A process belongs to its Claude Code session, its MCP server of the gateway, or a group, for example `docker`, `browser`, `editor` or `system`.
 - A Node process with `--title=<name>` that Task Scheduler, a service or Explorer starts is the owner `service:<name>`, for example `service:headroom-daemon`.
 - On Windows, the minimal processes have their own owners: `system:memory compression`, `system:registry` and `system:secure system`. The Docker VM is in `docker (VM)`.
+- On Windows, the file readers of the system have their own owners (H50): `system:search` (Windows Search and its filter hosts) and `system:defender` (the scanner of Microsoft Defender).
 - On Windows, some owners have no process: `kernel` (the kernel pools), `kernel:cache` (the system file cache in RAM), `kernel:drivers` (the code of the kernel and of the drivers), `kernel:driver locked`, `kernel:pfn database` and `kernel:page tables`.
 - On Windows, one read of `SystemProcessInformation` gives the memory of each process, also of a protected process. The daemon opens no process for it.
 - The memory in RAM of a process is its private working set, as the column "Memory" of Task Manager. A page that processes share is in no owner, so it is in `unattributed`.
@@ -174,6 +175,17 @@ On 2026-10-25, a subagent started `find / -name ... | head -3` in Git Bash. The 
 - **The alert `handles`.** A warning comes when one process holds more than 100,000 handles, or gains more than 20,000 handles in 5 minutes. Above 500,000 handles, the alert is critical.
 - The alert names the process, its handles and their gain in one minute, its age, its owner and its command line. It ends when the process ends, or after 2 minutes under its line.
 - headroom does not stop the process. The owner stops it by its process ID.
+
+### The system file cache (H50)
+
+On 2026-10-25, the available memory fell two times while no job used much memory. The system file cache grew from 0.5 GB to 10.1 GB in some minutes, and the available memory stayed near 1 GB for 22 minutes. Then the reaper of Claude Code stopped jobs. Windows Search read 350 MB each second from the files of the sessions on `D:`, and Defender scanned them.
+
+- **The cause.** The system file cache holds the pages of the open files and the metadata of the file system. Windows does not count these pages as available memory, and it trims them slowly. The standby list is a different list: it is available memory.
+- **The alert `cache`.** A warning comes when the cache holds 4 GB or more and less than 6 GB of memory is available. Below 1 GB available, the alert is critical. It ends when the cache falls below 3 GB, or when more than 8 GB is available.
+- The alert names the owners that read most and wrote most in the last hour. The daemon counts the reads of each owner from the same process read as the writes. The count includes the reads from the cache and from pipes.
+- **The owners.** `system:search` and `system:defender` show the work of the indexer and the scanner in the lists of owners.
+- **The jobs.** Run jobs that read many files (a wide grep, a build of many repos) with `headroom run --slot files`. Only one job holds the slot `files` at a time.
+- headroom does not trim the cache. A trim needs a privilege that the daemon does not have. `docs/RESOURCES.md` gives the commands for an admin shell.
 - **The owner records.** At the first read of a process, the daemon records its owner, its command line (200 characters) and its start. The record keeps the owner after the parent ends.
 - An orphan shows as `<owner> (orphan)`, with the owner of its record, in the owners of `headroom status`, of the dashboard and of each resource. The runaway alerts of the memory and the CPU (H23) add `(orphan)` to the owner of each orphan, also `other (orphan)`.
 - The store keeps the records of the processes that live for more than one minute. Thus a restart of the daemon keeps the owners of the orphans. The record of an ended process goes away at the next read.
@@ -562,6 +574,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `orphan` | A process with no owner holds more than 1 GB, and its parent stopped. |
 | `handles` | One process holds more than 100,000 handles (a warning) or more than 500,000 (critical), or gains more than 20,000 handles in 5 minutes. The id is `runaway:handles:<pid>`. The alert names the owner, also after the parent ended, and the command line (H48). |
 | `memory` | Less than 1 GB of memory is available. |
+| `cache` | The system file cache holds 4 GB or more, and less than 6 GB of memory is available (a warning) or less than 1 GB (critical). The alert names the owners that read and wrote most in the last hour (H50). |
 | `commit` | The commit charge is above 90% of its limit. |
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |

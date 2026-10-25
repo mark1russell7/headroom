@@ -7,7 +7,7 @@ import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInpu
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { conditionWait, localClock, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
-import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
+import { CounterTracker, type OwnerCores, type OwnerReads, type OwnerWrites } from "./counters.ts";
 import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { gpuRead, gpuStatus, leaseGpuMb, type GpuRead, type GpuStatus } from "./gpu.ts";
 import {
@@ -427,9 +427,11 @@ export class Engine {
   /** The memory in use that no owner holds at the last read of the processes (H49), or `null` before the first read. */
   #unattributedMb: number | null = null;
   /** The change of the processor time and of the written bytes of each owner (H20). */
-  readonly #counters = new CounterTracker(["cpuMs", "writeBytes"]);
+  // H50: the reads name the owners that fill the system file cache.
+  readonly #counters = new CounterTracker(["cpuMs", "writeBytes", "readBytes"]);
   /** The owners that wrote most in the last hour, from the last read of the processes. */
   #writes: readonly OwnerWrites[] = [];
+  #reads: readonly OwnerReads[] = [];
   /** The cores of each owner over the last minute, from the last read of the processes. */
   #cores: readonly OwnerCores[] | undefined;
   /** The CPU group of each process at the last read (H23): a leased job or a process tree. */
@@ -777,6 +779,7 @@ export class Engine {
       this.#groups = cpuGroups(this.#processes, this.#ownership);
       this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf, this.#groups);
       this.#writes = this.#counters.writes(now);
+      this.#reads = this.#counters.reads(now);
       const cores = this.#counters.cores(now);
       this.#cores = docker === null ? cores : splitCores(cores, docker.shares);
       this.#docker =
@@ -1224,7 +1227,7 @@ export class Engine {
     const found = detect(
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
-        load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
+        load: this.#load, disks, writes: this.#writes, reads: this.#reads, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
         battery: this.#battery, meters: this.#meters, cores: this.#cores, thermal: this.#thermal.state(now) ?? undefined, gpu: this.#gpu,
         // H23: the CPU rules read the trails of the counter tracker, and an active alert ends only after its clear time.
         // H36: the GPU rule reads the trail of the used part of each adapter.

@@ -123,6 +123,23 @@ describe("attribute", () => {
     expect(owners.reduce((sum, owner) => sum + owner.workingMb, 0)).toBe(10_844);
     expect(unattributedMb(memory, owners)).toBe(28_310 - 5959 - 10_844);
   });
+
+  it("gives Windows Search and Defender their own owners, with the filter hosts of the indexer (H50)", () => {
+    const readers: ProcessInfo[] = [
+      { pid: 900, ppid: 4, name: "services.exe", privateMb: 10, workingMb: 4 },
+      { pid: 5100, ppid: 900, name: "SearchIndexer.exe", privateMb: 180, workingMb: 120 },
+      { pid: 5120, ppid: 5100, name: "SearchProtocolHost.exe", privateMb: 20, workingMb: 15 },
+      { pid: 5130, ppid: 5100, name: "SearchFilterHost.exe", privateMb: 12, workingMb: 9 },
+      { pid: 3300, ppid: 900, name: "MsMpEng.exe", privateMb: 400, workingMb: 310 },
+      { pid: 3310, ppid: 900, name: "NisSrv.exe", privateMb: 8, workingMb: 6 },
+      { pid: 2200, ppid: 900, name: "svchost.exe", privateMb: 50, workingMb: 40 },
+    ];
+    const { owners, ownerOf } = attribute(readers, []);
+    expect([5100, 5120, 5130].map((pid) => ownerOf.get(pid))).toEqual(["system:search", "system:search", "system:search"]);
+    expect([3300, 3310].map((pid) => ownerOf.get(pid))).toEqual(["system:defender", "system:defender"]);
+    expect(ownerOf.get(2200)).toBe("system");
+    expect(owners.find((owner) => owner.owner === "system:search")).toEqual({ owner: "system:search", kind: "system", privateMb: 212, workingMb: 144, processes: 3 });
+  });
 });
 
 describe("unattributedMb (H49)", () => {
