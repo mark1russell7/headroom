@@ -23,7 +23,7 @@ import {
 } from "./docker.ts";
 import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
-import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
+import { findJobs, MIN_ID_PREFIX, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb, unattributedMb } from "./owners.ts";
@@ -299,6 +299,30 @@ export interface Suggestion {
   readonly coreRuns: number;
   /** The highest peak cores of those runs. */
   readonly peakCores: number | null;
+}
+
+/**
+ * A query of `headroom cancel`: the id of a lease or its first 8 characters or more, or the name of a job. `holder` keeps
+ * only the leases of that holder. `all` cancels each waiting match, else a query with more than one cancels none.
+ */
+export interface CancelQuery {
+  readonly id?: string | undefined;
+  readonly job?: string | undefined;
+  readonly holder?: string | undefined;
+  readonly all?: boolean | undefined;
+  /** Who cancels: the holder of the caller, or "cli". */
+  readonly by: string;
+}
+
+/** The result of `cancel()`: the leases that it cancelled, and the leases that match the query. */
+export interface CancelResult {
+  /** The waiting leases that left the queue. */
+  readonly cancelled: readonly Lease[];
+  /**
+   * The leases that match: the active ones, the waiting ones first. Without an active match, an id gives its ended lease.
+   * A granted lease does not leave the queue: `headroom release` ends it.
+   */
+  readonly matches: readonly Lease[];
 }
 
 /** One pool tag: its non-paged size and its change over the window, in MB. */
@@ -872,6 +896,30 @@ export class Engine {
     return findJobs(this.#store, query, this.#now());
   }
 
+  /**
+   * This function takes waiting leases off the queue (`headroom cancel`). Their jobs do not start, and each client of
+   * `headroom run` exits with code 75. A query with more than one waiting match cancels none, unless it has `all`.
+   * It throws a `RangeError` for a query with no id and no job, or for an id shorter than 8 characters.
+   */
+  cancel(query: CancelQuery): CancelResult {
+    this.#clock();
+    const id = query.id?.trim() ?? "";
+    const job = query.job ?? "";
+    if ((id === "") === (job === "")) throw new RangeError("Give the id of a lease or the name of a job, not both");
+    if (id !== "" && id.length < MIN_ID_PREFIX) throw new RangeError(`Give the full id of the lease or its first ${MIN_ID_PREFIX} characters or more`);
+    const ofQuery = (lease: Lease): boolean =>
+      (id === "" ? lease.job === job : lease.id.startsWith(id)) && (query.holder === undefined || lease.holder === query.holder);
+    const active = this.#broker.leases().filter((lease) => isActive(lease) && ofQuery(lease));
+    const waiting = active.filter((lease) => lease.state === "waiting");
+    const matches = [...waiting, ...active.filter((lease) => lease.state !== "waiting")];
+    if (matches.length === 0 && id !== "") return { cancelled: [], matches: this.#store.leasesByPrefix(id, 1).filter(ofQuery) };
+    if (waiting.length === 0 || (waiting.length > 1 && query.all !== true)) return { cancelled: [], matches };
+    const cancelled = waiting.flatMap((lease) => this.#broker.cancel(lease.id, query.by) ?? []);
+    this.#persist(cancelled);
+    this.#persist(this.#broker.tick(this.capacity()));
+    return { cancelled, matches };
+  }
+
   /** This function records a heartbeat of a lease. `processes` is the count of processes that its job started so far (H29). */
   renew(id: string, processes?: number): Lease | undefined {
     this.#clock();
@@ -1064,11 +1112,15 @@ export class Engine {
     return () => this.#listeners.delete(listener);
   }
 
-  /** This function waits until a lease is no longer waiting, the signal aborts, or the time ends. */
+  /**
+   * This function waits until a lease is no longer waiting, the signal aborts, or the time ends. The call counts as a
+   * heartbeat of an active lease, because its client runs. Thus a waiting lease from the store keeps its place after a restart.
+   */
   waitFor(id: string, options: { readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined } = {}): Promise<Lease> {
     return new Promise((resolve, reject) => {
-      const lease = this.#broker.get(id);
-      if (!lease) return reject(new Error(`No lease has the id ${id}`));
+      const known = this.#broker.get(id);
+      if (!known) return reject(new Error(`No lease has the id ${id}`));
+      const lease = isActive(known) ? (this.renew(id) ?? known) : known;
       if (lease.state !== "waiting" || options.signal?.aborted) return resolve(lease);
       const done = (): void => {
         off();

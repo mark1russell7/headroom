@@ -303,6 +303,16 @@ The broker then has one rule for each id, with no name of a kind in it:
 - A lease that waits for a condition has no place in the queue. It does not hold the head after a long wait, and no later lease waits for it in a conflict.
 - The engine gives `conditionWait()` of `conditions.ts`: the `--when` conditions, `--timing` and the battery floor.
 
+**Cancel and dead clients.** A waiting lease leaves the queue with no job start in these ways:
+
+- `Broker.cancel(id, by)` sets the state `cancelled`, the reason `cancelled by <by> (headroom cancel)` and the field `cancelledBy`. The store keeps it in the column `cancelled_by`. A lease that does not wait does not change.
+- `Engine.cancel()` finds the active leases by an id, a prefix of 8 or more characters, or a job, with an optional holder. More than one waiting match cancels none, unless `all` is true. The procedure is `resources.cancel`.
+- The wait of the client ends at the change. The client of `headroom run` then exits with code 75 and names who cancelled.
+- A lease with a process ends at the next tick after its process exits. The client of `headroom run` gives its process ID, so its lease ends within 2 seconds of its stop.
+- A lease with no process ends after its heartbeat limit with no call. A call of `resources.wait` counts as a heartbeat, because its client runs.
+- `Broker.restore()` gives each active lease from the store a new limit from the start of the daemon. No heartbeat came while the daemon was stopped.
+- A waiting lease from the store also ends after that limit when its client does not call `resources.wait` or `resources.renew`. A live process ID does not keep it. Windows can give the process ID of a stopped client to a new process. The reason is `NO_REJOIN_REASON`.
+
 ### 5. Enforce
 
 `headroom run` holds each job in a job object (H6). The enforce part of a kind tells what the job object can limit. Without a limit, headroom only reports the use of the job at its release.
@@ -983,7 +993,15 @@ Mark approved this item on 2026-10-24. The AMD display driver leaks kernel memor
 - A reboot ends an automatic drain as a planned drain. A cancel ends it too.
 - Hold: a cancel saves its time in the setting `autoDrainHold`. The hold ends when the sum falls under the end level, at a reboot, or at a new level.
 - The rule does not change a drain without `auto`. A sleep starts the two times again.
-- Reason: `drainReason()` gives `waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)`, with the current sum.
+- Heavy jobs only: an automatic drain holds only a heavy lease. `drainHolds()` gives the rule, and `drainHeavyWhy()` tells why a lease is heavy, or gives `null`.
+  - A heavy lease asks for 2 GB of memory or more, 4 cores or more (`DRAIN_HEAVY_CORES`), or the slot `browser`. A spawn-heavy lease (H47) is heavy too.
+  - The amounts of `--mem auto` and `--cpu auto` count, because the client asks for the learned amounts. A learned or a declared spawn class counts.
+  - The reason: the failed process starts (0xC0000142) came from browsers and test workers. A light job, for example lint or a typecheck, does not wait for hours.
+  - A drain without `auto` (`headroom drain`) holds each lease, as before. A lease with `conditions.duringDrain` passes each drain.
+  - `drainStatus().waiting` counts only the leases that the drain holds. The status line and the alert `drain` tell `automatic: heavy jobs wait` (`AUTO_DRAIN_HOLDS`).
+  - The client of `headroom run` writes `headroom: a drain for a reboot runs. Light jobs start.` for a light job in an active automatic drain.
+  - The daemon runs a tick at its start. Thus a light lease from the store that waited under an older rule starts at the deploy.
+- Reason: `drainReason()` gives `waits for a reboot: the kernel pools are at 6.1 GB, and this job is heavy: it runs browser tests (headroom drain, automatic: heavy jobs wait)`, with the current sum.
 - Budget: `autoDrain` is `{ levelMb, poolsMb, forecast }`. The engine fits the sum of the pool points of each sample (`poolsPoints()`), and gives the forecast to the level.
 
 **Faces.** The commands are `headroom reboot-plan [--json]` and `headroom drain`, and the procedure is `resources.drain`. `headroom status` shows the drain line and the recommendation. The dashboard shows one line under the strip.
@@ -1359,6 +1377,9 @@ These were the open questions. The session decided each one as a technical call.
 | What does `ports:tcp` count? | Each TCP row with a local port in the dynamic range, in each state. | A port in `TIME_WAIT` is not free. When the range is full, new connections fail. |
 | Who puts a job in efficiency mode on battery? | The client of `headroom run`, from the field `eco` of the answer of its heartbeat. | The client holds the job object and the rights on its processes. The daemon stays small and opens no process of a job. |
 | Does a lease end because the laptop slept? | No. The heartbeat of each active lease gets the time of the sleep. | A heartbeat cannot come while the laptop sleeps. The job continues after the wake. |
+| Which jobs does an automatic drain hold? | Only the heavy jobs: 2 GB or more, 4 cores or more, the slot `browser`, or spawn-heavy. A drain of `headroom drain` holds each job. | The failed starts came from browsers and test workers. A held lint job helps nothing, and the sessions waited for hours. A manual drain still holds all jobs for a reboot. |
+| Does `headroom cancel` take a granted lease? | No. It tells the caller to use `headroom release <id>`. | A cancel promises that nothing ran. A release of a granted lease ends only the lease, and the job continues. Two commands keep the two results apart. |
+| Does a waiting lease from the store keep its place after a restart? | Yes, for one heartbeat limit. Its client must call again in that limit, else the lease ends. | The clients of `headroom run` connect again in seconds. A stopped client can leave its process ID to a new process, so a live process ID is not sufficient. |
 | Is the power of an owner measured? | No. It is an estimate from the CPU power and the processor time of the owner. | Windows gives no power for each process with no ETW. The estimate is cheap and names the large users. |
 | How does the model show the health of a service? | A new unit `state`. The measurement has the field `health`. Its used part is the latency of the last check in ms, and the capacity and the free part are `null`. | A state is not an amount. The latency gives the history and the trend of the panel a number. The unit `count` gives a capacity of 1 that tells nothing. |
 | When is an MCP server down? | When its start failed, or after 3 exits in 10 minutes. A server that the gateway stopped for idle, or that exited one time, is `idle`. | The gateway starts a server again at the next request. Thus one exit is not a failure of the service, but a start that fails is. |

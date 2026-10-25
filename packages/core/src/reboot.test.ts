@@ -184,21 +184,30 @@ describe("the drain (H34)", () => {
 
   it("gives the reason, the line, the alerts and the end of an automatic drain", () => {
     const auto: Drain = { at: NOW, until: null, setAt: NOW, startedAt: NOW, readyAt: null, auto: { levelMb: 6144, poolsMb: 6250 } };
-    const plain = lease("a", "waiting", "pnpm test", "graph");
-    expect(drainWait(plain, auto, NOW, clock, 6400)).toBe("waits for a reboot: the kernel pools are at 6.3 GB (headroom drain, automatic)");
-    expect(drainWait(plain, auto, NOW, clock)).toBe("waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)");
+    const plain = { ...lease("a", "waiting", "playwright test", "graph"), amounts: { browser: 1 } };
+    const heavy = "and this job is heavy: it runs browser tests (headroom drain, automatic: heavy jobs wait)";
+    expect(drainWait(plain, auto, NOW, clock, 6400)).toBe(`waits for a reboot: the kernel pools are at 6.3 GB, ${heavy}`);
+    expect(drainWait(plain, auto, NOW, clock)).toBe(`waits for a reboot: the kernel pools are at 6.1 GB, ${heavy}`);
+    // A light lease does not wait in an automatic drain, and the drain does not count it.
+    const light = lease("c", "waiting", "pnpm lint", "graph");
+    expect(drainWait(light, auto, NOW, clock)).toBeNull();
     expect(drainName(auto, clock)).toBe("the automatic drain of 01:40");
     expect(drainName({ ...auto, auto: null }, clock)).toBe("the drain for the reboot at 01:40");
-    const status = drainStatus(auto, [lease("b", "granted", "vitest", "vex"), plain], NOW);
+    const status = drainStatus(auto, [lease("b", "granted", "vitest", "vex"), plain, light], NOW);
     expect(drainLine(status, clock)).toBe(
-      "Automatic drain since 01:40 (the kernel pools were at 6.1 GB): 1 job still runs. 1 job waits for a reboot. A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
+      "Automatic drain since 01:40 (automatic: heavy jobs wait, and light jobs start). The kernel pools were at 6.1 GB. 1 job still runs. " +
+        "1 heavy job waits for a reboot. A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
     );
     const alerts = drainAlerts(drainStatus(auto, [], NOW), clock);
     expect(alerts.map((alert) => [alert.id, alert.subject])).toEqual([["drain", "kernel pools"], ["drain:ready", "kernel pools"]]);
     expect(alerts[0]?.message).toBe(
-      "The kernel pools reached 6.1 GB and stayed at or above 6.0 GB for 2 minutes. An automatic drain started at 01:40: new jobs wait for a reboot. No job runs. A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
+      "The kernel pools reached 6.1 GB and stayed at or above 6.0 GB for 2 minutes. An automatic drain started at 01:40 (automatic: heavy jobs wait, and light jobs start). " +
+        "A heavy job asks for 2 GB of memory or more, 4 cores or more, or the slot browser, or it is spawn-heavy. No job runs. " +
+        "A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
     );
-    expect(alerts[1]?.message).toBe("Ready for the reboot: no job runs. New jobs wait for a reboot (automatic drain). headroom does not reboot the computer: Mark does it.");
+    expect(alerts[1]?.message).toBe(
+      "Ready for the reboot: no job runs. New heavy jobs wait for a reboot (automatic drain), and light jobs start. headroom does not reboot the computer: Mark does it.",
+    );
     expect(autoDrainEndedText({ levelMb: 6144, poolsMb: 6250 })).toBe("The kernel pools stayed under 5.7 GB for 10 minutes, so the automatic drain ended. New jobs start again.");
     // The settings keep the facts of an automatic drain. A drain of an older version has none.
     expect(parseDrain(JSON.stringify(auto))).toEqual(auto);

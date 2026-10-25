@@ -25,6 +25,7 @@
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
  * - `headroom drain --at <HH:MM|now> [--until <HH:MM>]` and `headroom drain --cancel`: a planned drain for a reboot (H34).
+ * - `headroom cancel <id> | --job <name> [--holder <h>] [--all]`: take a waiting lease off the queue. Its job does not start.
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -51,6 +52,8 @@ import {
   isSpawnWait,
   AUTO_DRAIN_DEFAULT_MB,
   AUTO_DRAIN_MARGIN_MB,
+  AUTO_DRAIN_WAIT,
+  drainHeavyWhy,
   BATTERY_FLOOR_DEFAULT,
   coresText,
   drainLine,
@@ -95,6 +98,7 @@ import {
   type Suggestion,
   type TcpPorts,
 } from "@headroom/core";
+import { CANCEL_USAGE, cancelCommand, NOT_STARTED, notStartedLine } from "./cancel-cli.ts";
 import { answers, connect, connectTo, isNetworkError, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
@@ -149,6 +153,8 @@ const HELP = `headroom: the memory and job broker of this computer
                On battery below the floor (${BATTERY_FLOOR_DEFAULT}%), a heavy job waits: 2 GB or more, the slot
                browser, or spawn-heavy. --battery-ok: start it anyway.
                In a planned drain for a reboot, a new job waits. --during-drain: start it anyway.
+               In an automatic drain, only a heavy job waits: 2 GB or more, 4 cores or more, the slot
+               browser, or spawn-heavy. A light job starts.
                While Mark is on a call, presents or uses a full-screen app, a new heavy job waits
                (up to 20 min). While Mark is at the laptop, a heavy job runs in efficiency mode, and
                2 more cores stay for Mark. --when away: wait until Mark is away. --ignore-presence: not.
@@ -189,6 +195,7 @@ const HELP = `headroom: the memory and job broker of this computer
                An alert tells when no job runs. --until: the drain ends at that time if no reboot came.
                headroom does not reboot the computer. Only Mark does.
                The kernel pools at the level of headroom config auto-drain start a drain with no end.
+               An automatic drain holds only the heavy jobs. The light jobs start.
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
@@ -205,11 +212,23 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom history [--minutes 60] [--json]
   headroom pool <name> <capacity>
   headroom release <id>
+  ${CANCEL_USAGE}
+               Take a waiting job off the queue: it does not start, and its headroom run exits with code 75.
+               <id>: the lease id or its first 8 characters. --job: more than one match cancels none, unless --all.
+               A running job does not change: headroom release <id> ends its lease. No match: exit 3.
   headroom resume-plan
 `;
 
-/** This function finds the Claude Code session that started this process: by the variables of Claude Code, then by the process tree. */
+/** This function finds the holder of this process: its Claude Code session, else the user name. */
 async function holderOf(): Promise<string> {
+  return (await sessionHolder()) ?? userInfo().username;
+}
+
+/**
+ * This function finds the Claude Code session that started this process, or gives `null`: by `HEADROOM_HOLDER`, by the
+ * variables of Claude Code, then by the process tree.
+ */
+async function sessionHolder(): Promise<string | null> {
   const fromEnv = process.env["HEADROOM_HOLDER"];
   if (fromEnv) return fromEnv;
   try {
@@ -226,9 +245,9 @@ async function holderOf(): Promise<string> {
       if (name) return name;
     }
   } catch {
-    // The process tree is not readable: the user name is the holder.
+    // The process tree is not readable, so no session is known.
   }
-  return userInfo().username;
+  return null;
 }
 
 function mb(value: number): string {
@@ -772,6 +791,12 @@ async function run(argv: string[]): Promise<number> {
   if ((when.length > 0 || timing) && first.conditions === undefined) {
     console.error("headroom: the daemon is older than --when and --timing, so the job runs without its conditions. Run headroom service restart.");
   }
+  // H34: an automatic drain holds only the heavy jobs. A daemon of an older version holds each job, so no note comes then.
+  const drain = status?.reboot?.drain ?? null;
+  const held = first.state === "waiting" && first.reason?.startsWith(AUTO_DRAIN_WAIT) === true;
+  if (drain?.state === "active" && drain.auto && !duringDrain && !held && drainHeavyWhy(first) === null) {
+    console.error("headroom: a drain for a reboot runs. Light jobs start.");
+  }
   // H47: a spawn-heavy job does not run beside a browser test. A daemon of an older version gives no class.
   if (first.spawn?.heavy === true) {
     const opt = first.spawn.source === "declared" ? "" : " --no-spawn-heavy: not.";
@@ -783,9 +808,10 @@ async function run(argv: string[]): Promise<number> {
     console.error(`headroom: ${job} waited too long (${lease.reason ?? "no room"}). Nothing ran.`);
     return 75;
   }
+  // The lease ended, or headroom cancel took it off the queue.
   if (lease.state !== "granted") {
-    console.error(`headroom: the lease ended before the job started: ${lease.reason ?? lease.state}`);
-    return 75;
+    console.error(notStartedLine(job, lease));
+    return NOT_STARTED;
   }
   // H19: with a temp root, the job writes its temp files under its lease. With --keep, the job keeps the TEMP of its
   // parent, because a service that it starts on purpose can use its temp folder after the job ends.
@@ -1439,6 +1465,9 @@ async function main(argv: string[]): Promise<number> {
       printStatus(await connection.call<Status>(["resources", "pool"], { name, capacity: Number(capacity) }));
       return 0;
     }
+    case "cancel":
+      // The caller of the cancel: its session, else "cli".
+      return cancelCommand(rest, connect(), (await sessionHolder()) ?? "cli");
     case "release": {
       const connection = connect();
       if (!connection || !rest[0]) return (console.error("Usage: headroom release <id>, with the daemon running"), 1);

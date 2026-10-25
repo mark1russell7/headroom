@@ -444,8 +444,12 @@ headroom config auto-drain --clear # the default level again
 ```
 
 - When the two pools stay at or above the level for 2 minutes, the daemon starts a drain with no end time. It does this only when no drain is planned or active.
-- A new lease waits with the reason `waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)`.
-- The alert `drain` tells why the drain started and what ends it. The alert `drain:ready` and the resume plan are the same as for a planned drain.
+- An automatic drain holds only the heavy jobs. A heavy job asks for 2 GB of memory or more, 4 cores or more, or the slot `browser`, or it is spawn-heavy (learned, or `--spawn-heavy`). The amounts of `--mem auto` and `--cpu auto` count.
+- The failed starts came from browsers and test workers. Thus a light job, for example lint or a typecheck, starts. `headroom run` then writes `headroom: a drain for a reboot runs. Light jobs start.`
+- A heavy lease waits with the reason `waits for a reboot: the kernel pools are at 6.1 GB, and this job is heavy: it runs browser tests (headroom drain, automatic: heavy jobs wait)`.
+- A drain of `headroom drain` still holds each new job, light or heavy.
+- The alert `drain` and the drain line of `headroom status` tell `automatic: heavy jobs wait`. The alert `drain` also tells why the drain started and what ends it. The alert `drain:ready` and the resume plan are the same as for a planned drain.
+- At its start, the daemon runs the admission at once. Thus a light job that waited under an older version starts at the deploy.
 - A reboot ends the drain. `headroom drain --cancel` ends it too.
 - The automatic drain also ends by itself when the pools stay under the level less 300 MB for 10 minutes. The alert `drain:ended` tells it.
 - After `headroom drain --cancel`, the rule starts no new drain until the pools fall under the level less 300 MB, or until a reboot.
@@ -511,6 +515,23 @@ graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6
 - `--json` gives `{ id, job, holder, state, exitCode, signal, reason, queuedAt, startedAt, endedAt, waitedMs, ranMs, peakMb, processes, peakStartsPerMin, averageStartsPerMin, spawn, log }`. The times are ISO strings or `null`. The procedure is `resources.job`.
 - The command gives the exit code 0 when it finds a job. With no match, it gives the exit code 3, and `--json` writes `{ "error": "no job", "query": "..." }`.
 - The store keeps each ended lease for at least 7 days.
+
+A session can take its queued job off the queue with `headroom cancel`, for example after its subagent ended:
+
+```sh
+headroom cancel 3f2a9c1e                       # the lease id, or its first 8 characters
+headroom cancel --job graph-e2e --holder graph # only the jobs of one holder
+headroom cancel --job "pnpm test" --all        # each waiting match
+```
+
+- The job does not start. Its waiting `headroom run` exits with code 75 and writes `headroom: graph-e2e was cancelled by graph before it started. Nothing ran.`
+- The lease records who cancelled it: the session of the caller (`HEADROOM_HOLDER` or the session of the process tree), else `cli`. Its state is `cancelled`.
+- `--job` with more than one waiting match lists the matches and cancels none. `--all` cancels each match.
+- A running job does not change. `headroom cancel` tells it and gives exit code 1. `headroom release <id>` ends its lease, but the job does not stop.
+- The exit code is 0 after a cancel, or when the match ended already. It is 3 with no match, 1 for more than one match, and 2 for a wrong use.
+- `--json` gives `{ cancelled, matches }`. The procedure is `resources.cancel`.
+- A waiting lease also ends by itself when its client stops. A lease with a process ends at the next tick after its process exits. A lease with no process ends after its heartbeat limit (5 minutes by default) with no call.
+- After a restart of the daemon, each waiting lease of the store gets a new limit. It ends when its client does not call again in that limit.
 
 A job that writes much data asks for space on a drive with `--disk`. `--disk 5g` asks for space on the drive of the current folder, and `--disk D:=5g` names the drive. The lease waits until the drive has the space. The broker keeps the critical limit of the disk alert free: 5 GB, or 5% of a small drive. A disk lease holds its full amount until its release. A lease that is larger than the drive, or that names a drive that does not exist, is cancelled at once.
 

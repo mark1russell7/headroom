@@ -33,7 +33,7 @@ export {
 export type { CpuControl, CpuRateBinding, TrailPoint, TreeUse } from "./cpu.ts";
 export { largeFileDirs, largeFiles } from "./disks.ts";
 export type { LargeFile } from "./disks.ts";
-export { Broker, isActive, processIsAlive } from "./broker.ts";
+export { Broker, isActive, NO_REJOIN_REASON, processIsAlive } from "./broker.ts";
 export type { BrokerOptions, Capacity, JobExit, Lease, LeaseMeasures, LeaseRequest, LeaseState } from "./broker.ts";
 export {
   averageRate,
@@ -103,7 +103,22 @@ export type {
 export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
-export type { Alerts, ConfigChange, DiskStatus, EcoState, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
+export type {
+  Alerts,
+  CancelQuery,
+  CancelResult,
+  ConfigChange,
+  DiskStatus,
+  EcoState,
+  EndedAlert,
+  EngineOptions,
+  History,
+  PoolTagRow,
+  PoolTags,
+  ResourcePoint,
+  Status,
+  Suggestion,
+} from "./engine.ts";
 export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, ORPHAN_LABEL, orphanName, parentOf, processKey, programName, readSessions, sessionsDir, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
 export { COMMAND_MAX, isOrphanOwner, OwnerRecords, ownerText, RECORD_AFTER_MS, RECORDS_MAX, shortCommand } from "./orphans.ts";
 export type { ProcessRecord, RecordChanges } from "./orphans.ts";
@@ -153,12 +168,17 @@ export {
   AUTO_DRAIN_DEFAULT_MB,
   AUTO_DRAIN_END_MS,
   AUTO_DRAIN_MARGIN_MB,
+  AUTO_DRAIN_HOLDS,
   AUTO_DRAIN_START_MS,
+  AUTO_DRAIN_WAIT,
   autoDrainEndedText,
   DRAIN_ALERT,
   DRAIN_ENDED_ALERT,
+  DRAIN_HEAVY_CORES,
   DRAIN_READY_ALERT,
   drainAlerts,
+  drainHeavyWhy,
+  drainHolds,
   drainLine,
   drainName,
   drainReason,

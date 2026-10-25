@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
-import { Broker, type Capacity } from "./broker.ts";
+import { Broker, NO_REJOIN_REASON, type Capacity, type Lease } from "./broker.ts";
 import { rooms } from "./resources.ts";
 
 function setup(options: { alive?: Set<number>; used?: number } = {}) {
@@ -253,5 +253,82 @@ describe("Broker", () => {
     const lease = broker.request({ holder: "a", job: "x", amounts: { memory: 9000 } });
     expect(broker.release(lease.id)?.state).toBe("cancelled");
     expect(() => broker.request({ holder: "a", job: "x", amounts: { memory: -1 } })).toThrow(RangeError);
+  });
+});
+
+describe("Broker cancel and the leases of a restart", () => {
+  it("cancels a waiting lease with who cancelled it, and does not change a granted lease", () => {
+    const { broker } = setup();
+    const runs = broker.request({ holder: "graph", job: "build", amounts: { memory: 6000 } });
+    const waits = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 } });
+    broker.tick(cap(8000));
+    expect(broker.get(waits.id)?.state).toBe("waiting");
+    expect(broker.cancel(waits.id, "jarvis")).toMatchObject({ state: "cancelled", reason: "cancelled by jarvis (headroom cancel)", cancelledBy: "jarvis", endedAt: 1_000_000 });
+    expect(broker.cancel(runs.id, "jarvis")).toMatchObject({ state: "granted" });
+    expect(broker.cancel("nothing", "cli")).toBeUndefined();
+    // A second cancel does not change the lease.
+    expect(broker.cancel(waits.id, "cli")).toMatchObject({ cancelledBy: "jarvis" });
+  });
+
+  it("ends a waiting lease of a dead client at the next tick, by its process", () => {
+    const alive = new Set([10, 11]);
+    const { broker, advance } = setup({ alive });
+    broker.request({ holder: "graph", job: "build", amounts: { memory: 6000 }, pid: 10 });
+    const waits = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 }, pid: 11 });
+    broker.tick(cap(8000));
+    alive.delete(11);
+    advance(2000);
+    broker.tick(cap(8000));
+    expect(broker.get(waits.id)).toMatchObject({ state: "expired", reason: "the process exited" });
+  });
+
+  it("ends a waiting lease with no process when its client stops its heartbeat, after its limit", () => {
+    const { broker, advance } = setup();
+    broker.request({ holder: "graph", job: "build", amounts: { memory: 6000 }, ttlMs: 3_600_000 });
+    const waits = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 }, ttlMs: 60_000 });
+    broker.tick(cap(8000));
+    advance(60_000);
+    broker.tick(cap(8000));
+    expect(broker.get(waits.id)?.state).toBe("waiting");
+    advance(1);
+    broker.tick(cap(8000));
+    expect(broker.get(waits.id)).toMatchObject({ state: "expired", reason: "no heartbeat" });
+  });
+
+  it("gives the restored leases a new limit, and ends a restored waiting lease that no client calls for", () => {
+    const alive = new Set([10, 11, 12]);
+    const { broker, advance } = setup({ alive });
+    const base = { holder: "a", amounts: { memory: 100 }, priority: 0, requestedAt: 0, grantedAt: null, endedAt: null, reason: null, peakMb: null };
+    const old = 1_000_000 - 3_600_000;
+    const leases: Lease[] = [
+      // A client that does not come back. Its process ID belongs to another process now.
+      { ...base, id: "gone", job: "x", pid: 10, ttlMs: 300_000, state: "waiting", heartbeatAt: old },
+      // A client that calls again after the restart.
+      { ...base, id: "back", job: "y", pid: 11, ttlMs: 300_000, state: "waiting", heartbeatAt: old },
+      // A waiting lease with no process. Its heartbeat was an hour old at the restart.
+      { ...base, id: "quiet", job: "z", pid: null, ttlMs: 300_000, state: "waiting", heartbeatAt: old },
+      // A granted lease with a process: the process decides.
+      { ...base, id: "runs", job: "w", pid: 12, ttlMs: 300_000, state: "granted", grantedAt: old, heartbeatAt: old },
+    ];
+    broker.restore(leases);
+    // The waiting leases do not fit, so they stay in the queue.
+    broker.tick(cap(1000));
+    expect(broker.leases().filter((lease) => lease.state === "expired")).toEqual([]);
+    expect(broker.get("quiet")?.heartbeatAt).toBe(1_000_000);
+    advance(200_000);
+    broker.renew("back");
+    advance(100_001);
+    broker.tick(cap(1000));
+    expect(broker.get("gone")).toMatchObject({ state: "expired", reason: NO_REJOIN_REASON });
+    expect(broker.get("quiet")).toMatchObject({ state: "expired", reason: NO_REJOIN_REASON });
+    expect(broker.get("back")?.state).toBe("waiting");
+    expect(broker.get("runs")?.state).toBe("granted");
+    // After its call, the lease of a client with a process does not end for no heartbeat.
+    advance(3_600_000);
+    broker.tick(cap(1000));
+    expect(broker.get("back")?.state).toBe("waiting");
+    alive.delete(11);
+    broker.tick(cap(1000));
+    expect(broker.get("back")).toMatchObject({ state: "expired", reason: "the process exited" });
   });
 });

@@ -349,7 +349,7 @@ export function leaseConditions(
 }
 
 /** This function tells why a lease is heavy for the battery policy, or gives `null` for a lease that is not heavy. */
-export function heavyWhy(lease: Lease): string | null {
+export function heavyWhy(lease: Pick<Lease, "amounts" | "spawn">): string | null {
   const memory = lease.amounts[MEMORY] ?? 0;
   if (memory >= HEAVY_MEMORY_MB) return `it asks for ${(memory / 1024).toFixed(1)} GB of memory`;
   if ((lease.amounts[BROWSER_SLOT] ?? 0) > 0) return "it runs browser tests";
