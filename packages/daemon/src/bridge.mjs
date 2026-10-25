@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { windowsCommand } from "./winshell.mjs";
 
 /** @typedef {{ jsonrpc: "2.0", id?: string | number | null, method?: string, params?: Record<string, unknown>, result?: Record<string, unknown> }} Message */
 
@@ -47,6 +48,7 @@ export class Bridge {
   /** @type {string | undefined} */ #version;
   /** @type {Message | undefined} */ #initialize;
   /** @type {Promise<void>} */ #ready = Promise.resolve();
+  /** @type {Promise<void> | undefined} */ #reopening;
   #listening = false;
   #closed = false;
 
@@ -100,11 +102,14 @@ export class Bridge {
   }
 
   /**
+   * This function sends one message. While a new session opens, a message waits for it, except the messages that open it (`reopen`).
    * @param {Message} message
    * @param {(message: unknown) => void} write
    * @returns {Promise<void>}
    */
-  async #post(message, write, attempt = 0) {
+  async #post(message, write, attempt = 0, reopen = false) {
+    if (!reopen && this.#reopening) await this.#reopening;
+    const used = this.#session;
     /** @type {Response} */
     let res;
     try {
@@ -113,15 +118,15 @@ export class Bridge {
       // The daemon does not answer: it can be in a restart. Wait, then try again with a new session.
       if (attempt < RETRIES) {
         await pause(1000 * (attempt + 1));
-        return this.#again(message, write, attempt);
+        return this.#again(message, write, attempt, used);
       }
       return this.#fail(message, `The MCP gateway does not answer: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (res.status === 401 && attempt < RETRIES) {
       this.#token = discovery()?.token;
-      return this.#post(message, write, attempt + 1);
+      return this.#post(message, write, attempt + 1, reopen);
     }
-    if (res.status === 404 && this.#session && message.method !== "initialize" && attempt < RETRIES) return this.#again(message, write, attempt);
+    if (res.status === 404 && used && message.method !== "initialize" && attempt < RETRIES) return this.#again(message, write, attempt, used);
     const session = res.headers.get("mcp-session-id");
     if (session) this.#session = session;
     if (res.status === 202) return;
@@ -144,18 +149,35 @@ export class Bridge {
    * @param {Message} message
    * @param {(message: unknown) => void} write
    * @param {number} attempt
+   * @param {string | undefined} lost the session that the message used
    * @returns {Promise<void>}
    */
-  async #again(message, write, attempt) {
-    if (this.#initialize && message.method !== "initialize") {
+  async #again(message, write, attempt, lost) {
+    if (this.#initialize && message.method !== "initialize") await this.#reopen(this.#initialize, lost);
+    return this.#post(message, write, attempt + 1);
+  }
+
+  /**
+   * This function opens one new session for all the messages that lost the session `lost`. The other messages wait for it.
+   * When another message opened a new session before, the function does nothing.
+   * @param {Message} initialize
+   * @param {string | undefined} lost
+   * @returns {Promise<void>}
+   */
+  #reopen(initialize, lost) {
+    if (this.#reopening) return this.#reopening;
+    if (this.#session !== lost) return Promise.resolve();
+    this.#reopening = (async () => {
       this.#session = undefined;
       this.#token = discovery()?.token;
       const silent = () => undefined;
-      await this.#post(this.#initialize, silent, RETRIES);
-      await this.#post({ jsonrpc: "2.0", method: "notifications/initialized" }, silent, RETRIES);
+      await this.#post(initialize, silent, RETRIES, true);
+      await this.#post({ jsonrpc: "2.0", method: "notifications/initialized" }, silent, RETRIES, true);
       void this.#listen();
-    }
-    return this.#post(message, write, attempt + 1);
+    })().finally(() => {
+      this.#reopening = undefined;
+    });
+    return this.#reopening;
   }
 
   /**
@@ -273,13 +295,12 @@ export async function gatewayServes(name) {
 function runLocal(command) {
   const [file, ...args] = command;
   if (!file) process.exit(2);
-  // On Windows, npx and pnpm are .cmd files, which only a shell starts. The shell gets one quoted command line.
-  /** @param {string} arg */
-  const quote = (arg) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg);
+  // On Windows, a program starts directly. A .cmd file, such as npx, starts in cmd with each argument escaped.
+  const win = process.platform === "win32" ? windowsCommand(command) : null;
   const child =
-    process.platform === "win32"
-      ? spawn([file, ...args].map(quote).join(" "), { stdio: "inherit", shell: true })
-      : spawn(file, args, { stdio: "inherit" });
+    win === null
+      ? spawn(file, args, { stdio: "inherit" })
+      : spawn(win.file, win.args, { stdio: "inherit", windowsVerbatimArguments: win.verbatim });
   child.on("exit", (code) => process.exit(code ?? 1));
   child.on("error", (error) => {
     process.stderr.write(`headroom bridge: the local server did not start: ${error.message}\n`);

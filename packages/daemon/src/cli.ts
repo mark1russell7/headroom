@@ -51,7 +51,8 @@ import { sessionFromEnv } from "./holder.ts";
 import { diskAmounts, finishTemp, jobEnv, prepareTemp } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
-import { readDiscovery, readPlannedStop } from "./paths.ts";
+import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
+import { windowsCommand } from "./winshell.mjs";
 import type { DaemonStatus } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
@@ -191,10 +192,6 @@ function printStatus(status: DaemonStatus): void {
   }
 }
 
-function quote(arg: string): string {
-  return process.platform === "win32" && /[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg;
-}
-
 /** The end of a command: the exit code that `headroom run` gives, and the exit of the command itself. */
 interface CommandEnd {
   readonly code: number;
@@ -216,11 +213,9 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
     sink?.on("error", (error) => console.error(`headroom: the log file ${log ?? ""} failed: ${error.message}`));
     const stdio: StdioOptions = sink === null ? "inherit" : ["inherit", "pipe", "pipe"];
     const options = { stdio, env: jobEnv(env) };
-    // On Windows, pnpm and npm are .cmd files, which only a shell starts. The shell gets one quoted command line.
-    const child =
-      process.platform === "win32"
-        ? spawn([file, ...args].map(quote).join(" "), { ...options, shell: true })
-        : spawn(file, args, options);
+    // On Windows, a program starts directly. A .cmd file, such as npm, starts in cmd with each argument escaped.
+    const win = process.platform === "win32" ? windowsCommand(command, { env: options.env }) : null;
+    const child = win === null ? spawn(file, args, options) : spawn(win.file, win.args, { ...options, windowsVerbatimArguments: win.verbatim });
     let done = false;
     const finish = (end: CommandEnd): void => {
       if (done) return;
@@ -785,10 +780,16 @@ async function main(argv: string[]): Promise<number> {
     case "dashboard": {
       const endpoint = connect()?.endpoint;
       if (!endpoint) return (console.error("headroom does not run. Start it with: headroom service install"), 1);
-      const url = `${new URL(endpoint).origin}/`;
+      // The key of the dashboard is in a file that only this user can read. The page refuses a request without it.
+      const url = `${new URL(endpoint).origin}/?k=${dashboardKey()}`;
       console.log(`The dashboard: ${url}`);
-      const [open, ...args] = process.platform === "win32" ? ["cmd", "/c", "start", "", url] : process.platform === "darwin" ? ["open", url] : ["xdg-open", url];
-      spawn(open as string, args, { stdio: "ignore", detached: true, windowsHide: true }).on("error", () => undefined).unref();
+      const opener =
+        process.platform === "win32"
+          ? windowsCommand(["start", "", url])
+          : { file: process.platform === "darwin" ? "open" : "xdg-open", args: [url], verbatim: false };
+      spawn(opener.file, opener.args, { stdio: "ignore", detached: true, windowsHide: true, windowsVerbatimArguments: opener.verbatim })
+        .on("error", () => undefined)
+        .unref();
       return 0;
     }
     case "alerts": {

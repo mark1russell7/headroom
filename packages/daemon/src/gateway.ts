@@ -121,16 +121,42 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** This function gives the descendants of a process from the lines `<pid> <parent pid>` of `ps -A -o pid=,ppid=`. */
+export function descendantsOf(pid: number, table: string): number[] {
+  const children = new Map<number, number[]>();
+  for (const line of table.split("\n")) {
+    const [child, parent] = line.trim().split(/\s+/).map(Number);
+    if (child === undefined || parent === undefined || !Number.isInteger(child) || !Number.isInteger(parent)) continue;
+    const list = children.get(parent) ?? [];
+    list.push(child);
+    children.set(parent, list);
+  }
+  const found: number[] = [];
+  const queue = [pid];
+  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
+    for (const child of children.get(next) ?? []) {
+      if (child === pid || found.includes(child)) continue;
+      found.push(child);
+      queue.push(child);
+    }
+  }
+  return found;
+}
+
 /** This function stops a process and its descendants. A server often starts a chain of processes, for example `pnpm`, then `tsx`, then `node`. */
 export function killTree(pid: number): void {
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
     return;
   }
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    // The process stopped before.
+  // The function finds the descendants first, because a child gets another parent when its parent stops.
+  const table = spawnSync("ps", ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
+  for (const id of [pid, ...(table.status === 0 ? descendantsOf(pid, table.stdout) : [])]) {
+    try {
+      process.kill(id, "SIGTERM");
+    } catch {
+      // The process stopped before.
+    }
   }
 }
 
@@ -146,6 +172,8 @@ class Upstream {
   #pid: number | null = null;
   #startedAt: number | null = null;
   #usedAt: number | null = null;
+  /** The requests that the server has not answered. */
+  #open = 0;
   #requests = 0;
   #failures = 0;
   #failedAt = 0;
@@ -189,18 +217,25 @@ class Upstream {
     const meta = request.params?.["_meta"] as { progressToken?: string | number } | undefined;
     const token = meta?.progressToken;
     const send = client.request.bind(client) as unknown as SendRequest;
-    return send(request, resultSchema, {
-      signal: extra.signal,
-      timeout: CALL_TIMEOUT_MS,
-      resetTimeoutOnProgress: true,
-      ...(token !== undefined
-        ? {
-            onprogress: (progress: Record<string, unknown>) => {
-              extra.sendNotification({ method: "notifications/progress", params: { ...progress, progressToken: token } }).catch(() => undefined);
-            },
-          }
-        : {}),
-    });
+    // The sweep does not stop a server with an open request. The end of a request also counts as a use.
+    this.#open += 1;
+    try {
+      return await send(request, resultSchema, {
+        signal: extra.signal,
+        timeout: CALL_TIMEOUT_MS,
+        resetTimeoutOnProgress: true,
+        ...(token !== undefined
+          ? {
+              onprogress: (progress: Record<string, unknown>) => {
+                extra.sendNotification({ method: "notifications/progress", params: { ...progress, progressToken: token } }).catch(() => undefined);
+              },
+            }
+          : {}),
+      });
+    } finally {
+      this.#open -= 1;
+      this.#usedAt = Date.now();
+    }
   }
 
   /** This function stops the server. The next request starts it again. */
@@ -216,7 +251,7 @@ class Upstream {
     this.#log(`The MCP server ${this.name} stopped.`);
   }
 
-  /** This function closes the sessions that sent no request for a long time, and stops an idle server. */
+  /** This function closes the sessions that sent no request for a long time, and stops an idle server. A server with an open request is not idle. */
   async sweep(now: number): Promise<void> {
     for (const [id, session] of this.sessions) {
       if (now - session.seenAt > SESSION_IDLE_MS) {
@@ -226,7 +261,7 @@ class Upstream {
     }
     const idleMs = (this.spec.idleMinutes ?? DEFAULT_IDLE_MINUTES) * 60_000;
     const last = this.#usedAt ?? this.#startedAt;
-    if (this.#client && idleMs > 0 && last !== null && now - last > idleMs) await this.stop();
+    if (this.#client && this.#open === 0 && idleMs > 0 && last !== null && now - last > idleMs) await this.stop();
   }
 
   /** This function closes each session and stops the server. */
