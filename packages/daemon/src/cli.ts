@@ -10,7 +10,7 @@
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
- * - `headroom config [job-temp <folder>] [health <name> <url>]`: show or change the settings.
+ * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>]`: show or change the settings.
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
@@ -30,7 +30,12 @@ import {
   kindOf,
   MB,
   powerLine,
+  isBrowserLease,
+  isSpawnWait,
   readSessions,
+  SPAWN_HEAVY_DEFAULT,
+  spawnClassText,
+  spawnLine,
   startsLine,
   type Alert,
   type Alerts,
@@ -71,7 +76,8 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
   headroom run [--mem 2g|auto] [--cpu 2] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
-               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file] -- <command> [args...]
+               [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
+               [--spawn-heavy | --no-spawn-heavy] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
                --log file: the output of the job also goes to the end of the file.
@@ -80,12 +86,17 @@ const HELP = `headroom: the memory and job broker of this computer
                With a temp root (headroom config job-temp), the job gets its own TEMP folder,
                and the run removes it at the end. --keep-temp: keep the folder.
                A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
+               A job whose past runs start more than 600 processes a minute is spawn-heavy:
+               it does not run beside a browser test. --spawn-heavy: say so for a new job.
+               --no-spawn-heavy: a normal job, also with high past runs.
                A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
   ${JOB_USAGE}
                The state of a job: queued, running or exited, with its exit code. No job: exit 3.
   headroom config [job-temp <folder> | job-temp --clear]   (show or change the settings)
   headroom config health [<name> <url> | <name> --clear | --clear]
                The URLs that the service monitor checks. The default: ${DEFAULT_HEALTH_TEXT}.
+  headroom config spawn-heavy [<n> | --clear]
+               The limit of a spawn-heavy job, in process starts a minute. The default: ${SPAWN_HEAVY_DEFAULT}.
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
@@ -176,6 +187,9 @@ function printStatus(status: DaemonStatus): void {
   // H29: the process starts. A daemon of an older version gives none.
   const starts = status.starts === undefined ? null : startsLine(status.starts);
   if (starts !== null) console.log(starts);
+  // H47: the spawn-heavy jobs that run. A browser test waits until they end.
+  const heavy = spawnLine(status.leases);
+  if (heavy !== null) console.log(heavy);
   // H24: the network needs two reads of the adapters, so its first status after a start has no rate.
   const usedOf = (id: string): number | null => (status.resources ?? []).find((each) => each.id === id)?.used ?? null;
   const received = usedOf("net:in");
@@ -367,9 +381,13 @@ function openLog(path: string): { readonly path: string } | { readonly error: st
   }
 }
 
-/** This function gives the line that names a new lease, for example "headroom: lease 3f2a9c1e for e2e, queued for browser." */
+/**
+ * This function gives the line that names a new lease, for example "headroom: lease 3f2a9c1e for e2e, queued for browser."
+ * A lease that waits for the spawn rule (H47) is queued for the browser tests, or for a job that starts many processes.
+ */
 function leaseLine(lease: Lease): string {
-  const waitsFor = /^waits for ([^:]+):/.exec(lease.reason ?? "")?.[1];
+  const spawnWait = !isSpawnWait(lease.reason) ? undefined : isBrowserLease(lease) ? "a job that starts many processes" : "the browser tests";
+  const waitsFor = spawnWait ?? /^waits for ([^:]+):/.exec(lease.reason ?? "")?.[1];
   const state =
     lease.state === "granted" ? "granted" : lease.state === "waiting" ? `queued${waitsFor === undefined ? "" : ` for ${waitsFor}`}` : lease.state;
   return `headroom: lease ${lease.id.slice(0, 8)} for ${lease.job}, ${state}.`;
@@ -453,12 +471,20 @@ async function run(argv: string[]): Promise<number> {
       "force-disk": { type: "boolean" },
       "no-eco": { type: "boolean" },
       log: { type: "string" },
+      "spawn-heavy": { type: "boolean" },
+      "no-spawn-heavy": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
     console.error("headroom run needs a command after --. Example: headroom run --mem 2g -- pnpm test");
     return 2;
   }
+  if (values["spawn-heavy"] === true && values["no-spawn-heavy"] === true) {
+    console.error("headroom run takes --spawn-heavy or --no-spawn-heavy, not both.");
+    return 2;
+  }
+  // H47: the option of the run. Without it, the past runs of the job decide.
+  const spawnHeavy = values["spawn-heavy"] === true ? true : values["no-spawn-heavy"] === true ? false : undefined;
   const opened = values.log === undefined ? null : openLog(values.log);
   if (opened !== null && "error" in opened) {
     console.error(`headroom: ${opened.error}`);
@@ -525,6 +551,7 @@ async function run(argv: string[]): Promise<number> {
     pid: process.pid,
     ...(values.priority ? { priority: Number(values.priority) } : {}),
     ...(log === null ? {} : { log }),
+    ...(spawnHeavy === undefined ? {} : { spawnHeavy }),
   };
   let first: Lease;
   try {
@@ -543,6 +570,11 @@ async function run(argv: string[]): Promise<number> {
   }
   // H26: a session can wait on this id with `headroom job <id>`, also after its shell stops.
   console.error(leaseLine(first));
+  // H47: a spawn-heavy job does not run beside a browser test. A daemon of an older version gives no class.
+  if (first.spawn?.heavy === true) {
+    const opt = first.spawn.source === "declared" ? "" : " --no-spawn-heavy: not.";
+    console.error(`headroom: this job is ${spawnClassText(first.spawn)}, so it does not run beside a browser test.${opt}`);
+  }
   const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
   if (lease.state === "waiting") {
     await latest.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
@@ -740,6 +772,22 @@ function printConfig(config: Config): void {
   console.log(`job-temp: ${config.jobTemp ?? "(none: each job of headroom run uses the TEMP of its parent)"}`);
   // A daemon of an older version has no setting health.
   if (config.health !== undefined) for (const line of healthLines(config.health)) console.log(line);
+  // H47: a daemon of an older version has no setting spawn-heavy.
+  if (typeof config.spawnHeavy === "number") {
+    const named = config.spawnHeavy === SPAWN_HEAVY_DEFAULT ? " (the default)" : "";
+    console.log(`spawn-heavy: ${config.spawnHeavy} process starts a minute${named}. A job above it does not run beside a browser test.`);
+  }
+}
+
+/** `headroom config spawn-heavy <n>` sets the limit of a spawn-heavy job (H47), and `--clear` gives the default. */
+async function spawnHeavyConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  const limit = value === undefined ? null : Number(value);
+  if ((value === undefined) === !clear || extra || (limit !== null && !(Number.isInteger(limit) && limit > 0))) {
+    console.error(`Usage: headroom config spawn-heavy <n>, with a whole number above 0, or headroom config spawn-heavy --clear (the default: ${SPAWN_HEAVY_DEFAULT})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { spawnHeavy: limit }));
+  return 0;
 }
 
 /** `headroom config`: show the settings. `headroom config job-temp <folder>` sets the temp root, and `--clear` removes it. */
@@ -766,8 +814,9 @@ async function configCommand(argv: string[]): Promise<number> {
     else printConfig(await connection.call<Config>(["config", "set"], { health }));
     return 0;
   }
+  if (name === "spawn-heavy") return spawnHeavyConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
-    console.error("Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, or headroom config health");
+    console.error("Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, or headroom config spawn-heavy <n>");
     return 2;
   }
   // The daemon has its own current folder, so a relative folder resolves here.

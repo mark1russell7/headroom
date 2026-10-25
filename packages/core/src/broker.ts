@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { JobUsage, ResourceId, Room } from "./resources.ts";
+import type { SpawnClass } from "./spawn.ts";
 import { MEMORY, type Amounts } from "./types.ts";
 
 /** The state of a lease. Only `waiting` and `granted` are active. */
@@ -29,6 +30,11 @@ export interface LeaseRequest {
   readonly ttlMs?: number | undefined;
   /** The absolute path of the log file of the job (`headroom run --log`). */
   readonly log?: string | undefined;
+  /**
+   * The spawn option of the run (H47). True (`--spawn-heavy`): the job starts many processes. False (`--no-spawn-heavy`):
+   * the job is normal, also with a high peak in its past runs. Without it, the past runs decide.
+   */
+  readonly spawnHeavy?: boolean | undefined;
 }
 
 /** The exit of a job, from its holder at the release (H26). */
@@ -70,6 +76,19 @@ export interface Lease {
    * and its release. A job with no job object has none.
    */
   readonly processes?: number | undefined;
+  /**
+   * The highest count of process starts of the job in one minute, over a window of 30 seconds (H47). The engine measures
+   * it from the counts of the heartbeats and of the release.
+   */
+  readonly peakStartsPerMin?: number | undefined;
+  /** The spawn class of the job (H47): a spawn-heavy job and a browser test do not run at the same time. */
+  readonly spawn?: SpawnClass | undefined;
+}
+
+/** The fields of a lease that the engine measures while its job runs (H47). */
+export interface LeaseMeasures {
+  readonly peakStartsPerMin?: number | undefined;
+  readonly spawn?: SpawnClass | undefined;
 }
 
 /** The capacity at one time. */
@@ -105,6 +124,12 @@ export interface BrokerOptions {
   readonly headWaitMs?: number | undefined;
   /** The heartbeat limit of a lease without a process. The default is 5 minutes. */
   readonly defaultTtlMs?: number | undefined;
+  /**
+   * This function tells why a lease cannot run beside another lease, or gives `null` (H47). The other lease is granted, or
+   * it waits before the lease in the queue. Thus a later lease does not go before an earlier lease that it conflicts with.
+   * The default gives `null`.
+   */
+  readonly conflict?: ((lease: Lease, other: Lease) => string | null) | undefined;
 }
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
@@ -113,6 +138,13 @@ const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
 function processesOf(lease: Lease, processes: number | undefined): { processes?: number } {
   if (processes === undefined) return {};
   return { processes: Math.max(processes, lease.processes ?? 0) };
+}
+
+/** This function gives the field `spawn` of a new lease: the class from the engine, else the class from the option of the request. */
+function spawnOf(request: LeaseRequest, spawn: SpawnClass | undefined): { spawn?: SpawnClass } {
+  if (spawn !== undefined) return { spawn };
+  if (request.spawnHeavy === undefined) return {};
+  return { spawn: { heavy: request.spawnHeavy, source: request.spawnHeavy ? "declared" : "opted-out", perMinute: null, runs: 0 } };
 }
 
 /** This function tells if a lease is active: waiting or granted. */
@@ -142,6 +174,7 @@ export class Broker {
   readonly #agingMs: number;
   readonly #headWaitMs: number;
   readonly #defaultTtlMs: number;
+  readonly #conflict: (lease: Lease, other: Lease) => string | null;
 
   constructor(options: BrokerOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -153,6 +186,7 @@ export class Broker {
     this.#agingMs = options.agingMs ?? 60_000;
     this.#headWaitMs = options.headWaitMs ?? 600_000;
     this.#defaultTtlMs = options.defaultTtlMs ?? 300_000;
+    this.#conflict = options.conflict ?? (() => null);
   }
 
   /** This function adds leases that a store kept, for example after a restart of the daemon. */
@@ -160,8 +194,11 @@ export class Broker {
     for (const lease of leases) this.#leases.set(lease.id, lease);
   }
 
-  /** This function adds a request. The lease waits until a `tick()` grants it. */
-  request(request: LeaseRequest): Lease {
+  /**
+   * This function adds a request. The lease waits until a `tick()` grants it. `spawn` is the spawn class from the engine.
+   * Without it, `spawnHeavy` of the request gives the class.
+   */
+  request(request: LeaseRequest, spawn?: SpawnClass): Lease {
     for (const [name, amount] of Object.entries(request.amounts)) {
       if (!Number.isFinite(amount) || amount < 0) throw new RangeError(`The amount of ${name} must be a number of 0 or more`);
     }
@@ -182,6 +219,7 @@ export class Broker {
       reason: null,
       peakMb: null,
       ...(request.log === undefined ? {} : { log: request.log }),
+      ...spawnOf(request, spawn),
     };
     this.#leases.set(lease.id, lease);
     return lease;
@@ -213,6 +251,13 @@ export class Broker {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
     return this.#set({ ...lease, heartbeatAt: this.#now(), ...processesOf(lease, processes) });
+  }
+
+  /** This function sets the measured fields of a lease (H47): its peak rate of starts and its spawn class. It gives `undefined` for an unknown id. */
+  update(id: string, measures: LeaseMeasures): Lease | undefined {
+    const lease = this.#leases.get(id);
+    if (!lease) return undefined;
+    return this.#set({ ...lease, ...measures });
   }
 
   /**
@@ -310,18 +355,24 @@ export class Broker {
       .filter((lease) => lease.state === "waiting")
       .sort((a, b) => this.#rank(b, now) - this.#rank(a, now) || a.requestedAt - b.requestedAt);
     const free = this.#free(capacity, waiting.flatMap((lease) => Object.keys(lease.amounts)));
+    // The granted leases, with the leases that this tick grants, and the leases that wait before the next lease (H47).
+    const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
+    const before: Lease[] = [];
     for (const [index, lease] of waiting.entries()) {
       const never = this.#neverFits(lease, capacity);
       if (never) {
         changed.push(this.#set({ ...lease, state: "cancelled", endedAt: now, reason: never }));
         continue;
       }
-      const short = this.#shortOf(lease, free);
+      const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before);
       if (short === null) {
         for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? 0) - amount;
-        changed.push(this.#set({ ...lease, state: "granted", grantedAt: now, reason: null }));
+        const next = this.#set({ ...lease, state: "granted", grantedAt: now, reason: null });
+        granted.push(next);
+        changed.push(next);
         continue;
       }
+      before.push(lease);
       if (lease.reason !== short) changed.push(this.#set({ ...lease, reason: short }));
       // The first request keeps its place: after a long wait, no smaller request goes before it.
       if (index === 0 && now - lease.requestedAt > this.#headWaitMs) break;
@@ -339,6 +390,18 @@ export class Broker {
       const room = this.#room(name, capacity);
       const limit = room.capacity - room.reserve;
       if (amount > limit) return `${name}: ${amount} is more than the capacity of ${limit}`;
+    }
+    return null;
+  }
+
+  /**
+   * This function tells why a lease cannot run beside a granted lease, or beside a lease that waits before it (H47). It
+   * gives `null` when no lease conflicts. The granted leases come first.
+   */
+  #conflictOf(lease: Lease, granted: readonly Lease[], before: readonly Lease[]): string | null {
+    for (const other of [...granted, ...before]) {
+      const reason = this.#conflict(lease, other);
+      if (reason !== null) return reason;
     }
     return null;
   }

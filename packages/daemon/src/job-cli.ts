@@ -6,7 +6,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { countText, diskSize, type JobState } from "@headroom/core";
+import { countText, diskSize, spawnClassText, type JobState } from "@headroom/core";
 import type { Connection } from "./client.ts";
 
 /** The exit code of `headroom job` when no job matches the query. */
@@ -39,7 +39,10 @@ function clockOf(at: string, now: number): string {
   return day(date) === day(new Date(now)) ? time : `${day(date)} ${time}`;
 }
 
-/** This function gives the line of one job, for example "e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6 min." */
+/**
+ * This function gives the line of one job, for example "e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12
+ * min, ran 6 min, normal (no past runs)." It ends with the spawn class of the job (H47).
+ */
 export function jobLine(state: JobState, now: number): string {
   const parts: string[] = [];
   if (state.state === "queued") {
@@ -59,6 +62,9 @@ export function jobLine(state: JobState, now: number): string {
   if (state.peakMb !== null) parts.push(`peak ${diskSize(state.peakMb)}`);
   // H29: the processes that the job started, from its job object. A daemon of an older version gives none.
   if (typeof state.processes === "number") parts.push(`${countText(state.processes)} ${state.processes === 1 ? "process" : "processes"} started`);
+  // H47: the peak starts in one minute and the spawn class. A daemon of an older version gives neither.
+  if (typeof state.peakStartsPerMin === "number") parts.push(`at most ${countText(state.peakStartsPerMin)} starts a minute`);
+  if (state.spawn !== null && state.spawn !== undefined) parts.push(spawnClassText(state.spawn));
   const log = state.log === null ? "" : ` Log: ${state.log}`;
   return `${state.job} (${state.id.slice(0, 8)}) of ${state.holder}: ${parts.join(", ")}.${log}`;
 }

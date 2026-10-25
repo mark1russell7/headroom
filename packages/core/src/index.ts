@@ -10,7 +10,26 @@ export type { Counter, CounterRow, OwnerCores, OwnerWrites } from "./counters.ts
 export { largeFileDirs, largeFiles } from "./disks.ts";
 export type { LargeFile } from "./disks.ts";
 export { Broker, isActive, processIsAlive } from "./broker.ts";
-export type { BrokerOptions, Capacity, JobExit, Lease, LeaseRequest, LeaseState } from "./broker.ts";
+export type { BrokerOptions, Capacity, JobExit, Lease, LeaseMeasures, LeaseRequest, LeaseState } from "./broker.ts";
+export {
+  averageRate,
+  BROWSER_SLOT,
+  isBrowserLease,
+  isSpawnHeavy,
+  isSpawnWait,
+  learnSpawn,
+  percentile90,
+  promote,
+  SPAWN_HEAVY_DEFAULT,
+  SPAWN_RUNS,
+  SPAWN_WAIT_END,
+  SPAWN_WINDOW_MS,
+  spawnClassText,
+  spawnConflict,
+  spawnLine,
+  windowRate,
+} from "./spawn.ts";
+export type { SpawnClass, SpawnSource } from "./spawn.ts";
 export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
