@@ -10,6 +10,7 @@ Mark approved the plan on 2026-10-19. The plan follows the design rule of Mark: 
 - The capacity of `memory` is measured, not configured. It is the available memory of the computer, less a reserve.
 - The capacity of the other resources is configured in the database.
 - `docs/RESOURCES.md` gives the general model (H22): each resource has the same five parts. Memory is its first resource, and disk is the second.
+- The next resources are H30 to H43, which Mark approved on 2026-10-24: power, heat, the GPU, disk speed, containers, budgets, end dates and job conditions.
 
 ### The leases
 
@@ -67,6 +68,22 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H27 | Service health: Docker, the MCP servers of the gateway, the fleet site | done |
 | H28 | UX round 1: the dashboard and the tracker. The dashboard shows what uses the computer, opens each panel to its history and shows the jobs on a timeline. | done |
 | H29 | Process starts by owner. Each new process leaks kernel memory in the AMD display driver until Mark updates it (hub ask `amd-driver`). | done: the resource `procs` in starts each minute, an exact total of the computer from the sequence numbers of Windows, exact counts of the leased jobs from their job objects, a lower bound for each owner with its jobs and its own commands, the alert `churn`, the line of `headroom status`, `processes` in `headroom job`. A parent counts only when it started at or before its child. |
+| H30 | Battery and power: the battery becomes a resource of the model. On battery, heavy jobs wait or run in the efficiency mode of Windows. | later |
+| H31 | Conditions for a job: plugged in, Mark away, no metered network, a cool CPU. A job waits for a condition, not only for an amount: `headroom run --when ac,away`. | later |
+| H32 | A forecast for each resource: the time to a limit, from its history. The fleet acts before the limit, not at it. | later |
+| H33 | Keep room for Mark: while Mark works or is on a call, heavy jobs wait or run slower. When Mark steps away, they run. | later |
+| H34 | The reboot budget and a planned drain. headroom forecasts when the kernel leak of the AMD driver needs a reboot, and offers a reboot window. The resume plan (H13) brings the fleet back. | later |
+| H35 | Heat and throttling: when heat or a power limit slows the CPU, timing tests and benchmarks wait, because their numbers are wrong. | later |
+| H36 | GPU for each process: the GPU uses the main memory, so GPU memory counts against memory, and each session sees its share. | later |
+| H37 | Disk speed, SSD wear and disk limits for jobs. A cap on the disk rate of a job keeps the computer fast for the other jobs. | later |
+| H38 | Docker inside: the memory, CPU and disk of each container, by session. The Docker VM shows as one big process, so headroom asks the Docker engine. | later |
+| H39 | Network cost: on a metered network, big downloads wait. While the network is offline, the jobs that need it wait and do not fail. | later |
+| H40 | Budgets outside this computer: the GitHub API quota that all sessions share. A job can wait for room in it. Claude usage stays with the usage meter of the organizer. | later |
+| H41 | Things that expire: certificates, the npm trust, tokens and keys. headroom shows the time left and alerts before each one ends. | later |
+| H42 | Quiet hours and the overnight window: a CPU cap at night for quiet fans, or big test suites that wait for the night. Mark picks the hours. | later |
+| H43 | Clean-grid timing: jobs that can wait run when the New England grid is cleanest. The effect is small, so this item is last. | later |
+| H44 | Fix: the Angular completion in `~/.bashrc` starts node in each new shell, and each node process leaks kernel memory. Mark runs the two commands of the hub ask. | waits for Mark |
+| H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when it is not in use. If the poll continues, Mark turns off the extension in the workspaces that do not use Docker. | waits for Mark |
 
 ## The MCP gateway (H11)
 
