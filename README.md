@@ -247,9 +247,41 @@ headroom tells the time until each resource reaches a limit, so the fleet acts b
 `headroom forecast` lists the forecast of each instance to its nearest limit, for example `Drive D: 20 GB free in 4 days (at 1.1 GB an hour, confidence 0.65).` `--json` gives the data. `headroom status` adds the line `Forecast (24 h)` with the forecasts under 24 hours. Each card of the dashboard shows its forecast in one line, and `Status.resources` gives the field `forecast`.
 
 - **Alerts** (kind `forecast`): a warning before a limit. A drive reaches its critical level within 24 hours, a kernel pool its alert level within 2 hours, or the commit charge 90% within 30 minutes.
-- The message names the rate and the time, for example `Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB.`
+- The message names the rate and the time, for example `Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB.` A drive message ends with the hint of H21.
 - A pool alert names the owners with the most process starts and the pool tags that grow. A commit alert names the owners with the most private memory.
 - An active forecast alert ends past 1.25 times its horizon, so a small change of the rate does not end it and start it again.
+
+### What uses the space, and a safe cleanup (H21)
+
+`headroom disk report` shows what uses the space of each drive. `headroom disk clean` removes only the data that is disposable by definition. All other data goes to Mark.
+
+```sh
+headroom disk report                     # the known places, 30 seconds
+headroom disk report --drive C: --deep   # also the largest folders to depth 3, 3 minutes
+headroom disk clean                      # a dry run: what the cleanup deletes
+headroom disk clean --apply              # delete it, and log each delete
+```
+
+- The report runs in the process of the command, not in the daemon. It sizes a fixed list of places: the free space of each drive and the temp folders.
+- The list also has the temp folders of the jobs (live or not), the pnpm store, the npm cache, the Playwright browsers and the VS Code caches.
+- It also sizes the disk images of Docker Desktop and WSL, the Recycle Bins, `~/.claude/projects` and `node_modules` of each repository in `~/git`.
+- It lists each `*.before-devdrive` copy and marks it `kept`. Only Mark decides about these copies.
+- `--deep` adds the largest folders under the home folder and the root of each drive other than the system drive, to depth 3.
+- The walk does not follow a symbolic link, a junction or another reparse point. A file with two hard links counts one time.
+- The quick report has 30 seconds, and `--deep` has 3 minutes. A place whose time runs out gets a lower limit, marked `partial`.
+- The report saves itself to `~/.headroom/disk-report.json`. The dashboard shows its time and its largest places. `--json` gives the full report.
+
+`headroom disk clean` is a dry run. With `--apply`, it deletes only 3 kinds of data:
+
+1. The temp folders of the jobs whose lease ended. The daemon tells the state of each lease. With no answer, the cleanup removes no folder.
+2. The trace files directly in the temp folder of the user and in the temp root, 7 days or older. These are `node_trace.*.log`, `*.cpuprofile`, `*.heapsnapshot`, `*.heapprofile` and the Playwright temp folders.
+3. `pnpm store prune`, only when no lease is live, no pnpm process runs, and less than half of the store has one hard link.
+
+- pnpm counts a store file with one hard link as unused. On a Dev Drive, pnpm uses block clones, so each file has one link. A prune then removes almost the whole store.
+- Each other place of 1 GB or more goes to the list "Ask Mark", with its size and the steps to free it. The cleanup deletes none of them.
+- The cleanup refuses each path with `.before-devdrive` in it, each disk image and each path in `~/git`. It does not touch the temp folder of a live job.
+- `~/.headroom/disk-clean.log` gets one line for each delete: the time, the kind, the size and the path.
+- The disk alert and the disk forecast alert end with the hint `Run headroom disk report to see what uses the space.`
 
 ### Heat and throttling (H35)
 
@@ -539,6 +571,7 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
 - The write counters do not name the drive. Thus the drive panels show no users, and one panel "Writes to all drives" follows them with the top writers.
 - The panel "Docker containers" follows the panel of the Docker engine (H38). It gives the running containers with their owners, the VM, the disk use and the Docker alerts.
+- The panel "What uses the space" follows it. It shows the time of the last `headroom disk report` and its largest places (H21).
 - Select a panel to open it to the full width. It then shows a chart of its history in the window, a table of the data and all its users.
 - The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
 - The page is one HTML file of approximately 73 KB, with no framework and no build step. The daemon keeps it as one string.

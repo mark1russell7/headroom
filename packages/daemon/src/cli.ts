@@ -19,6 +19,8 @@
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
  * - `headroom docker [--json]`: each container with its owner, its memory and its cores, the VM and the disk use of Docker (H38).
+ * - `headroom disk report [--drive C:] [--deep] [--json]`: what uses the space of each drive (H21).
+ * - `headroom disk clean [--apply] [--json]`: a dry run of the safe cleanup. With `--apply`, it deletes only disposable data (H21).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
@@ -96,6 +98,7 @@ import { answers, connect, connectTo, isNetworkError, isRestartError, type Conne
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
+import { diskCommand } from "./disk-cli.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
@@ -189,6 +192,12 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
   ${DOCKER_USAGE}                  (each container: its owner, memory and cores; the VM and the disk use)
+  headroom disk report [--drive C:] [--deep] [--json]
+               What uses the space: the temp folders, the caches, the disk images, node_modules and more.
+               It saves the report to ~/.headroom/disk-report.json. --deep: the largest folders, 3 minutes.
+  headroom disk clean [--apply] [--json]
+               A dry run. --apply deletes only the temp folders of ended jobs, old trace files and,
+               when safe, the unused pnpm packages. Each other large place goes to Mark.
   headroom peer <localPort> <remotePort> [--json]
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
@@ -1441,6 +1450,8 @@ async function main(argv: string[]): Promise<number> {
       return gpuCommand(rest, connect());
     case "docker":
       return dockerCommand(rest, connect());
+    case "disk":
+      return diskCommand(rest, connect());
     case "peer":
       return showPeer(rest);
     case "config":

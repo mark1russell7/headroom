@@ -196,6 +196,7 @@ export type {
 export {
   batteryForecast,
   batteryLevel,
+  DISK_HINT,
   fitsHistory,
   forecastsOf,
   forecastTargets,

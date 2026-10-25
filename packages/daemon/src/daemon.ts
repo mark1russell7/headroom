@@ -15,8 +15,9 @@ import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
 import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
-import { announceDaemon, databasePath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
-import { gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
+import { readSummary } from "./disk-report.ts";
+import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
+import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
 
@@ -113,7 +114,12 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   });
   const registry = new ProcedureRegistry();
   registerModules(registry, [
-    defineModule("@headroom/daemon", [...resourceProcedures(engine, () => idle.pending()), ...gatewayProcedures(engine, gateway), ...serviceProcedures(idle)]),
+    defineModule("@headroom/daemon", [
+      ...resourceProcedures(engine, () => idle.pending()),
+      ...gatewayProcedures(engine, gateway),
+      ...serviceProcedures(idle),
+      ...diskProcedures(() => readSummary(diskReportPath())),
+    ]),
   ]);
 
   const port = options.port ?? DEFAULT_PORT;

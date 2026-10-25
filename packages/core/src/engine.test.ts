@@ -314,7 +314,7 @@ describe("Engine disks", () => {
     expect(engine.status().disks[0]?.dropMbPerHour).toBe(295_700);
     const [alert] = engine.alerts().active;
     expect(alert).toMatchObject({ id: "disk:C:", kind: "disk", severity: "critical", mb: 4300 });
-    expect(alert?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 289 GB less than one hour ago. New large files: C:\\Users\\markt\\pool.etl (96 GB).");
+    expect(alert?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 289 GB less than one hour ago. New large files: C:\\Users\\markt\\pool.etl (96 GB). Run `headroom disk report` to see what uses the space.");
 
     // The search for large files runs at most one time in 5 minutes.
     now += 2 * 60_000;
@@ -552,7 +552,7 @@ describe("Engine writes and processor use of the owners", () => {
       ]);
       expect(status.resources.find((each) => each.id === "disk:C:")?.owners[0]).toEqual({ owner: "session:graph", kind: "session", value: 6144, unit: "MB/h" });
       expect(status.resources.find((each) => each.id === "memory")?.owners[0]).toMatchObject({ owner: "session:graph", unit: "MB", value: 200 });
-      expect(engine.alerts().active[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB. Most writes in the last hour: session:graph 6 GB, mcp:vex 300 MB.");
+      expect(engine.alerts().active[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB. Most writes in the last hour: session:graph 6 GB, mcp:vex 300 MB. Run `headroom disk report` to see what uses the space.");
       expect(store.writesSince(0)).toEqual([
         { at: 1_060_000, owner: "mcp:vex", kind: "mcp", amount: 300 },
         { at: 1_060_000, owner: "session:graph", kind: "session", amount: 6144 },

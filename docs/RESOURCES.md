@@ -523,23 +523,52 @@ The write counters have limits. headroom tells them in the dashboard and in the 
 
 `headroom disk report` shows what uses the space of each drive. `headroom disk clean` removes only the data that is disposable by definition.
 
-The report gives, for each drive:
+H21 shipped in one change. These parts are as built.
 
-- The free part, the size and the loss of the last hour (measure).
-- The owners that wrote most (H20).
-- The size of each known folder: the temp root, the temp folders, the pnpm store and the npm cache.
-- The size of the disk images of Docker and WSL, of `~/.claude/projects` and of the `*.before-devdrive` copies.
-- The large files, from the search of H18.
+**The report.** `headroom disk report [--drive C:] [--deep] [--json]` runs in the process of the command. A tick of the daemon does not start it. It sizes a fixed list of places, the cheap ones first:
 
-The report reads many files. Thus it starts only on demand, with a time limit. A tick of the daemon does not start it.
+- The free space of each fixed drive, from `statfs`.
+- The disk images of Docker Desktop (each `.vhdx` under `%LOCALAPPDATA%\Docker\wsl`, and under its custom folder) and of WSL (`BasePath` of each key under `HKCU\...\Lxss`). The report reads only their size.
+- The temp folders of the jobs under the temp root, in 4 groups: live, not live, kept with `--keep-temp`, and other entries. The daemon gives the temp root and the live leases.
+- The temp folder of the user, the temp folder of Windows, the Recycle Bins and the caches of VS Code.
+- The Playwright browsers, the npm cache, the old npm cache on `C:`, `~/.claude/projects` and each `*.before-devdrive` copy (marked `kept`).
+- The old pnpm store on `C:`, the pnpm store (all store versions, from `pnpm store path`) and `node_modules` of each repository in `~/git`.
 
-`headroom disk clean` is a dry run. It deletes only with `--apply`. It deletes only these classes:
+The walk uses `fs.promises.opendir` and `lstat`, 4 folders at the same time:
 
-1. The folders of the temp root whose lease is not active (H19).
-2. The files in the temp folders of the user that are older than 7 days and that no process holds open.
-3. The unused packages of the pnpm store, with `pnpm store prune`.
+- It does not follow a symbolic link, a junction or another reparse point. On Windows, the entry of each reparse point is a link.
+- A file with more than one hard link counts one time in the report: the walks share a set of `dev:ino` keys.
+- A `Walker` stops at its deadline with its open folder handles. A later run continues from the same entry. Thus no entry counts two times.
+- The first pass gives each place an equal part of half of the budget. The next passes give the rest of the time to the places that are not done.
+- The budget is 30 seconds, or 3 minutes with `--deep`. A place whose time runs out is `partial`, and its size is a lower limit.
+- `--deep` walks the home folder and the root of each drive other than the system drive. It gives the 20 largest folders of each root, to depth 3.
 
-All other data goes to Mark first. The report gives Mark the size of each folder, and numbered steps for each delete. The cleaner skips each path that contains `.before-devdrive`, also inside a disposable class. A test covers this rule. The `*.before-devdrive` copies go only when Mark decides (`docs/DEV-DRIVE.md`, part B, step 8).
+Each place has a class: `clean` (the cleanup removes it), `part` (only old trace files), `live`, `ask` (Mark decides), `kept` and `image`. The report saves itself to `~/.headroom/disk-report.json`. The procedure `disk.report` reads its summary for the card "What uses the space" of the dashboard.
+
+**The cleanup.** `headroom disk clean [--apply] [--json]` is a dry run. With `--apply`, it deletes only 3 kinds:
+
+1. **The temp folders of ended jobs.** Each folder directly under the temp root whose name is a lease id. The daemon must give `exited` for the lease (`resources.job`). A live lease, an unknown lease and a folder of `--keep-temp` stay. With no answer from the daemon, this kind does nothing. The cleanup asks the daemon again before each delete.
+2. **Old trace files.** These are only directly in the temp folder of the user and in the temp root, 7 days or older. The files are `node_trace.*.log`, `*.cpuprofile`, `*.heapsnapshot` and `*.heapprofile`. The folders are `playwright-artifacts-*`, `playwright_chromiumdev_profile-*` and `playwright_firefoxdev_profile-*`. The match uses plain string code, not a regular expression. A folder is old only when the walk read each entry and each entry is 7 days or older.
+3. **`pnpm store prune`.** pnpm removes each store file with one hard link (`pnpm.io/cli/store`, and `storePrune` in the source of pnpm). The docs do not say that a prune is safe beside an install. Thus the gate needs 3 conditions. The daemon answers with no live lease. No pnpm process runs, except the parents of the command. Less than 50% of the store has one link.
+
+The last condition protects the Dev Drive. pnpm imports packages from the store with block clones there, so each file of the store has one link. A prune then removes almost the whole store, and each session downloads it again.
+
+The guards:
+
+- The cleanup refuses each path with `.before-devdrive` in it, each `.vhdx` or `.vhd` file and each path in `~/git` or its real path.
+- It deletes only a path directly in its temp folders. It does not follow a link, and a file that a process holds open stays.
+- `~/.headroom/disk-clean.log` gets one line for each delete: the time, the kind, the size and the path.
+- Each other place of 1 GB or more goes to the list "Ask Mark" with its size and its steps, from the report of the last 24 hours. Without one, the cleanup makes a quick report first.
+- The `*.before-devdrive` copies go only when Mark decides (`docs/DEV-DRIVE.md`, part B, step 8).
+
+**Alerts.** The disk alert and the forecast alert of a drive end with the hint `Run headroom disk report to see what uses the space.` The new large files of H18 go before the hint.
+
+**The numbers on 2026-10-25.** The quick report took 30 seconds. Drive `C:` had 269 GB free, and drive `D:` had 110 GB free.
+
+- The largest places were the disk image of Docker Desktop (54.2 GB), `~/.claude/projects` (7.8 GB) and the Playwright browsers (3.6 GB).
+- The time ran out for 5 to 9 places in 3 runs, for example the pnpm store and the temp folder of the user.
+- The dry run of the cleanup took 11 seconds. It found 1 temp folder of an ended lease (0 MB) and no old trace file.
+- It skipped `pnpm store prune`. Leases were live, and 80% of the store `v10` (5.5 GB of 6.9 GB) had one link.
 
 ### H23: CPU on the model
 

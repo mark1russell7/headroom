@@ -32,6 +32,7 @@ import { HandleTracker, handleStatus, type HandleStatus } from "./handles.ts";
 import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
 import { fitTrend, forecastFrom, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
 import {
+  DISK_HINT,
   fitsHistory,
   forecastsOf,
   leasesOf,
@@ -1336,7 +1337,11 @@ export class Engine {
       if (alert.kind !== "disk") continue;
       const files = this.#files.list.filter((file) => mountOf(file.path) === alert.id.slice("disk:".length));
       if (files.length === 0) continue;
-      found[index] = { ...alert, message: `${alert.message} New large files: ${files.map((file) => `${file.path} (${diskSize(file.mb)})`).join(", ")}.` };
+      // The files go before the hint of H21, so the hint stays the last sentence.
+      const hint = ` ${DISK_HINT}`;
+      const text = alert.message.endsWith(hint) ? alert.message.slice(0, -hint.length) : alert.message;
+      const named = ` New large files: ${files.map((file) => `${file.path} (${diskSize(file.mb)})`).join(", ")}.`;
+      found[index] = { ...alert, message: `${text}${named}${text === alert.message ? "" : hint}` };
     }
   }
 

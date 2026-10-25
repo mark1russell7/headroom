@@ -1,8 +1,9 @@
 /**
- * The procedures of headroom: `resources.*`, `config.*`, `mcp.*` and `service.*`. Each procedure uses one engine.
+ * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
 import type { Alerts, Config, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
@@ -541,6 +542,27 @@ export function serviceProcedures(idle: IdleRestart): AnyProcedure[] {
     .build() as AnyProcedure;
 
   return [restartWhenIdle];
+}
+
+/**
+ * This function gives the procedures of the disk report (H21): `disk.report`. The command `headroom disk report` writes the
+ * report in its own process. The daemon only reads the summary of the saved file, so the dashboard can show it.
+ */
+export function diskProcedures(summary: () => ReportSummary | null): AnyProcedure[] {
+  const report = createProcedure()
+    .path(["disk", "report"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<ReportSummary | null>())
+    .meta({
+      description: "Give the summary of the last headroom disk report: its time, the free space and the largest places. null: no report.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<ReportSummary | null> => summary())
+    .build() as AnyProcedure;
+
+  return [report];
 }
 
 /** This function gives the usage of a release with only the fields that have a value. */

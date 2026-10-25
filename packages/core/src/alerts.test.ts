@@ -65,7 +65,7 @@ describe("detect", () => {
   it("warns about a drive with little free space", () => {
     const alerts = detect({ ...input([], {}), disks: [{ mount: "D:", freeMb: 12_600, totalMb: 200_000 }] });
     expect(alerts).toEqual([
-      { id: "disk:D:", kind: "disk", subject: "drive D:", pid: null, mb: 12_600, severity: "warning", message: "Drive D: has 12.3 GB free of 195 GB." },
+      { id: "disk:D:", kind: "disk", subject: "drive D:", pid: null, mb: 12_600, severity: "warning", message: "Drive D: has 12.3 GB free of 195 GB. Run `headroom disk report` to see what uses the space." },
     ]);
   });
 
@@ -73,7 +73,7 @@ describe("detect", () => {
     const disks = [{ mount: "C:", freeMb: 4300, totalMb: 974_848, droppedMb: 39_014, windowMinutes: 60 }, { mount: "D:", freeMb: 125_000, totalMb: 200_000 }];
     const alerts = detect({ ...input([], {}), disks });
     expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["disk:C:", "critical"]]);
-    expect(alerts[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago.");
+    expect(alerts[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Run `headroom disk report` to see what uses the space.");
     const recent = detect({ ...input([], {}), disks: [{ ...disks[0]!, windowMinutes: 12 }] });
     expect(recent[0]?.message).toContain("38.1 GB less than 12 minutes ago.");
   });
@@ -91,12 +91,12 @@ describe("detect", () => {
     expect(alerts).toStrictEqual([
       {
         id: "disk:C:", kind: "disk", subject: "drive C:", pid: null, mb: 4300, severity: "critical",
-        message: "Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB, docker 400 MB.",
+        message: "Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB, docker 400 MB. Run `headroom disk report` to see what uses the space.",
       },
     ]);
     // No owner above 100 MB: the message is the same as before.
     const quiet = detect({ ...input([], {}), disks, writes: writes.slice(4) });
-    expect(quiet[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago.");
+    expect(quiet[0]?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Run `headroom disk report` to see what uses the space.");
   });
 
   it("gives no disk alert above the limits, and scales the limits down on a small drive", () => {

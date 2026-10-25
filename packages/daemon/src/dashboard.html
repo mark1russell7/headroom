@@ -303,7 +303,7 @@ const WINDOWS = [
   { minutes: 1440, label: "24 h", step: 12 },
   { minutes: 10080, label: "7 days", step: 84 },
 ];
-const state = { status: null, history: null, historyAt: 0, mcp: [], tags: null, config: null, window: 360, ok: true, at: 0, open: null, focus: null };
+const state = { status: null, history: null, historyAt: 0, mcp: [], tags: null, config: null, disk: null, window: 360, ok: true, at: 0, open: null, focus: null };
 try {
   const saved = Number(localStorage.getItem("headroom.window"));
   if (WINDOWS.some((w) => w.minutes === saved)) state.window = saved;
@@ -910,6 +910,29 @@ function dockerCard(d, alerts) {
     h("b", { text: c.memoryMb == null ? "-" : diskSize(c.memoryMb) })))) : h("div", { class: "sub", text: "No container runs." }));
 }
 
+/**
+ * The last disk report (H21), in one card after the writes. The command headroom disk report writes it, and the daemon
+ * only reads its summary: the time and the largest places. A size with "+" is partial, a lower limit.
+ */
+const DISK_CLASS = { clean: "the cleanup removes it", part: "the cleanup removes only old trace files", live: "live jobs: not touched", ask: "ask Mark", kept: "kept until Mark decides", image: "disk image: size only" };
+function diskReportCard(s) {
+  const head = [h("div", { class: "eye" }, h("span", { text: "Disk" })), h("div", { class: "ttl" }, h("h3", { text: "What uses the space" }))];
+  if (!s || !Array.isArray(s.top)) {
+    return h("article", { class: "card res static", "data-id": "disk-report" }, ...head,
+      h("div", { class: "sub", text: "No disk report yet. Run headroom disk report on this computer." }));
+  }
+  const top = Math.max(1, ...s.top.map((t) => t.mb));
+  const partial = s.partial ? ` ${s.partial} places are partial (+).` : "";
+  return h("article", { class: "card res static", "data-id": "disk-report" }, ...head,
+    h("div", { class: "sub", text: `The last headroom disk report (${s.mode}) is ${ago(Date.parse(s.at))} old.${partial} headroom disk clean removes only disposable data.` }),
+    h("div", { class: "list" }, h("div", { class: "t", text: "The largest places" }), ...s.top.map((t) => h("div", {
+      class: "row own", title: `${t.label}${t.drive ? ` on ${t.drive}` : ""}: ${DISK_CLASS[t.class] || t.class}`,
+    },
+    h("span", { class: "clip", text: `${t.label}${t.drive ? ` (${t.drive})` : ""}` }),
+    h("span", {}, h("span", { class: "bar", style: `width:${((t.mb / top) * 100).toFixed(1)}%` })),
+    h("b", { text: `${diskSize(t.mb)}${t.partial ? "+" : ""}` })))));
+}
+
 /** The history of one resource, in a larger chart. A size in MB shows in GB from 2 GB. */
 function drawDetail(r, host, points) {
   const { k, onFree } = viewOf(r);
@@ -933,7 +956,7 @@ function renderResources() {
   const cards = st.resources.map((r, i) => [r, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([r]) => resCard(r, st, hist[r.id] || []));
   // The writers go once, after the last drive.
   const drives = st.resources.filter((r) => r.kind === "disk");
-  if (drives.length) cards.splice(cards.findLastIndex((c) => drives.some((r) => r.id === c.dataset.id)) + 1, 0, writesCard(drives[0].owners || []));
+  if (drives.length) cards.splice(cards.findLastIndex((c) => drives.some((r) => r.id === c.dataset.id)) + 1, 0, writesCard(drives[0].owners || []), diskReportCard(state.disk));
   // H38: the containers go after the card of the Docker engine. A daemon of an older version and no engine give none.
   if (st.docker) {
     const at = cards.findIndex((c) => c.dataset.id === "service:docker");
@@ -1163,8 +1186,10 @@ async function refreshHistory() {
 async function refreshMcp() { try { state.mcp = await call("mcp/list"); renderMcp(); } catch {} }
 async function refreshTags() { try { state.tags = await call("resources/pooltags", { limit: 10 }); renderTags(); } catch {} }
 async function refreshConfig() { try { state.config = await call("config/get"); if (state.status) renderResources(); } catch {} }
+// H21: a daemon of an older version has no disk/report. The card then asks for a report.
+async function refreshDisk() { try { state.disk = await call("disk/report"); if (state.status) renderResources(); } catch {} }
 
-const LOOPS = [[refreshStatus, 3000], [refreshMcp, 10000], [refreshHistory, 60000], [refreshTags, 60000], [refreshConfig, 60000]];
+const LOOPS = [[refreshStatus, 3000], [refreshMcp, 10000], [refreshHistory, 60000], [refreshTags, 60000], [refreshConfig, 60000], [refreshDisk, 60000]];
 let timers = [];
 function start() {
   stop();
