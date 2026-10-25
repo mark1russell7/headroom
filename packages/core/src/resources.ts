@@ -283,7 +283,7 @@ export interface HealthRule extends RuleBase {
 
 /**
  * A rule with its own test of the facts of an instance (H30). The battery uses it, because its alerts need the power
- * source and the leases, not only a limit. The `--when` conditions of H31 can use the same type.
+ * source and the leases, not only a limit. The `--when` conditions of H31 have their own registry in `conditions.ts`.
  */
 export interface CheckRule extends RuleBase {
   readonly type: "check";
@@ -943,8 +943,8 @@ const BATTERY: Resource = {
       },
     ],
   },
-  // H31 adds the admission rules with the `--when` conditions: heavy jobs wait below a floor of charge, and the timing
-  // tests do not start on battery. They read `Readings.battery`, so this part stays `null` until then.
+  // H31: the battery admits no amount. The conditions of `conditions.ts` read the power source and the charge: a heavy job
+  // waits below the battery floor, and a job with `--timing` or `--when ac` waits for AC power.
   admit: null,
   // The client of `headroom run` puts its job in efficiency mode (EcoQoS) on battery, from the answer of its heartbeat.
   enforce: null,

@@ -294,6 +294,12 @@ The broker then has one rule for each id, with no name of a kind in it:
 - The queue order is the order of the broker: the priority with the aging, then the time of the request.
 - The engine gives the spawn rule of H47: a spawn-heavy lease and a lease with the slot `browser` do not run at the same time.
 
+**Conditions (H31).** Some leases wait for a fact, not for an amount. `BrokerOptions.condition(lease)` gives the reason of the wait, or `null`. The broker has no name of a condition in it.
+
+- The broker examines the conditions first, then the amounts, then the conflicts.
+- A lease that waits for a condition has no place in the queue. It does not hold the head after a long wait, and no later lease waits for it in a conflict.
+- The engine gives `conditionWait()` of `conditions.ts`: the `--when` conditions, `--timing` and the battery floor.
+
 ### 5. Enforce
 
 `headroom run` holds each job in a job object (H6). The enforce part of a kind tells what the job object can limit. Without a limit, headroom only reports the use of the job at its release.
@@ -363,7 +369,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
 | `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
 | `procs` (per minute) | H29. The process starts in one minute, as an average over the last 10 minutes. Windows: exact, from the sequence number of the newest process. Elsewhere: a lower bound. Capacity: `null`. | The starts of each owner: its leased jobs (exact, from the job objects) and its own commands (a lower bound, the new processes of each read). | Level on used: a warning above 600 for 10 minutes (`churn`). | None. | None. Report only: the lease keeps `processes`. |
-| `battery` (Wh) | H30. Capacity: the full charge. Free: the remaining charge, from `CallNtPowerInformation(SystemBatteryState)`. The measurement also has the power source, the charge state, the percent, the rate in W and the minutes left. No battery: no instance. Linux and macOS: no instance. | None. | Check: a warning below 30 minutes left, critical below 10 minutes or 10%. A warning when leased jobs run on battery. On AC power, no alert. | None. H31 adds the `--when` rules. | EcoQoS for the processes of `headroom run` on battery, from the answer of the heartbeat. `--no-eco` turns it off. |
+| `battery` (Wh) | H30. Capacity: the full charge. Free: the remaining charge, from `CallNtPowerInformation(SystemBatteryState)`. The measurement also has the power source, the charge state, the percent, the rate in W and the minutes left. No battery: no instance. Linux and macOS: no instance. | None. | Check: a warning below 30 minutes left, critical below 10 minutes or 10%. A warning when leased jobs run on battery. On AC power, no alert. | No amount. The conditions of H31 read the power source and the charge: `ac`, `battery>=N` and the battery floor. | EcoQoS for the processes of `headroom run` on battery, from the answer of the heartbeat. `--no-eco` turns it off. |
 | `power` (W) | H30. Used: the power of the whole computer, from the counter `\Energy Meter(*)\Power` (PDH). Capacity: `null`. No counter set: no instance. Linux and macOS: no instance. | An estimate: the CPU power, shared by the processor time of each owner. | None. The battery alert names the 3 owners with the most power. | None. | A power request keeps the computer awake on AC power while a lease is granted. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
 | `gpu:<adapter>` (later, MB) | The dedicated memory of each adapter. | The counter `GPU Process Memory` of each process. | Level on free. | Measured, as `memory`. | None. A job object has no GPU limit. |
@@ -690,13 +696,84 @@ Mark asked for the battery as a resource on battery power. An event or a cheap r
 - The first heartbeat comes 3 seconds after the start, then every 30 seconds. `--no-eco` turns the mode off. A daemon of an older version gives no `eco`, and the job keeps its speed.
 - **Keep awake.** On AC power, while a lease is granted, the daemon holds a power request: `PowerCreateRequest` with the reason `headroom: N jobs run`, then `PowerSetRequest(PowerRequestSystemRequired)`. With no lease or on battery, it clears the request. A lid close still puts the laptop to sleep, because the lid action of Windows is stronger than a power request.
 
-**Admit.** None in this item. H31 adds the rules with `--when`: they read `Readings.battery`, and the `admit` part of `battery` is the place for them.
+**Admit.** None in this item. H31 adds the conditions in `conditions.ts`. They read the power source and the charge, not an amount, so the `admit` part of `battery` stays `null`.
 
 **Status.** `Status.power` gives the power source, the power mode, the lid, `eco`, the reason of the power request and the last sleep. `headroom status` gives one line, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:graph 2.4 W.`
 
 **Cost.** The battery read is one call of approximately 32 bytes. The PDH query costs approximately 4 MB of private memory and approximately 900 ms once, at the first read. Each collection takes 4 to 28 ms. The PerfLib V2 consumer API can replace PDH later, if the 4 MB matter.
 
 **The numbers on 2026-10-24.** On battery: 47%, 21.9 W, 67 minutes left. The Energy Meter gave 23.3 W for the computer, 7.1 W for the CPU and 0.05 W for the GPU.
+
+### H31: conditions for a job
+
+Mark approved a set of resources on 2026-10-24. Some of them are conditions, not amounts: plugged in, Mark away, no metered network, a cool CPU. H31 is the gate that each of them uses. Timing-sensitive work belongs in CI, and its local numbers are wrong on battery or under heat.
+
+**The registry.** `CONDITIONS` in `conditions.ts` has one entry for each condition:
+
+```ts
+export interface Condition {
+  readonly name: string;
+  /** The fact, for the list of the known conditions: "the laptop is plugged in". */
+  readonly about: string;
+  /** The value of the condition: its operator and its range. A condition without it takes no value. */
+  readonly value?: ConditionValue | undefined;
+  /** A pure function of the facts: the power source, the charge, the usage window and the time. */
+  test(facts: ConditionFacts, value: number | null): boolean;
+  /** The waiting reason, for example "waits until the laptop is plugged in". */
+  reason(facts: ConditionFacts, value: number | null): string;
+  /** The facts that stop the condition, for a granted lease: "on battery". */
+  state(facts: ConditionFacts, value: number | null): string;
+}
+```
+
+| Condition | Test | Reason |
+|---|---|---|
+| `ac` | The power source is not the battery. No battery read counts as AC power. | `waits until the laptop is plugged in` |
+| `battery>=N` | AC power, no battery, or a charge of N% or more. N is 0 to 100. | `waits until the battery is at 50% or more, or plugged in (now 41%)` |
+| `usage<N` | Fresh usage data, and the five-hour window is under N%. N is 1 to 100. | `waits until the five-hour usage window is under 80% (now 91%, resets at 02:10)` |
+
+- `parseWhen()` reads `--when`. A value can have a list with commas, and the option can come more than one time. A condition that comes twice counts one time.
+- An unknown name gives a `ConditionError` with the list of the known conditions. A planned name also names its item: `away` (H33), `cool` (H35), `unmetered` (H39) and `night` (H42).
+- `headroom run` reads the conditions before it connects, so a wrong name stops the run with exit code 2. The broker reads them again at the request.
+- A later item adds a condition with one entry in `CONDITIONS` and one field in `ConditionFacts`. It removes the name from `PLANNED_CONDITIONS`.
+
+**The lease.** The lease keeps its conditions in the column `conditions`, as JSON: `{ when, timing, batteryOk }`. Two more columns keep the time when the conditions held after a wait (`conditions_met_at`) and the record of a running job (`unmet`). An older database gets the three columns at the start.
+
+**Admit.** At each tick, the broker asks the engine for the reason of each waiting lease. `conditionWait()` examines the checks of the lease in this order:
+
+1. The conditions of `--when`.
+2. The conditions of `--timing`: `ac`, and `cool` when H35 comes. The reason adds `(--timing): timing numbers on battery are wrong, so run timing tests in CI`.
+3. The battery floor, for a heavy lease without `--battery-ok`: `battery>=<floor>`. The reason names why the lease is heavy and tells about `--battery-ok`.
+
+The first check that does not hold gives the reason. Each reason starts with "waits until" or "waits for", but not with "waits for memory". Thus the hook of the plugin does not count it.
+
+**The power events.** A power event of H30 sets the state of the engine. The daemon then asks for a tick at once, and that tick reads the battery and runs the admission. Thus a lease that waits for `ac` starts within a second after the charger goes in. Without an event, the battery read comes with the read of the processes, every 10 seconds.
+
+**The battery policy.** A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. On battery below the floor, a new heavy lease waits.
+
+- The setting `batteryFloor` gives the floor: 25% by default. `headroom config battery-floor <pct>` changes it, and `0` turns the rule off.
+- A change of the floor runs the admission at once.
+- `--battery-ok` starts a heavy lease on a low battery.
+- The floor is a rule for the start of a job. A heavy job that runs continues, and the battery alerts of H30 tell about it.
+
+**The usage data.** `usage<N` reads the field `limits.five_hour` of the usage file of the fleet: `ratio` (0 to 1) and `resetsAt`. The setting `usageFile` gives the file, and `headroom config usage-file <path>` changes it.
+
+- The engine reads the file only when a lease has a usage condition. `UsageReader` keeps each read for 30 seconds, and it has no file watcher.
+- A missing or unreadable file fails closed: `waits for the usage data: <path> is missing`.
+- Data older than 70 minutes fails closed: `waits for fresh usage data: the file is 95 minutes old`. The time of the data is the field `updatedAt`, else the time of the last write of the file.
+- After `resetsAt`, the ratio of the old window does not apply, so the condition holds. Stale data stays closed, also after the reset.
+
+**A running job.** A granted lease continues when a condition stops. Pausing a job is not in this item. At each tick, `nextUnmet()` examines the conditions of `--when` and `--timing` of each granted lease:
+
+- A condition that stops starts the record `unmet`: `{ condition, state, since, until: null }`.
+- A condition that holds again closes the record with `until`. A later stop starts a new record.
+- `headroom status` gives `runs without its condition: on battery since 01:20`. `headroom job` gives an open or a closed record.
+
+**Status.** `headroom status` gives the conditions of each lease, for example `[when ac, --timing]`, and the reason of each waiting lease. `headroom run` gives `queued until the laptop is plugged in`. The JSON of `headroom job` gives `conditions` and `unmet`. The timeline of the dashboard draws the wait for a condition as a dashed line, up to `conditionsMetAt`. It draws the time without a condition as a red line on the run.
+
+**The restart.** A restart for an idle queue does not wait for a lease that waits for a condition. A condition can take hours, and the new daemon keeps each lease from the store.
+
+**Cost.** The facts come from the last battery read and the power state, one time for each tick. The settings are one read of the store for each tick with a waiting lease or a lease with conditions. The usage file is approximately 50 KB, at most one read in 30 seconds while a usage condition waits.
 
 ### H46: the peer of a local connection
 
@@ -830,3 +907,7 @@ These were the open questions. The session decided each one as a technical call.
 | How does headroom count the process starts of the computer? | The change of the sequence number of the newest process on Windows. Elsewhere, the new processes of each read, a lower bound. | The sequence number is exact and costs one open of one process. ETW is exact too, but it needs admin rights. |
 | Does a session get the starts of its jobs? | Yes, with a split: its jobs (exact) and its own commands (a lower bound). The holder decides the owner of a job, not the process tree. | A lease can have the name of the job of another project. The session that runs the lease starts its processes. |
 | Which processes are services? | A Node process with a title under the rule `system`, with its descendants. | The title names the program. An orphan with a title stays `other`, so the orphan rule still finds it. |
+| Does a lease that waits for a condition keep its place in the queue? | No. It does not hold the head, and no later lease waits for it in a conflict. | A condition can take hours. A lease that cannot run does not stop the leases that can run. |
+| Does a job stop when its condition stops? | No. The lease records the time, and the status shows it. | Pausing a job is not in H31. A stopped benchmark loses its work, and the record tells that its numbers are suspect. |
+| What does `usage<N` do without fresh data? | It waits, with the path or the age in the reason. After the reset time of fresh data, it holds. | A job that spends usage does not start on old data. A new window starts with no use. |
+| Does a restart for an idle queue wait for a lease that waits for a condition? | No. | A condition can take hours. The new daemon keeps the lease, and its client connects again. |

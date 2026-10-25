@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES } from "./alerts.ts";
+import { defaultUsageFile } from "./conditions.ts";
 import { Engine } from "./engine.ts";
 import { DEFAULT_HEALTH, type ServiceHealth } from "./services.ts";
 import type { Sampler } from "./sampler.ts";
@@ -437,7 +438,7 @@ describe("Engine disk leases and temp folders", () => {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
       expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600 });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile() });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });

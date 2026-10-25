@@ -6,7 +6,7 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { createSampler, Engine, ServiceMonitor, Store } from "@headroom/core";
+import { createSampler, Engine, ServiceMonitor, Store, waitsForRoom } from "@headroom/core";
 import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
@@ -86,7 +86,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   // `headroom service restart --when-idle`: the daemon waits for an idle queue, and then it restarts itself.
   let stopSelf = (): void => undefined;
   const idle: IdleRestart = new IdleRestart({
-    waiting: () => engine.status().leases.filter((lease) => lease.state === "waiting").length,
+    // H31: a lease that waits for a condition does not hold the restart. The new daemon keeps it.
+    waiting: () => engine.status().leases.filter(waitsForRoom).length,
     restart: () => {
       log("No lease waits, so the restart for an idle queue starts.");
       restartFromDaemon(process.pid, log).then(

@@ -13,6 +13,7 @@ import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
+import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -81,6 +82,19 @@ export interface Config {
    * browser test. The default is 600.
    */
   readonly spawnHeavy: number;
+  /**
+   * The battery floor in percent (H31). On battery below it, a new heavy lease waits. The default is 25, and 0 turns the
+   * rule off.
+   */
+  readonly batteryFloor: number;
+  /** The usage file of the fleet for the condition `usage<N` (H31). The default is `~/git/fleet/artifacts/hub/db/usage/current.json`. */
+  readonly usageFile: string;
+}
+
+/** This function reads the setting `batteryFloor`. A value that is not a whole number from 0 to 100 gives the default. */
+function batteryFloorOf(value: string | undefined): number {
+  const floor = Number(value);
+  return value !== undefined && Number.isInteger(floor) && floor >= 0 && floor <= 100 ? floor : BATTERY_FLOOR_DEFAULT;
 }
 
 /** This function reads the setting `spawnHeavy`. A value that is not a number above 0 gives the default. */
@@ -133,7 +147,11 @@ export class Store {
     // A database of an older version has no columns for the exit and the log of a job (H26).
     // A database of an older version has no column for the processes that a job started (H29).
     // A database of an older version has no columns for the peak starts and the spawn class of a job (H47).
-    const added = [["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"], ["peak_starts_per_min", "REAL"], ["spawn", "TEXT"]] as const;
+    // A database of an older version has no columns for the conditions of a lease (H31).
+    const added = [
+      ["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"], ["peak_starts_per_min", "REAL"], ["spawn", "TEXT"],
+      ["conditions", "TEXT"], ["conditions_met_at", "INTEGER"], ["unmet", "TEXT"],
+    ] as const;
     for (const [column, type] of added) {
       if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
     }
@@ -152,12 +170,13 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log, processes, peak_starts_per_min, spawn)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
            usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes,
-           peak_starts_per_min = excluded.peak_starts_per_min, spawn = excluded.spawn`,
+           peak_starts_per_min = excluded.peak_starts_per_min, spawn = excluded.spawn, conditions_met_at = excluded.conditions_met_at,
+           unmet = excluded.unmet`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
@@ -165,6 +184,8 @@ export class Store {
         lease.usage === undefined ? null : JSON.stringify(lease.usage),
         lease.exitCode ?? null, lease.signal ?? null, lease.log ?? null, lease.processes ?? null,
         lease.peakStartsPerMin ?? null, lease.spawn === undefined ? null : JSON.stringify(lease.spawn),
+        lease.conditions === undefined ? null : JSON.stringify(lease.conditions), lease.conditionsMetAt ?? null,
+        lease.unmet === undefined ? null : JSON.stringify(lease.unmet),
       );
   }
 
@@ -207,10 +228,19 @@ export class Store {
   config(): Config {
     const values = new Map<string, string>();
     for (const row of this.#db.prepare("SELECT name, value FROM settings").all()) values.set(String(row["name"]), String(row["value"]));
-    return { jobTemp: values.get("jobTemp") ?? null, health: healthOf(values.get("health")), spawnHeavy: spawnLimitOf(values.get("spawnHeavy")) };
+    return {
+      jobTemp: values.get("jobTemp") ?? null,
+      health: healthOf(values.get("health")),
+      spawnHeavy: spawnLimitOf(values.get("spawnHeavy")),
+      batteryFloor: batteryFloorOf(values.get("batteryFloor")),
+      usageFile: values.get("usageFile") ?? defaultUsageFile(),
+    };
   }
 
-  /** This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The value of `spawnHeavy` is a number as text. */
+  /**
+   * This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The values of
+   * `spawnHeavy` and `batteryFloor` are numbers as text.
+   */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
     else this.#db.prepare("INSERT INTO settings VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(name, value);
@@ -479,5 +509,8 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["processes"] === null || row["processes"] === undefined ? {} : { processes: Number(row["processes"]) }),
     ...(row["peak_starts_per_min"] === null || row["peak_starts_per_min"] === undefined ? {} : { peakStartsPerMin: Number(row["peak_starts_per_min"]) }),
     ...(row["spawn"] === null || row["spawn"] === undefined ? {} : { spawn: JSON.parse(String(row["spawn"])) as SpawnClass }),
+    ...(row["conditions"] === null || row["conditions"] === undefined ? {} : { conditions: JSON.parse(String(row["conditions"])) as LeaseConditions }),
+    ...(row["conditions_met_at"] === null || row["conditions_met_at"] === undefined ? {} : { conditionsMetAt: Number(row["conditions_met_at"]) }),
+    ...(row["unmet"] === null || row["unmet"] === undefined ? {} : { unmet: JSON.parse(String(row["unmet"])) as UnmetCondition }),
   };
 }

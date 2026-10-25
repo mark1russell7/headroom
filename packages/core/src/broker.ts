@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { leaseConditions, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import type { JobUsage, ResourceId, Room } from "./resources.ts";
 import type { SpawnClass } from "./spawn.ts";
 import { MEMORY, type Amounts } from "./types.ts";
@@ -35,6 +36,12 @@ export interface LeaseRequest {
    * the job is normal, also with a high peak in its past runs. Without it, the past runs decide.
    */
   readonly spawnHeavy?: boolean | undefined;
+  /** The conditions of `--when` (H31), for example `ac` or `usage<80`. The lease waits until each one holds. */
+  readonly when?: readonly string[] | undefined;
+  /** `--timing` (H31): the job measures time, so it waits for AC power. */
+  readonly timing?: boolean | undefined;
+  /** `--battery-ok` (H31): a heavy job starts also on battery below the floor. */
+  readonly batteryOk?: boolean | undefined;
 }
 
 /** The exit of a job, from its holder at the release (H26). */
@@ -83,12 +90,19 @@ export interface Lease {
   readonly peakStartsPerMin?: number | undefined;
   /** The spawn class of the job (H47): a spawn-heavy job and a browser test do not run at the same time. */
   readonly spawn?: SpawnClass | undefined;
+  /** The conditions of the lease (H31): `--when`, `--timing` and `--battery-ok`. A lease with none has no field. */
+  readonly conditions?: LeaseConditions | undefined;
+  /** The time when the conditions held after a wait for them (H31). The dashboard draws the condition wait up to this time. */
+  readonly conditionsMetAt?: number | undefined;
+  /** The record of a granted lease that runs without one of its conditions (H31). */
+  readonly unmet?: UnmetCondition | undefined;
 }
 
-/** The fields of a lease that the engine measures while its job runs (H47). */
+/** The fields of a lease that the engine measures while its job runs (H47), and the record of a condition that stops (H31). */
 export interface LeaseMeasures {
   readonly peakStartsPerMin?: number | undefined;
   readonly spawn?: SpawnClass | undefined;
+  readonly unmet?: UnmetCondition | undefined;
 }
 
 /** The capacity at one time. */
@@ -130,6 +144,12 @@ export interface BrokerOptions {
    * The default gives `null`.
    */
   readonly conflict?: ((lease: Lease, other: Lease) => string | null) | undefined;
+  /**
+   * This function tells why a waiting lease waits for a condition (H31), or gives `null` when each condition holds. A lease
+   * that waits for a condition keeps no place in the queue. Thus it does not hold the head, and no later lease waits for it.
+   * The default gives `null`.
+   */
+  readonly condition?: ((lease: Lease) => string | null) | undefined;
 }
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
@@ -175,6 +195,9 @@ export class Broker {
   readonly #headWaitMs: number;
   readonly #defaultTtlMs: number;
   readonly #conflict: (lease: Lease, other: Lease) => string | null;
+  readonly #condition: (lease: Lease) => string | null;
+  /** The waiting leases that waited for a condition at the last tick (H31). */
+  readonly #held = new Set<string>();
 
   constructor(options: BrokerOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -187,6 +210,7 @@ export class Broker {
     this.#headWaitMs = options.headWaitMs ?? 600_000;
     this.#defaultTtlMs = options.defaultTtlMs ?? 300_000;
     this.#conflict = options.conflict ?? (() => null);
+    this.#condition = options.condition ?? (() => null);
   }
 
   /** This function adds leases that a store kept, for example after a restart of the daemon. */
@@ -196,12 +220,13 @@ export class Broker {
 
   /**
    * This function adds a request. The lease waits until a `tick()` grants it. `spawn` is the spawn class from the engine.
-   * Without it, `spawnHeavy` of the request gives the class.
+   * Without it, `spawnHeavy` of the request gives the class. A wrong condition of `when` throws a `ConditionError` (H31).
    */
   request(request: LeaseRequest, spawn?: SpawnClass): Lease {
     for (const [name, amount] of Object.entries(request.amounts)) {
       if (!Number.isFinite(amount) || amount < 0) throw new RangeError(`The amount of ${name} must be a number of 0 or more`);
     }
+    const conditions = leaseConditions(request.when, request.timing, request.batteryOk);
     const now = this.#now();
     const lease: Lease = {
       id: this.#newId(),
@@ -220,6 +245,7 @@ export class Broker {
       peakMb: null,
       ...(request.log === undefined ? {} : { log: request.log }),
       ...spawnOf(request, spawn),
+      ...(conditions === undefined ? {} : { conditions }),
     };
     this.#leases.set(lease.id, lease);
     return lease;
@@ -232,6 +258,7 @@ export class Broker {
   release(id: string, reason = "released", peakMb: number | null = null, usage?: JobUsage, exit?: JobExit, processes?: number): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
+    this.#held.delete(id);
     const state = lease.state === "waiting" ? "cancelled" : "released";
     return this.#set({
       ...lease,
@@ -347,6 +374,7 @@ export class Broker {
       const ended = lease.pid !== null ? !this.#isAlive(lease.pid) : now - lease.heartbeatAt > lease.ttlMs;
       if (ended) {
         const reason = lease.pid !== null ? "the process exited" : "no heartbeat";
+        this.#held.delete(lease.id);
         changed.push(this.#set({ ...lease, state: "expired", endedAt: now, reason }));
       }
     }
@@ -358,12 +386,27 @@ export class Broker {
     // The granted leases, with the leases that this tick grants, and the leases that wait before the next lease (H47).
     const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
     const before: Lease[] = [];
-    for (const [index, lease] of waiting.entries()) {
+    // The place of a lease in the queue. A lease that waits for a condition has no place (H31).
+    let place = 0;
+    for (const waitingLease of waiting) {
+      let lease = waitingLease;
       const never = this.#neverFits(lease, capacity);
       if (never) {
+        this.#held.delete(lease.id);
         changed.push(this.#set({ ...lease, state: "cancelled", endedAt: now, reason: never }));
+        place += 1;
         continue;
       }
+      const unmet = this.#condition(lease);
+      if (unmet !== null) {
+        this.#held.add(lease.id);
+        if (lease.reason !== unmet) changed.push(this.#set({ ...lease, reason: unmet }));
+        continue;
+      }
+      // The conditions held after a wait for them: the lease keeps the time for the timeline of the dashboard.
+      if (this.#held.delete(lease.id)) lease = this.#set({ ...lease, conditionsMetAt: now });
+      const index = place;
+      place += 1;
       const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before);
       if (short === null) {
         for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? 0) - amount;
@@ -373,7 +416,7 @@ export class Broker {
         continue;
       }
       before.push(lease);
-      if (lease.reason !== short) changed.push(this.#set({ ...lease, reason: short }));
+      if (lease.reason !== short || lease !== waitingLease) changed.push(this.#set({ ...lease, reason: short }));
       // The first request keeps its place: after a long wait, no smaller request goes before it.
       if (index === 0 && now - lease.requestedAt > this.#headWaitMs) break;
     }

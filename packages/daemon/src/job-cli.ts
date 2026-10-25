@@ -6,7 +6,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { countText, diskSize, spawnClassText, type JobState } from "@headroom/core";
+import { conditionsText, countText, diskSize, spawnClassText, unmetText, type JobState } from "@headroom/core";
 import type { Connection } from "./client.ts";
 
 /** The exit code of `headroom job` when no job matches the query. */
@@ -41,7 +41,7 @@ function clockOf(at: string, now: number): string {
 
 /**
  * This function gives the line of one job, for example "e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12
- * min, ran 6 min, normal (no past runs)." It ends with the spawn class of the job (H47).
+ * min, ran 6 min, normal (no past runs)." It ends with the spawn class of the job (H47) and its conditions (H31).
  */
 export function jobLine(state: JobState, now: number): string {
   const parts: string[] = [];
@@ -65,7 +65,12 @@ export function jobLine(state: JobState, now: number): string {
   // H47: the peak starts in one minute and the spawn class. A daemon of an older version gives neither.
   if (typeof state.peakStartsPerMin === "number") parts.push(`at most ${countText(state.peakStartsPerMin)} starts a minute`);
   if (state.spawn !== null && state.spawn !== undefined) parts.push(spawnClassText(state.spawn));
-  const log = state.log === null ? "" : ` Log: ${state.log}`;
+  // H31: the conditions of the job, and a time when it ran without one of them. A daemon of an older version gives neither.
+  const conditions = conditionsText(state.conditions);
+  if (conditions !== null) parts.push(conditions);
+  const unmet = unmetText(state.unmet, (at) => clockOf(new Date(at).toISOString(), now));
+  if (unmet !== null) parts.push(unmet);
+  const log = state.log === null || state.log === undefined ? "" : ` Log: ${state.log}`;
   return `${state.job} (${state.id.slice(0, 8)}) of ${state.holder}: ${parts.join(", ")}.${log}`;
 }
 

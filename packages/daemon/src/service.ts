@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { processIsAlive, startOutsideJob, type Status } from "@headroom/core";
+import { processIsAlive, startOutsideJob, waitsForRoom, type Status } from "@headroom/core";
 import { answers, connect, connectTo, isNetworkError } from "./client.ts";
 import { killTree } from "./gateway.ts";
 import { headroomHome, logPath, readDiscovery, takePlannedStop, writePlannedStop } from "./paths.ts";
@@ -229,7 +229,8 @@ export async function restart(options: RestartOptions = {}): Promise<number> {
   while (!options.now && options.after === undefined) {
     const connection = connect();
     if (!connection) break;
-    const waiting = (await connection.call<Status>(["resources", "status"], {})).leases.filter((lease) => lease.state === "waiting").length;
+    // H31: a lease that waits for a condition does not hold the restart. The new daemon keeps it.
+    const waiting = (await connection.call<Status>(["resources", "status"], {})).leases.filter(waitsForRoom).length;
     if (waiting === 0) break;
     if (Date.now() > deadline) {
       fail(`headroom: ${waiting} leases still wait. No restart. Use --now to restart anyway, or --when-idle.`);

@@ -239,7 +239,9 @@ div.owner { cursor: default; }
     <p class="sumline" id="jobsSum"></p>
     <div class="legend">
       <span><i class="key" style="background:var(--warn);height:4px"></i>Waits for room</span>
+      <span><svg width="14" height="6" aria-hidden="true"><line x1="0" x2="14" y1="3" y2="3" stroke="var(--s2)" stroke-width="4" stroke-dasharray="4 2"/></svg>Waits for a condition</span>
       <span><i class="key" style="background:var(--s1);height:8px;border-radius:2px"></i>Runs</span>
+      <span><i class="key" style="background:var(--crit);height:3px"></i>Runs without its condition</span>
       <span><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="var(--good)"/></svg>Exit code 0</span>
       <span><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="var(--crit)"/></svg>An error</span>
       <span><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="3.2" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.5"/></svg>No exit code</span>
@@ -809,15 +811,34 @@ function renderResources() {
 // ---- the jobs: the leases of the window as bars, one line for each holder ----
 const waitOf = (l, now) => (l.grantedAt ?? l.endedAt ?? now) - l.requestedAt;
 const failedOf = (l) => (l.exitCode != null && l.exitCode !== 0) || !!l.signal;
+// H31: a wait for a condition (plugged in, the battery, the usage window), not for room.
+const isCondWait = (reason) => /^waits (until |for (the|fresh) usage data)/.test(reason || "");
+// The end of the wait for the conditions of a lease, or null when the lease did not wait for a condition.
+const condEndOf = (l, now) => (l.state === "waiting" && isCondWait(l.reason) ? now : l.conditionsMetAt ?? null);
+function conditionsOf(l) {
+  const c = l.conditions;
+  if (!c) return null;
+  const parts = [...(c.when || []), ...(c.timing ? ["--timing"] : []), ...(c.batteryOk ? ["--battery-ok"] : [])];
+  return parts.length ? `Conditions: ${parts.join(", ")}` : null;
+}
+function unmetOf(l) {
+  const u = l.unmet;
+  if (!u) return null;
+  return u.until == null ? `Runs without its condition: ${u.state} since ${clock(u.since)}` : `Ran without its condition ${u.condition}: ${u.state} from ${clock(u.since)} to ${clock(u.until)}`;
+}
 function leaseTip(l, now) {
   const w = waitOf(l, now), ran = l.grantedAt == null ? null : (l.endedAt ?? now) - l.grantedAt;
   const waited = w >= 1000 ? `waited ${dur(w)}` : "no wait";
-  const run = l.endedAt == null ? (ran == null ? `Waits for room since ${dur(w)}` : `Runs for ${dur(ran)}, ${waited}`) : `${waited[0].toUpperCase()}${waited.slice(1)}, ${ran == null ? "did not run" : `ran ${dur(ran)}`}`;
+  const waits = isCondWait(l.reason) ? `${l.reason[0].toUpperCase()}${l.reason.slice(1)}, for ${dur(w)}` : `Waits for room since ${dur(w)}`;
+  const run = l.endedAt == null ? (ran == null ? waits : `Runs for ${dur(ran)}, ${waited}`) : `${waited[0].toUpperCase()}${waited.slice(1)}, ${ran == null ? "did not run" : `ran ${dur(ran)}`}`;
+  const condEnd = l.state === "waiting" ? null : l.conditionsMetAt;
+  const condWaited = condEnd != null && condEnd - l.requestedAt >= 1000 ? `Waited ${dur(condEnd - l.requestedAt)} for its conditions` : null;
   const end = l.endedAt == null ? null : `Ended ${clock(l.endedAt)}${l.exitCode != null ? ` · exit code ${l.exitCode}` : l.signal ? ` · ${l.signal}` : ""}${l.peakMb != null ? ` · peak ${mb(l.peakMb)}` : ""}`;
   // H47: the peak process starts of the job, and its spawn class.
   const heavy = l.spawn?.heavy ? "Spawn-heavy: no browser test runs beside it" : null;
   const starts = l.peakStartsPerMin != null ? `At most ${Math.round(l.peakStartsPerMin).toLocaleString()} process starts a minute` : null;
-  return [`${l.holder} · ${l.job}`, run, end, `Asked for ${amounts(l.amounts)}`, [starts, heavy].filter(Boolean).join(" · ") || null];
+  return [`${l.holder} · ${l.job}`, run, end, `Asked for ${amounts(l.amounts)}`, [starts, heavy].filter(Boolean).join(" · ") || null,
+    [conditionsOf(l), condWaited].filter(Boolean).join(" · ") || null, unmetOf(l)];
 }
 function renderTimeline() {
   const host = $("timeline"), st = state.status;
@@ -828,8 +849,12 @@ function renderTimeline() {
   const all = [...byId.values()].filter((l) => (l.endedAt ?? now) >= t0).sort((a, b) => a.requestedAt - b.requestedAt);
   const waited = all.filter((l) => waitOf(l, now) >= 1000).sort((a, b) => waitOf(b, now) - waitOf(a, now));
   const failed = all.filter(failedOf).length, long = waited[0];
+  const conditioned = all.filter((l) => { const e = condEndOf(l, now); return e != null && e - l.requestedAt >= 1000; }).length;
+  const unmet = all.filter((l) => l.unmet).length;
   $("jobsSum").textContent = !all.length ? "" : [`${all.length} jobs in the last ${windowLabel()}.`,
-    long ? `${waited.length} waited for room, the longest ${dur(waitOf(long, now))} (${long.holder} · ${long.job}).` : "No job waited for room.",
+    long ? `${waited.length} waited, the longest ${dur(waitOf(long, now))} (${long.holder} · ${long.job}).` : "No job waited.",
+    conditioned ? `${conditioned} waited for a condition.` : "",
+    unmet ? `${unmet} ran without a condition.` : "",
     failed ? `${failed} ended with an error.` : "No job ended with an error.",
     (state.history?.leases || []).length >= 100 ? "The bars show the last 100 ended jobs." : ""].filter(Boolean).join(" ");
   if (!all.length) { host.replaceChildren(h("div", { class: "empty", text: "No job of headroom run in this window." })); return; }
@@ -856,8 +881,16 @@ function renderTimeline() {
     for (const l of g.ls) {
       const cy = y + PAD + lane.get(l) * LANE + LANE / 2;
       const qa = x(l.requestedAt), ga = x(l.grantedAt ?? l.endedAt ?? now), ea = x(l.endedAt ?? now);
-      if (ga - qa >= 1) marks.push(s("rect", { x: qa, y: cy - 2, width: ga - qa, height: 4, rx: 1, fill: "var(--warn)" }));
+      // H31: the wait for the conditions comes first, as a dashed line. The wait for room follows it.
+      const condEnd = condEndOf(l, now), ca = condEnd == null ? qa : Math.min(ga, x(condEnd));
+      if (ca - qa >= 1) marks.push(s("line", { x1: qa, x2: ca, y1: cy, y2: cy, stroke: "var(--s2)", "stroke-width": 4, "stroke-dasharray": "4 2" }));
+      if (ga - ca >= 1) marks.push(s("rect", { x: ca, y: cy - 2, width: ga - ca, height: 4, rx: 1, fill: "var(--warn)" }));
       if (l.grantedAt != null) marks.push(s("rect", { x: ga, y: cy - 5, width: Math.max(2, ea - ga), height: 10, rx: 2, fill: "var(--s1)" }));
+      // H31: the time when the job ran without one of its conditions, as a red line on its run.
+      if (l.unmet && l.grantedAt != null) {
+        const ua = Math.max(ga, x(l.unmet.since)), ub = Math.min(ea, x(l.unmet.until ?? l.endedAt ?? now));
+        if (ub >= ua) marks.push(s("rect", { x: ua, y: cy - 5, width: Math.max(2, ub - ua), height: 3, fill: "var(--crit)" }));
+      }
       if (l.endedAt != null) marks.push(l.exitCode == null && !l.signal
         ? s("circle", { cx: ea, cy, r: 3.2, fill: "var(--surface)", stroke: "var(--muted)", "stroke-width": 1.5 })
         : s("circle", { cx: ea, cy, r: 4, fill: failedOf(l) ? "var(--crit)" : "var(--good)", stroke: "var(--surface)", "stroke-width": 1.5 }));
@@ -891,8 +924,12 @@ function leaseTable(leases, ended) {
         h("td", { class: "num", text: amounts(l.amounts) }),
         h("td", { class: "num", text: l.peakMb == null ? "-" : mb(l.peakMb) }),
         h("td", { class: "num", text: ended ? clock(l.endedAt) : ago(l.grantedAt ?? l.requestedAt) }),
-        h("td", { class: "clip", title: l.reason || "", text: l.reason || "" }));
+        h("td", { class: "clip", title: noteOf(l), text: noteOf(l) }));
     })));
+}
+// The note of a lease: why it waits or ended, its conditions (H31), and a time when it ran without one of them.
+function noteOf(l) {
+  return [l.reason, l.state === "granted" ? unmetOf(l) : null, conditionsOf(l)].filter(Boolean).join(" · ");
 }
 function renderJobs() {
   const leases = [...(state.status?.leases || [])].sort((a, b) => (a.state === b.state ? a.requestedAt - b.requestedAt : a.state === "granted" ? -1 : 1));

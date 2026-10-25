@@ -22,6 +22,13 @@ const LeaseInput = z.object({
     .boolean()
     .optional()
     .describe("True: the job starts many processes, so no browser test runs beside it. False: a normal job. Default: the past runs decide (H47)."),
+  when: z
+    .array(z.string().min(1).max(64))
+    .max(16)
+    .optional()
+    .describe("The conditions of the job (H31), for example ac, battery>=50 or usage<80. The lease waits until each one holds."),
+  timing: z.boolean().optional().describe("True: the job measures time, so it waits for AC power (H31)"),
+  batteryOk: z.boolean().optional().describe("True: a heavy job starts also on battery below the floor (H31)"),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -85,6 +92,21 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The limit of a spawn-heavy job in process starts a minute (H47). null gives the default: 600."),
+  batteryFloor: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .nullable()
+    .optional()
+    .describe("The battery floor in percent (H31): on battery below it, a new heavy lease waits. 0 turns it off. null gives the default: 25."),
+  usageFile: z
+    .string()
+    .min(1)
+    .max(1000)
+    .nullable()
+    .optional()
+    .describe("The usage file of the fleet for the condition usage<N (H31). null gives the default file."),
 });
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -181,6 +203,9 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         ttlMs: input.ttlMs,
         log: input.log,
         spawnHeavy: input.spawnHeavy,
+        when: input.when,
+        timing: input.timing,
+        batteryOk: input.batteryOk,
       }),
     )
     .build() as AnyProcedure;
@@ -371,12 +396,21 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job.",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N.",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig({ jobTemp: input.jobTemp, health: input.health, spawnHeavy: input.spawnHeavy }))
+    .handler(
+      async (input: ConfigSetInput): Promise<Config> =>
+        engine.setConfig({
+          jobTemp: input.jobTemp,
+          health: input.health,
+          spawnHeavy: input.spawnHeavy,
+          batteryFloor: input.batteryFloor,
+          usageFile: input.usageFile,
+        }),
+    )
     .build() as AnyProcedure;
 
   return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet];

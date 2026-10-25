@@ -30,6 +30,48 @@ export {
   windowRate,
 } from "./spawn.ts";
 export type { SpawnClass, SpawnSource } from "./spawn.ts";
+export {
+  BATTERY_FLOOR_DEFAULT,
+  checksOf,
+  ConditionError,
+  conditionOf,
+  CONDITIONS,
+  conditionsText,
+  conditionWait,
+  defaultUsageFile,
+  HEAVY_MEMORY_MB,
+  heavyWhy,
+  isConditionWait,
+  knownConditionsText,
+  leaseConditions,
+  localClock,
+  nextUnmet,
+  parseCondition,
+  parseUsage,
+  parseWhen,
+  PLANNED_CONDITIONS,
+  readUsage,
+  TIMING_CONDITIONS,
+  TIMING_REASON,
+  unmetCheck,
+  unmetText,
+  USAGE_CACHE_MS,
+  USAGE_FRESH_MS,
+  UsageReader,
+  waitsForRoom,
+} from "./conditions.ts";
+export type {
+  CheckSource,
+  Condition,
+  ConditionCheck,
+  ConditionFacts,
+  ConditionOp,
+  ConditionSpec,
+  ConditionValue,
+  LeaseConditions,
+  UnmetCondition,
+  UsageFacts,
+} from "./conditions.ts";
 export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
