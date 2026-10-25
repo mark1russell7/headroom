@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*` and `service.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, PoolTags, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
@@ -60,7 +60,13 @@ const ConfigSetInput = z.object({
     .min(1)
     .max(1000)
     .nullable()
+    .optional()
     .describe("The temp root of the jobs, for example D:\\headroom\\tmp. null removes it, and each job then keeps the TEMP of its parent."),
+  health: z
+    .record(z.string().min(1).max(64), z.string().min(1).max(2000))
+    .nullable()
+    .optional()
+    .describe("The URLs that the service monitor checks, by name (H27). null gives the default: the fleet site. {} checks no URL."),
 });
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -237,7 +243,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Alerts>())
     .meta({
       description:
-        "Give the active alerts (a runaway process, an orphan, low memory, the commit charge, the kernel pool, a drive, the dynamic TCP ports) and the alerts that ended last",
+        "Give the active alerts (a runaway process, an orphan, low memory, the commit charge, the kernel pool, a drive, the dynamic TCP ports, a service) and the alerts that ended last",
       args: [],
       output: "json",
       effects: { reads: ["headroom", "process"], writes: [], destructive: false },
@@ -271,6 +277,19 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .handler(async (): Promise<TcpPorts> => engine.ports())
     .build() as AnyProcedure;
 
+  const services = createProcedure()
+    .path(["resources", "services"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<ServiceHealth[]>())
+    .meta({
+      description: "Give the health of each shared service: Docker, the URLs of the setting health and the MCP servers of the gateway (H27)",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<ServiceHealth[]> => engine.services())
+    .build() as AnyProcedure;
+
   const suggest = createProcedure()
     .path(["resources", "suggest"])
     .input(zodAdapter<SuggestInput>(SuggestInput))
@@ -302,15 +321,15 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .input(zodAdapter<ConfigSetInput>(ConfigSetInput))
     .output(anything<Config>())
     .meta({
-      description: "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it.",
+      description: "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check.",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig("jobTemp", input.jobTemp))
+    .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig({ jobTemp: input.jobTemp, health: input.health }))
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, suggest, configGet, configSet];
+  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, services, suggest, configGet, configSet];
 }
 
 const RestartWhenIdleInput = z.object({

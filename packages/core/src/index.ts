@@ -14,7 +14,7 @@ export type { BrokerOptions, Capacity, JobExit, Lease, LeaseRequest, LeaseState 
 export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
-export type { Alerts, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
+export type { Alerts, ConfigChange, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
 export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
 export {
@@ -36,7 +36,7 @@ export {
 export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary } from "./network.ts";
 export { createJob, startOutsideJob } from "./enforce.ts";
 export type { Job, JobLimits, StartedProcess } from "./enforce.ts";
-export { kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
+export { healthLevel, kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
 export type {
   Admit,
   AlertPart,
@@ -46,6 +46,7 @@ export type {
   CpuTimes,
   Enforce,
   GrowthRule,
+  HealthRule,
   InstanceFacts,
   JobSetup,
   JobUsage,
@@ -70,6 +71,18 @@ export type {
   Unit,
 } from "./resources.ts";
 export { createSampler, MB, takeSample } from "./sampler.ts";
+export {
+  CHECK_EVERY_MS,
+  CHECK_TIMEOUT_MS,
+  checkHealth,
+  DEFAULT_HEALTH,
+  errorText,
+  HEALTH_NAME,
+  nextHealth,
+  ServiceMonitor,
+  SLOW_MS,
+} from "./services.ts";
+export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, ServiceState, ServiceType } from "./services.ts";
 export type { Sampler } from "./sampler.ts";
 export { Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow } from "./store.ts";

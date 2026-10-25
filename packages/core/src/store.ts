@@ -12,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
+import { DEFAULT_HEALTH } from "./services.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
@@ -65,6 +66,24 @@ export interface Config {
    * for its `TEMP`, `TMP` and `TMPDIR`. Without it, a job keeps the `TEMP` of its parent.
    */
   readonly jobTemp: string | null;
+  /**
+   * The URLs that the service monitor checks (H27), by name. Each one gives the instance `service:<name>`. Without the
+   * setting, the list has the fleet site only. An empty list checks no URL.
+   */
+  readonly health: Readonly<Record<string, string>>;
+}
+
+/** This function reads the setting `health`. A value that is not an object of strings gives the default list. */
+function healthOf(value: string | undefined): Readonly<Record<string, string>> {
+  if (value === undefined) return DEFAULT_HEALTH;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return DEFAULT_HEALTH;
+    const entries = Object.entries(parsed);
+    return entries.every(([, url]) => typeof url === "string") ? (Object.fromEntries(entries) as Record<string, string>) : DEFAULT_HEALTH;
+  } catch {
+    return DEFAULT_HEALTH;
+  }
 }
 
 /** One stored measurement of a resource instance, in the unit of its kind. */
@@ -167,10 +186,10 @@ export class Store {
   config(): Config {
     const values = new Map<string, string>();
     for (const row of this.#db.prepare("SELECT name, value FROM settings").all()) values.set(String(row["name"]), String(row["value"]));
-    return { jobTemp: values.get("jobTemp") ?? null };
+    return { jobTemp: values.get("jobTemp") ?? null, health: healthOf(values.get("health")) };
   }
 
-  /** This function sets one setting. `null` removes it. */
+  /** This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
     else this.#db.prepare("INSERT INTO settings VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(name, value);

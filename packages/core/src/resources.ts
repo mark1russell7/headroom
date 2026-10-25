@@ -14,15 +14,19 @@ import type { Amounts, DiskSpace, NetRead, OwnerKind, ProcessInfo, SessionLoad, 
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
+import type { ServiceHealth, ServiceState } from "./services.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
 
 /** The kinds of resource. An id with no known kind is a slot, as before. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "gpu";
 
-/** The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s";
+/**
+ * The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. A kind in the unit `state` has
+ * no amount (H27). Its measurement has a `health`, and its used part is the latency of the last check in ms.
+ */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state";
 
 /** The processor times of the computer since its start (H23), in milliseconds, for all the processors together. */
 export interface CpuTimes {
@@ -61,6 +65,8 @@ export interface Readings {
   readonly previousNetwork?: NetRead | undefined;
   /** The TCP connections and the dynamic port range (H24). */
   readonly tcp?: TcpTable | undefined;
+  /** The health of each service after the last round of checks (H27). */
+  readonly services?: readonly ServiceHealth[] | undefined;
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -72,6 +78,8 @@ export interface Measurement {
   readonly used: number | null;
   /** The free part, or `null` without a capacity. For the memory, it is the available memory. */
   readonly free: number | null;
+  /** The health of a service (H27). Only a kind in the unit `state` has it. */
+  readonly health?: ServiceHealth | undefined;
 }
 
 /** The use of one owner of an instance, in the unit of the attribute part of its kind. */
@@ -226,8 +234,22 @@ export interface OutlierRule extends RuleBase {
   text(facts: ProcessFacts): AlertText;
 }
 
+/** A rule on the health of a service (H27): the same state for a count of checks in a row. */
+export interface HealthRule extends RuleBase {
+  readonly type: "health";
+  /** The rule examines only this instance. Without it, the rule examines each instance of the kind. */
+  readonly instance?: ResourceId | undefined;
+  /** The state that starts the alert. */
+  readonly state: ServiceState;
+  /** The count of checks in a row with the state. Fewer checks give no alert. */
+  readonly checks: number;
+  /** This function gives the level of the alert for the health of a service. */
+  level(health: ServiceHealth): Level;
+  text(facts: InstanceFacts): AlertText;
+}
+
 /** One alert rule of a kind. */
-export type Rule = LevelRule | GrowthRule | OutlierRule;
+export type Rule = LevelRule | GrowthRule | OutlierRule | HealthRule;
 
 /** The alert part of a kind. */
 export interface AlertPart {
@@ -688,6 +710,58 @@ const PORTS: Resource = {
   enforce: null,
 };
 
+/** This function gives a time span for a person: "30 s", "3 min" or "1.5 h". */
+function span(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  return `${(seconds / 3600).toFixed(1)} h`;
+}
+
+/** This function gives the text of an alert on a service. The service does not answer, the MCP server does not start, or the answer is slow. */
+function serviceText({ measurement }: InstanceFacts): AlertText {
+  const health = measurement.health;
+  const subject = health?.name ?? measurement.id;
+  if (health === undefined) return { subject, mb: 0, message: `The service ${measurement.id} has no health data.` };
+  if (health.state === "slow") {
+    return { subject, mb: 0, message: `${health.title} answers slowly: ${health.latencyMs ?? 0} ms at the last check, ${health.checks} slow checks in a row.` };
+  }
+  if (health.type === "mcp") return { subject, mb: 0, message: `${health.title} does not start: ${(health.error ?? "no reason").replace(/\.+$/, "")}.` };
+  const since = new Date(health.since).toISOString().slice(11, 16);
+  const needs = health.needs === null ? "" : ` ${health.needs}`;
+  return {
+    subject,
+    mb: 0,
+    message: `${health.title} does not answer since ${since} UTC (${span(health.checkedAt - health.since)}).${needs} headroom does not restart it.`,
+  };
+}
+
+/**
+ * The shared services (H27). Each service has one instance: `service:docker`, `service:mcp:<server>`, and `service:<name>`
+ * for each URL of the setting `health`. The unit is `state`. The measurement has the health, and the used part is the
+ * latency of the last check. An alert does not restart a service.
+ */
+const SERVICE: Resource = {
+  kind: "service",
+  unit: "state",
+  measure: {
+    read: ({ services }) => (services ?? []).map((health) => ({ id: `service:${health.name}`, capacity: null, used: health.latencyMs, free: null, health })),
+  },
+  attribute: null,
+  alert: {
+    rules: (limits) => [
+      // Docker and the MCP servers are critical. The services of the setting `health` give a warning.
+      {
+        type: "health", alert: "service", severity: true, state: "down", checks: limits.serviceDownChecks,
+        level: (health) => (health.critical ? "critical" : "warning"), text: serviceText,
+      },
+      { type: "health", alert: "service", severity: true, state: "slow", checks: limits.serviceSlowChecks, level: () => "warning", text: serviceText },
+    ],
+  },
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -710,7 +784,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */
@@ -745,6 +819,12 @@ export function levelOf(rule: LevelRule, measurement: Measurement): Level | null
     if (rule.on === "free" ? value < amount : value > amount) return level;
   }
   return null;
+}
+
+/** This function gives the level of a service for a health rule, or `null` when the service has not had the state for enough checks. */
+export function healthLevel(rule: HealthRule, measurement: Measurement): Level | null {
+  const health = measurement.health;
+  return health !== undefined && health.state === rule.state && health.checks >= rule.checks ? rule.level(health) : null;
 }
 
 /** This function tells if the change of an instance passes the limit of a growth rule. A change over a short history does not. */
@@ -790,7 +870,8 @@ export function withKinds(measurements: readonly Measurement[], attribution?: { 
   };
   return measurements.map((each) => {
     const resource = resourceOf(each.id);
-    return { id: each.id, kind: resource.kind, unit: resource.unit, capacity: each.capacity, used: each.used, free: each.free, owners: ownersOf(resource) };
+    const health = each.health === undefined ? {} : { health: each.health };
+    return { id: each.id, kind: resource.kind, unit: resource.unit, capacity: each.capacity, used: each.used, free: each.free, ...health, owners: ownersOf(resource) };
   });
 }
 

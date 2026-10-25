@@ -45,13 +45,14 @@ headroom status
 headroom history --minutes 120
 ```
 
-`headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network and the TCP connections:
+`headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network, the TCP connections and the shared services:
 
 ```text
 Writes (last hour): session:graph 31.2 GB, mcp:vex 2.1 GB.
 CPU: 3.4 of 16 cores in use. Most: session:graph 2.1, mcp:vex 0.4.
 Network: 1.2 MB/s in, 0.3 MB/s out.
 TCP: 812 connections (120 waiting to close), 2% of the dynamic ports.
+Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.
 ```
 
 - The writes come from the write counter of each process: `WriteTransferCount` on Windows, and `write_bytes` of `/proc/<pid>/io` on Linux. The line names the 5 owners above 10 MB.
@@ -72,6 +73,28 @@ PORT       PID  PROCESS                    OWNER                  ADDRESSES
 
 3 listening ports. Outgoing connections use the dynamic ports 49152-65535, so give a dev server a port below 49152.
 ```
+
+### The shared services (H27)
+
+On 2026-10-24, the Docker engine stopped to answer, and an MCP server of the gateway did not start. Nothing told the sessions. Since H27, the daemon checks the shared services every 30 seconds, with a time limit of 3 seconds for each check:
+
+- **Docker**: a `GET /_ping` on the pipe of the engine, `\\.\pipe\docker_engine` on Windows and `/var/run/docker.sock` on Linux. headroom starts no `docker` process. When the pipe does not exist, the state is `absent`, and no alert starts.
+- **The MCP servers of the gateway**: the state of the gateway, with no call. A server that did not start is `down`, with the last error line of its stderr. A server that the gateway stopped for idle is `idle`, not `down`. A server that exited is `idle`, because the next request starts it again. With 3 exits in 10 minutes, it is `down`.
+- **The URLs of the setting `health`**: a `GET` of each URL. An answer with a status below 500 is good. The default list has the fleet site only: `fleet-site` at `http://127.0.0.1:4731/`.
+
+Each service has a state: `ok`, `slow` (an answer after more than 1 second), `down`, `idle` or `absent`. `headroom services` shows the state, the latency, the start of the state, the last good check and the last error of each service. `--json` gives the list.
+
+```text
+SERVICE                  STATE    LATENCY  SINCE (UTC)      LAST OK  LAST ERROR
+docker                   ok         12 ms  16:02 (2.7 h)    18:45    -
+fleet-site               ok          3 ms  16:02 (2.7 h)    18:45    -
+mcp:vex                  down           -  18:41 (4 min)    -        18:45 Error: Cannot find module 'zod'
+mcp:loom                 idle           -  16:02 (2.7 h)    -        -
+```
+
+- `headroom config health <name> <url>` adds a URL or changes it. `headroom config health <name> --clear` removes one URL.
+- `headroom config health --clear` sets the default list again. `headroom config health` shows the list.
+- headroom does not restart a service for its health. A person or the session that owns the service decides.
 
 On Windows, `headroom run` puts the job into a job object:
 
@@ -137,6 +160,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
 | `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It names the 3 owners that wrote most in the last hour, each above 100 MB, for example `Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB.` It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
 | `ports` | More than 80% of the dynamic TCP ports are in use (a warning), or more than 95% (critical). When no dynamic port is free, new connections fail. The alert names the 3 owners with the most connections, and the count in `TIME_WAIT`. |
+| `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the graph tests need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.

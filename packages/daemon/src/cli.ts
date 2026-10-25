@@ -10,8 +10,9 @@
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
- * - `headroom config [job-temp <folder>]`: show or change the settings.
+ * - `headroom config [job-temp <folder>] [health <name> <url>]`: show or change the settings.
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
+ * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -52,6 +53,7 @@ import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { readDiscovery, readPlannedStop } from "./paths.ts";
 import type { DaemonStatus } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
+import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
 import * as service from "./service.ts";
 
 const HELP = `headroom: the memory and job broker of this computer
@@ -76,6 +78,9 @@ const HELP = `headroom: the memory and job broker of this computer
   ${JOB_USAGE}
                The state of a job: queued, running or exited, with its exit code. No job: exit 3.
   headroom config [job-temp <folder> | job-temp --clear]   (show or change the settings)
+  headroom config health [<name> <url> | <name> --clear | --clear]
+               The URLs that the service monitor checks. The default: ${DEFAULT_HEALTH_TEXT}.
+  ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
@@ -166,6 +171,9 @@ function printStatus(status: DaemonStatus): void {
     const part = Math.round((ports.used / ports.capacity) * 100);
     console.log(`TCP: ${status.tcp.connections} connections (${status.tcp.timeWait} waiting to close), ${part}% of the dynamic ports.`);
   }
+  // H27: the health of the shared services. A daemon of an older version gives none.
+  const services = servicesLine((status.resources ?? []).flatMap((each) => (each.health === undefined ? [] : [each.health])));
+  if (services !== null) console.log(services);
   const free = Object.entries(status.free).map(([name, amount]) => `${name} ${amountText(name, amount)}`);
   console.log(`Free for a new lease: ${free.join(", ")} (reserve ${mb(status.reserveMb)}).`);
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
@@ -622,6 +630,8 @@ async function showPorts(json: boolean): Promise<number> {
 /** This function prints the settings. */
 function printConfig(config: Config): void {
   console.log(`job-temp: ${config.jobTemp ?? "(none: each job of headroom run uses the TEMP of its parent)"}`);
+  // A daemon of an older version has no setting health.
+  if (config.health !== undefined) for (const line of healthLines(config.health)) console.log(line);
 }
 
 /** `headroom config`: show the settings. `headroom config job-temp <folder>` sets the temp root, and `--clear` removes it. */
@@ -636,8 +646,20 @@ async function configCommand(argv: string[]): Promise<number> {
     else printConfig(config);
     return 0;
   }
+  if (name === "health") {
+    const [, check, url] = positionals;
+    const current = (await connection.call<Config>(["config", "get"], {})).health ?? {};
+    const health = positionals.length > 3 ? undefined : healthChange(current, check, url, values.clear === true);
+    if (health === undefined && (check !== undefined || values.clear === true || positionals.length > 3)) {
+      console.error("Usage: headroom config health, headroom config health <name> <url>, headroom config health <name> --clear, or headroom config health --clear");
+      return 2;
+    }
+    if (health === undefined) for (const line of healthLines(current)) console.log(line);
+    else printConfig(await connection.call<Config>(["config", "set"], { health }));
+    return 0;
+  }
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
-    console.error("Usage: headroom config, headroom config job-temp <folder>, or headroom config job-temp --clear");
+    console.error("Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, or headroom config health");
     return 2;
   }
   // The daemon has its own current folder, so a relative folder resolves here.
@@ -767,6 +789,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "config":
       return configCommand(rest);
+    case "services":
+      return servicesCommand(rest, connect());
     case "mcp":
       return mcpCommand(rest, connect());
     case "resume-plan":

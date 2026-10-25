@@ -25,6 +25,7 @@ import {
   type ResourceStatus,
 } from "./resources.ts";
 import { MB, type Sampler } from "./sampler.ts";
+import { checkHealth, type ServiceHealth } from "./services.ts";
 import type { Config, MemoryRow, OwnerRow, Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
@@ -63,6 +64,8 @@ export interface EngineOptions {
   readonly sessionsDir?: string | undefined;
   /** This function gives the process of each server of the MCP gateway, with the name of the server. */
   readonly servers?: (() => ReadonlyMap<number, string>) | undefined;
+  /** This function gives the health of each service after the last round of checks (H27). The default gives no service. */
+  readonly services?: (() => readonly ServiceHealth[]) | undefined;
   /**
    * This function gives the new large files for the drives of the disk alerts. The default reads the home folder, the
    * downloads, the temporary folders and the root of each drive. It gives the 3 largest files above 1 GB of the last 2 hours.
@@ -97,7 +100,7 @@ export interface Status {
   readonly disks: readonly DiskStatus[];
   /**
    * The level of each resource instance, with its 10 largest owners. The instances are the memory, the commit charge, the
-   * kernel pools, the desktop, the drives, the processors, the network, the TCP ports and the slots.
+   * kernel pools, the desktop and the drives. Then come the processors, the network, the TCP ports, the services and the slots.
    */
   readonly resources: readonly ResourceStatus[];
   /**
@@ -107,6 +110,12 @@ export interface Status {
   readonly writes: readonly OwnerWrites[];
   /** The TCP connections of the last read of the processes (H24), or `null` on a platform with no TCP read. */
   readonly tcp: TcpSummary | null;
+}
+
+/** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
+export interface ConfigChange {
+  readonly jobTemp?: string | null | undefined;
+  readonly health?: Readonly<Record<string, string>> | null | undefined;
 }
 
 /** An alert that ended. */
@@ -196,6 +205,7 @@ export class Engine {
   readonly #retentionMs: number;
   readonly #sessionsDir: string;
   readonly #servers: () => ReadonlyMap<number, string>;
+  readonly #services: () => readonly ServiceHealth[];
   readonly #listeners = new Set<(changed: readonly Lease[]) => void>();
   #memory: SystemMemory;
   #processes: readonly ProcessInfo[] = [];
@@ -252,6 +262,7 @@ export class Engine {
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#servers = options.servers ?? (() => new Map());
+    this.#services = options.services ?? (() => []);
     this.#alertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
     this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
     this.#startedAt = this.#now();
@@ -316,6 +327,7 @@ export class Engine {
       network: this.#network,
       previousNetwork: this.#previousNetwork,
       tcp: this.#tcp,
+      services: this.#services(),
     };
     return this.#readings;
   }
@@ -427,10 +439,21 @@ export class Engine {
     return this.#store.config();
   }
 
-  /** This function changes one setting. `null` removes it. It refuses a temp root that is not an absolute folder. */
-  setConfig(name: keyof Config, value: string | null): Config {
-    this.#store.setConfig(name, value === null ? null : checkJobTemp(value));
+  /**
+   * This function changes the settings. `null` removes a setting. It refuses a temp root that is not an absolute folder, and
+   * a URL of `health` that is not http or https. With an error, it changes no setting.
+   */
+  setConfig(change: ConfigChange): Config {
+    const jobTemp = change.jobTemp === undefined || change.jobTemp === null ? change.jobTemp : checkJobTemp(change.jobTemp);
+    const health = change.health === undefined || change.health === null ? change.health : JSON.stringify(checkHealth(change.health));
+    if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
+    if (health !== undefined) this.#store.setConfig("health", health);
     return this.#store.config();
+  }
+
+  /** This function gives the health of each service after the last round of checks (H27). */
+  services(): ServiceHealth[] {
+    return [...this.#services()];
   }
 
   /**
@@ -578,7 +601,7 @@ export class Engine {
     const found = detect(
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
-        load: this.#load, disks, writes: this.#writes, tcp: this.#tcp,
+        load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(),
       },
       this.#alertRules,
     );

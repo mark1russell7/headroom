@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseBootTime, parseMeminfo, parseStat } from "./linux.ts";
+import { DEFAULT_HEALTH } from "./services.ts";
 import { Store } from "./store.ts";
 
 describe("Store", () => {
@@ -34,11 +35,21 @@ describe("Store", () => {
 
   it("keeps the settings, and the usage of an ended lease", () => {
     const store = new Store(":memory:");
-    expect(store.config()).toEqual({ jobTemp: null });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH });
     store.setConfig("jobTemp", "D:\\headroom\\tmp");
-    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp" });
+    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH });
     store.setConfig("jobTemp", null);
-    expect(store.config()).toEqual({ jobTemp: null });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH });
+
+    // H27: the setting health. Without it, the list has the fleet site. An empty list checks no URL.
+    store.setConfig("health", JSON.stringify({ "fleet-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
+    expect(store.config().health).toEqual({ "fleet-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" });
+    store.setConfig("health", "{}");
+    expect(store.config().health).toEqual({});
+    store.setConfig("health", "not json");
+    expect(store.config().health).toEqual(DEFAULT_HEALTH);
+    store.setConfig("health", null);
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH });
 
     const broker = new Broker({ now: () => 5000, newId: () => "l1" });
     const lease = broker.request({ holder: "graph", job: "test", amounts: { "disk:D:": 5120 } });
