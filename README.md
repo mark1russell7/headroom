@@ -215,10 +215,11 @@ headroom run --when "starts<700" -- pnpm e2e
 | `battery>=N` | The battery is at N% or more, or the laptop is plugged in. |
 | `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file of the fleet. |
 | `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. The daemon tests it at each read of the processes. |
+| `away` | Mark is away from the laptop (H33). A computer with no read of the presence counts as away. |
 
 - **The wait.** The lease waits until each condition holds and its amounts fit. A lease that waits for a condition does not hold the queue: later leases go before it.
 - **A power event.** When the charger goes in or out, Windows tells the daemon. The daemon reads the battery and runs the admission at once. Thus a lease that waits for `ac` starts in less than a second.
-- **A wrong name.** `headroom run` refuses an unknown condition, with the list of the known conditions. A planned condition names its item: `away` (H33), `cool` (H35), `unmetered` (H39) and `night` (H42).
+- **A wrong name.** `headroom run` refuses an unknown condition, with the list of the known conditions. A planned condition names its item: `cool` (H35), `unmetered` (H39) and `night` (H42).
 - **A running job.** A job continues when a condition stops, for example when the charger goes out. The lease records it, and `headroom status` shows `runs without its condition: on battery since 01:20`.
 - **`--timing`.** A job that measures time waits for AC power. Its reason tells you to run timing tests in CI. H35 adds `cool` to `--timing`.
 
@@ -242,6 +243,41 @@ waits until the computer starts fewer than 700 processes a minute (now 1,108)
 ```
 
 `headroom job` gives the conditions of a job and a time when it ran without one of them. The timeline of the dashboard draws the wait for a condition as a dashed line, and the time without a condition as a red line. A restart of the daemon for an idle queue does not wait for a lease that waits for a condition. The new daemon keeps the lease.
+
+### Keep room for Mark (H33)
+
+While Mark works at the laptop or is on a call, heavy jobs wait or run slower, so the laptop stays fast for Mark. When Mark steps away, they run at full speed.
+
+| State | When |
+|---|---|
+| `present` | An input came in the last 5 minutes. |
+| `busy` | Mark is present, and a full-screen app or a presentation runs. A call also makes Mark busy, with or without input: an app uses the camera or the microphone. |
+| `away` | No input came for 5 minutes, Windows tells that the user is inactive, the display is off, or the session is locked. |
+
+**The measure.** The reads are cheap. They start no process, no timer and no window:
+
+- Windows tells the daemon when the user presence or the display changes. The daemon then runs a tick at once.
+- At each tick, every 2 seconds, `GetLastInputInfo` gives the time since the last input. `SHQueryUserNotificationState` tells if the session is locked, a full-screen app runs or a presentation runs. The two calls take approximately 0.2 ms.
+- At most one time in 30 seconds, the daemon reads the consent store of the camera and the microphone in the registry. It only reads.
+- The daemon keeps only the fact that a call is on, and the device. It keeps no name of an app.
+
+**The rules.**
+
+- **A heavy job waits while Mark is busy.** The reason is `waits while Mark is on a call (at most until 10:22, then in eco mode)`, or `presents`, or `uses a full-screen app`. After 20 minutes, the job starts in efficiency mode. A light job and a running job continue.
+- **Efficiency mode while Mark is at the laptop.** While Mark is present or busy, each heavy job runs in EcoQoS, and 2 more cores stay for Mark. The client of `headroom run` changes the mode at its next heartbeat. `--no-eco` keeps the full speed.
+- **Full speed while Mark is away.** No job runs in efficiency mode for Mark, and the CPU reserve is 0. On battery, the efficiency mode of H30 applies in each state.
+- **Heavy.** A heavy job asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. With `--ignore-presence`, a heavy job does not wait and keeps its full speed.
+- **`--when away`.** The job waits until Mark is away. A change of the state runs the admission at once, so the job starts within 2 seconds.
+
+```sh
+headroom run --when away -- pnpm bench
+headroom config away-after 10m      # no input for 10 minutes: away (the default: 5 min)
+headroom config busy-wait 30m       # the longest wait of a heavy job while Mark is busy (the default: 20 min)
+headroom config present-reserve 3   # 3 more cores for Mark while Mark is at the laptop (the default: 2)
+headroom config presence off        # measure only: no wait, no efficiency mode, no change of the reserve
+```
+
+`headroom status` gives one line, for example `You: present (last input 12 s ago). Heavy jobs run in eco mode.`, `You: on a call since 10:02. 2 heavy jobs wait.` or `You: away since 09:40.` `headroom presence` gives the state, its reason and the last 20 changes. `--json` gives the data. The dashboard shows the state in the chip `You`.
 
 ### The reboot budget and a planned drain (H34)
 

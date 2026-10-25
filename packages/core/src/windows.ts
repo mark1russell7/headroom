@@ -16,6 +16,7 @@
  * - `windows-power.ts` gives the battery, the Energy Meter, the power events and the power request (H30).
  * - For `resources.peer` (H46), `GetExtendedTcpTable` gives the rows of one connection, and `GetProcessTimes` gives the start of one process.
  * - `RegOpenKeyExW` of `advapi32.dll` tells if a key of the registry exists (H34). The reboot budget reads two keys, and writes none.
+ * - `windows-presence.ts` gives the time since the last input, the notification state and the camera and the microphone (H33).
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
@@ -30,6 +31,7 @@ import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
 import { closePower, keepAwake, readBattery, readMeters, watchPower } from "./windows-power.ts";
+import { readCalls, readPresence } from "./windows-presence.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
@@ -600,6 +602,8 @@ export function windowsSampler(): Sampler {
     watchPower,
     keepAwake,
     registryKey,
+    presence: readPresence,
+    calls: readCalls,
     close: closePower,
   };
 }

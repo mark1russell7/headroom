@@ -13,6 +13,7 @@ import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Lease } from "./broker.ts";
+import type { PresenceState } from "./presence.ts";
 import { BROWSER_SLOT, isSpawnHeavy } from "./spawn.ts";
 import { countText } from "./starts.ts";
 import { MEMORY } from "./types.ts";
@@ -47,6 +48,11 @@ export interface ConditionFacts {
    * before two reads of the processes.
    */
   readonly starts: number | null;
+  /**
+   * The state of Mark at the laptop (H33): `present`, `busy` or `away`. It is `null` on a computer with no read of the
+   * presence, and then the condition `away` holds.
+   */
+  readonly presence: PresenceState | null;
 }
 
 /** The operator of a condition with a value. */
@@ -95,6 +101,8 @@ export interface LeaseConditions {
   readonly batteryOk?: boolean | undefined;
   /** `--during-drain` (H34): the job starts also in a planned drain for a reboot. */
   readonly duringDrain?: boolean | undefined;
+  /** `--ignore-presence` (H33): a heavy job does not wait while Mark is busy, and gets no efficiency mode for Mark. */
+  readonly ignorePresence?: boolean | undefined;
 }
 
 /** The record of a granted lease that runs without one of its conditions (H31). */
@@ -143,6 +151,12 @@ export function localClock(at: number): string {
 }
 
 const percentText = (ratio: number): string => `${Math.round(ratio * 100)}%`;
+
+/** This function writes the state of Mark for a reason: "at the laptop", "busy at the laptop" or "away". */
+function presenceText(state: PresenceState | null): string {
+  if (state === "present") return "at the laptop";
+  return state === "busy" ? "busy at the laptop" : "away";
+}
 
 /** This function tells why the usage data does not give a ratio, or gives `null` when it is fresh. */
 function usageProblem(facts: ConditionFacts): string | null {
@@ -202,11 +216,18 @@ export const CONDITIONS: readonly Condition[] = [
       `waits until the computer starts fewer than ${countText(value ?? 0)} processes a minute (${facts.starts === null ? "no count yet" : `now ${countText(facts.starts)}`})`,
     state: (facts) => (facts.starts === null ? "no count of the process starts" : `${countText(facts.starts)} process starts a minute`),
   },
+  {
+    name: "away",
+    about: "Mark is away from the laptop",
+    // A computer with no read of the presence has no person to keep room for, so the condition holds.
+    test: (facts) => facts.presence === null || facts.presence === "away",
+    reason: (facts) => `waits until Mark is away from the laptop (now ${presenceText(facts.presence)})`,
+    state: (facts) => `Mark is ${presenceText(facts.presence)}`,
+  },
 ];
 
 /** The planned conditions, with the item that adds each one. */
 export const PLANNED_CONDITIONS: Readonly<Record<string, { readonly item: string; readonly about: string }>> = {
-  away: { item: "H33", about: "Mark is away from the computer" },
   cool: { item: "H35", about: "the processors are cool" },
   unmetered: { item: "H39", about: "the network is not metered" },
   night: { item: "H42", about: "the quiet hours" },
@@ -280,14 +301,16 @@ export function leaseConditions(
   timing: boolean | undefined,
   batteryOk: boolean | undefined,
   duringDrain?: boolean | undefined,
+  ignorePresence?: boolean | undefined,
 ): LeaseConditions | undefined {
   const specs = parseWhen(when ?? []);
-  if (specs.length === 0 && timing !== true && batteryOk !== true && duringDrain !== true) return undefined;
+  if (specs.length === 0 && timing !== true && batteryOk !== true && duringDrain !== true && ignorePresence !== true) return undefined;
   return {
     when: specs.map((spec) => spec.text),
     ...(timing === true ? { timing: true } : {}),
     ...(batteryOk === true ? { batteryOk: true } : {}),
     ...(duringDrain === true ? { duringDrain: true } : {}),
+    ...(ignorePresence === true ? { ignorePresence: true } : {}),
   };
 }
 
@@ -383,11 +406,11 @@ export function nextUnmet(lease: Lease, facts: ConditionFacts): UnmetCondition |
   return { condition: failed.condition, state: failed.state, since: facts.now, until: null };
 }
 
-const CONDITION_WAIT = /^waits (until |for (the|fresh) usage data|for the planned reboot)/;
+const CONDITION_WAIT = /^waits (until |while |for (the|fresh) usage data|for the planned reboot)/;
 
 /**
- * This function tells if a waiting reason comes from a condition or from a planned drain (H34). A restart for an idle queue
- * does not wait for such a lease.
+ * This function tells if a waiting reason comes from a condition, from a planned drain (H34) or from the presence of Mark
+ * (H33). A restart for an idle queue does not wait for such a lease.
  */
 export function isConditionWait(reason: string | null): boolean {
   return reason !== null && CONDITION_WAIT.test(reason);
@@ -409,6 +432,7 @@ export function conditionsText(conditions: LeaseConditions | undefined | null): 
     ...(conditions.timing === true ? ["--timing"] : []),
     ...(conditions.batteryOk === true ? ["--battery-ok"] : []),
     ...(conditions.duringDrain === true ? ["--during-drain"] : []),
+    ...(conditions.ignorePresence === true ? ["--ignore-presence"] : []),
   ];
   return parts.length === 0 ? null : `when ${parts.join(", ")}`;
 }

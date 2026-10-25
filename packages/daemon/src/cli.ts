@@ -12,6 +12,8 @@
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
  * - `headroom forecast [--json]`: the time of each resource to its nearest limit, from the fit of its history (H32).
  * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
+ * - `headroom config [presence on|off] [away-after <time>] [busy-wait <time>] [present-reserve <cores>]`: the presence rules (H33).
+ * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
@@ -49,6 +51,13 @@ import {
   conditionsText,
   defaultUsageFile,
   parseWhen,
+  AWAY_AFTER_DEFAULT_MS,
+  BUSY_WAIT_DEFAULT_MS,
+  PRESENT_RESERVE_DEFAULT,
+  elapsedText,
+  presenceHistoryLines,
+  presenceLine,
+  stateText,
   readSessions,
   unmetText,
   SPAWN_HEAVY_DEFAULT,
@@ -99,7 +108,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g|auto] [--cpu 2|auto] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
                [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
-               [--battery-ok] [--during-drain] -- <command> [args...]
+               [--battery-ok] [--during-drain] [--ignore-presence] -- <command> [args...]
                --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
                Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
                --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
@@ -122,6 +131,9 @@ const HELP = `headroom: the memory and job broker of this computer
                On battery below the floor (${BATTERY_FLOOR_DEFAULT}%), a heavy job waits: 2 GB or more, the slot
                browser, or spawn-heavy. --battery-ok: start it anyway.
                In a planned drain for a reboot, a new job waits. --during-drain: start it anyway.
+               While Mark is on a call, presents or uses a full-screen app, a new heavy job waits
+               (up to 20 min). While Mark is at the laptop, a heavy job runs in efficiency mode, and
+               2 more cores stay for Mark. --when away: wait until Mark is away. --ignore-presence: not.
                A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
   ${JOB_USAGE}
                The state of a job: queued, running or exited, with its exit code. No job: exit 3.
@@ -136,6 +148,15 @@ const HELP = `headroom: the memory and job broker of this computer
                The usage file of the fleet for --when usage<N.
   headroom config cpu-reserve [<cores> | --clear]
                The cores that the leases do not take, for Mark. 0: no reserve. The default: ${CPU_RESERVE_DEFAULT}.
+  headroom config presence [on | off | --clear]
+               The presence rules: heavy jobs wait or run slower while Mark works. The default: on.
+  headroom config away-after [<time> | --clear]
+               With no input for this time, Mark is away. The default: ${elapsedText(AWAY_AFTER_DEFAULT_MS)}.
+  headroom config busy-wait [<time> | --clear]
+               The longest wait of a heavy job while Mark is busy. The default: ${elapsedText(BUSY_WAIT_DEFAULT_MS)}.
+  headroom config present-reserve [<cores> | --clear]
+               The cores that the reserve gets while Mark is at the laptop. While away: no reserve. The default: ${PRESENT_RESERVE_DEFAULT}.
+  headroom presence [--json]                (Mark at the laptop: present, busy or away, and the history)
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
@@ -208,6 +229,9 @@ function printStatus(status: DaemonStatus): void {
   const advice = status.reboot?.advice;
   if (advice !== undefined && advice.level !== "none") console.log(`Reboot: ${advice.text}`);
   if ((status.alerts ?? []).length > 0 || status.restart || drain !== null || (advice !== undefined && advice.level !== "none")) console.log("");
+  // H33: Mark at the laptop. A daemon of an older version and a computer with no read of the presence give no line.
+  const you = presenceLine(status.presence, status.leases);
+  if (you !== null) console.log(you);
   console.log(`Memory: ${mb(memory.availableMb)} available of ${mb(memory.totalMb)}. Committed ${mb(memory.commitMb)} of ${mb(memory.commitLimitMb)}.`);
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
   const load = status.session;
@@ -339,6 +363,19 @@ interface Enforcement extends LimitOptions {
   readonly noEco?: boolean | undefined;
 }
 
+/** The efficiency mode of a job from the answer of a heartbeat (H30), with its reason (H33). */
+interface EcoAnswer {
+  readonly on: boolean;
+  /** The reason, for example "Mark works at the laptop". A daemon of an older version gives none. */
+  readonly reason: string | null;
+}
+
+/** This function writes the message of a change of the efficiency mode of a job (H30, H33). */
+function ecoText(answer: EcoAnswer): string {
+  if (!answer.on) return "headroom: the job runs at full speed again.";
+  return `headroom: ${answer.reason ?? "the laptop runs on battery"}, so the job runs in efficiency mode (EcoQoS). --no-eco: full speed.`;
+}
+
 /** The time between two counts of the processes of a job for the daemon (H29). */
 const PROCESS_REPORT_MS = 30_000;
 /** The time from the start of a job to its first heartbeat, so a job on battery gets efficiency mode soon (H30). */
@@ -358,14 +395,15 @@ interface EnforcedEnd extends CommandEnd {
  *
  * Every 30 seconds, `report` gets the count of processes that the job started so far (H29). The count of the job object
  * includes this process, so the count of the job starts after it. The answer of `report` tells if the job runs in efficiency
- * mode (H30). On battery, the processes of the job go into EcoQoS, unless --no-eco. The first report comes after 3 seconds.
+ * mode (H30), and why. On battery, or for a heavy job while Mark is at the laptop (H33), the processes of the job go into
+ * EcoQoS, unless --no-eco. The first report comes after 3 seconds.
  */
 async function runEnforced(
   command: readonly string[],
   enforcement: Enforcement,
   env: Readonly<Record<string, string>> = {},
   log: string | null = null,
-  report?: (processes: number) => Promise<boolean | undefined>,
+  report?: (processes: number) => Promise<EcoAnswer | undefined>,
 ): Promise<EnforcedEnd> {
   let held: Job | null = null;
   const processors = availableParallelism();
@@ -394,16 +432,15 @@ async function runEnforced(
   let eco = false;
   const heartbeat = (): void => {
     if (job === null || report === undefined) return;
-    void report(started()).then((on) => {
-      if (enforcement.noEco === true || on === undefined) return;
+    void report(started()).then((answer) => {
+      if (enforcement.noEco === true || answer === undefined) return;
+      const on = answer.on;
       try {
         job.eco(on);
       } catch {
         return;
       }
-      if (on !== eco) {
-        console.error(on ? "headroom: the laptop runs on battery, so the job runs in efficiency mode (EcoQoS). --no-eco: full speed." : "headroom: the laptop runs on AC power again, so the job runs at full speed.");
-      }
+      if (on !== eco) console.error(ecoText(answer));
       eco = on;
     });
   };
@@ -547,6 +584,7 @@ async function run(argv: string[]): Promise<number> {
       timing: { type: "boolean" },
       "battery-ok": { type: "boolean" },
       "during-drain": { type: "boolean" },
+      "ignore-presence": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
@@ -564,6 +602,7 @@ async function run(argv: string[]): Promise<number> {
   const timing = values.timing === true;
   const batteryOk = values["battery-ok"] === true;
   const duringDrain = values["during-drain"] === true;
+  const ignorePresence = values["ignore-presence"] === true;
   if (values["spawn-heavy"] === true && values["no-spawn-heavy"] === true) {
     console.error("headroom run takes --spawn-heavy or --no-spawn-heavy, not both.");
     return 2;
@@ -662,6 +701,7 @@ async function run(argv: string[]): Promise<number> {
     ...(timing ? { timing } : {}),
     ...(batteryOk ? { batteryOk } : {}),
     ...(duringDrain ? { duringDrain } : {}),
+    ...(ignorePresence ? { ignorePresence } : {}),
     // H23: the status names the capped jobs. The job object of this process holds the cap.
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
   };
@@ -708,9 +748,10 @@ async function run(argv: string[]): Promise<number> {
   let tempMb: number | null = null;
   // H29: the heartbeat gives the daemon the count of processes of the job. A daemon that does not answer misses one count.
   // H30: its answer tells if the job runs in efficiency mode. A daemon of an older version gives no answer for it.
-  const report = (processes: number): Promise<boolean | undefined> =>
+  // H33: the answer also tells why, for example "Mark works at the laptop".
+  const report = (processes: number): Promise<EcoAnswer | undefined> =>
     (connect() ?? latest).call<RenewAnswer>(["resources", "renew"], { id: lease.id, processes }).then(
-      (answer) => (typeof answer.eco === "boolean" ? answer.eco : undefined),
+      (answer) => (typeof answer.eco === "boolean" ? { on: answer.eco, reason: typeof answer.ecoReason === "string" ? answer.ecoReason : null } : undefined),
       () => undefined,
     );
   try {
@@ -932,6 +973,98 @@ function printConfig(config: Config): void {
         : `cpu-reserve: ${coresText(config.cpuReserve)}${named}. The cpu amounts of the leases do not take them, so Mark keeps them.`,
     );
   }
+  // H33: a daemon of an older version has no presence rules.
+  if (typeof config.presence === "boolean") {
+    console.log(
+      config.presence
+        ? "presence: on (the default). While Mark works or is on a call, heavy jobs wait or run in efficiency mode."
+        : "presence: off. The daemon measures the presence, but it changes no wait, no efficiency mode and no reserve.",
+    );
+  }
+  const byDefault = (value: number, fallback: number): string => (value === fallback ? " (the default)" : "");
+  if (typeof config.awayAfterMs === "number") {
+    console.log(`away-after: ${elapsedText(config.awayAfterMs)}${byDefault(config.awayAfterMs, AWAY_AFTER_DEFAULT_MS)}. With no input for this time, Mark is away.`);
+  }
+  if (typeof config.busyWaitMs === "number") {
+    console.log(`busy-wait: ${elapsedText(config.busyWaitMs)}${byDefault(config.busyWaitMs, BUSY_WAIT_DEFAULT_MS)}. A heavy job waits at most this time while Mark is busy.`);
+  }
+  if (typeof config.presentReserve === "number") {
+    console.log(
+      `present-reserve: ${coresText(config.presentReserve)}${byDefault(config.presentReserve, PRESENT_RESERVE_DEFAULT)} more for Mark while Mark is at the laptop. While Mark is away, the reserve is 0.`,
+    );
+  }
+}
+
+/** `headroom config presence on|off` turns the presence rules on or off (H33). `--clear` gives the default: on. */
+async function presenceConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra || (value !== undefined && value !== "on" && value !== "off")) {
+    console.error("Usage: headroom config presence on, headroom config presence off, or headroom config presence --clear (the default: on)");
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { presence: value === undefined ? null : value === "on" }));
+  return 0;
+}
+
+/** `headroom config away-after <time>` and `busy-wait <time>` set a time of the presence rules (H33). `--clear` gives the default. */
+async function presenceTimeConfig(
+  connection: Connection,
+  name: "away-after" | "busy-wait",
+  value: string | undefined,
+  clear: boolean,
+  extra: boolean,
+): Promise<number> {
+  let ms: number | null = null;
+  try {
+    ms = value === undefined ? null : parseTime(value);
+  } catch {
+    ms = Number.NaN;
+  }
+  const min = name === "away-after" ? 30_000 : 0;
+  if ((value === undefined) === !clear || extra || (ms !== null && !(Number.isInteger(ms) && ms >= min && ms <= 86_400_000))) {
+    const fallback = elapsedText(name === "away-after" ? AWAY_AFTER_DEFAULT_MS : BUSY_WAIT_DEFAULT_MS);
+    console.error(`Usage: headroom config ${name} <time>, for example 10m, from ${elapsedText(min)} to 24h, or headroom config ${name} --clear (the default: ${fallback})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], name === "away-after" ? { awayAfterMs: ms } : { busyWaitMs: ms }));
+  return 0;
+}
+
+/** `headroom config present-reserve <cores>` sets the cores that the reserve gets while Mark is at the laptop (H33). */
+async function presentReserveConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  const cores = value === undefined ? null : Number(value);
+  if ((value === undefined) === !clear || extra || (cores !== null && !(Number.isFinite(cores) && cores >= 0))) {
+    console.error(`Usage: headroom config present-reserve <cores>, with a number of 0 or more, or headroom config present-reserve --clear (the default: ${PRESENT_RESERVE_DEFAULT})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { presentReserve: cores }));
+  return 0;
+}
+
+/** `headroom presence [--json]`: the state of Mark at the laptop, with its reason and its history (H33). */
+async function showPresence(argv: string[]): Promise<number> {
+  const { values } = parseArgs({ args: argv, options: { json: { type: "boolean" } } });
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  const status = await connection.call<DaemonStatus>(["resources", "status"], {});
+  const presence = status.presence;
+  if (values.json) {
+    console.log(JSON.stringify(presence ?? null, null, 2));
+    return 0;
+  }
+  if (presence === undefined) return (console.error("headroom: the daemon is older than the presence rules (H33). Run headroom service restart."), 1);
+  if (presence.state === null || presence.since === null) {
+    console.log("You: no read of the presence on this computer. The presence rules change nothing.");
+    return 0;
+  }
+  console.log(presenceLine(presence, status.leases) ?? "");
+  console.log(`State: ${stateText(presence.state, presence.busy)} since ${localClock(presence.since)} (${presence.reason ?? "no reason"}).`);
+  if (presence.idleSeconds !== null) console.log(`Last input: ${elapsedText(presence.idleSeconds * 1000)} ago. Away after ${elapsedText(presence.awayAfterMs)} with no input.`);
+  console.log(`A call: ${presence.call === null ? "no" : `yes (${presence.call})`}.`);
+  console.log(`Rules: ${presence.enabled ? `on. Heavy jobs wait at most ${elapsedText(presence.busyWaitMs)} while Mark is busy.` : "off (headroom config presence on)."}`);
+  console.log(`CPU reserve for Mark: ${coresText(status.cpuReserve)} now.`);
+  console.log("\nHistory (the oldest first):");
+  for (const line of presenceHistoryLines(presence.history)) console.log(`  ${line}`);
+  return 0;
 }
 
 /** `headroom config cpu-reserve <cores>` sets the cores that the leases do not take (H23). `--clear` gives the default. */
@@ -1006,9 +1139,12 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "battery-floor") return batteryFloorConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "usage-file") return usageFileConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "cpu-reserve") return cpuReserveConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "presence") return presenceConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "away-after" || name === "busy-wait") return presenceTimeConfig(connection, name, value, values.clear === true, positionals.length > 2);
+  if (name === "present-reserve") return presentReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, or headroom config cpu-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config cpu-reserve <cores>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }
@@ -1234,6 +1370,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "drain":
       return drainCommand(rest);
+    case "presence":
+      return showPresence(rest);
     default:
       console.log(HELP);
       return command === undefined || command === "help" || command === "--help" ? 0 : 2;

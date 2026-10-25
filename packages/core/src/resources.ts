@@ -366,6 +366,11 @@ export interface Room {
   /** The measured free part. It is `null` for a counted instance. */
   readonly free: number | null;
   readonly reserve: number;
+  /**
+   * The lowest reserve of the instance at another time (H33): the CPU reserve while Mark is away. The broker cancels a lease
+   * only above the capacity less this reserve. Without it, the reserve is the lowest reserve.
+   */
+  readonly lowestReserve?: number | undefined;
 }
 
 /** The environment of a job, from its lease. The release removes the folders. */

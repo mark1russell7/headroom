@@ -30,6 +30,10 @@ const LeaseInput = z.object({
   timing: z.boolean().optional().describe("True: the job measures time, so it waits for AC power (H31)"),
   batteryOk: z.boolean().optional().describe("True: a heavy job starts also on battery below the floor (H31)"),
   duringDrain: z.boolean().optional().describe("True: the job starts also in a planned drain for a reboot (H34)"),
+  ignorePresence: z
+    .boolean()
+    .optional()
+    .describe("True: a heavy job does not wait while Mark is busy, and gets no efficiency mode while Mark is at the laptop (H33)"),
   cpuCap: z
     .number()
     .positive()
@@ -121,6 +125,34 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The cores that the broker keeps out of the cpu amounts of the leases for Mark (H23). 0 turns it off. null gives the default: 2."),
+  presence: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe("The presence rules (H33): while Mark works or is on a call, heavy jobs wait or run slower. false turns them off. null gives the default: on."),
+  awayAfterMs: z
+    .number()
+    .int()
+    .min(30_000)
+    .max(86_400_000)
+    .nullable()
+    .optional()
+    .describe("The time with no input after which Mark is away, in ms (H33). null gives the default: 300000."),
+  busyWaitMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(86_400_000)
+    .nullable()
+    .optional()
+    .describe("The longest wait of a new heavy lease while Mark is busy, in ms (H33). null gives the default: 1200000."),
+  presentReserve: z
+    .number()
+    .min(0)
+    .max(1024)
+    .nullable()
+    .optional()
+    .describe("The cores that the CPU reserve gets while Mark is present or busy (H33). null gives the default: 2."),
 });
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -173,10 +205,13 @@ const anything = <T>(): ReturnType<typeof zodAdapter<T>> => zodAdapter<T>(z.cust
 
 /**
  * The answer of a heartbeat: the lease, and the efficiency mode for its job (H30). On battery, `eco` is true, and the client
- * of `headroom run` puts the processes of its job in EcoQoS. A daemon of an older version does not give it.
+ * of `headroom run` puts the processes of its job in EcoQoS. While Mark is at the laptop, `eco` is true for a heavy job
+ * (H33). A daemon of an older version does not give it.
  */
 export interface RenewAnswer extends Lease {
   readonly eco: boolean;
+  /** The reason of the efficiency mode, for example "Mark works at the laptop", or `null` (H33). A daemon of an older version does not give it. */
+  readonly ecoReason?: string | null | undefined;
 }
 
 /** The status of the daemon: the status of the engine, and the restart that waits for an idle queue. */
@@ -232,6 +267,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         timing: input.timing,
         batteryOk: input.batteryOk,
         duringDrain: input.duringDrain,
+        ignorePresence: input.ignorePresence,
         cpuCap: input.cpuCap,
       }),
     )
@@ -292,7 +328,11 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: RenewInput): Promise<RenewAnswer> => ({ ...found(engine.renew(input.id, input.processes), input.id), eco: engine.powerStatus().eco }))
+    .handler(async (input: RenewInput): Promise<RenewAnswer> => {
+      const lease = found(engine.renew(input.id, input.processes), input.id);
+      const eco = engine.ecoOf(lease);
+      return { ...lease, eco: eco.on, ecoReason: eco.reason };
+    })
     .build() as AnyProcedure;
 
   const history = createProcedure()
@@ -423,7 +463,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. cpuReserve: the cores kept for Mark.",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -437,6 +477,10 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           batteryFloor: input.batteryFloor,
           usageFile: input.usageFile,
           cpuReserve: input.cpuReserve,
+          presence: input.presence,
+          awayAfterMs: input.awayAfterMs,
+          busyWaitMs: input.busyWaitMs,
+          presentReserve: input.presentReserve,
         }),
     )
     .build() as AnyProcedure;

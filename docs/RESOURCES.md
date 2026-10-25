@@ -745,9 +745,10 @@ export interface Condition {
 | `battery>=N` | AC power, no battery, or a charge of N% or more. N is 0 to 100. | `waits until the battery is at 50% or more, or plugged in (now 41%)` |
 | `usage<N` | Fresh usage data, and the five-hour window is under N%. N is 1 to 100. | `waits until the five-hour usage window is under 80% (now 91%, resets at 02:10)` |
 | `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. N is 1 to 100,000. | `waits until the computer starts fewer than 700 processes a minute (now 1,108)` |
+| `away` | Mark is away from the laptop (H33). No read of the presence counts as away. | `waits until Mark is away from the laptop (now at the laptop)` |
 
 - `parseWhen()` reads `--when`. A value can have a list with commas, and the option can come more than one time. A condition that comes twice counts one time.
-- An unknown name gives a `ConditionError` with the list of the known conditions. A planned name also names its item: `away` (H33), `cool` (H35), `unmetered` (H39) and `night` (H42).
+- An unknown name gives a `ConditionError` with the list of the known conditions. A planned name also names its item: `cool` (H35), `unmetered` (H39) and `night` (H42).
 - `headroom run` reads the conditions before it connects, so a wrong name stops the run with exit code 2. The broker reads them again at the request.
 - A later item adds a condition with one entry in `CONDITIONS` and one field in `ConditionFacts`. It removes the name from `PLANNED_CONDITIONS`.
 
@@ -853,6 +854,57 @@ The processors, the network, the process starts, the services, the power, the de
 **Faces.** `headroom forecast [--json]` lists the forecast of each instance, the nearest first. `headroom status` adds the line `Forecast (24 h)`. Each card of the dashboard shows its forecast in one line, with a dot under 24 hours. The battery card already gives the time left, so it has no extra line.
 
 **The numbers on 2026-10-25.** A read-only fit of the live store at 05:13 UTC gave one forecast: `Drive D: 20 GB free in 4 days (at 1.1 GB an hour, confidence 0.65).` Drive C: lost 210 MB an hour with a confidence of 0.98. Its 20 GB target was 51 days away, so it got no forecast. The commit charge, the memory, the pools and the ports had no clear trend.
+
+### H33: keep room for Mark
+
+Mark approved the item on 2026-10-24. While Mark works at the laptop or is on a call, heavy jobs wait or run slower, so the laptop stays fast for Mark. When Mark steps away, they run at full speed. `presence.ts` has the rules, with no FFI. `windows-presence.ts` has the reads.
+
+**Measure.** The events come first. The polls use the tick of the daemon, every 2 seconds:
+
+- **Events.** `watchPower()` of H30 also registers `GUID_SESSION_USER_PRESENCE` (0 present, 2 inactive) and `GUID_SESSION_DISPLAY_STATUS` (0 off, 1 on, 2 dimmed), with the same callback path. `settingEvent()` gives the events `presence` and `display`. The daemon then asks for a tick at once.
+- **The last input.** `GetLastInputInfo` gives the tick of the last input of the session. The difference to the low 32 bits of `GetTickCount64` gives the idle time. It is correct for 49 days.
+- **The notification state.** `SHQueryUserNotificationState` gives 1 (`QUNS_NOT_PRESENT`) for a locked session or a screen saver, and 2 (`QUNS_BUSY`) for a full-screen app. It gives 3 (`QUNS_RUNNING_D3D_FULL_SCREEN`) for a full-screen game, and 4 (`QUNS_PRESENTATION_MODE`) for a presentation.
+- **A call.** `readCall()` reads the keys `webcam` and `microphone` of `HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore`, with the subkeys of `NonPackaged`. An app uses the device when `LastUsedTimeStop` is 0 and `LastUsedTimeStart` is above 0.
+- The engine reads the consent store at most one time in 30 seconds. It only reads.
+- **Privacy.** The read gives two booleans: the camera and the microphone. The status gives only `camera`, `microphone` or `camera and microphone`. No name of an app goes into the memory, the store or the log.
+- **The session lock.** `WTSRegisterSessionNotification` needs a window and a message loop. The daemon has neither, so `QUNS_NOT_PRESENT` and the idle time give the lock.
+
+**The state.** `classify()` gives one state from the facts, with a reason. An event that came before the last input is old: the input tells that Mark came back.
+
+1. The display is off, or the session is locked: `away`.
+2. The camera or the microphone is in use: `busy` (a call). A call needs no input, because Mark talks and listens without the keyboard.
+3. Windows tells that the user is inactive, or no input came for `awayAfterMs` (5 minutes): `away`.
+4. A presentation or a full-screen app: `busy`.
+5. Otherwise: `present`.
+
+`PresenceTracker` keeps the last events, the state with its start, and the last 20 changes in memory. The store keeps no presence.
+
+**Attribute and alert.** None. The presence is a fact of the computer, not an amount of an owner. The line of `headroom status` and the chip of the dashboard show the state.
+
+**Admit.**
+
+- The condition `away` of H31 holds while the state is `away`. A computer with no read of the presence counts as away, as a computer with no battery counts as plugged in. `away` is no longer a planned name.
+- While Mark is `busy`, `presenceWait()` holds a new heavy lease. The reason is `waits while Mark is on a call (at most until 10:22, then in eco mode)`, or `presents`, or `uses a full-screen app`.
+- The wait ends `busyWaitMs` (20 minutes) after the request. Then the lease starts, and the job runs in efficiency mode.
+- A heavy lease is a lease of `heavyWhy()` of H31: 2 GB of memory or more, the slot `browser`, or spawn-heavy (H47). With `--ignore-presence`, the lease does not wait, and its job keeps its full speed.
+- The wait is a condition wait: its reason starts with `waits while`. The hook of the plugin and a restart for an idle queue do not count it. A running lease continues.
+- A change of the state runs the admission in the same tick, as the power events of H30 do. A setting that changes the state runs it at once.
+
+**Enforce.**
+
+- **EcoQoS.** While Mark is `present` or `busy`, `Engine.ecoOf()` gives `eco` for a heavy lease, with the reason `Mark works at the laptop` or `Mark is on a call`. The answer of `resources.renew` has `eco` and `ecoReason`.
+- The client of H30 applies the mode at its next heartbeat, and prints the reason. `--no-eco` still wins. On battery, the efficiency mode of H30 applies to each job in each state.
+- **The CPU reserve.** While Mark is `present` or `busy`, the reserve of H23 grows by `presentReserve` (2 cores), up to the count of processors. While Mark is `away`, it is 0. `Status.cpuReserve` and `free.cpu` give the reserve of this time.
+- The room `cpu` has `lowestReserve: 0`. Thus a lease above the reserve of this time waits for Mark to leave, and the broker does not cancel it.
+- **Presence off.** `headroom config presence off` keeps the measure. The state then changes no admission, no efficiency mode and no reserve. The condition `away` still reads the state, because the job asks for it.
+
+**Status.** `Status.presence` gives the state, its start, its reason and the seconds since the last input. It also gives the kind of busy state, the devices of a call, `eco` and the history. `headroom status` gives one line, for example `You: on a call since 10:02. 2 heavy jobs wait.` `headroom presence [--json]` gives the state and the history.
+
+**Settings.** `presence` (on), `awayAfterMs` (5 minutes, from 30 seconds to one day), `busyWaitMs` (20 minutes, from 0 to one day) and `presentReserve` (2 cores). `headroom config presence|away-after|busy-wait|present-reserve` changes them.
+
+**Cost.** The two calls of each tick take approximately 0.16 ms together: 1,000 reads took 156 ms on 2026-10-25. One read of the consent store took 2.3 ms, one time in 30 seconds. The events cost nothing between two changes. The history has at most 20 entries.
+
+**The numbers on 2026-10-25.** A one-off check gave no input for 15,700 seconds, the notification state 5 (`QUNS_ACCEPTS_NOTIFICATIONS`) and no call. The event `presence: inactive` came at the registration. The state was `away`, with the reason `Windows tells that the user is inactive`. No display event came at the registration.
 
 ### H34: the reboot budget and a planned drain
 
@@ -1052,3 +1104,8 @@ These were the open questions. The session decided each one as a technical call.
 | Over which window does `starts<N` measure? | The reads of the last 2 minutes. | The 10 minutes of `procs` keep a lease in the queue for minutes after a burst. One read of 10 seconds changes too fast. |
 | Does a browser test count in the sum of the start rates? | No. The sum counts the other leases. | The rule keeps the bursts of the other jobs away from the browser test. |
 | Does a lease with no rate wait while the sum is above the limit? | Yes, beside a browser test. | A first run has no rate, and one first run was part of the burst of 2026-10-25. |
+| Does a call make Mark busy with no input? | Yes, while the display is on and the session is not locked. | Mark talks and listens on a call without the keyboard. Jobs at full speed can cut the audio. |
+| Does a full-screen app make Mark busy with no input? | No. With no input for 5 minutes, Mark is away. | A full-screen app can stay open after Mark leaves. A call ends when the app releases the device. |
+| From when does the busy wait count? | From the request of the lease. | A heavy job waits at most 20 minutes for Mark in all. The reason gives the time of the end. |
+| Does a lease above the reserve while Mark is present fail? | No. The broker cancels a lease only above the processors less the reserve while Mark is away, which is 0. | The lease waits for Mark to leave, and then it runs. |
+| Does `--when away` work with the presence rules off? | Yes. It reads the measured state. | The job asks for the condition. The setting turns off only the automatic rules. |

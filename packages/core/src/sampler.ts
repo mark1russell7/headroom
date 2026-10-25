@@ -3,6 +3,7 @@
  */
 
 import type { PowerEvent } from "./power.ts";
+import type { CallRead, PresenceRead } from "./presence.ts";
 import type { KeyState } from "./reboot.ts";
 import type {
   BatteryRead,
@@ -74,6 +75,16 @@ export interface Sampler {
    * key that refuses the read exists. Only Windows has a registry.
    */
   registryKey?(path: string): KeyState;
+  /**
+   * This function reads the time since the last input of the session and the notification state of the shell (H33). The
+   * engine calls it at each tick. Each read is a few microseconds. Only Windows has it.
+   */
+  presence?(): PresenceRead;
+  /**
+   * This function tells if an app uses the camera or the microphone, from the consent store of the registry (H33). It
+   * reads only, and keeps no name of an app. The engine calls it at most one time in 30 seconds. Only Windows has it.
+   */
+  calls?(): CallRead | null;
   /** This function frees the resources of the sampler. */
   close(): void;
 }

@@ -352,6 +352,12 @@ function batteryLine(b) {
     : ["On battery", `${b.percent}%`, ...(b.rateW ? [`${Math.abs(b.rateW).toFixed(1)} W`] : []), ...(b.minutesLeft != null ? [`${minutesText(b.minutesLeft)} left`] : [])];
   return parts.join(" · ");
 }
+// Mark at the laptop in one line (H33): "You: on a call since 10:02 (a call is on (microphone)). New heavy jobs wait up to 20 min."
+const youState = (p) => (p.state !== "busy" ? p.state : p.busy === "call" ? "on a call" : p.busy === "presentation" ? "presenting" : "in a full-screen app");
+function youLine(p) {
+  const rules = !p.enabled ? "The presence rules are off." : p.state === "away" ? "Jobs run at full speed." : p.state === "busy" ? `New heavy jobs wait up to ${dur(p.busyWaitMs)}.` : "Heavy jobs run in eco mode.";
+  return `You: ${youState(p)} since ${clock(p.since)} (${p.reason}). ${rules}`;
+}
 // The forecast of a resource in one short line (H32): "5 GB free in 9 h 10 min (at 2.1 GB an hour)".
 const spanText = (m) => (m >= 2880 ? `${Math.round(m / 1440)} days` : minutesText(Math.max(0, Math.round(m))));
 function rateText(rate, unit) {
@@ -671,12 +677,16 @@ function renderNow() {
     h("span", { class: "lg static" }, h("i", { class: "sw free" }), "Free", h("b", { text: mb(m.availableMb) })));
   const svc = st.resources.filter((r) => r.health);
   const bat = st.resources.find((r) => r.battery)?.battery;
+  // H33: a daemon of an older version and a computer with no read of the presence give no state.
+  const you = st.presence && st.presence.state ? st.presence : null;
   $("strip").replaceChildren(
     ...(svc.length ? [h("span", { class: "lab", text: "Services" })] : []),
     ...svc.map((r) => h("button", { type: "button", class: `svc ${r.health.state}`, title: r.health.error || r.health.needs || r.health.title, onclick: () => openRes(r.id, true) },
       stateIcon(r.health.state), h("span", { text: resName(r) }), h("b", { text: r.health.state }), r.health.latencyMs == null ? null : h("small", { text: `${r.health.latencyMs} ms` }))),
     ...(bat ? [h("span", { class: "lab", text: "Power" }), h("button", { type: "button", class: `svc ${bat.ac ? "ok" : "slow"}`, title: batteryLine(bat), onclick: () => openRes("battery", true) },
       bat.ac ? ICON.good() : ICON.wait(), h("b", { text: bat.ac ? "plugged in" : "on battery" }), h("small", { text: `${bat.percent}%` }))] : []),
+    ...(you ? [h("span", { class: "lab", text: "You" }), h("span", { class: `svc ${you.state === "away" || !you.enabled ? "ok" : "slow"}`, style: "cursor:default", title: youLine(you) },
+      you.state === "away" || !you.enabled ? ICON.good() : ICON.wait(), h("b", { text: youState(you) }), h("small", { text: `since ${clock(you.since)}` }))] : []),
     h("span", { class: "lab", text: "Jobs" }),
     h("a", { class: "svc", href: "#jobs" }, ICON.good(), h("b", { text: `${granted} run` }), ICON.wait(), h("b", { text: `${waiting} wait` })));
   renderReboot(st);
@@ -893,7 +903,7 @@ const condEndOf = (l, now) => (l.state === "waiting" && isCondWait(l.reason) ? n
 function conditionsOf(l) {
   const c = l.conditions;
   if (!c) return null;
-  const parts = [...(c.when || []), ...(c.timing ? ["--timing"] : []), ...(c.batteryOk ? ["--battery-ok"] : [])];
+  const parts = [...(c.when || []), ...(c.timing ? ["--timing"] : []), ...(c.batteryOk ? ["--battery-ok"] : []), ...(c.ignorePresence ? ["--ignore-presence"] : [])];
   return parts.length ? `Conditions: ${parts.join(", ")}` : null;
 }
 function unmetOf(l) {
