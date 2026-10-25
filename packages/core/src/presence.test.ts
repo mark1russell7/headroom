@@ -115,6 +115,17 @@ describe("the state of Mark (H33)", () => {
     expect(tracker.history).toHaveLength(20);
   });
 
+  it("starts an away state at the first read from the last input, not from the start of the daemon", () => {
+    const tracker = new PresenceTracker();
+    tracker.update(NOW, { idleMs: 60 * MINUTE, notification: 5 }, NO_CALL, 5 * MINUTE);
+    expect(tracker.current).toMatchObject({ state: "away", since: NOW - 55 * MINUTE });
+    expect(tracker.history[0]?.at).toBe(NOW - 55 * MINUTE);
+    // A later change to away starts at the read.
+    tracker.update(NOW + 1000, { idleMs: 0, notification: 5 }, NO_CALL, 5 * MINUTE);
+    tracker.update(NOW + 2000, { idleMs: 6 * MINUTE, notification: 5 }, NO_CALL, 5 * MINUTE);
+    expect(tracker.current).toMatchObject({ state: "away", since: NOW + 2000 });
+  });
+
   it("gives the events of the user presence and of the display from the power settings", () => {
     expect(POWER_SETTINGS).toContain(GUID_SESSION_USER_PRESENCE);
     expect(POWER_SETTINGS).toContain(GUID_SESSION_DISPLAY_STATUS);
