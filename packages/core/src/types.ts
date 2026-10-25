@@ -18,6 +18,18 @@ export interface SystemMemory {
   readonly commitLimitMb: number;
   readonly kernelPagedMb: number;
   readonly kernelNonpagedMb: number;
+  /** The part of the paged pool in physical memory. Only Windows gives it: `\Memory\Pool Paged Resident Bytes`. */
+  readonly kernelPagedResidentMb?: number | undefined;
+  /**
+   * The system file cache in physical memory: the working set of the system cache. It is not available memory. Only
+   * Windows gives it: `\Memory\System Cache Resident Bytes`. The standby pages of the cache are in `availableMb`.
+   */
+  readonly cacheMb?: number | undefined;
+  /**
+   * The code of the kernel and of the drivers in physical memory. Only Windows gives it: `\Memory\System Driver Resident
+   * Bytes` and `\Memory\System Code Resident Bytes`.
+   */
+  readonly driversMb?: number | undefined;
 }
 
 /** One process, with its parent and its memory in MB. */
@@ -43,6 +55,12 @@ export interface ProcessInfo {
    * device. Linux: `write_bytes` of `/proc/<pid>/io`. It is absent when the counter is not readable.
    */
   readonly writeBytes?: number | undefined;
+  /**
+   * The name that a Node process gives itself with the option `--title=<name>`, from its command line. Only the Windows
+   * sampler reads it, and only for `node.exe`. A titled process that the system starts, for example with Task Scheduler,
+   * is the owner `service:<name>`.
+   */
+  readonly title?: string | undefined;
 }
 
 /** One sample of the computer. The process list is empty when the sample did not read the processes. */
@@ -53,8 +71,11 @@ export interface Sample {
   readonly processes: readonly ProcessInfo[];
 }
 
-/** The kind of an owner of memory. */
-export type OwnerKind = "session" | "mcp" | "docker" | "browser" | "editor" | "kernel" | "system" | "other";
+/**
+ * The kind of an owner of memory. A `service` is a Node process with a title that the system starts, for example the
+ * daemon of headroom from Task Scheduler. A `kernel` owner has no process: the kernel pools, the file cache or the drivers.
+ */
+export type OwnerKind = "session" | "mcp" | "service" | "docker" | "browser" | "editor" | "kernel" | "system" | "other";
 
 /**
  * A local MCP server that the gateway starts one time for all sessions. The fields have the meaning

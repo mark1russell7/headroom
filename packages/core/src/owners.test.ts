@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { attribute, readSessions, treeMb } from "./owners.ts";
+import { attribute, kernelOwners, readSessions, titleOf, treeMb } from "./owners.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb / 2 });
@@ -44,6 +44,61 @@ describe("attribute", () => {
   it("survives a cycle in the parents", () => {
     const { ownerOf } = attribute([p(1, 2, "a.exe", 1), p(2, 1, "b.exe", 1)], []);
     expect(ownerOf.get(1)).toBe("other");
+  });
+
+  it("gives a Node process with a title under the system, and its descendants, to service:<title>", () => {
+    const titled = (pid: number, ppid: number, title: string): ProcessInfo => ({ ...p(pid, ppid, "node.exe", 70), title });
+    const list = [
+      p(60, 0, "svchost.exe", 20),
+      p(61, 60, "conhost.exe", 5),
+      titled(62, 61, "headroom-daemon"),
+      p(63, 62, "netsh.exe", 3),
+      titled(64, 62, "headroom-mcp-vex"),
+      ...processes,
+      titled(14, 12, "headroom-cli"),
+      titled(41, 10, "fleet-site"),
+      titled(70, 999, "headroom-cli"),
+    ];
+    const sessions = [{ pid: 11, name: "graph", sessionId: "s1", status: null, cwd: null }];
+    const { owners, ownerOf } = attribute(list, sessions, undefined, undefined, new Map([[64, "vex"]]));
+    // The title is nearer than the rule of svchost.
+    expect(ownerOf.get(62)).toBe("service:headroom-daemon");
+    expect(ownerOf.get(63)).toBe("service:headroom-daemon");
+    expect(ownerOf.get(61)).toBe("system");
+    // A server of the gateway and a session win over a title.
+    expect(ownerOf.get(64)).toBe("mcp:vex");
+    expect(ownerOf.get(14)).toBe("session:graph");
+    // A title replaces only the rule system. An orphan with a title stays other.
+    expect(ownerOf.get(41)).toBe("editor");
+    expect(ownerOf.get(70)).toBe("other");
+    expect(owners.find((owner) => owner.owner === "service:headroom-daemon")).toMatchObject({ kind: "service", privateMb: 73, processes: 2 });
+  });
+});
+
+describe("titleOf", () => {
+  it("reads the option --title of a Node command line", () => {
+    expect(titleOf("C:\\nvm4w\\nodejs\\node.exe --title=fleet-site C:\\fleet\\cli.ts serve")).toBe("fleet-site");
+    expect(titleOf('"C:\\Program Files\\nodejs\\node.exe" --title "my server" app.js')).toBe("my server");
+    expect(titleOf('node.exe "--title=quoted" app.js')).toBe("quoted");
+    expect(titleOf("node.exe app.js")).toBeNull();
+    expect(titleOf("node.exe --title= app.js")).toBeNull();
+    expect(titleOf("node.exe --titles=x app.js")).toBeNull();
+  });
+});
+
+describe("kernelOwners", () => {
+  const memory = { totalMb: 28_000, availableMb: 7000, commitMb: 31_000, commitLimitMb: 80_000, kernelPagedMb: 1482, kernelNonpagedMb: 1433 };
+
+  it("gives the pools in RAM, the file cache and the drivers when the platform gives them", () => {
+    expect(kernelOwners({ ...memory, kernelPagedResidentMb: 1278, cacheMb: 10_100, driversMb: 60 })).toEqual([
+      { owner: "kernel", kind: "kernel", privateMb: 2915, workingMb: 2711, processes: 0 },
+      { owner: "kernel:cache", kind: "kernel", privateMb: 10_100, workingMb: 10_100, processes: 0 },
+      { owner: "kernel:drivers", kind: "kernel", privateMb: 60, workingMb: 60, processes: 0 },
+    ]);
+  });
+
+  it("gives only the pools without the amounts in RAM", () => {
+    expect(kernelOwners(memory)).toEqual([{ owner: "kernel", kind: "kernel", privateMb: 2915, workingMb: 2915, processes: 0 }]);
   });
 });
 

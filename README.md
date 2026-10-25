@@ -45,6 +45,12 @@ headroom status
 headroom history --minutes 120
 ```
 
+The list "Memory by owner" gives the private memory and the memory in RAM of each owner. The owners and the available memory add up to approximately the physical memory:
+
+- A process belongs to its Claude Code session, its MCP server of the gateway, or a group, for example `docker`, `browser`, `editor` or `system`.
+- A Node process with `--title=<name>` that Task Scheduler, a service or Explorer starts is the owner `service:<name>`, for example `service:headroom-daemon`.
+- On Windows, three owners have no process: `kernel` (the kernel pools), `kernel:cache` (the system file cache in RAM) and `kernel:drivers` (the code of the kernel and of the drivers).
+
 `headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network, the TCP connections and the shared services:
 
 ```text
@@ -59,6 +65,7 @@ Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.
 - The Windows counter counts each write of a process, also to a pipe or a device. The counters do not name the drive, so the amount of an owner is for all the drives together.
 - A write is not always new space. A file that a job writes again uses no new space.
 - The process `System` writes the file cache and the pages of mapped files to the drives. Thus one write can count for its process and for the owner `system`.
+- The Windows counters charge to `system` the disk writes of cached files and of the page file. The lazy writer and the memory manager write them, so `system` can hide the real writer.
 - The cores of an owner are an average over the last minute, from the processor time of its processes.
 - The network line is the throughput of the physical adapters and the Wi-Fi adapters over the last 10 seconds. A loopback, a tunnel or a virtual adapter does not count. After a start of the daemon, the line comes after 10 seconds, because a rate needs two reads.
 - The TCP line counts the connections of IPv4 and IPv6. A connection that waits to close is in `TIME_WAIT`, and Windows keeps its port for some minutes. The part is the connections with a local port in the dynamic range (49152 to 65535 on Windows), in each state.
