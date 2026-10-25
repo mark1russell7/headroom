@@ -163,6 +163,23 @@ waits for the other jobs to start fewer processes: tsc (client) 400 and vitest (
 
 These reasons do not start with `waits for memory`, so the hook of the plugin does not count them. `docs/RESOURCES.md` gives the rules.
 
+### Handles and orphans (H48)
+
+On 2026-10-25, a subagent started `find / -name ... | head -3` in Git Bash. The Bash call ended after 2 minutes, but `find.exe` stayed as an orphan. It held 1.3 million handles, and the paged pool grew 593 MB in one hour. The daemon gave no alert, and after a restart it did not know the owner. Thus headroom watches the handles and keeps the owners of orphans:
+
+- **The handles.** The daemon reads the handles of each process in the call that gives the processor times. It starts no process and no timer.
+- **The alert `handles`.** A warning comes when one process holds more than 100,000 handles, or gains more than 20,000 handles in 5 minutes. Above 500,000 handles, the alert is critical.
+- The alert names the process, its handles and their gain in one minute, its age, its owner and its command line. It ends when the process ends, or after 2 minutes under its line.
+- headroom does not stop the process. The owner stops it by its process ID.
+- **The owner records.** At the first read of a process, the daemon records its owner, its command line (200 characters) and its start. The record keeps the owner after the parent ends.
+- An orphan shows as `<owner> (orphan)`, with the owner of its record, in the owners of `headroom status`, of the dashboard and of each resource. The runaway alerts of the memory and the CPU (H23) add `(orphan)` to the owner of each orphan, also `other (orphan)`.
+- The store keeps the records of the processes that live for more than one minute. Thus a restart of the daemon keeps the owners of the orphans. The record of an ended process goes away at the next read.
+- `headroom status` gives the sum of the handles, for example `Handles: 200,020 in all`. When one process is above 100,000 handles, it also names the 3 processes with the most handles.
+
+```text
+ALERT since 05:40 UTC: find.exe (pid 27056) holds 1,313,105 handles, +40,000 a minute. It started 44 min ago. Owner: session:server-stack tools (orphan, parent ended). Command: find / -name WIRE-PROTOCOL.md -path *procedures*. The owner stops it by its pid.
+```
+
 ### Battery and power (H30)
 
 On a laptop, the battery is a resource too. headroom reads it with the processes, every 10 seconds. The read starts no process and no timer:
@@ -469,6 +486,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 |---|---|
 | `runaway` | One process holds more than 4 GB with no lease. Docker and the system are not examined. |
 | `orphan` | A process with no owner holds more than 1 GB, and its parent stopped. |
+| `handles` | One process holds more than 100,000 handles (a warning) or more than 500,000 (critical), or gains more than 20,000 handles in 5 minutes. The id is `runaway:handles:<pid>`. The alert names the owner, also after the parent ended, and the command line (H48). |
 | `memory` | Less than 1 GB of memory is available. |
 | `commit` | The commit charge is above 90% of its limit. |
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |

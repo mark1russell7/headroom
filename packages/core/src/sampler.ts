@@ -28,6 +28,11 @@ export interface Sampler {
   /** This function reads the processes with their parents and their memory. */
   processes(): ProcessInfo[];
   /**
+   * This function reads the command line of one process, or gives `null` when the process is protected or ended (H48).
+   * The engine reads it one time for each new process, for the owner record of the process.
+   */
+  commandLine?(pid: number): string | null;
+  /**
    * This function gives the sequence number of the newest process at the last read of the processes (H29). Windows gives
    * each new process the next number, so the change between two reads is the exact count of starts. Only Windows has it.
    */

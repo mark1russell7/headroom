@@ -104,8 +104,12 @@ export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
 export type { Alerts, ConfigChange, DiskStatus, EcoState, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
-export { attribute, childrenOf, DEFAULT_RULES, fileTimeMs, isParent, parentOf, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
-export type { Attribution, OwnerRule } from "./owners.ts";
+export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, ORPHAN_LABEL, orphanName, parentOf, processKey, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
+export { COMMAND_MAX, isOrphanOwner, OwnerRecords, ownerText, RECORD_AFTER_MS, RECORDS_MAX, shortCommand } from "./orphans.ts";
+export type { ProcessRecord, RecordChanges } from "./orphans.ts";
+export { gainAt, gainPerMinute, HANDLE_HOLDERS_SHOWN, HandleTracker, handleStatus, handlesLines, handlesText, HANDLES_FLOOR, HANDLES_TRAIL_MS } from "./handles.ts";
+export type { HandleHolder, HandleStatus } from "./handles.ts";
+export type { Attribution, KeptOwner, OwnerRule } from "./owners.ts";
 export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, rolesDir, rolesFile } from "./peer.ts";
 export type { FleetRole, Peer, PeerErrorCode, PeerInput, PeerSources } from "./peer.ts";
 export {
@@ -206,6 +210,8 @@ export {
   roomOf,
   rooms,
   sustainedLevel,
+  trailLevel,
+  trailPointLevel,
   treeAbove,
   withKinds,
 } from "./resources.ts";
@@ -233,6 +239,7 @@ export type {
   Owners,
   OwnerUse,
   ProcessFacts,
+  ProcessTrail,
   Readings,
   Resource,
   ResourceId,
@@ -242,6 +249,8 @@ export type {
   Room,
   Rule,
   RuleBase,
+  TrailFacts,
+  TrailRule,
   Unit,
 } from "./resources.ts";
 export {

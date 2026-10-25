@@ -380,7 +380,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Alerts>())
     .meta({
       description:
-        "Give the active alerts (a runaway process, an orphan, low memory, the commit charge, the kernel pool, a drive, the dynamic TCP ports, a service) and the alerts that ended last",
+        "Give the active alerts (a runaway process, an orphan, a process with many handles, low memory, the commit charge, the kernel pool, a drive, the dynamic TCP ports, a service) and the alerts that ended last",
       args: [],
       output: "json",
       effects: { reads: ["headroom", "process"], writes: [], destructive: false },

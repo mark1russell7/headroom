@@ -103,6 +103,44 @@ export function parentOf(info: ProcessInfo, byPid: ReadonlyMap<number, ProcessIn
   return parent !== undefined && isParent(parent, info) ? parent : undefined;
 }
 
+/**
+ * This function tells if a process is an orphan: its parent ended, or a new process has the ID of its parent (H29). A
+ * process with the parent ID 0 is not an orphan, because the idle process and the kernel have no parent.
+ */
+export function isOrphan(info: ProcessInfo, byPid: ReadonlyMap<number, ProcessInfo>): boolean {
+  return info.ppid > 0 && parentOf(info, byPid) === undefined;
+}
+
+/** The label of an owner that comes from the record of an orphan (H48): `session:graph (orphan)`. */
+export const ORPHAN_LABEL = " (orphan)";
+
+/**
+ * This function gives the name of the owner of a process for the text of an alert (H48). An orphan gets the label
+ * `(orphan)` one time: `other` gives `other (orphan)`, and `session:graph (orphan)` stays as it is.
+ */
+export function orphanName(owner: string, orphan: boolean): string {
+  return orphan && !owner.endsWith(ORPHAN_LABEL) ? `${owner}${ORPHAN_LABEL}` : owner;
+}
+
+/** This function gives an owner without the label of an orphan: `session:graph (orphan)` gives `session:graph`. */
+export function baseOwner(owner: string): string {
+  return owner.endsWith(ORPHAN_LABEL) ? owner.slice(0, -ORPHAN_LABEL.length) : owner;
+}
+
+/**
+ * This function gives the key of a process (H48): its ID and its start in whole milliseconds, for example `27056:1792900000000`.
+ * A new process with the ID of an ended process has a different key. A read with no start gives the start 0.
+ */
+export function processKey(info: Pick<ProcessInfo, "pid" | "startedAt">): string {
+  return `${info.pid}:${Math.round(info.startedAt ?? 0)}`;
+}
+
+/** The owner that the record of a process keeps (H48). `attribute()` reads it for an orphan. */
+export interface KeptOwner {
+  /** The owner of the process while its parent was alive, without the label of an orphan. */
+  readonly owner: string;
+}
+
 /** This function gives the children of each process ID. A child of a process ID that is in use again is absent (H29). */
 export function childrenOf(processes: readonly ProcessInfo[]): Map<number, ProcessInfo[]> {
   const byPid = new Map(processes.map((info) => [info.pid, info]));
@@ -171,6 +209,9 @@ export function kernelOwners(memory: SystemMemory): OwnerUsage[] {
  *
  * The search goes up only to a parent that started at or before its child (H29). A later start shows a parent ID that
  * is in use again. The search then stops, and the process and the ancestors below that point decide the owner.
+ *
+ * When the search stops at an orphan, its record in `kept` gives the owner that it had while its parent was alive (H48). That owner wins when it is different, with the label `(orphan)` and the kind `other`. The key of
+ * `kept` is `processKey()`. Thus a command that a session started keeps the name of the session after its shell ends.
  */
 export function attribute(
   processes: readonly ProcessInfo[],
@@ -178,6 +219,7 @@ export function attribute(
   memory?: SystemMemory,
   rules: readonly OwnerRule[] = DEFAULT_RULES,
   servers: ReadonlyMap<number, string> = new Map(),
+  kept: ReadonlyMap<string, KeptOwner> = new Map(),
 ): Attribution {
   const byPid = new Map(processes.map((info) => [info.pid, info]));
   const sessionOf = new Map(sessions.map((session) => [session.pid, session.name]));
@@ -192,8 +234,11 @@ export function attribute(
     // The nearest title below the nearest rule.
     let title: string | null = null;
     const seen = new Set<number>();
+    // The last process of the search: an orphan, a process with no parent, or the end of a long chain.
+    let top = info;
     for (let at: ProcessInfo | undefined = info; at && !seen.has(at.pid) && seen.size < 64; at = parentOf(at, byPid)) {
       seen.add(at.pid);
+      top = at;
       const session = sessionOf.get(at.pid);
       if (session !== undefined) {
         owner = { name: `session:${session}`, kind: "session" };
@@ -207,8 +252,13 @@ export function attribute(
       rule ??= ruleOf.get(programName(at.name)) ?? null;
       if (rule === null && title === null && at.title !== undefined) title = at.title;
     }
-    if (owner === null && rule !== null) owner = title !== null && rule.kind === "system" ? { name: `service:${title}`, kind: "service" } : { name: rule.owner, kind: rule.kind };
-    owner ??= { name: "other", kind: "other" };
+    if (owner === null) {
+      const plain: { name: string; kind: OwnerKind } =
+        rule === null ? { name: "other", kind: "other" } : title !== null && rule.kind === "system" ? { name: `service:${title}`, kind: "service" } : { name: rule.owner, kind: rule.kind };
+      // H48: an orphan keeps the owner of its record. The kind is `other`, because no live session or server holds it.
+      const remembered = isOrphan(top, byPid) ? kept.get(processKey(top))?.owner : undefined;
+      owner = remembered !== undefined && remembered !== "other" && remembered !== plain.name ? { name: `${remembered}${ORPHAN_LABEL}`, kind: "other" } : plain;
+    }
     ownerOf.set(info.pid, owner.name);
     kindOf.set(owner.name, owner.kind);
   }

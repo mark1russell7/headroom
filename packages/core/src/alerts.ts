@@ -27,6 +27,9 @@
  * - `forecast`: the fit of the history of an instance reaches a limit soon (H32). A drive reaches its critical level within
  *   24 hours, a kernel pool its alert level within 2 hours, or the commit charge 90% within 30 minutes. The message names
  *   the rate, the time and the owners that the model has.
+ * - `handles`: one process holds more than 100,000 handles, or gains more than 20,000 handles in 5 minutes (H48). It is
+ *   critical above 500,000. The message names the owner from the record of the process, also after its parent ended, and
+ *   the command line. The alert ends when the process ends, or after 2 minutes under the line.
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  * - `drain`: a planned drain or an automatic drain for a reboot (H34). The alert `drain` names the running jobs. The alert
@@ -49,16 +52,21 @@ import {
   levelOf,
   RESOURCES,
   sustainedLevel,
+  trailLevel,
   treeAbove,
   type Change,
   type Level,
   type LevelRule,
   type OutlierRule,
   type Owners,
+  type ProcessTrail,
   type Readings,
   type ResourceId,
+  type Rule,
+  type TrailRule,
 } from "./resources.ts";
-import { parentOf } from "./owners.ts";
+import type { ProcessRecord } from "./orphans.ts";
+import { isOrphan } from "./owners.ts";
 import type { ServiceHealth } from "./services.ts";
 import type { ProcessStarts } from "./starts.ts";
 import type { ThermalState } from "./thermal.ts";
@@ -69,7 +77,8 @@ export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
 export type AlertKind =
-  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain";
+  | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain"
+  | "handles";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -159,6 +168,16 @@ export interface AlertRules {
   readonly gpuForMs: number;
   /** An active GPU alert ends after this time below its limit, in ms. The default is 60000, one minute. */
   readonly gpuClearMs: number;
+  /** One process with more handles than this starts a handles warning (H48). The default is 100000. */
+  readonly handlesWarn: number;
+  /** One process with more handles than this starts a critical handles alert. The default is 500000. */
+  readonly handlesCritical: number;
+  /** One process that gains more handles than this within `handlesGainMs` starts a handles warning. The default is 20000. */
+  readonly handlesGain: number;
+  /** The window of the gain of handles, in ms. The default is 300000, 5 minutes. */
+  readonly handlesGainMs: number;
+  /** An active handles alert ends after this time under its line, in ms. The default is 120000, 2 minutes. */
+  readonly handlesClearMs: number;
 }
 
 /** The default limits. */
@@ -196,6 +215,11 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   gpuWarnRatio: 0.9,
   gpuForMs: 120_000,
   gpuClearMs: 60_000,
+  handlesWarn: 100_000,
+  handlesCritical: 500_000,
+  handlesGain: 20_000,
+  handlesGainMs: 300_000,
+  handlesClearMs: 120_000,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -265,6 +289,10 @@ export interface AlertInput {
   readonly leaseCores?: ReadonlyMap<string, number> | undefined;
   /** The forecasts of each instance, the nearest first (H32). The forecast rules read them. */
   readonly forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]> | undefined;
+  /** The handles of each process with many handles, at each read of the last 7 minutes (H48). */
+  readonly handles?: readonly ProcessTrail[] | undefined;
+  /** This function gives the owner record of a process (H48). The handles alert names its command line. */
+  readonly recordOf?: ((info: ProcessInfo) => ProcessRecord | undefined) | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -276,7 +304,7 @@ function readingsOf(
   input: Pick<
     AlertInput,
     | "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
-    | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal"
+    | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles"
   > & {
     readonly leases?: readonly Lease[] | undefined;
   },
@@ -285,7 +313,7 @@ function readingsOf(
     at: input.at ?? 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
     processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, gpu: input.gpu, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
-    trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal,
+    trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal, handles: input.handles,
   };
 }
 
@@ -310,7 +338,7 @@ function changesOf(input: AlertInput): Map<ResourceId, Change> {
 function examines(rule: OutlierRule, info: ProcessInfo, kind: OwnerKind, owners: Owners, byPid: ReadonlyMap<number, ProcessInfo>): boolean {
   if (rule.skip.includes(kind) || (rule.only !== undefined && !rule.only.includes(kind))) return false;
   if (rule.when === "unleased") return !owners.leaseOf.has(info.pid);
-  if (rule.when === "orphaned") return info.ppid > 0 && parentOf(info, byPid) === undefined;
+  if (rule.when === "orphaned") return isOrphan(info, byPid);
   return true;
 }
 
@@ -336,7 +364,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       if (amount === undefined) return false;
       for (const rule of each) {
         if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, byPid)) continue;
-        const text = rule.text({ process: info, owner, amount });
+        const text = rule.text({ process: info, owner, amount, orphan: isOrphan(info, byPid) });
         alerts.push({ id: `${rule.alert}:${info.pid}`, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
         return true;
       }
@@ -358,8 +386,26 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         if (!examines(rule, info, input.kindOf.get(owner) ?? "other", owners, byPid)) continue;
         const id = rule.alertId?.(String(tree.pid)) ?? `${rule.alert}:${tree.pid}`;
         if (!treeAbove(rule, tree.trail, endOf(tree.trail), activeLevel.has(id))) continue;
-        const text = rule.text({ process: info, owner, amount: tree.trail.at(-1)?.value ?? 0, processes: tree.processes });
+        const text = rule.text({ process: info, owner, amount: tree.trail.at(-1)?.value ?? 0, processes: tree.processes, orphan: isOrphan(info, byPid) });
         alerts.push({ id, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
+      }
+    }
+  }
+
+  // The rules on the trail of a counter of each process (H48): the handles. An alert of a process that ended ends at once.
+  for (const { rules: each } of kinds) {
+    for (const rule of each) {
+      if (rule.type !== "trail") continue;
+      for (const { pid, trail } of rule.trails(readings) ?? []) {
+        const info = byPid.get(pid);
+        if (info === undefined) continue;
+        const id = rule.alertId?.(String(pid)) ?? `${rule.alert}:${pid}`;
+        const at = endOf(trail);
+        const level = trailLevel(rule, trail, at, activeLevel.get(id) ?? null);
+        if (level === null) continue;
+        const owner = input.ownerOf.get(pid) ?? "other";
+        const text = rule.text({ process: info, owner, orphan: isOrphan(info, byPid), record: input.recordOf?.(info), trail, level, at });
+        alerts.push({ id, kind: rule.alert, subject: text.subject, pid, mb: text.mb, ...(rule.severity === true ? { severity: level } : {}), message: text.message });
       }
     }
   }
@@ -367,7 +413,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
   // The rules on the instances. The first rule that gives an alert id wins, so a pool with two rules gives one alert.
   const ids = new Set<string>();
   for (const { resource, rules: each } of kinds) {
-    const instanceRules = each.filter((rule) => rule.type !== "outlier");
+    const instanceRules = each.filter((rule): rule is Exclude<Rule, OutlierRule | TrailRule> => rule.type !== "outlier" && rule.type !== "trail");
     if (instanceRules.length === 0) continue;
     for (const measurement of resource.measure.read(readings)) {
       const change = changes.get(measurement.id);

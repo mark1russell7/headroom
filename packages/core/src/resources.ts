@@ -8,7 +8,7 @@
 import type { Alert, AlertKind, AlertRules } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
-import { childrenOf, treeMb } from "./owners.ts";
+import { childrenOf, orphanName, treeMb } from "./owners.ts";
 import { MB } from "./sampler.ts";
 import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
@@ -21,6 +21,8 @@ import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, pow
 import type { ServiceHealth, ServiceState } from "./services.ts";
 import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "./starts.ts";
 import { heatHolds, heatMessage, heatOwners, type ThermalState } from "./thermal.ts";
+import { gainAt, handlesText } from "./handles.ts";
+import type { ProcessRecord } from "./orphans.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
@@ -41,7 +43,8 @@ export type ResourceKind =
   | "battery"
   | "power"
   | "thermal"
-  | "gpu";
+  | "gpu"
+  | "handles";
 
 /**
  * The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. A kind in the unit `state` has
@@ -112,6 +115,17 @@ export interface Readings {
   readonly leaseCores?: ReadonlyMap<string, number> | undefined;
   /** The forecasts of each instance, the nearest first (H32). The forecast rules read them. */
   readonly forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]> | undefined;
+  /**
+   * The handles of each process with many handles, at each read of the last 7 minutes (H48). The handles rule reads them.
+   * Only a process above 20,000 handles in a read of the window has a trail.
+   */
+  readonly handles?: readonly ProcessTrail[] | undefined;
+}
+
+/** One process with the trail of one of its counters (H48): for example its handles at each read, the oldest first. */
+export interface ProcessTrail {
+  readonly pid: number;
+  readonly trail: readonly TrailPoint[];
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -245,6 +259,8 @@ export interface ProcessFacts {
   readonly amount: number;
   /** The live processes of the tree. A rule on one process has none. */
   readonly processes?: number | undefined;
+  /** True when the parent of the process, or of the root of the tree, ended (H48). The text adds `(orphan)` to the owner. */
+  readonly orphan?: boolean | undefined;
 }
 
 /** The fields of each rule. */
@@ -345,8 +361,41 @@ export interface CheckRule extends RuleBase {
   text(facts: InstanceFacts): AlertText;
 }
 
+/** The facts of an alert on the trail of one process (H48). */
+export interface TrailFacts {
+  readonly process: ProcessInfo;
+  /** The owner of the process. An owner from the record of an ended ancestor has the label `(orphan)`. */
+  readonly owner: string;
+  /** True when the parent of the process ended. */
+  readonly orphan: boolean;
+  /** The owner record of the process, with its command line, when the engine has one. */
+  readonly record: ProcessRecord | undefined;
+  /** The counter of the process at each read of the window, the oldest first. */
+  readonly trail: readonly TrailPoint[];
+  readonly level: Level;
+  /** The time of the check. */
+  readonly at: number;
+}
+
+/**
+ * A rule on the trail of one counter of each process (H48). A warning starts above `warning`, or with a gain above `gain`
+ * within `windowMs`. A critical alert starts above `critical`. An active alert ends when its process ends, or after
+ * `clearMs` with no level.
+ */
+export interface TrailRule extends RuleBase {
+  readonly type: "trail";
+  /** This function gives the trails of the processes from the reads of one check. */
+  trails(readings: Readings): readonly ProcessTrail[] | undefined;
+  readonly warning: number;
+  readonly critical: number;
+  readonly gain: number;
+  readonly windowMs: number;
+  readonly clearMs: number;
+  text(facts: TrailFacts): AlertText;
+}
+
 /** One alert rule of a kind. */
-export type Rule = LevelRule | GrowthRule | OutlierRule | HealthRule | CheckRule;
+export type Rule = LevelRule | GrowthRule | OutlierRule | HealthRule | CheckRule | TrailRule;
 
 /** The alert part of a kind. */
 export interface AlertPart {
@@ -622,9 +671,9 @@ const MEMORY_RESOURCE: Resource = {
         above: limits.runawayMb,
         skip: ["docker", "system", "kernel"],
         when: "unleased",
-        text: ({ process, owner, amount }) => {
+        text: ({ process, owner, amount, orphan }) => {
           const subject = `${process.name} (${process.pid})`;
-          return { subject, mb: Math.round(amount), message: `${subject} of ${owner} holds ${gb(amount)} with no lease` };
+          return { subject, mb: Math.round(amount), message: `${subject} of ${orphanName(owner, orphan === true)} holds ${gb(amount)} with no lease` };
         },
       },
       {
@@ -846,8 +895,10 @@ function cpuText({ measurement, readings, owners, level }: InstanceFacts, limits
 }
 
 /** This function gives the text of the runaway alert on a process tree with no lease (H23), in the style of the memory runaway alert. */
-function runawayTreeText({ process, owner, amount, processes }: ProcessFacts, limits: AlertRules): AlertText {
+function runawayTreeText({ process, owner: name, amount, processes, orphan }: ProcessFacts, limits: AlertRules): AlertText {
   const subject = `${process.name} (${process.pid})`;
+  // H48: a tree whose root is an orphan names its owner with the label `(orphan)`.
+  const owner = orphanName(name, orphan === true);
   const others = (processes ?? 1) - 1;
   const tree = others <= 0 ? "" : ` and its ${others} child ${others === 1 ? "process" : "processes"}`;
   const minutes = Math.round(limits.runawayCoresMs / 60_000);
@@ -1381,6 +1432,49 @@ const GPU: Resource = {
   enforce: null,
 };
 
+/**
+ * The handles (H48): one instance, `handles`, with the sum of the handles of all the processes. Windows tells no limit, so
+ * it has no capacity. Each handle holds kernel memory, so a process that holds many handles fills the kernel pools.
+ * The rule examines each process, also a process of the system or of Docker. Only the Windows sampler counts the handles.
+ */
+const HANDLES: Resource = {
+  kind: "handles",
+  unit: "count",
+  measure: {
+    read: ({ processes }) => {
+      let total = 0;
+      let counted = false;
+      for (const info of processes) {
+        if (info.handles === undefined) continue;
+        counted = true;
+        total += info.handles;
+      }
+      return counted ? [{ id: "handles", capacity: null, used: total, free: null }] : [];
+    },
+  },
+  attribute: perProcess("handles", "count", (info) => info.handles),
+  alert: {
+    rules: (limits) => [
+      {
+        type: "trail",
+        alert: "handles",
+        alertId: (pid) => `runaway:handles:${pid}`,
+        severity: true,
+        trails: (readings) => readings.handles,
+        warning: limits.handlesWarn,
+        critical: limits.handlesCritical,
+        gain: limits.handlesGain,
+        windowMs: limits.handlesGainMs,
+        clearMs: limits.handlesClearMs,
+        text: (facts) => handlesText(facts, limits.handlesGainMs),
+      },
+    ],
+  },
+  // A job object has no limit of handles, so a lease has no amount of handles.
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -1403,7 +1497,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, THERMAL, GPU, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, THERMAL, GPU, HANDLES, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */
@@ -1474,6 +1568,31 @@ export function treeAbove(rule: OutlierRule, trail: readonly TrailPoint[], now: 
   const above = (cores: number): boolean => cores > rule.above;
   if (heldMs(trail, now, above) >= (rule.forMs ?? 0)) return true;
   return active && heldMs(trail, now, (cores) => !above(cores)) < (rule.clearMs ?? 0);
+}
+
+/** This function gives the level of one point of a trail for a trail rule (H48), or `null` when the point is under the lines. */
+export function trailPointLevel(rule: TrailRule, trail: readonly TrailPoint[], index: number): Level | null {
+  const value = trail[index]?.value ?? 0;
+  if (value > rule.critical) return "critical";
+  return value > rule.warning || gainAt(trail, index, rule.windowMs) > rule.gain ? "warning" : null;
+}
+
+/**
+ * This function gives the level of a process for a trail rule (H48), or `null`. The level of the last point starts an
+ * alert at once. An active level stays until the trail is under its line for `clearMs`.
+ */
+export function trailLevel(rule: TrailRule, trail: readonly TrailPoint[], now: number, active: Level | null): Level | null {
+  if (trail.length === 0) return null;
+  // The rank of each point: 0 under the lines, 1 for a warning and 2 for a critical level.
+  const ranks = trail.map((point, index) => {
+    const level = trailPointLevel(rule, trail, index);
+    return { at: point.at, value: level === null ? 0 : RANK[level] };
+  });
+  for (const level of ["critical", "warning"] as const) {
+    if ((ranks.at(-1)?.value ?? 0) >= RANK[level]) return level;
+    if (active !== null && RANK[active] >= RANK[level] && heldMs(ranks, now, (rank) => rank < RANK[level]) < rule.clearMs) return level;
+  }
+  return null;
 }
 
 /** This function gives the level of a service for a health rule, or `null` when the service has not had the state for enough checks. */

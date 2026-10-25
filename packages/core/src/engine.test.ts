@@ -827,3 +827,70 @@ describe("Engine forecasts (H32)", () => {
     }
   });
 });
+
+describe("Engine handles and orphans (H48)", () => {
+  it("keeps the owner of an orphan over a restart, gives the handles alert, and prunes the record when the process ends", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-orphans-"));
+    try {
+      const sessions = join(dir, "sessions");
+      mkdirSync(sessions);
+      writeFileSync(join(sessions, "s1.json"), JSON.stringify({ pid: 11, name: "server-stack tools", sessionId: "s1" }));
+      let now = 1_800_000_000_000;
+      const start = now;
+      const node = (pid: number, ppid: number, name: string, startedAt: number, handles: number): ProcessInfo => ({ pid, ppid, name, privateMb: 10, workingMb: 10, startedAt, handles });
+      let findHandles = 30_000;
+      let shell = true;
+      let found = true;
+      const list = (): ProcessInfo[] => [
+        node(4, 0, "System", 0, 12_000),
+        node(11, 4, "claude.exe", start - 3_600_000, 900),
+        ...(shell ? [node(12, 11, "bash.exe", start - 120_000, 200)] : []),
+        ...(found ? [node(13, 12, "find.exe", start - 60_000, findHandles)] : []),
+      ];
+      const sampler: Sampler = {
+        memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+        processes: list,
+        commandLine: (pid) => (pid === 13 ? '"C:\\Program Files\\Git\\usr\\bin\\find.exe" / -name WIRE-PROTOCOL.md -path *procedures*' : null),
+        close: () => undefined,
+      };
+      const path = join(dir, "headroom.db");
+      const first = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: sessions });
+      first.tick();
+      // The shell ends: find.exe keeps the owner of its record, with the label, and its handles grow.
+      shell = false;
+      for (let step = 0; step < 6; step++) {
+        now += 10_000;
+        findHandles += 4000;
+        first.tick();
+      }
+      const status = first.status();
+      expect(status.owners.find((each) => each.owner === "session:server-stack tools (orphan)")).toMatchObject({ kind: "other", processes: 1 });
+      expect(status.handles).toMatchObject({ total: 12_000 + 900 + 54_000, warning: 100_000 });
+      expect(status.resources.find((each) => each.id === "handles")).toMatchObject({ kind: "handles", unit: "count", used: 66_900 });
+      expect(first.alerts().active.find((each) => each.kind === "handles")?.message).toBe(
+        "find.exe (pid 13) holds 54,000 handles, +24,000 a minute. It started 2 min ago. Owner: session:server-stack tools (orphan, parent ended)." +
+          " Command: find / -name WIRE-PROTOCOL.md -path *procedures*. The owner stops it by its pid.",
+      );
+      first.close();
+      // The daemon restarts after the session ended. The record in the store keeps the owner.
+      rmSync(join(sessions, "s1.json"));
+      findHandles = 1_313_105;
+      now += 60_000;
+      const second = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: sessions });
+      second.tick();
+      expect(second.status().owners.some((each) => each.owner === "session:server-stack tools (orphan)")).toBe(true);
+      expect(second.alerts().active.find((each) => each.kind === "handles")).toMatchObject({ id: "runaway:handles:13", severity: "critical" });
+      // find.exe ends: the alert ends, and the store loses its record.
+      found = false;
+      now += 10_000;
+      second.tick();
+      expect(second.alerts().active.some((each) => each.kind === "handles")).toBe(false);
+      second.close();
+      const reopened = new Store(path);
+      expect(reopened.processOwners().map((row) => row.pid).sort((a, b) => a - b)).toEqual([4, 11]);
+      reopened.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

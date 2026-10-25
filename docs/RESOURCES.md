@@ -110,6 +110,7 @@ Each kind reads one counter of the processes:
 | `memory` | The private bytes | `K32GetProcessMemoryInfo`, `PrivateUsage` (today) | `RssAnon` of `/proc/<pid>/status` (today) |
 | `disk` | The bytes that the process wrote | `GetProcessIoCounters`, `WriteTransferCount` | `write_bytes` of `/proc/<pid>/io` |
 | `cpu` | The processor time | `GetProcessTimes`, the kernel time and the user time | `utime` and `stime` of `/proc/<pid>/stat` |
+| `handles` | The open handles (H48) | `SystemProcessInformation`, `HandleCount` | None |
 
 - Memory is a level: the private bytes at this time. Disk and CPU are totals since the start of the process. Their use is the change between two reads.
 - The sampler reads the new counters with the same process handle as the memory. Thus a read of the processes opens no more handles.
@@ -232,6 +233,7 @@ The alerts of today go onto the rules with no change to their ids, kinds, messag
 | `disk:<mount>` | `disk` | Level on free: a warning below 20 GB or 20%, critical below 5 GB or 5%. |
 | `runaway:<pid>` | `memory` | Outlier: a process above 4096 MB, with no lease. Docker, the system and the kernel are not examined. |
 | `orphan:<pid>` | `memory` | Outlier: a process above 1024 MB with an owner of the kind `other`, whose parent stopped. |
+| `runaway:handles:<pid>` | `handles` | Trail (H48): a process above 100,000 handles, or a gain of more than 20,000 in 5 minutes. Critical above 500,000. Clear after 2 minutes under the line. |
 | `stop:*` | none | An event of the daemon, not a rule of a resource. It stays as it is. |
 
 - The pool tags, the new large files and the top writers come from `explain()`. Thus `detect()` adds no special text for a kind.
@@ -375,6 +377,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `battery` (Wh) | H30. Capacity: the full charge. Free: the remaining charge, from `CallNtPowerInformation(SystemBatteryState)`. The measurement also has the power source, the charge state, the percent, the rate in W and the minutes left. No battery: no instance. Linux and macOS: no instance. | None. | Check: a warning below 30 minutes left, critical below 10 minutes or 10%. A warning when leased jobs run on battery. On AC power, no alert. | No amount. The conditions of H31 read the power source and the charge: `ac`, `battery>=N` and the battery floor. | EcoQoS for the processes of `headroom run` on battery, from the answer of the heartbeat. `--no-eco` turns it off. |
 | `power` (W) | H30. Used: the power of the whole computer, from the counter `\Energy Meter(*)\Power` (PDH). Capacity: `null`. No counter set: no instance. Linux and macOS: no instance. | An estimate: the CPU power, shared by the processor time of each owner. | None. The battery alert names the 3 owners with the most power. | None. | A power request keeps the computer awake on AC power while a lease is granted. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
+| `handles` (count) | H48. Used: the sum of the handles of all the processes. Capacity: `null`. No count of handles: no instance. | The handles of each owner. An orphan keeps the owner of its record, with the label `(orphan)`. | Trail: a process above 100,000 handles or with a gain of 20,000 in 5 minutes (warning), above 500,000 (critical). | None. | None. headroom does not stop the process. |
 | `gpu:<n>` (MB) | H36. One instance for each adapter. Used: the dedicated and the shared GPU memory, from `\GPU Adapter Memory(*)`. Capacity: the dedicated limit and the shared limit from DXGI. The measurement also has the use of the busiest engine. No GPU counters: no instance. | The dedicated and the shared GPU memory of each owner and of each leased job, from `\GPU Process Memory(*)`. Each adapter has its own owners. `Status.gpu` also gives the engine use of each owner. | Level on used: a warning above 90% for 2 minutes, clear after one minute below. | None. A job object has no GPU limit. The shared part is already in the available memory. | None. Report: the peak GPU memory of a lease. |
 
 ## The migration
@@ -1154,6 +1157,51 @@ H36 shipped in one change. These parts are as built:
 | The working set of the process | +258 MB | Only the shared part that the process maps. `dwm.exe` had 297 MB of shared GPU memory and a working set of 53 MB. Each Windows AI host on the NPU had approximately 160 MB and 22 MB. |
 
 Thus "GPU memory counts against memory" was already true. The free part of `memory` is the available memory, which already holds the shared GPU memory. The daemon only gives the GPU memory to its owners. A subtraction in `memory` counts the shared memory two times, so the memory resource stays as it is.
+
+### H48: handles and orphans
+
+**The incident.** On 2026-10-25 at 04:56, a subagent of the server-stack session started `find / -name "WIRE-PROTOCOL.md" -path "*procedures*" 2>/dev/null | head -3` in Git Bash.
+
+- The Bash call ended after 2 minutes, but `find.exe` stayed. Its parent `bash` ended, so it was an orphan, and it searched `/` through the mounts of MSYS.
+- At 05:40, it held 1,313,105 handles. The paged pool grew 593 MB in one hour, with the pool tags `Key` and `FMfn`.
+- The free memory fell under 1 GB, and the Playwright run of graph failed with `0xC0000142`.
+- headroom gave no alert for the process. After a restart of the daemon, it named no owner, because the parent had ended. The organizer found the owner in the session transcripts.
+
+H48 shipped in one change. These parts are as built:
+
+- **Measure**: `HandleCount` of `SystemProcessInformation`, at offset `0x60` of each entry. The read of the processor times already makes this call, so the daemon has no new call, no new process and no new timer. `ProcessInfo.handles` has the count.
+- The kind `handles` has one instance, `handles`: the sum of the handles of all the processes. It has no capacity, because Windows tells no limit. A computer with no count of handles, for example Linux, has no instance.
+- **Attribute**: the handles of each process go to its owner. The resource `handles` gives the 10 owners with the most handles.
+- **The trail**: `HandleTracker` keeps the handles of each process at each read of the last 7 minutes. The rule needs 5 minutes for the gain and 2 minutes for the clear. A read keeps only the processes with 1,000 handles or more.
+- In a read, a process under 1,000 handles counts as 1,000, the most that it can have held. A read before the start of the process counts as 0.
+- **Alert `handles`**: a new rule type, `trail`, on the trail of one counter of each process. The id is `runaway:handles:<pid>`.
+- The rule gives a warning above 100,000 handles, or for a gain above 20,000 handles in 5 minutes. Above 500,000 handles, the alert is critical. The alert starts at the first read past a line.
+- The alert ends when the process ends, or after 2 minutes under its line. A critical alert falls to a warning after 2 minutes under 500,000.
+- The rule examines each process, also a process of the system or of Docker. headroom does not stop the process. The owner stops it by its process ID.
+- **The text**: `find.exe (pid 27056) holds 1,313,105 handles, +40,000 a minute. It started 44 min ago. Owner: session:server-stack tools (orphan, parent ended). Command: find / -name WIRE-PROTOCOL.md -path *procedures*. The owner stops it by its pid.`
+- **Admit and enforce**: none. A job object has no limit of handles.
+
+**The owner records.** `OwnerRecords` in `orphans.ts` keeps one record for each live process, by its process ID and its start:
+
+- At the first read of a process, the record gets the owner, the command line and the time of the read. The command line has the name of the program with no folder, cut to 200 characters.
+- While the parent is alive, the record follows the owner, for example when the file of a new session appears. After the parent ends, the record keeps its owner.
+- `attribute()` reads the records. When the search up the tree stops at an orphan, the record of the orphan gives its owner. A different owner wins, with the label `(orphan)` and the kind `other`.
+- Thus `find.exe` is `session:server-stack tools (orphan)` in the owners of `headroom status`, of the dashboard and of each resource. The runaway alerts of the memory and the CPU (H23) add `(orphan)` to the owner of each orphan, also with no record: `other (orphan)`. The children of an orphan get the same owner.
+- The kind `other` keeps the rules of a session out. The tree of a session starts below its process, but no process of the session is above an orphan. The alert `orphan` (memory) also examines the orphans of a session.
+- A record with the owner `other`, or with the owner that the tree gives, adds no label. Thus `explorer.exe`, an orphan from the start of Windows, stays `system`.
+
+**The table `process_owners`.** The store keeps `(pid, created, owner, command, first_seen)` for each record of a process that is one minute old.
+
+- At its start, the daemon reads the table. Thus a restart keeps the owners of the orphans.
+- At each read of the processes, one statement removes the rows of the ended processes, and new rows go in one transaction. A read with no change writes nothing.
+- The table holds at most one row for each live process, and the memory holds at most 4,096 records.
+
+**The cost.** The daemon reads the command line of each new process one time: an open of the process, `NtQueryInformationProcess` and a close. A read every 10 seconds finds few new processes. The first read after a start reads all of them, approximately 480 on this laptop.
+
+- The records of approximately 480 processes use less than 0.5 MB. Each read of the handles keeps approximately 43 processes on this laptop.
+- On 2026-10-25 at 06:05, the sum was 200,020 handles in 479 processes. The top 3 were `System` (12,510), `explorer.exe` (7,468) and `dwm.exe` (3,094).
+
+`headroom status` gives the sum of the handles, for example `Handles: 200,020 in all`. When one process is above 100,000 handles, it also names the 3 processes with the most handles. Each one has its owner and its command line. `Status.handles` gives the same data.
 
 ## Decisions
 

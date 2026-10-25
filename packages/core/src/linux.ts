@@ -146,7 +146,17 @@ export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
     };
   }
 
-  return { memory, processes, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
+  /** This function reads the command line of a process from `/proc/<pid>/cmdline` (H48). A 0 byte separates the arguments. */
+  function commandLine(pid: number): string | null {
+    try {
+      const text = readFileSync(`${root}/${pid}/cmdline`, "utf8").split("\0").join(" ").trim();
+      return text === "" ? null : text;
+    } catch {
+      return null;
+    }
+  }
+
+  return { memory, processes, commandLine, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
 }
 
 /** The default dynamic port range of Linux: the ports 32768 to 60999. */

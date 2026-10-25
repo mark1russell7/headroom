@@ -9,7 +9,7 @@
  * - `headroom job <name|id> [--holder h] [--all] [--json]`: the state of a job of `headroom run` (H26).
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
- * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
+ * - `headroom alerts [--watch]`: a runaway process, an orphan, many handles, low memory, the commit charge, the kernel pool and low free space on a drive.
  * - `headroom forecast [--json]`: the time of each resource to its nearest limit, from the fit of its history (H32).
  * - `headroom thermal [--json]`: the speed limits, the speed and the thermal zones of the CPU, and the throttle (H35).
  * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
@@ -38,6 +38,7 @@ import {
   forecastLine,
   forecastText,
   gpuLines,
+  handlesLines,
   leaseGpuText,
   kindOf,
   MB,
@@ -252,6 +253,8 @@ function printStatus(status: DaemonStatus): void {
   console.log(`Kernel pools: ${mb(memory.kernelNonpagedMb)} non-paged, ${mb(memory.kernelPagedMb)} paged.`);
   const load = status.session;
   if (load) console.log(`Session: ${load.processes} processes${load.userObjects === null ? "" : `, ${load.userObjects} USER and ${load.gdiObjects ?? 0} GDI objects`}.`);
+  // H48: the handles of all the processes, and the top 3 processes only when one is above the warning line.
+  for (const line of handlesLines(status.handles)) console.log(line);
   const disks = status.disks ?? [];
   if (disks.length > 0) {
     const each = disks.map((disk) => {
