@@ -153,6 +153,16 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The cores that the CPU reserve gets while Mark is present or busy (H33). null gives the default: 2."),
+  autoDrainMb: z
+    .number()
+    .int()
+    .min(0)
+    .max(1_048_576)
+    .nullable()
+    .optional()
+    .describe(
+      "The level of the automatic drain in MB of the two kernel pools together (H34). At or above it for 2 minutes, new jobs wait for a reboot. 0 turns it off. null gives the default: 6144.",
+    ),
 });
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -463,7 +473,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33).",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -481,6 +491,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           awayAfterMs: input.awayAfterMs,
           busyWaitMs: input.busyWaitMs,
           presentReserve: input.presentReserve,
+          autoDrainMb: input.autoDrainMb,
         }),
     )
     .build() as AnyProcedure;
@@ -491,7 +502,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<DrainStatus | null>())
     .meta({
       description:
-        "Plan a drain for a reboot (H34): from at, new leases wait and the running leases finish. until ends it with no reboot. cancel ends it. With no field, give the drain.",
+        "Plan a drain for a reboot (H34): from at, new leases wait and the running leases finish. until ends it with no reboot. cancel ends it, also an automatic drain. With no field, give the drain.",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },

@@ -17,7 +17,7 @@ import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
 import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
-import { fitTrend, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
+import { fitTrend, forecastFrom, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
 import {
   fitsHistory,
   forecastsOf,
@@ -48,12 +48,18 @@ import {
   type PresenceStatus,
 } from "./presence.ts";
 import {
+  AUTO_DRAIN_END_MS,
+  AUTO_DRAIN_MARGIN_MB,
+  AUTO_DRAIN_START_MS,
+  autoDrainEndedText,
   DRAIN_ALERT,
   DRAIN_ENDED_ALERT,
   DRAIN_READY_ALERT,
   drainAlerts,
+  drainName,
   drainStatus,
   drainWait,
+  poolsPoints,
   rebootBudget,
   windowsReboot,
   type Drain,
@@ -66,7 +72,7 @@ import {
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
-import { AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
+import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
 import { diskSize } from "./units.ts";
@@ -224,6 +230,8 @@ export interface ConfigChange {
   readonly busyWaitMs?: number | null | undefined;
   /** The cores that the reserve gets while Mark is present (H33): 0 to the count of processors. `null` gives the default of 2. */
   readonly presentReserve?: number | null | undefined;
+  /** The level of the automatic drain in MB (H34): 0 for off, or 1 GB to 1 TB. `null` gives the default of 6 GB. */
+  readonly autoDrainMb?: number | null | undefined;
 }
 
 /** This function gives the presence rules from the settings (H33). */
@@ -449,6 +457,15 @@ export class Engine {
   #poolGrowth: { readonly nonpaged: number | null; readonly paged: number | null } = { nonpaged: null, paged: null };
   /** The last read of the reboot keys of the registry, and its time (H34). */
   #windowsReboot: { readonly at: number; readonly value: WindowsReboot | null } | null = null;
+  /** The level of the automatic drain in MB from the settings, or 0 for off (H34). */
+  #autoDrainMb: number;
+  /** The first tick at or above the level, and the first tick of an automatic drain under its end level. */
+  #autoHighSince: number | null = null;
+  #autoLowSince: number | null = null;
+  /** The time of the last `headroom drain --cancel`, or `null`. While it holds, the automatic rule starts no drain. */
+  #autoHold: number | null;
+  /** The fit of the two kernel pools together at the last sample, for the forecast to the automatic level. */
+  #poolsTrend: Trend | null = null;
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -483,7 +500,7 @@ export class Engine {
       // H31: a lease waits until each of its conditions holds, and a heavy lease waits on a low battery.
       // H34: in a planned drain, a lease waits for the reboot, unless its job runs with --during-drain.
       condition: (lease) => {
-        const drained = drainWait(lease, this.#drain, this.#now());
+        const drained = drainWait(lease, this.#drain, this.#now(), localClock, this.#drain?.auto ? this.#poolsMb() : null);
         if (drained !== null) return drained;
         const { facts, floor } = this.#conditionFacts();
         // H33: while Mark is busy, a new heavy lease waits, for at most the busy wait.
@@ -497,8 +514,11 @@ export class Engine {
     // H34: the drain continues after a restart of the daemon. A start of the computer after the drain means that the reboot came.
     this.#drain = this.#store.drain();
     if (this.#drain !== null && this.#bootedAt > this.#drain.setAt) {
-      this.#endDrain(this.#startedAt, `The reboot came, so the drain for the reboot at ${localClock(this.#drain.at)} ended. New jobs start again.`);
+      this.#endDrain(this.#startedAt, `The reboot came, so ${drainName(this.#drain)} ended. New jobs start again.`);
     }
+    // A reboot also ends the hold of the automatic drain after a cancel.
+    this.#autoHold = this.#store.autoDrainHold();
+    if (this.#autoHold !== null && this.#bootedAt > this.#autoHold) this.#setAutoHold(null);
     // The snapshots of the last hour continue after a restart, so the change of each tag has its full window. A start of
     // the computer empties the pools, so the snapshots before it do not continue.
     this.#tags = this.#store.poolTagsSince(Math.max(this.#startedAt - POOL_TAGS_KEEP_MS, this.#bootedAt));
@@ -508,6 +528,7 @@ export class Engine {
     this.#writes = this.#counters.writes(this.#startedAt);
     const config = this.#store.config();
     this.#cpuReserve = config.cpuReserve;
+    this.#autoDrainMb = config.autoDrainMb;
     this.#policy = policyOf(config);
     this.#memory = this.#sampler.memory();
     this.#seedTrends();
@@ -556,6 +577,10 @@ export class Engine {
       }
     }
     this.#trends = trends;
+    // H34: the fit of the two kernel pools together gives the forecast to the level of the automatic drain.
+    const nonpaged = this.#trendPoints.get("pool:nonpaged") ?? [];
+    const paged = this.#trendPoints.get("pool:paged") ?? [];
+    this.#poolsTrend = fitTrend(poolsPoints(nonpaged, paged), "used", { since });
   }
 
   /** This function gives the forecasts of each instance at a time, the nearest first, from the fits of the last sample (H32). */
@@ -677,7 +702,8 @@ export class Engine {
     }
     // H33: the presence of this tick comes before the admission, so a lease that waits for Mark starts at once.
     this.#readPresence(now);
-    // H34: the end of a drain at its time --until, and its start, come before the admission of this tick.
+    // H34: the automatic drain, the end of a drain at its time --until, and its start, come before the admission of this tick.
+    this.#autoDrain(now);
     this.#drainBefore(now);
     const changed = this.#broker.tick(this.capacity());
     this.#persist(changed);
@@ -823,6 +849,10 @@ export class Engine {
       throw new RangeError(`The CPU reserve must be a number from 0 to ${this.#processors}, the count of processors`);
     }
     const presence = this.#checkPresence(change);
+    const autoDrain = change.autoDrainMb;
+    if (typeof autoDrain === "number" && !isAutoDrainLevel(autoDrain)) {
+      throw new RangeError(`The level of the automatic drain must be 0 (off) or a whole number of MB from ${AUTO_DRAIN_MIN_MB} to ${AUTO_DRAIN_MAX_MB}`);
+    }
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -831,6 +861,13 @@ export class Engine {
     if (reserve !== undefined) {
       this.#store.setConfig("cpuReserve", reserve === null ? null : String(reserve));
       this.#cpuReserve = this.#store.config().cpuReserve;
+    }
+    if (autoDrain !== undefined) {
+      this.#store.setConfig("autoDrainMb", autoDrain === null ? null : String(autoDrain));
+      this.#autoDrainMb = this.#store.config().autoDrainMb;
+      // A new level is a new decision of Mark, so the hold of a cancel ends.
+      this.#setAutoHold(null);
+      this.#autoHighSince = null;
     }
     if (presence) {
       if (change.presence !== undefined) this.#store.setConfig("presence", change.presence === null ? null : change.presence ? "on" : "off");
@@ -1355,6 +1392,10 @@ export class Engine {
     // H32: a fit does not span the sleep, so the forecasts start again with the points after the wake.
     this.#trendPoints.clear();
     this.#trends = new Map();
+    this.#poolsTrend = null;
+    // H34: the times of the automatic drain do not span the sleep.
+    this.#autoHighSince = null;
+    this.#autoLowSince = null;
     this.#resumedAt = to;
     this.#lastSleep = { from, to };
     // The next tick reads the whole computer again.
@@ -1532,12 +1573,17 @@ export class Engine {
     return drain;
   }
 
-  /** This function cancels the planned drain (H34). The waiting leases start when they fit. It gives the drain, or `null` without one. */
+  /**
+   * This function cancels the drain (H34). The waiting leases start when they fit. It gives the drain, or `null` without one.
+   * After a cancel, the automatic rule starts no drain until the pools fall under its end level, or until a reboot.
+   */
   cancelDrain(): DrainStatus | null {
     const now = this.#clock();
     const current = this.drain();
     if (current === null) return null;
     this.#endDrain(now, null);
+    // The automatic rule does not start a new drain at once: it waits for the pools to fall, or for a reboot.
+    this.#setAutoHold(now);
     this.#persist(this.#broker.tick(this.capacity()));
     return current;
   }
@@ -1577,6 +1623,55 @@ export class Engine {
     } catch {
       // The resume plan is a help for the reboot. The drain continues without it.
     }
+  }
+
+  /** This function gives the non-paged pool and the paged pool together, in MB, from the last read of the memory. */
+  #poolsMb(): number {
+    return this.#memory.kernelNonpagedMb + this.#memory.kernelPagedMb;
+  }
+
+  /** This function sets or removes the hold of the automatic drain, in the engine and in the store. */
+  #setAutoHold(at: number | null): void {
+    this.#autoHold = at;
+    this.#store.setAutoDrainHold(at);
+  }
+
+  /**
+   * This function applies the rule of the automatic drain at a tick (H34). It uses the drain of `headroom drain`, with no end
+   * time, so the start, the alerts and the resume plan stay the same.
+   *
+   * - The pools at or above the level for 2 minutes, with no drain and no hold, start an automatic drain.
+   * - An automatic drain ends when the pools stay under the level less 300 MB for 10 minutes.
+   * - The rule does not change a drain of `headroom drain`.
+   */
+  #autoDrain(now: number): void {
+    const poolsMb = this.#poolsMb();
+    const drain = this.#drain;
+    const auto = drain?.auto ?? null;
+    if (drain !== null) {
+      this.#autoHighSince = null;
+      if (auto === null || poolsMb >= auto.levelMb - AUTO_DRAIN_MARGIN_MB) {
+        this.#autoLowSince = null;
+        return;
+      }
+      this.#autoLowSince ??= now;
+      if (now - this.#autoLowSince < AUTO_DRAIN_END_MS) return;
+      this.#autoLowSince = null;
+      this.#endDrain(now, autoDrainEndedText(auto));
+      return;
+    }
+    this.#autoLowSince = null;
+    const level = this.#autoDrainMb;
+    // The hold of a cancel ends when the pools fall under the end level.
+    if (this.#autoHold !== null && level > 0 && poolsMb < level - AUTO_DRAIN_MARGIN_MB) this.#setAutoHold(null);
+    if (level <= 0 || this.#autoHold !== null || poolsMb < level) {
+      this.#autoHighSince = null;
+      return;
+    }
+    this.#autoHighSince ??= now;
+    if (now - this.#autoHighSince < AUTO_DRAIN_START_MS) return;
+    this.#autoHighSince = null;
+    this.#saveDrain({ at: now, until: null, setAt: now, startedAt: null, readyAt: null, auto: { levelMb: level, poolsMb: Math.round(poolsMb) } });
   }
 
   /** This function records the time when no job runs in an active drain, and updates the alerts of the drain (H34). */
@@ -1633,8 +1728,13 @@ export class Engine {
     } catch {
       plan = null;
     }
+    const level = this.#autoDrainMb;
+    const poolsMb = Math.round(this.#poolsMb());
+    const trend = this.#poolsTrend;
+    const autoForecast = level > 0 && trend !== null ? forecastFrom(trend, { on: "used", amount: level, name: "critical" }, now, poolsMb) : null;
     return rebootBudget({
       at: now,
+      autoDrain: { levelMb: level, poolsMb, forecast: autoForecast },
       pools: [
         pool("pool:nonpaged", this.#memory.kernelNonpagedMb, rules.poolMb, this.#poolGrowth.nonpaged, rules.poolGrowthMb),
         pool("pool:paged", this.#memory.kernelPagedMb, rules.pagedMb, this.#poolGrowth.paged, rules.pagedGrowthMb),

@@ -495,7 +495,7 @@ describe("Engine disk leases and temp folders", () => {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
       expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });

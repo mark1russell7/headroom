@@ -3,17 +3,21 @@ import type { Lease } from "./broker.ts";
 import { isConditionWait, waitsForRoom } from "./conditions.ts";
 import type { Forecast } from "./forecast.ts";
 import {
+  autoDrainEndedText,
   drainAlerts,
   drainLine,
+  drainName,
   drainStatus,
   drainWait,
   nextClock,
   parseDrain,
+  poolsPoints,
   REBOOT_KEYS,
   rebootAdvice,
   rebootBudget,
   rebootLines,
   windowsReboot,
+  type AutoDrainBudget,
   type Drain,
   type KeyState,
   type PoolBudget,
@@ -74,6 +78,37 @@ describe("rebootAdvice (H34)", () => {
 
   it("tells to plan a reboot for a fast growth with no forecast", () => {
     expect(rebootAdvice(pools({ growthMbPerHour: 620 }), NO_UPDATE, { clock })).toEqual({ level: "plan", by: null, text: "Plan a reboot: the non-paged pool grows 620 MB an hour." });
+  });
+
+  it("counts the level of the automatic drain as one more limit", () => {
+    const auto = { levelMb: 6144, poolsMb: 5000, forecast: forecastIn(120, 6144) };
+    // The forecast to the automatic level comes before the forecast of a pool.
+    const soon = rebootAdvice(pools({ forecast: forecastIn(300, 3072) }), NO_UPDATE, { clock, auto });
+    expect(soon).toEqual({ level: "soon", by: NOW + 120 * 60_000, text: "Reboot within 2 hours: the kernel pools reach the level of the automatic drain (6.0 GB) at 03:40." });
+    expect(rebootAdvice(pools({ forecast: forecastIn(60, 3072) }), NO_UPDATE, { clock, auto }).text).toBe("Reboot within 60 minutes: the non-paged pool reaches its alert level at 02:40.");
+    const far = rebootAdvice(pools(), NO_UPDATE, { clock, auto: { ...auto, forecast: forecastIn(3 * 24 * 60, 6144) } });
+    expect(far.text).toBe("No reboot needed. The kernel pools reach the level of the automatic drain (6.0 GB) in 3 days.");
+    // The pools at or above the level give overdue, alone or after a pool above its alert level.
+    const over = { levelMb: 6144, poolsMb: 6300, forecast: null };
+    expect(rebootAdvice(pools(), NO_UPDATE, { clock, auto: over })).toEqual({
+      level: "overdue",
+      by: null,
+      text: "Reboot soon: the kernel pools are at 6.2 GB, at or above the level of the automatic drain (6.0 GB).",
+    });
+    expect(rebootAdvice(pools({ usedMb: 4710 }), UPDATE, { clock, auto: over }).text).toBe(
+      "Reboot soon: the non-paged pool is at 4.6 GB, above its alert level of 3.0 GB. The kernel pools are at 6.2 GB, at or above the level of the automatic drain (6.0 GB). A Windows update waits for a reboot too.",
+    );
+    // With the rule off, the level is not a limit.
+    expect(rebootAdvice(pools(), NO_UPDATE, { clock, auto: { ...over, levelMb: 0 } }).text).toBe("No reboot needed.");
+  });
+
+  it("adds the two pools at the same times", () => {
+    expect(
+      poolsPoints(
+        [[1, 100, 5], [2, 110, 4], [3, null, 3]],
+        [[1, 50, 9], [3, 60, 8]],
+      ),
+    ).toEqual([[1, 150, null]]);
   });
 });
 
@@ -147,6 +182,29 @@ describe("the drain (H34)", () => {
     }
   });
 
+  it("gives the reason, the line, the alerts and the end of an automatic drain", () => {
+    const auto: Drain = { at: NOW, until: null, setAt: NOW, startedAt: NOW, readyAt: null, auto: { levelMb: 6144, poolsMb: 6250 } };
+    const plain = lease("a", "waiting", "pnpm test", "graph");
+    expect(drainWait(plain, auto, NOW, clock, 6400)).toBe("waits for a reboot: the kernel pools are at 6.3 GB (headroom drain, automatic)");
+    expect(drainWait(plain, auto, NOW, clock)).toBe("waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)");
+    expect(drainName(auto, clock)).toBe("the automatic drain of 01:40");
+    expect(drainName({ ...auto, auto: null }, clock)).toBe("the drain for the reboot at 01:40");
+    const status = drainStatus(auto, [lease("b", "granted", "vitest", "vex"), plain], NOW);
+    expect(drainLine(status, clock)).toBe(
+      "Automatic drain since 01:40 (the kernel pools were at 6.1 GB): 1 job still runs. 1 job waits for a reboot. A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
+    );
+    const alerts = drainAlerts(drainStatus(auto, [], NOW), clock);
+    expect(alerts.map((alert) => [alert.id, alert.subject])).toEqual([["drain", "kernel pools"], ["drain:ready", "kernel pools"]]);
+    expect(alerts[0]?.message).toBe(
+      "The kernel pools reached 6.1 GB and stayed at or above 6.0 GB for 2 minutes. An automatic drain started at 01:40: new jobs wait for a reboot. No job runs. A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
+    );
+    expect(alerts[1]?.message).toBe("Ready for the reboot: no job runs. New jobs wait for a reboot (automatic drain). headroom does not reboot the computer: Mark does it.");
+    expect(autoDrainEndedText({ levelMb: 6144, poolsMb: 6250 })).toBe("The kernel pools stayed under 5.7 GB for 10 minutes, so the automatic drain ended. New jobs start again.");
+    // The settings keep the facts of an automatic drain. A drain of an older version has none.
+    expect(parseDrain(JSON.stringify(auto))).toEqual(auto);
+    expect(parseDrain(JSON.stringify({ ...auto, auto: { levelMb: "x" } }))).toEqual({ ...auto, auto: undefined });
+  });
+
   it("gives the next time of a local clock", () => {
     const after = new Date(2026, 9, 25, 1, 40).getTime();
     expect(nextClock("02:30", after)).toBe(new Date(2026, 9, 25, 2, 30).getTime());
@@ -185,5 +243,18 @@ describe("rebootBudget and rebootLines (H34)", () => {
       "Drain: none. `headroom drain --at 02:30` plans one.",
       "Resume plan: none yet. `headroom resume-plan` writes it, and a drain writes it at its start.",
     ]);
+  });
+
+  it("adds the level of the automatic drain and the time of its forecast", () => {
+    const lines = (autoDrain: AutoDrainBudget): string[] =>
+      rebootLines(rebootBudget({ at: NOW, pools: pools(), windows: null, bootedAt: null, drain: null, resumePlan: null, autoDrain, clock }), clock);
+    const near = lines({ levelMb: 6144, poolsMb: 5300, forecast: forecastIn(190, 6144) });
+    expect(near[0]).toBe("Reboot: Reboot within 3 hours: the kernel pools reach the level of the automatic drain (6.0 GB) at 04:50.");
+    expect(near[2]).toMatch(/^Automatic drain: at 6\.0 GB of the kernel pools together, now 5\.2 GB\. The forecast reaches it at \d+ Oct 04:50, in 3 h 10 min\.$/);
+    expect(lines({ levelMb: 6144, poolsMb: 5300, forecast: null })[2]).toBe("Automatic drain: at 6.0 GB of the kernel pools together, now 5.2 GB. No forecast: the pools show no clear trend.");
+    expect(lines({ levelMb: 6144, poolsMb: 6300, forecast: null })[2]).toBe(
+      "Automatic drain: at 6.0 GB of the kernel pools together, now 6.2 GB. After 2 minutes at or above the level, new jobs wait for a reboot.",
+    );
+    expect(lines({ levelMb: 0, poolsMb: 6300, forecast: null })[2]).toBe("Automatic drain: off. `headroom config auto-drain 6GB` turns it on.");
   });
 });

@@ -330,6 +330,7 @@ headroom does not reboot the computer, and it does not log off. Only Mark does t
 ```text
 Reboot: Reboot within 6 hours: the non-paged pool reaches its alert level at 07:40. A Windows update waits for a reboot too.
 Kernel pools: non-paged 2.6 GB (alert level 3.0 GB, +80 MB in the last hour, at its alert level in 6 h 10 min), paged 2.6 GB (alert level 4.0 GB, +10 MB in the last hour).
+Automatic drain: at 6.0 GB of the kernel pools together, now 5.2 GB. The forecast reaches it at 25 Oct 11:20, in 8 h 40 min.
 Windows: an update waits for a reboot (Windows Update).
 Uptime: 3 days, since 22 Oct 21:10.
 Drain: none. `headroom drain --at 02:30` plans one.
@@ -338,8 +339,8 @@ Resume plan: C:\Users\markt\.headroom\resume-plan.md, written 2 h 10 min ago (25
 
 The rules of the recommendation go in this order:
 
-1. A kernel pool at or above its alert level (3 GB non-paged, 4 GB paged): "Reboot soon".
-2. A forecast (H32) of a pool to its alert level within 24 hours: "Reboot within N hours", with the time.
+1. A kernel pool at or above its alert level (3 GB non-paged, 4 GB paged), or the two pools at or above the automatic level: "Reboot soon".
+2. A forecast (H32) of a pool to its alert level, or of the two pools to the automatic level, within 24 hours: "Reboot within N hours", with the time.
 3. A pool that grows 500 MB or more in one hour, with no forecast: "Plan a reboot".
 4. Only a waiting Windows update: "Reboot when it suits you". With another rule, the update adds one sentence.
 5. Else: "No reboot needed", with the time of a far forecast.
@@ -363,6 +364,23 @@ headroom run --during-drain -- git status # this job starts also in the drain
 - `--until` ends the drain at its time when no reboot came. The alert `drain:ended` tells it, and the waiting jobs start.
 - `headroom status` shows a line, for example `Drain for the reboot at 02:30: 2 jobs still run.` The dashboard shows the budget in one line under the strip, with a bar for each pool.
 - The reason of a drain does not start with `waits for memory`, so the hook of the plugin does not count it. A restart of the daemon for an idle queue does not wait for it.
+
+**The automatic drain.** At a high pool level, new processes fail with 0xC0000142. On 2026-10-24 the two pools reached approximately 6.3 GB, and a reboot was necessary. No session watches the pools all the time, so headroom does it:
+
+```sh
+headroom config auto-drain 6g      # the level: the non-paged pool and the paged pool together. The default: 6 GB.
+headroom config auto-drain off     # no automatic drain
+headroom config auto-drain --clear # the default level again
+```
+
+- When the two pools stay at or above the level for 2 minutes, the daemon starts a drain with no end time. It does this only when no drain is planned or active.
+- A new lease waits with the reason `waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)`.
+- The alert `drain` tells why the drain started and what ends it. The alert `drain:ready` and the resume plan are the same as for a planned drain.
+- A reboot ends the drain. `headroom drain --cancel` ends it too.
+- The automatic drain also ends by itself when the pools stay under the level less 300 MB for 10 minutes. The alert `drain:ended` tells it.
+- After `headroom drain --cancel`, the rule starts no new drain until the pools fall under the level less 300 MB, or until a reboot.
+- The rule does not change a drain of `headroom drain`, and it does not end one.
+- `headroom reboot-plan` gives the level and the time when the forecast (H32) of the two pools reaches it.
 
 **The resume plan (H13).** `headroom resume-plan` prints the command of each live session, the organizer first. It also writes the plan to `~/.headroom/resume-plan.md`. `headroom reboot-plan` tells where the file is and its age.
 

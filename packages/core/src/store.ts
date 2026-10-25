@@ -16,7 +16,7 @@ import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
 import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } from "./presence.ts";
-import { parseDrain, type Drain } from "./reboot.ts";
+import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -108,6 +108,20 @@ export interface Config {
   readonly busyWaitMs: number;
   /** The cores that the CPU reserve gets while Mark is present or busy (H33). The default is 2. */
   readonly presentReserve: number;
+  /**
+   * The level of the automatic drain, in MB of the non-paged pool and the paged pool together (H34). At or above it for
+   * 2 minutes, new jobs wait for a reboot. The default is 6 GB, and 0 turns the rule off.
+   */
+  readonly autoDrainMb: number;
+}
+
+/** The lowest level of the automatic drain that is not 0: 1 GB. The highest level: 1 TB. */
+export const AUTO_DRAIN_MIN_MB = 1024;
+export const AUTO_DRAIN_MAX_MB = 1_048_576;
+
+/** This function tells if a level of the automatic drain is valid: 0 (off), or a whole number of MB from 1 GB to 1 TB. */
+export function isAutoDrainLevel(mb: number): boolean {
+  return mb === 0 || (Number.isInteger(mb) && mb >= AUTO_DRAIN_MIN_MB && mb <= AUTO_DRAIN_MAX_MB);
 }
 
 /** The longest time of the settings `awayAfterMs` and `busyWaitMs`: one day. */
@@ -131,6 +145,12 @@ function cpuReserveOf(value: string | undefined, fallback: number = CPU_RESERVE_
 function batteryFloorOf(value: string | undefined): number {
   const floor = Number(value);
   return value !== undefined && Number.isInteger(floor) && floor >= 0 && floor <= 100 ? floor : BATTERY_FLOOR_DEFAULT;
+}
+
+/** This function reads the setting `autoDrainMb`. A value that is not a valid level gives the default. */
+function autoDrainOf(value: string | undefined): number {
+  const mb = Number(value);
+  return value !== undefined && value !== "" && isAutoDrainLevel(mb) ? mb : AUTO_DRAIN_DEFAULT_MB;
 }
 
 /** This function reads the setting `spawnHeavy`. A value that is not a number above 0 gives the default. */
@@ -277,6 +297,7 @@ export class Store {
       awayAfterMs: msOf(values.get("awayAfterMs"), AWAY_AFTER_MIN_MS, AWAY_AFTER_DEFAULT_MS),
       busyWaitMs: msOf(values.get("busyWaitMs"), 0, BUSY_WAIT_DEFAULT_MS),
       presentReserve: cpuReserveOf(values.get("presentReserve"), PRESENT_RESERVE_DEFAULT),
+      autoDrainMb: autoDrainOf(values.get("autoDrainMb")),
     };
   }
 
@@ -293,6 +314,22 @@ export class Store {
   drain(): Drain | null {
     const row = this.#db.prepare("SELECT value FROM settings WHERE name = 'drain'").get();
     return row === undefined ? null : parseDrain(String(row["value"]));
+  }
+
+  /**
+   * This function reads the hold of the automatic drain (H34): the time of the last `headroom drain --cancel`. Until the
+   * pools fall under the end level, or until a reboot, the rule starts no drain. It gives `null` without a hold.
+   */
+  autoDrainHold(): number | null {
+    const row = this.#db.prepare("SELECT value FROM settings WHERE name = 'autoDrainHold'").get();
+    const at = row === undefined ? Number.NaN : Number(row["value"]);
+    return Number.isFinite(at) ? at : null;
+  }
+
+  /** This function writes the hold of the automatic drain (H34), so it continues after a restart of the daemon. `null` removes it. */
+  setAutoDrainHold(at: number | null): void {
+    if (at === null) this.#db.prepare("DELETE FROM settings WHERE name = 'autoDrainHold'").run();
+    else this.#db.prepare("INSERT INTO settings VALUES ('autoDrainHold', ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(String(at));
   }
 
   /** This function writes the planned drain to the settings (H34), so it continues after a restart of the daemon. `null` removes it. */

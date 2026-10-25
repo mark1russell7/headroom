@@ -440,10 +440,10 @@ export function nextUnmet(lease: Lease, facts: ConditionFacts): UnmetCondition |
   return { condition: failed.condition, state: failed.state, since: facts.now, until: null };
 }
 
-const CONDITION_WAIT = /^waits (until |while |for (the|fresh) usage data|for the planned reboot)/;
+const CONDITION_WAIT = /^waits (until |while |for (the|fresh) usage data|for (the planned|a) reboot)/;
 
 /**
- * This function tells if a waiting reason comes from a condition, from a planned drain (H34) or from the presence of Mark
+ * This function tells if a waiting reason comes from a condition, from a drain (H34) or from the presence of Mark
  * (H33). A restart for an idle queue does not wait for such a lease.
  */
 export function isConditionWait(reason: string | null): boolean {
