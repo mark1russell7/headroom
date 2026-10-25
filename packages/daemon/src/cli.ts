@@ -49,6 +49,7 @@ import {
   spawnClassText,
   spawnLine,
   startsLine,
+  SUM_WAIT_START,
   type Alert,
   type Alerts,
   type Config,
@@ -104,9 +105,11 @@ const HELP = `headroom: the memory and job broker of this computer
                A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
                A job whose past runs start more than 600 processes a minute is spawn-heavy:
                it does not run beside a browser test. --spawn-heavy: say so for a new job.
-               --no-spawn-heavy: a normal job, also with high past runs.
+               --no-spawn-heavy: a normal job, also with high past runs. Beside a browser test, the
+               other leases together start at most 600 processes a minute.
                --when: the job waits until each condition holds. ac: plugged in. battery>=50: 50% or
                more, or plugged in. usage<80: the five-hour usage window of Claude is under 80%.
+               starts<700: the computer starts fewer than 700 processes a minute (last 2 minutes).
                --timing: a timing-sensitive job waits for AC power. Timing tests belong in CI.
                On battery below the floor (${BATTERY_FLOOR_DEFAULT}%), a heavy job waits: 2 GB or more, the slot
                browser, or spawn-heavy. --battery-ok: start it anyway.
@@ -431,7 +434,8 @@ function openLog(path: string): { readonly path: string } | { readonly error: st
  * A lease that waits for the spawn rule (H47) is queued for the browser tests, or for a job that starts many processes.
  */
 function leaseLine(lease: Lease): string {
-  const spawnWait = !isSpawnWait(lease.reason) ? undefined : isBrowserLease(lease) ? "a job that starts many processes" : "the browser tests";
+  const browserWait = lease.reason?.startsWith(SUM_WAIT_START) === true ? "the other jobs to start fewer processes" : "a job that starts many processes";
+  const spawnWait = !isSpawnWait(lease.reason) ? undefined : isBrowserLease(lease) ? browserWait : "the browser tests";
   // H31: a lease that waits for a condition is queued until the condition holds, for example "until the laptop is plugged in".
   const until = /^waits until ([^(:]+)/.exec(lease.reason ?? "")?.[1]?.trim();
   const waitsFor = spawnWait ?? /^waits for ([^:]+):/.exec(lease.reason ?? "")?.[1];

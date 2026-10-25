@@ -293,6 +293,7 @@ The broker then has one rule for each id, with no name of a kind in it:
 - A lease that conflicts with an earlier waiting lease waits too. Thus a stream of later leases cannot keep an earlier lease in the queue forever.
 - The queue order is the order of the broker: the priority with the aging, then the time of the request.
 - The engine gives the spawn rule of H47: a spawn-heavy lease and a lease with the slot `browser` do not run at the same time.
+- `BrokerOptions.groupConflict(lease, granted, before)` examines all the other leases together, after the pairs. The engine gives the sum of the start rates of H47.
 
 **Conditions (H31).** Some leases wait for a fact, not for an amount. `BrokerOptions.condition(lease)` gives the reason of the wait, or `null`. The broker has no name of a condition in it.
 
@@ -729,7 +730,7 @@ export interface Condition {
   readonly about: string;
   /** The value of the condition: its operator and its range. A condition without it takes no value. */
   readonly value?: ConditionValue | undefined;
-  /** A pure function of the facts: the power source, the charge, the usage window and the time. */
+  /** A pure function of the facts: the power source, the charge, the usage window, the process starts and the time. */
   test(facts: ConditionFacts, value: number | null): boolean;
   /** The waiting reason, for example "waits until the laptop is plugged in". */
   reason(facts: ConditionFacts, value: number | null): string;
@@ -743,6 +744,7 @@ export interface Condition {
 | `ac` | The power source is not the battery. No battery read counts as AC power. | `waits until the laptop is plugged in` |
 | `battery>=N` | AC power, no battery, or a charge of N% or more. N is 0 to 100. | `waits until the battery is at 50% or more, or plugged in (now 41%)` |
 | `usage<N` | Fresh usage data, and the five-hour window is under N%. N is 1 to 100. | `waits until the five-hour usage window is under 80% (now 91%, resets at 02:10)` |
+| `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. N is 1 to 100,000. | `waits until the computer starts fewer than 700 processes a minute (now 1,108)` |
 
 - `parseWhen()` reads `--when`. A value can have a list with commas, and the option can come more than one time. A condition that comes twice counts one time.
 - An unknown name gives a `ConditionError` with the list of the known conditions. A planned name also names its item: `away` (H33), `cool` (H35), `unmetered` (H39) and `night` (H42).
@@ -760,6 +762,14 @@ export interface Condition {
 The first check that does not hold gives the reason. Each reason starts with "waits until" or "waits for", but not with "waits for memory". Thus the hook of the plugin does not count it.
 
 **The power events.** A power event of H30 sets the state of the engine. The daemon then asks for a tick at once, and that tick reads the battery and runs the admission. Thus a lease that waits for `ac` starts within a second after the charger goes in. Without an event, the battery read comes with the read of the processes, every 10 seconds.
+
+**The process starts.** `starts<N` lets a job wait for a quiet computer. On 2026-10-25, the browsers of graph failed with `0xC0000142` again, at approximately 1,108 starts in one minute.
+
+- The rate comes from the start tracker of H29. It is the rate of the instance `procs`, but over the reads of the last 2 minutes, not 10.
+- On Windows, the rate is exact: the sequence numbers of the new processes. Elsewhere, it is a lower bound.
+- Before two reads of the processes, the rate is not known. The condition does not hold, and the reason ends with `(no count yet)`.
+- Each read of the processes, every 10 seconds, sets new facts. The admission of the same tick tests the condition on the new sample. Thus a waiting lease starts at the first quiet sample.
+- The rate counts the starts of the job itself. A running job with `starts<N` can thus get the record `unmet`, for example `1,108 process starts a minute`.
 
 **The battery policy.** A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. On battery below the floor, a new heavy lease waits.
 
@@ -785,7 +795,7 @@ The first check that does not hold gives the reason. Each reason starts with "wa
 
 **The restart.** A restart for an idle queue does not wait for a lease that waits for a condition. A condition can take hours, and the new daemon keeps each lease from the store.
 
-**Cost.** The facts come from the last battery read and the power state, one time for each tick. The settings are one read of the store for each tick with a waiting lease or a lease with conditions. The usage file is approximately 50 KB, at most one read in 30 seconds while a usage condition waits.
+**Cost.** The facts come from the last battery read, the power state and the start tracker, one time for each tick. The settings are one read of the store for each tick with a waiting lease or a lease with conditions. The usage file is approximately 50 KB, at most one read in 30 seconds while a usage condition waits.
 
 ### H32: forecasts
 
@@ -939,9 +949,27 @@ waits for test-churn of server-stack to end: it starts many processes (about 1,8
 
 When the other lease waits before it in the queue, the reason has "to run first and end". A job name that starts with `memory` gets the words "the job" before it.
 
+**The sum of the start rates.** On 2026-10-25, the computer started approximately 1,108 processes in one minute, and the browsers of graph failed again. No lease was above the limit of 600. A first run, a type check, a vitest run and a release job ran together beside the browser test. Thus the engine also gives `startsSumConflict()` to the broker, as its group rule:
+
+- The rate of a lease is its own rate of the last 30 seconds, from `windowRate()`, when it has two counts. Else, it is its learned peak.
+- A first run with no past runs counts 0 until its second count. Then its own rate counts.
+- A lease with `--no-spawn-heavy` counts only its own rate, because its owner says that its past runs are wrong.
+- The sum counts the granted leases and the leases that wait before the lease in the queue. It does not count a browser test.
+- A browser test waits while the sum is above the limit.
+- Another lease waits while a browser test runs or waits before it, and the sum with its own rate is above the limit. A lease with no rate also waits while the sum is above the limit.
+- The leases that wait before the lease count in the sum. Thus a later lease does not take the part of an earlier lease, in each order.
+- A change of the limit runs the admission at once.
+
+The reasons name each lease of the sum, the highest rate first. A lease that waits has the word `queued` after its holder:
+
+```text
+waits for the other jobs to start fewer processes: tsc (client) 400 and vitest (vex, queued) 300 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
+waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
+```
+
 **Status.** `headroom status` gives the line `Spawn-heavy now: test-churn (server-stack), 1,870 a minute.` for each granted spawn-heavy lease. `headroom job` gives the peak and the class, for example `at most 1,870 starts a minute, spawn-heavy (about 1,870 a minute in past runs)`. The JSON gives `peakStartsPerMin`, `averageStartsPerMin` and `spawn`. The dashboard gives the peak and the class in the tooltip of each job of the timeline.
 
-**Cost.** The tracker keeps the counts of each job for 10 minutes, as before. The class costs one or two indexed queries of the store at each request.
+**Cost.** The tracker keeps the counts of each job for 10 minutes, as before. The class costs one or two indexed queries of the store at each request. The sum reads the counts of each granted lease in memory, at each tick with a waiting lease.
 
 ## Decisions
 
@@ -983,3 +1011,6 @@ These were the open questions. The session decided each one as a technical call.
 | Which fit gives a forecast? | The Theil–Sen slope of the last hour, with Kendall's tau as its confidence. | The median of the pair slopes ignores outliers, for example one large download. Tau is a plain count of the pairs that agree with the trend. |
 | Does the battery get a fit? | No. Its forecast is the time left that Windows estimates. | Windows knows the rate of the battery at this time. A fit of the charge lags behind a change of the load. |
 | How far does a forecast go? | At most 30 days. | One hour of history tells little about next month. |
+| Over which window does `starts<N` measure? | The reads of the last 2 minutes. | The 10 minutes of `procs` keep a lease in the queue for minutes after a burst. One read of 10 seconds changes too fast. |
+| Does a browser test count in the sum of the start rates? | No. The sum counts the other leases. | The rule keeps the bursts of the other jobs away from the browser test. |
+| Does a lease with no rate wait while the sum is above the limit? | Yes, beside a browser test. | A first run has no rate, and one first run was part of the burst of 2026-10-25. |

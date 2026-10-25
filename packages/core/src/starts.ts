@@ -63,6 +63,8 @@ export const NO_STARTS: ProcessStarts = { perMinute: 0, exact: false, spanMs: 0,
 const MINUTE_MS = 60_000;
 /** The window of the rates. */
 export const STARTS_WINDOW_MS: number = 10 * MINUTE_MS;
+/** The window of the rate of the condition `starts<N` (H31): a short window, so a waiting lease starts soon after a burst ends. */
+export const RECENT_STARTS_MS: number = 2 * MINUTE_MS;
 /** A process that the previous read did not have, and that started this long before it, is not new. The previous read missed it. */
 const MISSED_MS = 5000;
 /** The count of owners in `ProcessStarts.owners`. */
@@ -272,6 +274,28 @@ export class StartTracker {
       owners,
       jobs: jobs.sort((a, b) => b.perMinute - a.perMinute || b.processes - a.processes),
     };
+  }
+
+  /**
+   * This function gives the starts of the computer in one minute over the reads of the last `windowMs`, as a whole number.
+   * It gives `null` before two reads. The rate is exact when each read has a sequence number. Otherwise, it is a lower
+   * bound: the new processes that the reads found.
+   */
+  recent(now: number, windowMs: number = RECENT_STARTS_MS): number | null {
+    const reads = this.#reads.filter((each) => now - each.at < windowMs);
+    const spanMs = reads.reduce((sum, each) => sum + each.spanMs, 0);
+    if (spanMs <= 0) return null;
+    const exact = reads.every((each) => each.starts !== undefined);
+    let count = 0;
+    for (const each of reads) {
+      if (exact) {
+        count += each.starts ?? 0;
+        continue;
+      }
+      for (const found of each.own.values()) count += found;
+      for (const byOwner of each.leased.values()) for (const found of byOwner.values()) count += found;
+    }
+    return Math.round((count * MINUTE_MS) / spanMs);
   }
 
   /** This function removes the jobs with no count in the window, and the kinds of the owners that left the window. */

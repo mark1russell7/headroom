@@ -20,6 +20,7 @@ import {
   parseUsage,
   parseWhen,
   readUsage,
+  unmetCheck,
   unmetText,
   UsageReader,
   waitsForRoom,
@@ -40,7 +41,7 @@ const HEAVY: SpawnClass = { heavy: true, source: "history", perMinute: 1870, run
 const OK_USAGE: UsageFacts = { state: "ok", path: "D:\\usage.json", ratio: 0.91, resetsAt: NOW + 50 * MINUTE, updatedAt: NOW - 10 * MINUTE };
 
 function facts(fields: Partial<ConditionFacts> = {}): ConditionFacts {
-  return { now: NOW, ac: true, percent: 92, usage: OK_USAGE, ...fields };
+  return { now: NOW, ac: true, percent: 92, usage: OK_USAGE, starts: 320, ...fields };
 }
 
 function lease(id: string, fields: Partial<Lease> = {}): Lease {
@@ -51,13 +52,14 @@ function lease(id: string, fields: Partial<Lease> = {}): Lease {
 }
 
 describe("the registry of the conditions (H31)", () => {
-  it("knows ac, battery>=N and usage<N, each with a reason in STE", () => {
-    expect(CONDITIONS.map((each) => each.name)).toEqual(["ac", "battery", "usage"]);
+  it("knows ac, battery>=N, usage<N and starts<N, each with a reason in STE", () => {
+    expect(CONDITIONS.map((each) => each.name)).toEqual(["ac", "battery", "usage", "starts"]);
+    expect(parseCondition("starts < 700")).toEqual({ name: "starts", value: 700, text: "starts<700" });
     expect(parseCondition("ac")).toEqual({ name: "ac", value: null, text: "ac" });
     expect(parseCondition(" Battery >= 50 ")).toEqual({ name: "battery", value: 50, text: "battery>=50" });
     expect(parseCondition("usage<80")).toEqual({ name: "usage", value: 80, text: "usage<80" });
     expect(knownConditionsText()).toBe(
-      "The known conditions: ac (the laptop is plugged in), battery>=N (the battery is at N% or more, or the laptop is plugged in), usage<N (the five-hour usage window of Claude is under N%). Planned: away (H33), cool (H35), unmetered (H39), night (H42).",
+      "The known conditions: ac (the laptop is plugged in), battery>=N (the battery is at N% or more, or the laptop is plugged in), usage<N (the five-hour usage window of Claude is under N%), starts<N (the computer starts fewer than N processes a minute). Planned: away (H33), cool (H35), unmetered (H39), night (H42).",
     );
   });
 
@@ -81,6 +83,8 @@ describe("the registry of the conditions (H31)", () => {
     expect(() => parseCondition("usage<x")).toThrow(/usage<x: the value must be a whole number from 1 to 100/);
     expect(() => parseCondition("usage<0")).toThrow(/from 1 to 100/);
     expect(() => parseCondition("ac>=1")).toThrow("ac takes no value: write ac");
+    expect(() => parseCondition("starts>=700")).toThrow("starts takes <, for example starts<700");
+    expect(() => parseCondition("starts<0")).toThrow(/from 1 to 100000/);
   });
 });
 
@@ -140,6 +144,21 @@ describe("the tests of the conditions (H31)", () => {
     expect(conditionWait(usage, facts({ usage: { ...OK_USAGE, resetsAt: NOW } }), null)).toBeNull();
     // Stale data stays closed, also after the reset.
     expect(conditionWait(usage, facts({ usage: { ...OK_USAGE, resetsAt: NOW - MINUTE, updatedAt: NOW - 95 * MINUTE } }), null)).toMatch(/^waits for fresh usage data/);
+  });
+
+  it("starts<N compares the process starts of the computer over the last 2 minutes", () => {
+    const quiet = lease("q", { conditions: { when: ["starts<700"] } });
+    expect(conditionWait(quiet, facts({ starts: 699 }), null)).toBeNull();
+    expect(conditionWait(quiet, facts({ starts: 1108 }), null)).toBe("waits until the computer starts fewer than 700 processes a minute (now 1,108)");
+    expect(conditionWait(quiet, facts({ starts: 700 }), null)).toBe("waits until the computer starts fewer than 700 processes a minute (now 700)");
+    // Before two reads of the processes, the rate is not known: the lease waits.
+    expect(conditionWait(quiet, facts({ starts: null }), null)).toBe("waits until the computer starts fewer than 700 processes a minute (no count yet)");
+    expect(isConditionWait(conditionWait(quiet, facts({ starts: 1108 }), null))).toBe(true);
+    expect(conditionWait(lease("k", { conditions: { when: ["starts<2000"] } }), facts({ starts: 1108 }), null)).toBeNull();
+    expect(unmetCheck(lease("r", { state: "granted", conditions: { when: ["starts<700"] } }), facts({ starts: 1108 }))).toEqual({
+      condition: "starts<700",
+      state: "1,108 process starts a minute",
+    });
   });
 
   it("gives the first condition that does not hold, and a reason that the hook does not count as a memory wait", () => {
@@ -371,6 +390,43 @@ describe("Engine conditions (H31)", () => {
     engine.tick();
     expect(engine.get(bench.id)).toMatchObject({ state: "granted", reason: null });
     expect(engine.jobs({ query: bench.id })[0]).toMatchObject({ state: "running", conditions: { when: ["ac"] }, unmet: null });
+  });
+
+  it("holds a lease with --when starts<700 during a burst, and grants it at the tick of the first quiet sample", () => {
+    let now = NOW;
+    let sequence = 10_000;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      processSequence: () => sequence,
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
+    engine.tick();
+    const e2e = engine.request({ holder: "graph", job: "pnpm e2e", amounts: {}, ...ttl, when: ["starts<700"] });
+    expect(e2e).toMatchObject({ state: "waiting", reason: "waits until the computer starts fewer than 700 processes a minute (no count yet)" });
+    // A burst for 2 minutes: 185 starts in each read of 10 seconds, 1,110 a minute.
+    for (let read = 0; read < 12; read += 1) {
+      now += 10_000;
+      sequence += 185;
+      engine.tick();
+    }
+    expect(engine.get(e2e.id)?.reason).toBe("waits until the computer starts fewer than 700 processes a minute (now 1,110)");
+    // The burst stops. After 4 quiet reads, the rate of the last 2 minutes is 740 a minute.
+    for (let read = 0; read < 4; read += 1) {
+      now += 10_000;
+      engine.tick();
+    }
+    expect(engine.get(e2e.id)).toMatchObject({ state: "waiting", reason: "waits until the computer starts fewer than 700 processes a minute (now 740)" });
+    // A tick between two reads has no new sample.
+    now += 8000;
+    engine.tick();
+    expect(engine.get(e2e.id)?.state).toBe("waiting");
+    // The fifth quiet read gives 648 a minute: the tick of that sample grants the lease.
+    now += 2000;
+    engine.tick();
+    expect(engine.get(e2e.id)).toMatchObject({ state: "granted", reason: null, conditionsMetAt: now });
+    engine.close();
   });
 
   it("refuses an unknown or a planned condition at the request", () => {

@@ -26,7 +26,7 @@ const LeaseInput = z.object({
     .array(z.string().min(1).max(64))
     .max(16)
     .optional()
-    .describe("The conditions of the job (H31), for example ac, battery>=50 or usage<80. The lease waits until each one holds."),
+    .describe("The conditions of the job (H31), for example ac, battery>=50, usage<80 or starts<700. The lease waits until each one holds."),
   timing: z.boolean().optional().describe("True: the job measures time, so it waits for AC power (H31)"),
   batteryOk: z.boolean().optional().describe("True: a heavy job starts also on battery below the floor (H31)"),
   cpuCap: z

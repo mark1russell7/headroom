@@ -42,6 +42,7 @@ export {
   isSpawnHeavy,
   isSpawnWait,
   learnSpawn,
+  leaseRate,
   percentile90,
   promote,
   SPAWN_HEAVY_DEFAULT,
@@ -51,6 +52,8 @@ export {
   spawnClassText,
   spawnConflict,
   spawnLine,
+  startsSumConflict,
+  SUM_WAIT_START,
   windowRate,
 } from "./spawn.ts";
 export type { SpawnClass, SpawnSource } from "./spawn.ts";
@@ -234,7 +237,7 @@ export {
 } from "./services.ts";
 export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, ServiceState, ServiceType } from "./services.ts";
 export type { Sampler } from "./sampler.ts";
-export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
+export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, RECENT_STARTS_MS, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
 export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
 export { Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow, Sleep } from "./store.ts";

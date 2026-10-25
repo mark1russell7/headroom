@@ -156,6 +156,11 @@ export interface BrokerOptions {
    */
   readonly conflict?: ((lease: Lease, other: Lease) => string | null) | undefined;
   /**
+   * This function tells why a lease cannot run beside the other leases together, or gives `null` (H47). It gets the granted
+   * leases and the leases that wait before the lease in the queue. The broker calls it when no pair conflicts. The default gives `null`.
+   */
+  readonly groupConflict?: ((lease: Lease, granted: readonly Lease[], before: readonly Lease[]) => string | null) | undefined;
+  /**
    * This function tells why a waiting lease waits for a condition (H31), or gives `null` when each condition holds. A lease
    * that waits for a condition keeps no place in the queue. Thus it does not hold the head, and no later lease waits for it.
    * The default gives `null`.
@@ -206,6 +211,7 @@ export class Broker {
   readonly #headWaitMs: number;
   readonly #defaultTtlMs: number;
   readonly #conflict: (lease: Lease, other: Lease) => string | null;
+  readonly #groupConflict: (lease: Lease, granted: readonly Lease[], before: readonly Lease[]) => string | null;
   readonly #condition: (lease: Lease) => string | null;
   /** The waiting leases that waited for a condition at the last tick (H31). */
   readonly #held = new Set<string>();
@@ -221,6 +227,7 @@ export class Broker {
     this.#headWaitMs = options.headWaitMs ?? 600_000;
     this.#defaultTtlMs = options.defaultTtlMs ?? 300_000;
     this.#conflict = options.conflict ?? (() => null);
+    this.#groupConflict = options.groupConflict ?? (() => null);
     this.#condition = options.condition ?? (() => null);
   }
 
@@ -453,14 +460,14 @@ export class Broker {
 
   /**
    * This function tells why a lease cannot run beside a granted lease, or beside a lease that waits before it (H47). It
-   * gives `null` when no lease conflicts. The granted leases come first.
+   * gives `null` when no lease conflicts. The granted leases come first. Then the group rule examines all of them together.
    */
   #conflictOf(lease: Lease, granted: readonly Lease[], before: readonly Lease[]): string | null {
     for (const other of [...granted, ...before]) {
       const reason = this.#conflict(lease, other);
       if (reason !== null) return reason;
     }
-    return null;
+    return this.#groupConflict(lease, granted, before);
   }
 
   /** This function tells which amount does not fit at this time, or gives `null` when all fit. */

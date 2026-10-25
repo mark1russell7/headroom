@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Lease } from "./broker.ts";
 import { BROWSER_SLOT, isSpawnHeavy } from "./spawn.ts";
+import { countText } from "./starts.ts";
 import { MEMORY } from "./types.ts";
 
 /** The usage of the five-hour window of Claude, from the usage file of the fleet. */
@@ -41,6 +42,11 @@ export interface ConditionFacts {
   readonly percent: number | null;
   /** The usage of the five-hour window. The engine reads the file only when a test reads this field. */
   readonly usage: UsageFacts;
+  /**
+   * The process starts of the computer in one minute, over the last 2 minutes (H29). It is exact on Windows. It is `null`
+   * before two reads of the processes.
+   */
+  readonly starts: number | null;
 }
 
 /** The operator of a condition with a value. */
@@ -183,6 +189,16 @@ export const CONDITIONS: readonly Condition[] = [
       if (usageProblem(facts) !== null || facts.usage.state !== "ok") return "no fresh usage data";
       return `the usage window at ${percentText(facts.usage.ratio)}`;
     },
+  },
+  {
+    name: "starts",
+    about: "the computer starts fewer than N processes a minute",
+    value: { op: "<", min: 1, max: 100_000, example: 700 },
+    // Before two reads of the processes, the rate is not known, so the condition does not hold.
+    test: (facts, value) => facts.starts !== null && facts.starts < (value ?? 0),
+    reason: (facts, value) =>
+      `waits until the computer starts fewer than ${countText(value ?? 0)} processes a minute (${facts.starts === null ? "no count yet" : `now ${countText(facts.starts)}`})`,
+    state: (facts) => (facts.starts === null ? "no count of the process starts" : `${countText(facts.starts)} process starts a minute`),
   },
 ];
 
