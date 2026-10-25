@@ -60,14 +60,15 @@ export function leased(command) {
 /**
  * This function decides about one command. It gives the reason to refuse the command, or `null` to let it go on.
  * @param {string} command
- * @param {{ free: { memory?: number }, leases: { state: string }[] } | null} status
+ * @param {{ free: { memory?: number }, leases: { state: string, reason?: string | null }[] } | null} status
  */
 export function decide(command, status) {
   if (!command || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return null;
   if (!HEAVY.some((pattern) => pattern.test(command))) return null;
   if (!status) return null;
   const free = Math.max(0, Math.round(status.free?.memory ?? 0));
-  const waiting = (status.leases ?? []).filter((lease) => lease.state === "waiting").length;
+  // Only a lease that waits for memory counts. A lease that waits for a slot, for example the browser, does not stop other jobs.
+  const waiting = (status.leases ?? []).filter((lease) => lease.state === "waiting" && /^waits for memory\b/.test(lease.reason ?? "")).length;
   if (free >= TIGHT_MB && waiting === 0) return null;
   const why = waiting > 0 ? `${waiting} job${waiting === 1 ? "" : "s"} already wait for memory` : `only ${free} MB is free for a lease`;
   return (
