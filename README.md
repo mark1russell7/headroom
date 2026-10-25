@@ -89,7 +89,7 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 - **The computer**: an exact count on Windows. Windows gives each new process the next sequence number. The daemon reads the number of the newest process with `NtQueryInformationProcess(ProcessSequenceNumber)` at each read, every 10 seconds.
 - **A leased job**: an exact count. The job object of `headroom run` counts each process of the job (`TotalProcesses`). The client reports the count every 30 seconds and at the release.
 - **An owner**: a lower bound. The daemon counts the new processes of each owner at each read. A read every 10 seconds misses most short processes, for example each stage of a Git Bash pipeline.
-- **Own commands**: the new processes of an owner outside its leases. The jobs of an owner are the counts of its leases. The holder and the process tree decide the owner of a job, not the name of the job.
+- **Own commands**: the new processes of an owner outside its leases. The jobs of an owner are the counts of its leases. The holder decides the owner of a job, not the process tree or the name of the job.
 
 The line `Process starts` of `headroom status` gives the starts of the last 10 minutes, in one minute. The owners show their jobs and their own commands. `Status.starts` gives the same data, and the dashboard has a panel `Process starts`.
 

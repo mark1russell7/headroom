@@ -8,7 +8,8 @@
  *   seconds misses most short processes.
  * - The starts of a leased job are exact. The job object of `headroom run` counts each process of the job, and the client
  *   reports the count with its heartbeat and its release.
- * - The holder and the process tree decide the owner of a job, not the name of the job.
+ * - The holder of a lease decides the owner of the starts of its job, not the name of the job or the process tree. A
+ *   shell between a session and its job can stop and break the tree. The tree decides only outside the leases.
  */
 
 import type { Lease } from "./broker.ts";
@@ -34,7 +35,7 @@ export interface JobStarts {
   readonly id: string;
   readonly job: string;
   readonly holder: string;
-  /** The owner of the process of the lease, from the process tree. Without it, the session of the holder. */
+  /** The owner of the job, from its holder (`holderOwner`). */
   readonly owner: string;
   /** The processes that the job started so far. */
   readonly processes: number;
@@ -97,9 +98,20 @@ interface StartRead {
 interface JobReports {
   readonly job: string;
   readonly holder: string;
-  owner: string | undefined;
-  kind: OwnerKind | undefined;
+  owner: string;
+  kind: OwnerKind;
   points: (readonly [at: number, processes: number])[];
+}
+
+/**
+ * This function gives the owner of the starts of a leased job from the holder of the lease. A session with the name of
+ * the holder gives `session:<holder>`. Without that session, the holder is its own owner. The process tree does not
+ * decide, because a shell between the session and the job can stop.
+ */
+export function holderOwner(holder: string, kindOf: ReadonlyMap<string, OwnerKind>): { readonly owner: string; readonly kind: OwnerKind } {
+  const session = `session:${holder}`;
+  if (kindOf.get(session) === "session") return { owner: session, kind: "session" };
+  return { owner: holder, kind: kindOf.get(holder) ?? "other" };
 }
 
 function add(into: Map<string, number>, key: string, amount: number): void {
@@ -127,19 +139,23 @@ export class StartTracker {
 
   /**
    * This function adds one read of the processes. `sequence` is the sequence number of the newest process, when the
-   * platform gives it. The first read only keeps the processes.
+   * platform gives it. The first read only keeps the processes. The holder of a lease in `leases` decides the owner of
+   * the new processes of that lease.
    */
-  read(at: number, processes: readonly ProcessInfo[], owners: Owners, sequence?: number): void {
+  read(at: number, processes: readonly ProcessInfo[], owners: Owners, sequence?: number, leases: readonly Lease[] = []): void {
     const previousAt = this.#lastAt;
     if (previousAt !== null && at > previousAt) {
       const own = new Map<string, number>();
       const leased = new Map<string, Map<string, number>>();
+      const holders = new Map(leases.map((each) => [each.id, each.holder]));
       for (const info of processes) {
         const before = this.#last.has(info.pid) ? { startedAt: this.#last.get(info.pid) } : undefined;
         if (!isNewProcess(info, before, previousAt)) continue;
-        const owner = owners.ownerOf.get(info.pid) ?? "other";
-        this.#kinds.set(owner, owners.kindOf.get(owner) ?? this.#kinds.get(owner) ?? "other");
         const lease = owners.leaseOf.get(info.pid);
+        const holder = lease === undefined ? undefined : holders.get(lease);
+        const tree = owners.ownerOf.get(info.pid) ?? "other";
+        const { owner, kind } = holder === undefined ? { owner: tree, kind: owners.kindOf.get(tree) } : holderOwner(holder, owners.kindOf);
+        this.#kinds.set(owner, kind ?? this.#kinds.get(owner) ?? "other");
         if (lease === undefined) {
           add(own, owner, 1);
           continue;
@@ -163,22 +179,20 @@ export class StartTracker {
   }
 
   /**
-   * This function adds a count of the job object of a lease: the processes that the job started so far. The owner of the
-   * job is the owner of the process of the lease, from the process tree.
+   * This function adds a count of the job object of a lease: the processes that the job started so far. The holder of the
+   * lease decides the owner of the job, also when the processes of the job ended before a read.
    */
   report(lease: Lease, at: number, processes: number, owners: Owners): void {
+    const { owner, kind } = holderOwner(lease.holder, owners.kindOf);
     let entry = this.#jobs.get(lease.id);
     if (entry === undefined) {
-      entry = { job: lease.job, holder: lease.holder, owner: undefined, kind: undefined, points: [] };
+      entry = { job: lease.job, holder: lease.holder, owner, kind, points: [] };
       // A job has no process at its grant.
       if (lease.grantedAt !== null && lease.grantedAt < at) entry.points.push([lease.grantedAt, 0]);
       this.#jobs.set(lease.id, entry);
     }
-    const owner = lease.pid === null ? undefined : owners.ownerOf.get(lease.pid);
-    if (owner !== undefined) {
-      entry.owner = owner;
-      entry.kind = owners.kindOf.get(owner) ?? "other";
-    }
+    entry.owner = owner;
+    entry.kind = kind;
     const total = Math.max(processes, entry.points.at(-1)?.[1] ?? 0);
     const from = at - this.#windowMs;
     // The points of the window stay, with the newest point before the window as the base of the rate.
@@ -214,10 +228,9 @@ export class StartTracker {
       const base = entry.points.findLast((point) => point[0] <= now - this.#windowMs) ?? entry.points[0];
       if (last === undefined || base === undefined) continue;
       const perMinute = now > base[0] ? ((last[1] - base[1]) * MINUTE_MS) / (now - base[0]) : 0;
-      // The owner comes from the process tree of the lease. Without it, the new processes of the lease or the holder decide.
-      const seen = [...(leased.get(id) ?? [])].sort((a, b) => b[1] - a[1])[0]?.[0];
-      const owner = entry.owner ?? seen ?? `session:${entry.holder}`;
-      if (!kinds.has(owner)) kinds.set(owner, entry.kind ?? (entry.owner === undefined && seen === undefined ? "session" : "other"));
+      // The holder decides the owner of the job (`report`).
+      const owner = entry.owner;
+      if (!kinds.has(owner)) kinds.set(owner, entry.kind);
       jobs.push({ id, job: entry.job, holder: entry.holder, owner, processes: last[1], perMinute: round(perMinute) });
       add(jobsOf, owner, perMinute);
     }

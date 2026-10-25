@@ -613,10 +613,11 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 **Attribute.** The start tracker in `starts.ts` gives the starts of each owner over the last 10 minutes.
 
 - A new process is an ID that the previous read did not have, or an ID with a different start.
-- The owner of a new process is its owner from `attribute()`. A new process in the tree of a lease counts for its lease, and the other new processes are the own commands of the owner. These counts are lower bounds.
+- The owner of a new process outside the leases is its owner from `attribute()`. These processes are the own commands of the owner. A new process in the tree of a lease counts for its lease. These counts are lower bounds.
 - The job object of `headroom run` gives `TotalProcesses` of `JobObjectBasicAccountingInformation`. The client sends the count with `resources.renew` every 30 seconds and with `resources.release`. The count of the job object includes the client, so the client starts its count after itself.
 - The lease keeps the count in the column `processes`. `headroom job` and its JSON give it.
-- The owner of a job is the owner of the process of its lease, from the process tree. Without that process, the new processes of the lease or the session of the holder decide. The name of the job does not decide.
+- The holder of a lease decides the owner of its job: `holderOwner()`. A session with the name of the holder gives `session:<holder>`. Without that session, the holder is its own owner.
+- The process tree and the name of the job do not decide. A shell between a session and its job can stop. Then the tree gives the job to `other`.
 - The starts of an owner are its jobs and its own commands. A lease with no count, for example with `--keep`, gives the new processes of its tree, a lower bound.
 
 **The parents.** Windows gives the ID of an ended process to a new process. A child keeps the ID of its ended parent, so a new process with that ID looks like its parent.
@@ -664,5 +665,5 @@ These were the open questions. The session decided each one as a technical call.
 | What is the name of the owner of the kernel pools? | `kernel`, as before. The file cache and the drivers are new owners `kernel:cache` and `kernel:drivers`. | The history of `kernel` stays comparable: its private memory is still the size of the two pools. Only its memory in RAM changes, to the part in RAM. |
 | What is the private memory of the file cache and of the drivers? | The same as their memory in RAM. | They have no commit charge. With 0, the list sorts the largest owner of RAM last, and the dashboard shows no bar. |
 | How does headroom count the process starts of the computer? | The change of the sequence number of the newest process on Windows. Elsewhere, the new processes of each read, a lower bound. | The sequence number is exact and costs one open of one process. ETW is exact too, but it needs admin rights. |
-| Does a session get the starts of its jobs? | Yes, with a split: its jobs (exact) and its own commands (a lower bound). The holder and the process tree decide the owner of a job. | A lease can have the name of the job of another project. The session that runs the lease starts its processes. |
+| Does a session get the starts of its jobs? | Yes, with a split: its jobs (exact) and its own commands (a lower bound). The holder decides the owner of a job, not the process tree. | A lease can have the name of the job of another project. The session that runs the lease starts its processes. |
 | Which processes are services? | A Node process with a title under the rule `system`, with its descendants. | The title names the program. An orphan with a title stays `other`, so the orphan rule still finds it. |
