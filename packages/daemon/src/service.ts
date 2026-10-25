@@ -43,10 +43,23 @@ export function serviceCommand(serveArgs: readonly string[] = []): ServiceComman
   return { node: process.execPath, nodeOptions: [`--title=${DAEMON_TITLE}`], cli: join(import.meta.dirname, "cli.ts"), args: ["serve", "--background", "--log", logPath(), ...serveArgs] };
 }
 
-/** This function quotes one argument for a Windows command line. */
+/**
+ * This function quotes one argument for a Windows command line. Backslashes before a quote and at the end are doubled.
+ * One pass over the characters keeps the time linear, also for a long run of backslashes.
+ */
 export function windowsArg(arg: string): string {
   if (arg !== "" && !/[\s"]/.test(arg)) return arg;
-  return `"${arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, "$1$1")}"`;
+  let quoted = '"';
+  let slashes = 0;
+  for (const char of arg) {
+    if (char === "\\") {
+      slashes += 1;
+      continue;
+    }
+    quoted += char === '"' ? `${"\\".repeat(slashes * 2 + 1)}"` : `${"\\".repeat(slashes)}${char}`;
+    slashes = 0;
+  }
+  return `${quoted}${"\\".repeat(slashes * 2)}"`;
 }
 
 function xml(text: string): string {

@@ -13,6 +13,14 @@ describe("windowsArg", () => {
   it("quotes spaces and doubles a final backslash", () => expect(windowsArg("C:\\a b\\")).toBe('"C:\\a b\\\\"'));
   it("escapes a quote", () => expect(windowsArg('say "hi"')).toBe('"say \\"hi\\""'));
   it("quotes an empty argument", () => expect(windowsArg("")).toBe('""'));
+  it("doubles backslashes before a quote", () => expect(windowsArg('a\\\\"b c')).toBe('"a\\\\\\\\\\"b c"'));
+  it("keeps backslashes in the middle", () => expect(windowsArg("a\\b c")).toBe('"a\\b c"'));
+  it("is linear for a long run of backslashes", () => {
+    const start = performance.now();
+    const quoted = windowsArg(` ${"\\".repeat(200_000)}x`);
+    expect(quoted.length).toBe(200_004);
+    expect(performance.now() - start).toBeLessThan(1000);
+  });
 });
 
 describe("windowsTaskXml", () => {
