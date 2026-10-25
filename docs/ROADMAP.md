@@ -84,6 +84,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H43 | Clean-grid timing: jobs that can wait run when the New England grid is cleanest. The effect is small, so this item is last. | later |
 | H44 | Fix: the Angular completion in `~/.bashrc` starts node in each login shell, 13 times a minute, only from two sessions that run with no shell snapshot. A restart of those sessions stops it. | waits for Mark |
 | H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when it is not in use. If the poll continues, Mark turns off the extension in the workspaces that do not use Docker. | waits for Mark |
+| H46 | The peer of a local connection: `resources.peer` gives the process, the nearest `claude.exe`, the session and the fleet role at the other end of a loopback TCP connection. The fleet site uses it for its MCP face (server-stack fp-mcp). Also `headroom peer`. | done |
 
 ## The MCP gateway (H11)
 

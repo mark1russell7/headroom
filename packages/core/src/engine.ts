@@ -12,6 +12,7 @@ import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
+import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
 import {
   leasesOf,
   measure,
@@ -80,6 +81,8 @@ export interface EngineOptions {
    * daemon ticks every 2 seconds and sets 60 seconds. The default is no limit: only a resume event marks a sleep.
    */
   readonly sleepGapMs?: number | undefined;
+  /** The fleet registry of the roles for `resources.peer` (H46). The default is `~/git/fleet/registry/roles.json`. */
+  readonly rolesFile?: string | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -276,6 +279,8 @@ export class Engine {
   /** The leases of the last minutes that ended because their process exited. */
   #cut: { readonly at: number; readonly lease: Lease }[] = [];
   #sessions: readonly SessionInfo[] = [];
+  /** The resolver of `resources.peer`, with its caches (H46). */
+  readonly #peers: PeerResolver;
   #processesAt = 0;
   #recordedAt = 0;
   #prunedAt = 0;
@@ -314,6 +319,7 @@ export class Engine {
     this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
     this.#sleepGapMs = options.sleepGapMs ?? Number.POSITIVE_INFINITY;
     this.#startedAt = this.#now();
+    this.#peers = this.#peerResolver(new RoleBook(options.rolesFile));
     this.#broker = new Broker({
       now: this.#now,
       reserveMb: this.#reserveMb,
@@ -666,6 +672,30 @@ export class Engine {
    * This function gives the listening TCP ports of the last read, with the process and the owner of each port, by port.
    * A session can find a free port for a dev server, or the holder of a port.
    */
+  /**
+   * This function gives the peer of a local TCP connection: its process, the nearest `claude.exe`, the session and the
+   * role (H46). `PeerResolver.resolve()` gives the steps, the errors and the limit.
+   */
+  peer(input: PeerInput): Peer {
+    return this.#peers.resolve(input);
+  }
+
+  /** This function makes the peer resolver on the sampler, the process snapshot and the sessions of the engine. */
+  #peerResolver(roles: RoleBook): PeerResolver {
+    const sampler = this.#sampler;
+    const tcpEndpoints = sampler.tcpEndpoints?.bind(sampler);
+    const processStart = sampler.processStart?.bind(sampler);
+    return new PeerResolver({
+      tcpEndpoints,
+      processes: () => this.#processes,
+      freshProcesses: () => sampler.processTree?.() ?? sampler.processes(),
+      processStart,
+      sessions: () => this.#sessions,
+      freshSessions: () => readSessions(this.#sessionsDir),
+      roles: () => roles.roles(),
+    });
+  }
+
   ports(): TcpPorts {
     const tcp = this.#tcp;
     if (tcp === undefined) return { at: null, dynamic: null, listening: [] };

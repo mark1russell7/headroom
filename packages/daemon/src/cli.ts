@@ -13,6 +13,7 @@
  * - `headroom config [job-temp <folder>] [health <name> <url>]`: show or change the settings.
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
+ * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -39,6 +40,7 @@ import {
   type JobExit,
   type JobUsage,
   type Lease,
+  type Peer,
   type PoolTags,
   type Status,
   type Suggestion,
@@ -89,6 +91,9 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom alerts [--watch] [--json]
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
+  headroom peer <localPort> <remotePort> [--json]
+               The process at the other end of a loopback connection, its claude.exe, session and role.
+               The two ports are the ports that the server sees. No connection or no process: exit 3.
   headroom history [--minutes 60] [--json]
   headroom pool <name> <capacity>
   headroom release <id>
@@ -690,6 +695,46 @@ async function showPorts(json: boolean): Promise<number> {
   return 0;
 }
 
+/** The error codes of `resources.peer`. The command exits with 3 for each of them. */
+const PEER_ERRORS = new Set(["NO_CONNECTION", "PEER_GONE", "NOT_SUPPORTED"]);
+
+/**
+ * `headroom peer <localPort> <remotePort>`: the process at the other end of a loopback connection, for a manual check of
+ * `resources.peer` (H46). The two ports are the ports that the site sees: its listener and the port of the client.
+ */
+async function showPeer(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { json: { type: "boolean" } } });
+  const [localPort, remotePort] = positionals.map(Number);
+  const valid = (port: number | undefined): port is number => port !== undefined && Number.isInteger(port) && port >= 1 && port <= 65_535;
+  if (positionals.length !== 2 || !valid(localPort) || !valid(remotePort)) return (console.error("Usage: headroom peer <localPort> <remotePort> [--json]"), 2);
+  const connection = connect();
+  if (!connection) return (console.error("headroom does not run."), 1);
+  let peer: Peer;
+  try {
+    peer = await connection.call<Peer>(["resources", "peer"], { localPort, remotePort });
+  } catch (error) {
+    const code = String((error as { code?: unknown } | null)?.code ?? "");
+    if (!PEER_ERRORS.has(code)) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    if (values.json) console.log(JSON.stringify({ error: { code, message } }, null, 2));
+    else console.error(`headroom: ${code}: ${message}`);
+    return 3;
+  }
+  if (values.json) {
+    console.log(JSON.stringify(peer, null, 2));
+    return 0;
+  }
+  console.log(`Peer: ${peer.exe} (process ${peer.pid})`);
+  if (peer.via.length > 1) console.log(`Via: ${peer.via.join(" > ")} (the last is claude.exe)`);
+  if (peer.session === undefined) {
+    console.log(peer.via.length > 1 || peer.exe.toLowerCase() === "claude.exe" ? "Session: none (this claude.exe has no session file)" : "Session: none (no claude.exe above the peer: anonymous)");
+    return 0;
+  }
+  console.log(`Session: ${peer.session}${peer.sessionId === undefined ? "" : ` (${peer.sessionId})`}`);
+  console.log(`Role: ${peer.role ?? "none (no role of the fleet registry matches the session)"}`);
+  return 0;
+}
+
 /** This function prints the settings. */
 function printConfig(config: Config): void {
   console.log(`job-temp: ${config.jobTemp ?? "(none: each job of headroom run uses the TEMP of its parent)"}`);
@@ -856,6 +901,8 @@ async function main(argv: string[]): Promise<number> {
       const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
       return showPorts(values.json === true);
     }
+    case "peer":
+      return showPeer(rest);
     case "config":
       return configCommand(rest);
     case "services":

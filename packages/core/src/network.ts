@@ -4,7 +4,7 @@
  */
 
 import { MB } from "./sampler.ts";
-import type { NetAdapter, NetRead, OwnerKind, PortRange, ProcessInfo, TcpConnection, TcpState, TcpTable } from "./types.ts";
+import type { NetAdapter, NetRead, OwnerKind, PortRange, ProcessInfo, TcpConnection, TcpEndpoints, TcpState, TcpTable } from "./types.ts";
 
 /** The dynamic port range of Windows when `netsh` gives none: the ports 49152 to 65535. */
 export const DEFAULT_DYNAMIC_PORTS: PortRange = { first: 49_152, count: 16_384 };
@@ -240,6 +240,30 @@ export function parseTcpTable(buffer: Buffer, v6: boolean): TcpConnection[] {
     const pid = buffer.readUInt32LE(at + (v6 ? 52 : 20));
     if (state !== "listen") list.push({ localPort, state, pid });
     else list.push({ localPort, state, pid, address: v6 ? ipv6Text(buffer.subarray(at, at + 16)) : buffer.subarray(at + 4, at + 8).join(".") });
+  }
+  return list;
+}
+
+/**
+ * This function reads the rows of one connection from a table of `GetExtendedTcpTable` with `TCP_TABLE_OWNER_PID_ALL`
+ * (H46). It keeps the rows with this local port and this remote port, with their two addresses. The other rows make no object.
+ */
+export function parseTcpEndpoints(buffer: Buffer, v6: boolean, localPort: number, remotePort: number): TcpEndpoints[] {
+  const size = v6 ? TCP6_ROW : TCP4_ROW;
+  const count = buffer.length < 4 ? 0 : buffer.readUInt32LE(0);
+  const list: TcpEndpoints[] = [];
+  for (let index = 0; index < count; index++) {
+    const at = 4 + index * size;
+    if (at + size > buffer.length) break;
+    if (buffer.readUInt16BE(at + (v6 ? 20 : 8)) !== localPort || buffer.readUInt16BE(at + (v6 ? 44 : 16)) !== remotePort) continue;
+    list.push({
+      localAddress: v6 ? ipv6Text(buffer.subarray(at, at + 16)) : buffer.subarray(at + 4, at + 8).join("."),
+      localPort,
+      remoteAddress: v6 ? ipv6Text(buffer.subarray(at + 24, at + 40)) : buffer.subarray(at + 12, at + 16).join("."),
+      remotePort,
+      state: WINDOWS_STATES[buffer.readUInt32LE(at + (v6 ? 48 : 0))] ?? "other",
+      pid: buffer.readUInt32LE(at + (v6 ? 52 : 20)),
+    });
   }
   return list;
 }

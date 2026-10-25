@@ -10,6 +10,7 @@ import {
   parseNetDev,
   parsePortRange,
   parseProcTcp,
+  parseTcpEndpoints,
   parseTcpTable,
   tcpByOwner,
   tcpSummary,
@@ -127,6 +128,40 @@ describe("the network reads", () => {
     ]);
     // A table with fewer bytes than its count stops at the last full row.
     expect(parseTcpTable(tcp4([[2, [0, 0, 0, 0], 80, 4]]).subarray(0, 20), false)).toEqual([]);
+  });
+
+  it("reads the rows of one connection with their two ends (H46)", () => {
+    // IPv4: the state, the local address and port, the remote address and port, and the process.
+    const v4 = Buffer.alloc(4 + 3 * 24);
+    v4.writeUInt32LE(3, 0);
+    const row4 = (index: number, local: number, remote: number, remotePort: number, pid: number): void => {
+      const at = 4 + index * 24;
+      v4.writeUInt32LE(5, at);
+      v4.set([127, 0, 0, 1], at + 4);
+      v4.writeUInt16BE(local, at + 8);
+      v4.set([127, 0, 0, remote], at + 12);
+      v4.writeUInt16BE(remotePort, at + 16);
+      v4.writeUInt32LE(pid, at + 20);
+    };
+    row4(0, 50_123, 1, 4731, 812);
+    row4(1, 4731, 1, 50_123, 999);
+    row4(2, 50_123, 2, 4000, 813);
+    expect(parseTcpEndpoints(v4, false, 50_123, 4731)).toEqual([
+      { localAddress: "127.0.0.1", localPort: 50_123, remoteAddress: "127.0.0.1", remotePort: 4731, state: "established", pid: 812 },
+    ]);
+    // IPv6: the local address, its scope, the local port, the remote address, its scope, the remote port, the state and the process.
+    const v6 = Buffer.alloc(4 + 56);
+    v6.writeUInt32LE(1, 0);
+    v6[4 + 15] = 1;
+    v6.writeUInt16BE(50_124, 4 + 20);
+    v6[4 + 24 + 15] = 1;
+    v6.writeUInt16BE(4731, 4 + 44);
+    v6.writeUInt32LE(5, 4 + 48);
+    v6.writeUInt32LE(900, 4 + 52);
+    expect(parseTcpEndpoints(v6, true, 50_124, 4731)).toEqual([
+      { localAddress: "::1", localPort: 50_124, remoteAddress: "::1", remotePort: 4731, state: "established", pid: 900 },
+    ]);
+    expect(parseTcpEndpoints(v6, true, 4731, 50_124)).toEqual([]);
   });
 
   it("writes IPv6 addresses in their short form", () => {

@@ -691,6 +691,52 @@ Mark asked for the battery as a resource on battery power. An event or a cheap r
 
 **The numbers on 2026-10-24.** On battery: 47%, 21.9 W, 67 minutes left. The Energy Meter gave 23.3 W for the computer, 7.1 W for the CPU and 0.05 W for the GPU.
 
+### H46: the peer of a local connection
+
+The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP tools over Streamable HTTP to `claude.exe`. Each call needs the fleet role of the caller, from the TCP peer and not from a header. The step fp-identity of the organizer (`principalOf`) uses the same answer. The daemon reads the TCP table and the process tree already, so the procedure `resources.peer` gives the answer.
+
+**The connection.** The input is `{ localPort, remotePort }`: the two ports that the site sees on loopback.
+
+- The client row of the connection has the local port `remotePort` and the remote port `localPort`. The process of that row is the peer.
+- Each call reads the IPv4 table and the IPv6 table of `GetExtendedTcpTable` one time. The parser keeps only the rows with the two ports.
+- The two ends must be loopback addresses: `127.0.0.0/8`, `::1`, or `127.0.0.0/8` mapped into IPv6.
+- No row with a process gives the error `NO_CONNECTION`. Rows of two processes also give `NO_CONNECTION`, because the call fails closed.
+
+**The walk.** The peer of a call from a session is often not `claude.exe`. An example is `node scripts/fleet.mjs` from the Bash tool of a session.
+
+- `GetProcessTimes` gives the live start of the peer. A peer that ended before the walk gives the error `PEER_GONE`.
+- The walk uses the process snapshot of the daemon. A peer that is younger than the snapshot, or an entry with a different start, starts one fresh read.
+- The fresh read is a Toolhelp snapshot and one call of `NtQuerySystemInformation`. It reads no memory and opens no process.
+- The walk goes up at most 8 parents to the nearest `claude.exe`. Each parent must start at or before its child. A parent with no start stops the walk.
+- `via` gives the process IDs from the peer up to `claude.exe`, with the two ends.
+- Without a live `claude.exe` above it, the peer is anonymous. Then `via` has only the peer, and the answer has no session and no role. This is not an error.
+
+**The session and the role.**
+
+- The session is the session file of `claude.exe` in `~/.claude/sessions`, with the same process ID. On Windows, `procStart` of the file must be the start of that `claude.exe`.
+- The role comes from the fleet registry `~/git/fleet/registry/roles.json`. The daemon reads the file again only after a change of its time or its size.
+- The role with the ID of the session wins. Then the role with the name of the session as its session name wins. For example, the session `strategies` gives the role `strategist`.
+- Then the role with the name of the session as its ID wins, for a parked role with no session name. A retired role does not match.
+- `EngineOptions.rolesFile` sets another registry.
+
+**Cost and the caches.**
+
+- Each call reads the two TCP tables. It opens the peer and its `claude.exe` one time each, for their live starts.
+- The cache keeps the walk of each peer by its process ID and start. A new process snapshot removes the walks of the ended peers. The cache keeps at most 256 walks.
+- The cache keeps the session of each `claude.exe` until the next read of the session files, every 10 seconds.
+- On this computer on 2026-10-24, a call with a fresh read used approximately 24 ms. A call with a walk from the cache used approximately 2 ms.
+
+**The limit.** This attribution is as strong as "the same Windows user". It is not a security boundary.
+
+- A process of that user can choose its parent with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. It can also write a session file or change the registry.
+- Thus a role from `resources.peer` names the caller. It does not prove the identity of the caller.
+
+**The depth.** On 2026-10-24, the Bash tool put 3 `bash.exe` processes between `claude.exe` and its command. A `timeout` and a pipe put more processes in the chain. In one check, a walk of 8 parents did not get to `claude.exe`.
+
+**Linux.** `/proc/net/tcp` gives no process for a row, so Linux gives the error `NOT_SUPPORTED`. A read of the socket inodes of each process is a later step.
+
+**The command.** `headroom peer <localPort> <remotePort> [--json]` gives the answer for a check by hand. An error gives the exit code 3.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.

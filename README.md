@@ -82,6 +82,28 @@ PORT       PID  PROCESS                    OWNER                  ADDRESSES
 3 listening ports. Outgoing connections use the dynamic ports 49152-65535, so give a dev server a port below 49152.
 ```
 
+### The peer of a local connection (H46)
+
+The fleet site serves its procedures as MCP tools to `claude.exe`. Each call needs the fleet role of the caller. The site gets the role from the TCP peer, not from a header. The procedure `resources.peer` gives it:
+
+- The input is `{ localPort, remotePort }`: the two ports that the site sees on its loopback connection.
+- The daemon reads the client row of the connection from the IPv4 and the IPv6 table. The two ends must be loopback addresses.
+- The output is `{ pid, exe, via, sessionId?, session?, role? }`. `via` gives the process IDs from the peer up to the nearest `claude.exe`.
+- A peer with no `claude.exe` above it is anonymous. It has no session and no role. This is not an error.
+- The errors are `NO_CONNECTION` (no row for the two ports) and `PEER_GONE` (the process ended before the walk). Linux gives `NOT_SUPPORTED`.
+- The role comes from the fleet registry `~/git/fleet/registry/roles.json`: first by the session ID, then by the session name.
+
+`headroom peer <localPort> <remotePort>` shows the same answer for a check by hand. `--json` gives the JSON. An error gives the exit code 3.
+
+```text
+Peer: node.exe (process 8932)
+Via: 8932 > 4888 > 23080 > 21804 > 15696 > 25064 (the last is claude.exe)
+Session: headroom (19f84d12-fed5-4c42-a6bd-7d856e31cc16)
+Role: headroom
+```
+
+**The limit.** This attribution is as strong as "the same Windows user". It is not a security boundary. A process of that user can choose its parent with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and it can write a session file. `docs/RESOURCES.md` gives the details.
+
 ### Process starts (H29)
 
 On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`. Each new process leaks approximately 0.9 KB of the non-paged pool. With 14 or more new processes each second, the pool grew approximately 800 MB each hour. Until Mark updates the driver (hub ask `amd-driver`), the fleet must start fewer processes. headroom shows who starts them:
