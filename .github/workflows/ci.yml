@@ -1,3 +1,7 @@
+# The CI of headroom: the shared CI of mark1russell7 (reusable-ci.yml of mark1russell7/template, its
+# CI.md). With no inputs, the job runs typecheck, test, the npm build of each package that has one
+# (with its publint check, as release.yml builds it) and lint:ste (the writing rules, ASD-STE100, of
+# the README files and the doc comments) on Node.js 26.
 name: CI
 
 on:
@@ -15,20 +19,4 @@ concurrency:
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      # The pnpm version comes from "packageManager" in package.json
-      - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 26
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
-      - run: pnpm test
-      # The npm build of each package that has one, with its publint check, as release.yml builds it
-      - run: pnpm -r --if-present run build
-      # The writing rules (ASD-STE100) of the README files and the doc comments
-      - run: pnpm lint:ste
+    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@a743392393fc72acd1f5557eefe06e097bc9f906 # main
