@@ -30,7 +30,7 @@ import { fileTimeMs, programName, titleOf } from "./owners.ts";
 import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
-import { closePower, keepAwake, readBattery, readMeters, watchPower } from "./windows-power.ts";
+import { closePower, keepAwake, readBattery, readMeters, readThermal, watchPower } from "./windows-power.ts";
 import { readCalls, readPresence } from "./windows-presence.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
@@ -599,6 +599,7 @@ export function windowsSampler(): Sampler {
     bootedAt,
     battery: readBattery,
     power: readMeters,
+    thermal: readThermal,
     watchPower,
     keepAwake,
     registryKey,

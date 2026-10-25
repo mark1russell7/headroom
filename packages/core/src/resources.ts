@@ -19,6 +19,7 @@ import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
 import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, powerOwners, systemWatts, type BatteryState } from "./power.ts";
 import type { ServiceHealth, ServiceState } from "./services.ts";
 import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "./starts.ts";
+import { heatHolds, heatMessage, heatOwners, type ThermalState } from "./thermal.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
@@ -38,14 +39,15 @@ export type ResourceKind =
   | "procs"
   | "battery"
   | "power"
+  | "thermal"
   | "gpu";
 
 /**
  * The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. A kind in the unit `state` has
  * no amount (H27). Its measurement has a `health`, and its used part is the latency of the last check in ms. The process
- * starts use `per minute` (H29). The battery uses Wh, and the power uses W (H30).
+ * starts use `per minute` (H29). The battery uses Wh, and the power uses W (H30). The speed of the CPU uses `%` (H35).
  */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute" | "Wh" | "W";
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute" | "Wh" | "W" | "%";
 
 /** The processor times of the computer since its start (H23), in milliseconds, for all the processors together. */
 export interface CpuTimes {
@@ -92,6 +94,8 @@ export interface Readings {
   readonly battery?: BatteryRead | undefined;
   /** The counter set "Energy Meter" (H30). A computer with no such counters has none. */
   readonly meters?: PowerMeters | undefined;
+  /** The speed and the heat of the CPU, with the throttle rule (H35). A computer with no such counters has none. */
+  readonly thermal?: ThermalState | undefined;
   /** The granted leases. The battery alert names the jobs that run on battery (H30). */
   readonly leases?: readonly Lease[] | undefined;
   /**
@@ -120,6 +124,8 @@ export interface Measurement {
   readonly health?: ServiceHealth | undefined;
   /** The power source, the charge, the rate and the time left of the battery (H30). Only the kind `battery` has it. */
   readonly battery?: BatteryState | undefined;
+  /** The speed limits, the temperature and the throttle of the CPU (H35). Only the kind `thermal` has it. */
+  readonly thermal?: ThermalState | undefined;
 }
 
 /** The use of one owner of an instance, in the unit of the attribute part of its kind. */
@@ -1233,6 +1239,60 @@ const POWER: Resource = {
   enforce: null,
 };
 
+/**
+ * The attribute part of the heat (H35): while the CPU is throttled, the cores of each owner over the last minute. With no
+ * throttle, it gives no owners, because the heat has no cause to name.
+ */
+const HEAT_USE: Attribute = {
+  unit: "cores",
+  // A read of a process has no heat, so the outlier rules do not examine the heat.
+  counter: () => undefined,
+  read: (readings) =>
+    readings.thermal?.throttled === true
+      ? (readings.cores ?? []).map((each) => ({ resource: "thermal", owner: each.owner, kind: each.kind, amount: each.cores, processes: 0 }))
+      : [],
+};
+
+/**
+ * The speed and the heat of the CPU (H35): one instance, `thermal`, in percent of the nominal speed. The free part is the
+ * speed that the limits permit, and the used part is the part that a power or heat limit takes. The measurement has the
+ * reads and the throttle. A computer with no such counters has no instance.
+ */
+const THERMAL: Resource = {
+  kind: "thermal",
+  unit: "%",
+  measure: {
+    read: ({ thermal }) =>
+      thermal === undefined
+        ? []
+        : [{ id: "thermal", capacity: 100, used: thermal.speed === null ? null : Math.round((100 - thermal.speed) * 10) / 10, free: thermal.speed, thermal }],
+  },
+  attribute: HEAT_USE,
+  alert: {
+    // The alert starts after 5 minutes of throttle, and it ends after 2 minutes with no throttle.
+    rules: (limits) => [
+      {
+        type: "check",
+        alert: "heat",
+        alertId: () => "heat",
+        severity: true,
+        level: ({ measurement, readings, active }) => (heatHolds(measurement.thermal, readings.at, active != null, limits) ? "warning" : null),
+        text: ({ measurement, readings, owners }) => ({
+          subject: "processors",
+          mb: 0,
+          message:
+            measurement.thermal === undefined
+              ? "The CPU has no read of its speed."
+              : heatMessage(measurement.thermal, heatOwners(readings.cores, cpuWatts(readings.meters), readings.leases ?? [], owners.ownerOf), readings.at, limits),
+        }),
+      },
+    ],
+  },
+  // H35: the heat admits no amount. The condition `cool` of `conditions.ts` reads the throttle, and `--timing` waits for it.
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -1255,7 +1315,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, THERMAL, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */
@@ -1431,6 +1491,7 @@ export function withKinds(
     const resource = resourceOf(each.id);
     const health = each.health === undefined ? {} : { health: each.health };
     const battery = each.battery === undefined ? {} : { battery: each.battery };
+    const thermal = each.thermal === undefined ? {} : { thermal: each.thermal };
     const nearest = forecasts?.get(each.id)?.[0];
     return {
       id: each.id,
@@ -1441,6 +1502,7 @@ export function withKinds(
       free: each.free,
       ...health,
       ...battery,
+      ...thermal,
       owners: ownersOf(resource),
       ...(nearest === undefined ? {} : { forecast: nearest }),
     };

@@ -32,7 +32,7 @@ import {
   type ResourceId,
   type ResourceStatus,
 } from "./resources.ts";
-import { batteryState, keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
+import { batteryState, cpuWatts, keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
 import {
   busyText,
   CALL_EVERY_MS,
@@ -67,6 +67,7 @@ import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
+import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
 import { diskSize } from "./units.ts";
 import {
   MEMORY,
@@ -190,6 +191,11 @@ export interface Status {
    * also has a recommendation, the planned drain and the file of the resume plan.
    */
   readonly reboot: RebootBudget;
+  /**
+   * The speed and the heat of the CPU (H35): the speed limits, the speed, the thermal zones and the throttle. While the CPU
+   * is throttled, it names the 3 owners with the most cores. It is `null` on a computer with no such counters.
+   */
+  readonly thermal: ThermalStatus | null;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -395,6 +401,8 @@ export class Engine {
   /** The last read of the battery and of the Energy Meter (H30). */
   #battery: BatteryRead | undefined;
   #meters: PowerMeters | undefined;
+  /** The trail of the speed and the heat of the CPU (H35), from the reads of the last 11 minutes. */
+  readonly #thermal = new ThermalTracker();
   /** The state from the power events: the power source, the lid and the power mode. */
   readonly #powerState: { ac: boolean | null; lidOpen: boolean | null; powerMode: PowerMode | null } = { ac: null, lidOpen: null, powerMode: null };
   /** A power event asks for a read of the battery at the next tick. A change of the power source also asks for a check of the alerts. */
@@ -594,6 +602,7 @@ export class Engine {
       starts: this.#starts,
       battery: this.#battery,
       meters: this.#meters,
+      thermal: this.#thermal.state(this.#now()) ?? undefined,
       leases,
     };
     return this.#readings;
@@ -643,6 +652,7 @@ export class Engine {
       this.#readNetwork(now);
       this.#readBattery();
       this.#readMeters();
+      this.#readThermal(now);
       this.#check(now, ownerOf);
     } else if (this.#batteryDue) {
       // A power event: the battery is cheap to read, so the tick reads it before the next read of the processes.
@@ -883,6 +893,7 @@ export class Engine {
       cpuReserve: this.#reserveNow(),
       presence: presenceStatus(this.#presence, this.#policy),
       reboot: this.#rebootBudget(now, forecasts),
+      thermal: this.thermalStatus(),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -1018,7 +1029,7 @@ export class Engine {
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
         load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
-        battery: this.#battery, meters: this.#meters, cores: this.#cores,
+        battery: this.#battery, meters: this.#meters, cores: this.#cores, thermal: this.#thermal.state(now) ?? undefined,
         // H23: the CPU rules read the trails of the counter tracker, and an active alert ends only after its clear time.
         at: now, processors: this.#processors, active: [...this.#alerts.values()], leaseCores: this.#leaseCores,
         trails: this.#cores === undefined ? new Map() : new Map([["cpu", this.#counters.coresTrail(now)]]), trees: this.#trees(now),
@@ -1315,6 +1326,8 @@ export class Engine {
     for (const lease of this.#broker.resume(to - from)) this.#store.saveLease(lease);
     this.#counters.gap();
     this.#startTracker.gap(to);
+    // H35: a limit of the CPU does not span the sleep.
+    this.#thermal.gap();
     this.#network = undefined;
     this.#previousNetwork = undefined;
     this.#diskReadings.clear();
@@ -1345,6 +1358,7 @@ export class Engine {
       ac: this.powerStatus().ac,
       percent: this.#battery === undefined ? null : batteryState(this.#battery).percent,
       presence: this.#sampler.presence === undefined ? null : (this.#presence.current?.state ?? null),
+      thermal: this.#thermal.state(now),
       get usage(): UsageFacts {
         usage ??= reader.read(config.usageFile, now);
         return usage;
@@ -1402,6 +1416,30 @@ export class Engine {
     } catch {
       this.#meters = undefined;
     }
+  }
+
+  /**
+   * This function reads the speed and the heat of the CPU into the trail (H35). It uses the collection of the Energy Meter.
+   * A failed read adds no point, and the tick continues. The admission of this tick tests `cool` on the new read.
+   */
+  #readThermal(now: number): void {
+    if (!this.#sampler.thermal) return;
+    let read: ThermalRead | null = null;
+    try {
+      read = this.#sampler.thermal();
+    } catch {
+      // A missing counter gives no read. The state ends one minute after the last read.
+    }
+    this.#thermal.add(now, read);
+    this.#facts = null;
+  }
+
+  /** This function gives the speed and the heat of the CPU (H35). While the CPU is throttled, it adds the owners with the most cores. */
+  thermalStatus(): ThermalStatus | null {
+    const state = this.#thermal.state(this.#now());
+    if (state === null) return null;
+    const owners = state.throttled ? heatOwners(this.#cores, cpuWatts(this.#meters), this.#broker.leases(), this.#ownership.ownerOf) : [];
+    return { ...state, owners };
   }
 
   /** This function holds the power request while a lease is granted on AC power, and ends it otherwise (H30). */

@@ -198,6 +198,27 @@ headroom tells the time until each resource reaches a limit, so the fleet acts b
 - A pool alert names the owners with the most process starts and the pool tags that grow. A commit alert names the owners with the most private memory.
 - An active forecast alert ends past 1.25 times its horizon, so a small change of the rate does not end it and start it again.
 
+### Heat and throttling (H35)
+
+When heat or a power limit slows the CPU, timing tests and benchmarks give wrong numbers. Such jobs wait for a cool CPU, and headroom names the owners that make the heat.
+
+- **The reads**: PDH gives the speed limit, the speed and the nominal frequency of the CPU. It also gives the temperature, the passive limit and the throttle reasons of each thermal zone.
+- The counters are in the PDH query of the Energy Meter. The read comes with the read of the processes, every 10 seconds, with no new process and no timer.
+- **The resource** (`thermal`, in %): the free part is the speed that the limits permit. The used part is the part that a limit takes.
+- **Throttled**: a speed limit under 90% (a limit over 10%), or a passive limit under 100% in a thermal zone, for 30 seconds.
+- **Hot**: a thermal zone at 98 °C or more, or a zone with a passive limit.
+- A missing counter gives `null`. A computer with none of the counters has no `thermal`. Linux and macOS have no reads.
+
+`headroom thermal` prints the reads, the state, the condition `cool` and the owners. `--json` gives the data. `headroom status` adds a line only when the CPU is throttled or hot, for example `Heat: the CPU runs at 62% of its speed since 14:02: a power or heat limit.`
+
+- **Alert** (kind `heat`): a warning after 5 minutes of throttle. It ends after 2 minutes with no throttle.
+- The message names the speed, the cause and the 3 owners with the most cores, with their power as an estimate and their leased jobs.
+- **The condition `cool`**: it holds when the CPU was not throttled in the last 2 minutes. `--timing` waits for `ac` and `cool`.
+- A wait gives the limit, for example `waits until the CPU runs at full speed (now 62%, a power or heat limit)`.
+- The dashboard has a chip `Heat` and a panel "CPU speed and heat".
+
+On this laptop on 2026-10-25, all six counters gave values. The CPU had no limit (100%) and ran at 190% to 204% of its nominal 2.0 GHz. The zone `\_TZ.THM0` was at 86 °C to 100 °C.
+
 ### Conditions for a job (H31)
 
 Some jobs need a fact of the computer, not an amount. A benchmark needs AC power, because its numbers on battery are wrong. A fan-out of `claude -p` needs room in the usage window. `--when` makes the lease wait until each condition holds:
@@ -216,12 +237,13 @@ headroom run --when "starts<700" -- pnpm e2e
 | `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file of the fleet. |
 | `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. The daemon tests it at each read of the processes. |
 | `away` | Mark is away from the laptop (H33). A computer with no read of the presence counts as away. |
+| `cool` | The CPU was not throttled in the last 2 minutes (H35). A computer with no read of the speed counters counts as cool. |
 
 - **The wait.** The lease waits until each condition holds and its amounts fit. A lease that waits for a condition does not hold the queue: later leases go before it.
 - **A power event.** When the charger goes in or out, Windows tells the daemon. The daemon reads the battery and runs the admission at once. Thus a lease that waits for `ac` starts in less than a second.
-- **A wrong name.** `headroom run` refuses an unknown condition, with the list of the known conditions. A planned condition names its item: `cool` (H35), `unmetered` (H39) and `night` (H42).
+- **A wrong name.** `headroom run` refuses an unknown condition, with the list of the known conditions. A planned condition names its item: `unmetered` (H39) and `night` (H42).
 - **A running job.** A job continues when a condition stops, for example when the charger goes out. The lease records it, and `headroom status` shows `runs without its condition: on battery since 01:20`.
-- **`--timing`.** A job that measures time waits for AC power. Its reason tells you to run timing tests in CI. H35 adds `cool` to `--timing`.
+- **`--timing`.** A job that measures time waits for AC power and a cool CPU (`ac` and `cool`). Its reason tells you to run timing tests in CI.
 
 **The battery policy.** On battery below the floor, a new heavy lease waits. A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. `--battery-ok` starts it. `headroom config battery-floor 15` changes the floor, and `0` turns the rule off. The default is 25%.
 
@@ -439,8 +461,8 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - The top section shows what uses the computer. One bar shows the memory in RAM by owner, and the free memory. A second bar shows the processors by owner.
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
-- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site. On a laptop, a chip gives the power source and the charge.
-- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, network, TCP ports, services, slots, kernel pools, desktop, process starts, battery and power. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
+- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site. On a laptop, a chip gives the power source and the charge. The chip `Heat` gives the speed of the CPU and its hottest zone (H35).
+- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, CPU speed and heat, network, TCP ports, services, slots, kernel pools, desktop, process starts, battery and power. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
 - The write counters do not name the drive. Thus the drive panels show no users, and one panel "Writes to all drives" follows them with the top writers.

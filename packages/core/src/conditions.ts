@@ -5,7 +5,7 @@
  * - The registry: each condition has a name, an optional value, a test of the facts and a waiting reason in STE.
  * - Admit: a lease waits until each of its conditions holds and its amounts fit. A power event runs the admission at once.
  * - The battery policy: on battery below a floor, a new heavy lease waits. `--battery-ok` starts it.
- * - `--timing`: a timing-sensitive job waits for AC power, because timing numbers on battery are wrong.
+ * - `--timing`: a timing-sensitive job waits for AC power and a cool CPU (H35). Timing numbers on battery or on a throttled CPU are wrong.
  * - A granted lease continues when a condition stops. The lease records the time, and `headroom status` shows it.
  */
 
@@ -16,6 +16,7 @@ import type { Lease } from "./broker.ts";
 import type { PresenceState } from "./presence.ts";
 import { BROWSER_SLOT, isSpawnHeavy } from "./spawn.ts";
 import { countText } from "./starts.ts";
+import type { ThermalState } from "./thermal.ts";
 import { MEMORY } from "./types.ts";
 
 /** The usage of the five-hour window of Claude, from the usage file of the fleet. */
@@ -53,6 +54,11 @@ export interface ConditionFacts {
    * presence, and then the condition `away` holds.
    */
   readonly presence: PresenceState | null;
+  /**
+   * The speed and the heat of the CPU (H35). A computer with no read of the counters gives `null` or no field, and then
+   * the condition `cool` holds.
+   */
+  readonly thermal?: ThermalState | null | undefined;
 }
 
 /** The operator of a condition with a value. */
@@ -127,11 +133,14 @@ export const BATTERY_FLOOR_DEFAULT = 25;
 /** A lease with this memory or more, in MB, is heavy for the battery policy. */
 export const HEAVY_MEMORY_MB = 2048;
 
-/** The conditions of `--timing`. H35 adds `cool`. */
-export const TIMING_CONDITIONS: readonly string[] = ["ac"];
+/** The conditions of `--timing`: AC power and a cool CPU (H35). */
+export const TIMING_CONDITIONS: readonly string[] = ["ac", "cool"];
 
-/** The end of the reason of a `--timing` wait. It points to CI, because the numbers of this computer on battery are wrong. */
-export const TIMING_REASON = "timing numbers on battery are wrong, so run timing tests in CI";
+/** The end of the reason of a `--timing` wait. It points to CI, because the numbers of this computer on battery or on a throttled CPU are wrong. */
+export const TIMING_REASON = "timing numbers on battery or on a throttled CPU are wrong, so run timing tests in CI";
+
+/** The condition `cool` holds after this time with no throttle of the CPU (H35). */
+export const COOL_MS = 120_000;
 
 /** Usage data older than this is stale, so `usage<N` does not hold. The fleet writes the file approximately each hour. */
 export const USAGE_FRESH_MS: number = 70 * 60_000;
@@ -156,6 +165,24 @@ const percentText = (ratio: number): string => `${Math.round(ratio * 100)}%`;
 function presenceText(state: PresenceState | null): string {
   if (state === "present") return "at the laptop";
   return state === "busy" ? "busy at the laptop" : "away";
+}
+
+/**
+ * This function tells why `cool` does not hold (H35): "waits until the CPU runs at full speed (now 62%, a power or heat
+ * limit)". After a throttle, the reason names the time of the last throttle.
+ */
+function coolReason(thermal: ThermalState | null | undefined): string {
+  if (thermal == null) return "waits until the CPU runs at full speed";
+  if (thermal.limited) return `waits until the CPU runs at full speed (now ${Math.round(thermal.speed ?? 100)}%, ${thermal.cause ?? "a power or heat limit"})`;
+  const last = thermal.lastThrottledAt === null ? "" : ` (the last throttle was at ${localClock(thermal.lastThrottledAt)})`;
+  return `waits until the CPU runs at full speed for ${Math.round(COOL_MS / 60_000)} minutes${last}`;
+}
+
+/** This function gives the facts that stop `cool` for a granted lease: "the CPU at 62% of its speed: a power or heat limit". */
+function coolState(thermal: ThermalState | null | undefined): string {
+  if (thermal == null) return "no read of the CPU speed";
+  if (thermal.limited) return `the CPU at ${Math.round(thermal.speed ?? 100)}% of its speed: ${thermal.cause ?? "a power or heat limit"}`;
+  return thermal.lastThrottledAt === null ? "a throttle of the CPU" : `a throttle of the CPU at ${localClock(thermal.lastThrottledAt)}`;
 }
 
 /** This function tells why the usage data does not give a ratio, or gives `null` when it is fresh. */
@@ -224,11 +251,18 @@ export const CONDITIONS: readonly Condition[] = [
     reason: (facts) => `waits until Mark is away from the laptop (now ${presenceText(facts.presence)})`,
     state: (facts) => `Mark is ${presenceText(facts.presence)}`,
   },
+  {
+    name: "cool",
+    about: "the CPU runs at full speed, with no power or heat limit for 2 minutes",
+    // A computer with no read of the speed counters has no throttle to wait for, so the condition holds.
+    test: (facts) => facts.thermal == null || facts.thermal.cool,
+    reason: (facts) => coolReason(facts.thermal),
+    state: (facts) => coolState(facts.thermal),
+  },
 ];
 
 /** The planned conditions, with the item that adds each one. */
 export const PLANNED_CONDITIONS: Readonly<Record<string, { readonly item: string; readonly about: string }>> = {
-  cool: { item: "H35", about: "the processors are cool" },
   unmetered: { item: "H39", about: "the network is not metered" },
   night: { item: "H42", about: "the quiet hours" },
 };
