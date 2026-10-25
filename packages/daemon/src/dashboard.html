@@ -7,13 +7,16 @@
 <title>headroom</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M5 24a11 11 0 0 1 22 0' fill='none' stroke='%232a78d6' stroke-width='4' stroke-linecap='round'/%3E%3Cpath d='M16 24l6-8' stroke='%23eb6834' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <style>
-/* The tokens follow the reference palette of the dataviz method: light first, dark redefines them. */
+/* Layout: the answer first (what uses this computer), then one card for each resource, then the jobs, the owners and the tools.
+   The tokens follow the reference palette of the dataviz method: light first, dark redefines them. c1 to c8 are the owner groups. */
 :root {
   color-scheme: light;
   --page: #f9f9f7; --surface: #fcfcfb; --raise: #f0efec;
   --ink: #0b0b0b; --ink-2: #52514e; --muted: #6f6d68;
-  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10);
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, 0.10); --shadow: rgba(0, 0, 0, 0.12);
   --s1: #2a78d6; --s2: #eb6834; --s1-wash: rgba(42, 120, 214, 0.10); --track: #cde2fb;
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c6: #008300; --c7: #6250d6; --c8: #8f8d86;
+  --on-fill: #ffffff; --on-fill-dk: #0b0b0b;
   --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b; --good-text: #006300;
   --mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -23,8 +26,9 @@
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --raise: #232321;
     --ink: #f0efec; --ink-2: #c3c2b7; --muted: #9a988f;
-    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
-    --s1: #3987e5; --s2: #d95926; --s1-wash: rgba(57, 135, 229, 0.12); --track: #1c3350;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --shadow: rgba(0, 0, 0, 0.5);
+    --s1: #3987e5; --s2: #d95926; --s1-wash: rgba(57, 135, 229, 0.14); --track: #1c3350;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #7c7a74;
     --good-text: #0ca30c;
   }
 }
@@ -32,63 +36,96 @@
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --raise: #232321;
   --ink: #f0efec; --ink-2: #c3c2b7; --muted: #9a988f;
-  --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10);
-  --s1: #3987e5; --s2: #d95926; --s1-wash: rgba(57, 135, 229, 0.12); --track: #1c3350;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, 0.10); --shadow: rgba(0, 0, 0, 0.5);
+  --s1: #3987e5; --s2: #d95926; --s1-wash: rgba(57, 135, 229, 0.14); --track: #1c3350;
+  --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #7c7a74;
   --good-text: #0ca30c;
 }
 * { box-sizing: border-box; }
 html { background: var(--page); }
 body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 var(--sans); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
 .wrap { max-width: 1240px; margin: 0 auto; padding: 20px max(16px, env(safe-area-inset-right, 0px)) 40px max(16px, env(safe-area-inset-left, 0px)); display: grid; gap: 16px; }
 
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
 .mark { display: flex; align-items: center; gap: 10px; }
 .mark h1 { margin: 0; font-size: 20px; font-weight: 650; letter-spacing: -0.01em; }
 .mark span { color: var(--ink-2); font-size: 13px; }
-.live { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; }
+.live { margin-left: auto; display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 13px; min-width: 0; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 2px var(--surface); flex: none; }
 .dot.off { background: var(--crit); }
-
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.filters .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 4px; }
+.filters .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
 .seg { display: inline-flex; background: var(--raise); border-radius: 8px; padding: 2px; }
-.seg button { font: inherit; font-size: 13px; color: var(--ink-2); background: none; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+.seg button { font-size: 13px; color: var(--ink-2); background: none; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border); font-weight: 600; }
-.seg button:focus-visible, .chart svg:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
 
 .alerts { display: grid; gap: 8px; }
-.alert { display: grid; grid-template-columns: auto auto 1fr auto; align-items: start; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--warn); border-radius: 10px; padding: 10px 14px; }
+.alert { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 2px 10px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--warn); border-radius: 10px; padding: 10px 14px; }
 .alert.crit { border-left-color: var(--crit); }
 .alert.serious { border-left-color: var(--serious); }
-.alert .kind { font-weight: 650; text-transform: capitalize; }
-.alert .since { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.alert .msg { min-width: 0; }
+.alert svg { grid-row: span 2; margin-top: 2px; }
+.alert .kind { font-weight: 650; text-transform: capitalize; margin-right: 8px; }
+.alert .since { color: var(--muted); font-size: 12px; }
+.alert .msg { overflow-wrap: anywhere; }
 
-.tiles { display: grid; grid-template-columns: 1.5fr repeat(5, 1fr); gap: 12px; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; }
-.tile .label { color: var(--ink-2); font-size: 13px; }
-.tile .value { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; margin-top: 2px; }
-.tile.hero .value { font-size: 48px; line-height: 1.05; }
-.tile .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-.meter { height: 8px; background: var(--track); border-radius: 4px; margin-top: 10px; overflow: hidden; }
-.meter > div { height: 100%; border-radius: 0 4px 4px 0; background: var(--s1); }
-.meter > div.warn { background: var(--warn); }
-.meter > div.crit { background: var(--crit); }
+.card h2, .sec h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.hint { margin: 0; color: var(--muted); font-size: 12px; }
+.sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
 
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.card h2 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
-.card .hint { margin: 0 0 10px; color: var(--muted); font-size: 12px; }
-.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 6px; color: var(--ink-2); font-size: 12px; }
-.legend span { display: inline-flex; align-items: center; gap: 6px; }
-.key { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
+/* The answer: who uses the memory and the processors. */
+.now { display: grid; gap: 12px; padding: 16px 18px 14px; }
+.nowhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.marked { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.marked button { border: 1px solid var(--border); background: var(--raise); border-radius: 6px; padding: 1px 8px; cursor: pointer; font-size: 12px; }
+.hero { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
+.hero b { font-size: 48px; line-height: 1.02; font-weight: 650; letter-spacing: -0.02em; }
+.hero span { color: var(--ink-2); font-size: 15px; }
+.hero small { flex-basis: 100%; color: var(--muted); font-size: 12px; }
+.urow { display: grid; gap: 5px; }
+.urow .lab { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.urow .lab b { color: var(--ink); font-weight: 600; }
+.ubar { display: flex; gap: 2px; height: 30px; border-radius: 6px; overflow: hidden; }
+.ubar.thin { height: 18px; }
+.seg2 { flex: 1 1 0; min-width: 2px; display: flex; align-items: center; padding: 0 6px; color: var(--on-fill); font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: opacity 0.15s; }
+.seg2.dk { color: var(--on-fill-dk); }
+.seg2.free { background: var(--raise); color: var(--ink-2); font-weight: 500; justify-content: flex-end; cursor: default; }
+.seg2.rest, .sw.rest { background: repeating-linear-gradient(135deg, var(--axis) 0 2px, var(--raise) 2px 6px); cursor: default; }
+.lgs { display: flex; flex-wrap: wrap; gap: 4px; }
+.lg { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: none; border-radius: 6px; padding: 3px 8px 3px 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; transition: opacity 0.15s; }
+button.lg:hover { border-color: var(--border); background: var(--raise); }
+.lg.static { cursor: default; }
+.lg b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.lg small { color: var(--muted); font-size: 11px; }
+.sw { width: 10px; height: 10px; border-radius: 3px; flex: none; display: inline-block; }
+.sw.free { background: var(--raise); box-shadow: inset 0 0 0 1px var(--axis); }
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; border-top: 1px solid var(--grid); padding-top: 10px; }
+.strip .lab { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 2px 0 6px; }
+.strip .lab:first-child { margin-left: 0; }
+.svc { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 12px; cursor: pointer; text-decoration: none; color: var(--ink); }
+.svc:hover { background: var(--raise); }
+.svc b { font-weight: 600; }
+.svc small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.svc.down { border-color: var(--crit); }
+.svc.slow { border-color: var(--warn); }
 
+.focusing [data-group]:not(.hit) { opacity: 0.25; }
+.focusing .res:not(.has-hit) { opacity: 0.5; }
+.focusing .row.hit, .focusing .owner.hit { background: var(--s1-wash); }
+
+.tip { position: fixed; z-index: 5; pointer-events: none; max-width: 300px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 20px var(--shadow); font-size: 12px; color: var(--ink-2); }
+.tip .tt { color: var(--ink); font-weight: 650; overflow-wrap: anywhere; }
 .chart { position: relative; }
 .chart svg { display: block; width: 100%; overflow: visible; }
-.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); font-size: 12px; min-width: 150px; z-index: 2; }
-.tip .t { color: var(--muted); margin-bottom: 4px; }
-.tip .row { display: flex; align-items: center; gap: 8px; }
-.tip .row b { font-weight: 650; font-variant-numeric: tabular-nums; }
-.tip .row span:last-child { color: var(--ink-2); }
+.chart .tip { position: absolute; min-width: 150px; }
+.chart .tip .t { color: var(--muted); margin-bottom: 4px; }
+.chart .tip .row { display: flex; align-items: center; gap: 8px; }
+.chart .tip .row b { font-weight: 650; font-variant-numeric: tabular-nums; color: var(--ink); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); font-size: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.key { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
 
 details { margin-top: 8px; }
 details summary { color: var(--muted); font-size: 12px; cursor: pointer; }
@@ -100,52 +137,72 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 .clip { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scroll { overflow-x: auto; }
 .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
-
 .chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .chip svg { flex: none; }
 
-.owners { display: grid; gap: 2px; }
-.owner { display: grid; grid-template-columns: minmax(120px, 210px) 1fr 72px 88px; align-items: center; gap: 10px; padding: 5px 0; }
-.owner .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.owner .name small { display: block; color: var(--muted); font-size: 11px; white-space: normal; }
-.owner .bar { height: 12px; }
-.owner .bar > div { height: 100%; background: var(--s1); border-radius: 0 4px 4px 0; min-width: 2px; }
-.owner .val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-
-.miniBar { display: inline-block; height: 8px; background: var(--s1); border-radius: 0 3px 3px 0; vertical-align: middle; margin-right: 8px; }
-.up { color: var(--ink); font-weight: 600; }
-.foot { color: var(--muted); font-size: 12px; text-align: center; }
-.stale { opacity: 0.55; transition: opacity 0.2s; }
-
-.sec { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
-.sec h2 { margin: 0; font-size: 15px; font-weight: 650; }
-.sec .hint { margin: 0; color: var(--muted); font-size: 12px; }
-.res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr)); gap: 12px; margin-top: 10px; }
-.res { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-content: start; border-top: 3px solid var(--lv, transparent); }
+/* The resource cards. A card opens to the full width with the history of its resource. */
+.res-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr)); grid-auto-flow: row dense; gap: 12px; margin-top: 10px; }
+.res { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-content: start; border-top: 3px solid var(--lv, transparent); cursor: pointer; transition: opacity 0.15s, box-shadow 0.15s; }
+.res:hover { box-shadow: 0 0 0 1px var(--axis); }
+.res.open { grid-column: 1 / -1; grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 10px 28px; cursor: default; }
+.res.open:hover { box-shadow: none; }
+.res .sum { display: grid; gap: 6px; align-content: start; cursor: pointer; }
+.res .det { display: grid; gap: 10px; align-content: start; min-width: 0; }
+.res .det .dh { font-size: 12px; color: var(--ink-2); }
 .res.warn, .note.warn { --lv: var(--warn); }
 .res.serious, .note.serious { --lv: var(--serious); }
 .res.crit, .note.crit { --lv: var(--crit); }
 .res .eye { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-.res h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.res .ttl { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.res h3 { margin: 0; font-size: 15px; font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
+.res .more { border: 0; background: none; padding: 0; color: var(--s1); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .res .big { color: var(--ink-2); font-size: 13px; }
 .res .big b { color: var(--ink); font-size: 22px; font-weight: 650; letter-spacing: -0.01em; margin-right: 4px; font-variant-numeric: tabular-nums; }
-.res .meter { margin-top: 0; }
+.meter { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
+.meter > div { height: 100%; border-radius: 0 4px 4px 0; background: var(--s1); }
+.meter > div.warn { background: var(--warn); }
+.meter > div.crit { background: var(--crit); }
 .res .sub { color: var(--muted); font-size: 12px; }
 .trend { display: flex; align-items: center; gap: 10px; min-height: 32px; }
 .trend svg { flex: 1; min-width: 0; height: 32px; }
 .trend span { font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.up { color: var(--ink); font-weight: 600; }
 .note { font-size: 12px; background: var(--raise); border-left: 3px solid var(--lv, var(--warn)); border-radius: 0 6px 6px 0; padding: 4px 8px; overflow-wrap: anywhere; }
-.res .list { display: grid; gap: 4px; font-size: 12px; border-top: 1px solid var(--grid); padding-top: 6px; }
-.res .list .t { color: var(--muted); }
-.res .row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; }
-.res .row.own { grid-template-columns: minmax(0, 1fr) 56px auto; }
-.res .row > .clip { max-width: none; }
-.res .row b { font-weight: 600; font-variant-numeric: tabular-nums; }
-.res .path { grid-column: 2 / -1; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
-.res .row .bar { height: 8px; background: var(--s1); border-radius: 0 3px 3px 0; min-width: 2px; }
+.list { display: grid; gap: 2px; font-size: 12px; border-top: 1px solid var(--grid); padding-top: 6px; }
+.list .t { color: var(--muted); margin-bottom: 2px; }
+.row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; border-radius: 4px; transition: opacity 0.15s; }
+button.row { border: 0; background: none; padding: 2px 4px; margin: 0 -4px; text-align: left; font-size: 12px; cursor: pointer; }
+button.row:hover { background: var(--raise); }
+.row.own { grid-template-columns: minmax(0, 1fr) 56px auto; }
+.row.own.full { grid-template-columns: minmax(0, 1fr) minmax(40px, 160px) 64px 88px; }
+.row > .clip { max-width: none; }
+.row b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.path { grid-column: 2 / -1; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.bar { display: block; height: 8px; border-radius: 0 3px 3px 0; min-width: 2px; background: var(--s1); }
 
-@media (max-width: 1000px) { .tiles { grid-template-columns: repeat(2, 1fr); } .tile.hero { grid-column: 1 / -1; } .grid2 { grid-template-columns: 1fr; } }
-@media (max-width: 520px) { .tiles { grid-template-columns: 1fr; } .owner { grid-template-columns: minmax(90px, 1fr) 1fr 64px; } .owner .spark { display: none; } }
+/* The jobs: a timeline of the leases of the window, by holder. */
+.jobs { display: grid; gap: 10px; }
+.sumline { margin: 0; font-size: 13px; color: var(--ink-2); }
+.tl svg { display: block; width: 100%; }
+.sub3 { margin: 6px 0 0; font-size: 13px; font-weight: 650; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.owners { display: grid; gap: 2px; margin-top: 10px; }
+.owner { display: grid; grid-template-columns: minmax(120px, 230px) 1fr 72px 88px; align-items: center; gap: 10px; padding: 5px 6px; margin: 0 -6px; border: 0; background: none; text-align: left; border-radius: 6px; cursor: pointer; transition: opacity 0.15s; }
+button.owner:hover { background: var(--raise); }
+div.owner { cursor: default; }
+.owner .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.owner .name small { display: block; color: var(--muted); font-size: 11px; white-space: normal; }
+.owner .bar { height: 12px; border-radius: 0 4px 4px 0; }
+.owner .val { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.miniBar { display: inline-block; height: 8px; background: var(--s1); border-radius: 0 3px 3px 0; vertical-align: middle; margin-right: 8px; }
+.foot { color: var(--muted); font-size: 12px; text-align: center; }
+.stale { opacity: 0.55; transition: opacity 0.2s; }
+
+@media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .res.open { grid-template-columns: minmax(0, 1fr); } .row.own.full { grid-template-columns: minmax(0, 1fr) 48px auto; } .row.own.full svg { display: none; } }
+@media (max-width: 520px) { .hero b { font-size: 40px; } .owner { grid-template-columns: minmax(90px, 1fr) 1fr 64px; } .owner .spark { display: none; } .live { margin-left: 0; } }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
@@ -156,39 +213,46 @@ td.mono { font-family: var(--mono); font-size: 12px; }
       <h1>headroom</h1>
       <span>the resources and the jobs of this computer</span>
     </div>
+    <div class="filters" role="group" aria-label="Time window"><span class="label">Window</span><div class="seg" id="windows"></div></div>
     <div class="live" id="live"><span class="dot"></span><span>connecting</span></div>
   </header>
 
-  <div class="filters" role="group" aria-label="Time window">
-    <span class="label">Window</span>
-    <div class="seg" id="windows"></div>
-  </div>
-
   <section class="alerts" id="alerts" aria-live="polite"></section>
 
-  <section class="tiles" id="tiles"></section>
+  <section class="card now" aria-labelledby="nowTitle">
+    <div class="nowhead"><h2 id="nowTitle">What uses this computer</h2><p class="hint">Each color is one group of owners. Select a part or a name to mark it in the cards and the table.</p><div class="marked" id="marked"></div></div>
+    <div class="hero" id="hero"><b>-</b><span>connecting to the daemon</span></div>
+    <div class="urow"><div class="lab"><span>Memory</span><span id="ramText"></span></div><div class="ubar" id="ramBar"></div></div>
+    <div class="urow" id="cpuRow" hidden><div class="lab"><span>Processors</span><span id="cpuText"></span></div><div class="ubar thin" id="cpuBar"></div></div>
+    <div class="lgs" id="ownLegend"></div>
+    <div class="strip" id="strip"></div>
+  </section>
 
   <section aria-labelledby="resTitle">
-    <div class="sec"><h2 id="resTitle">Resources</h2><p class="hint">One card for each resource: the free part now, the trend in the window, its alert, the leases that hold it and its top users.</p></div>
+    <div class="sec"><h2 id="resTitle">Resources</h2><p class="hint">One card for each resource: the free part, the trend in the window, its alert, the leases that hold it and its top users. Select a card for its history.</p></div>
     <div class="res-grid" id="resources"></div>
   </section>
 
-  <section class="grid2">
-    <div class="card"><h2>Memory</h2><p class="hint">Available and committed memory, in GB. The line for the RAM shows the size of the physical memory.</p><div class="legend" id="memLegend"></div><div class="chart" id="memChart"></div><div id="memTable"></div></div>
-    <div class="card"><h2>Kernel pools</h2><p class="hint">The memory of the drivers, in MB. A non-paged pool that only grows is a driver leak.</p><div class="legend" id="poolLegend"></div><div class="chart" id="poolChart"></div><div id="poolTable"></div></div>
+  <section class="card jobs" id="jobs" aria-labelledby="jobsTitle">
+    <div class="sec"><h2 id="jobsTitle">Jobs</h2><p class="hint">The jobs of <code>headroom run</code> in the window, one line for each holder. Select a bar for its times.</p></div>
+    <p class="sumline" id="jobsSum"></p>
+    <div class="legend">
+      <span><i class="key" style="background:var(--warn);height:4px"></i>Waits for room</span>
+      <span><i class="key" style="background:var(--s1);height:8px;border-radius:2px"></i>Runs</span>
+      <span><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="var(--good)"/></svg>Exit code 0</span>
+      <span><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="4" fill="var(--crit)"/></svg>An error</span>
+      <span><svg width="10" height="10" aria-hidden="true"><circle cx="5" cy="5" r="3.2" fill="var(--surface)" stroke="var(--muted)" stroke-width="1.5"/></svg>No exit code</span>
+    </div>
+    <div class="tl" id="timeline"></div>
+    <h3 class="sub3">The jobs that run or wait</h3>
+    <div class="scroll" id="leases"></div>
+    <details><summary>The ended jobs of the window as a table</summary><div class="scroll" id="ended"></div></details>
   </section>
 
   <section class="card">
     <h2>Memory by owner</h2>
-    <p class="hint">The private memory of each Claude Code session, MCP server, service and program group, now. The kernel owners hold the pools, the file cache and the drivers. The line at the right shows the window.</p>
+    <p class="hint">The memory in RAM of each Claude Code session, MCP server, service and program group. The kernel owners hold the pools, the file cache and the drivers. The line at the right shows the window.</p>
     <div class="owners" id="owners"></div>
-  </section>
-
-  <section class="card">
-    <h2>Leases</h2>
-    <p class="hint">The jobs that run under <code>headroom run</code>, and the jobs that wait for room.</p>
-    <div class="scroll" id="leases"></div>
-    <details><summary>Ended leases in the window</summary><div class="scroll" id="ended"></div></details>
   </section>
 
   <section class="grid2">
@@ -198,6 +262,7 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 
   <p class="foot" id="foot">headroom stops its requests while this tab is hidden.</p>
 </div>
+<div class="tip" id="tip" role="tooltip" hidden></div>
 
 <script>
 "use strict";
@@ -211,8 +276,12 @@ const WINDOWS = [
   { minutes: 1440, label: "24 h", step: 12 },
   { minutes: 10080, label: "7 days", step: 84 },
 ];
-const state = { status: null, history: null, mcp: [], tags: null, config: null, window: 360, ok: true, at: 0 };
-try { const saved = Number(localStorage.getItem("headroom.window")); if (WINDOWS.some((w) => w.minutes === saved)) state.window = saved; } catch {}
+const state = { status: null, history: null, historyAt: 0, mcp: [], tags: null, config: null, window: 360, ok: true, at: 0, open: null, focus: null };
+try {
+  const saved = Number(localStorage.getItem("headroom.window"));
+  if (WINDOWS.some((w) => w.minutes === saved)) state.window = saved;
+  state.open = localStorage.getItem("headroom.open") || null;
+} catch {}
 
 // ---- helpers ----
 const $ = (id) => document.getElementById(id);
@@ -238,17 +307,18 @@ function s(tag, attrs, ...children) {
 }
 const mb = (v) => (v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${Math.round(v)} MB`);
 const diskSize = (v) => (v < 1024 ? `${Math.round(v)} MB` : v < 102400 ? `${Number((v / 1024).toFixed(1))} GB` : `${Math.round(v / 1024)} GB`);
-const gbNum = (v) => (v / 1024).toFixed(1);
 const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const clockS = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const dayClock = (t) => new Date(t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-function ago(t) {
-  const sec = Math.max(0, Math.round((Date.now() - t) / 1000));
+function dur(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
   if (sec < 60) return `${sec} s`;
   if (sec < 3600) return `${Math.round(sec / 60)} min`;
   if (sec < 86400) return `${(sec / 3600).toFixed(1)} h`;
   return `${(sec / 86400).toFixed(1)} days`;
 }
+const ago = (t) => dur(Date.now() - t);
+const fit = (t, n) => (t.length > n ? `${t.slice(0, Math.max(1, n - 1))}…` : t);
 // An amount in the unit of its resource: sizes in MB or GB, processors in cores, slots as counts.
 function amount(v, unit) {
   if (v == null) return "-";
@@ -260,9 +330,8 @@ function amount(v, unit) {
   return unit === "cores" ? `${n} ${n === 1 ? "core" : "cores"}` : String(n);
 }
 const unitOf = (id) => state.status?.resources?.find((r) => r.id === id)?.unit ?? (id === "memory" || id.startsWith("disk:") ? "MB" : "count");
-function amounts(a) {
-  return Object.entries(a || {}).map(([k, v]) => (k === "memory" ? mb(v) : `${k} ${amount(v, unitOf(k))}`)).join(", ") || "-";
-}
+const amounts = (a) => Object.entries(a || {}).map(([k, v]) => (k === "memory" ? mb(v) : `${k} ${amount(v, unitOf(k))}`)).join(", ") || "-";
+const windowLabel = () => (WINDOWS.find((w) => w.minutes === state.window) || WINDOWS[1]).label;
 // The level of an alert, for its color: the severity of the alert, else its kind.
 const alertLevel = (a) => (a.severity === "critical" ? "crit" : a.severity === "warning" ? "warn" : a.kind === "memory" || a.kind === "commit" || a.kind === "runaway" ? "crit" : a.kind === "pool" ? "serious" : "warn");
 const LEVEL = { crit: ["var(--crit)", "critical", 0], serious: ["var(--serious)", "serious", 1], warn: ["var(--warn)", "warning", 2] };
@@ -273,6 +342,48 @@ const ICON = {
   off: () => s("svg", { width: 10, height: 10, viewBox: "0 0 10 10", "aria-hidden": "true" }, s("circle", { cx: 5, cy: 5, r: 3.5, fill: "none", stroke: "var(--muted)", "stroke-width": 1.5 })),
   alert: (color) => s("svg", { width: 16, height: 16, viewBox: "0 0 16 16", "aria-hidden": "true" }, s("path", { d: "M8 1.5 15 14H1z", fill: color }), s("path", { d: "M8 6v3.5M8 11.5v.5", stroke: "var(--surface)", "stroke-width": 1.6, "stroke-linecap": "round" })),
 };
+const stateIcon = (st) => (st === "ok" ? ICON.good() : st === "slow" ? ICON.wait() : st === "down" ? ICON.alert("var(--crit)") : ICON.off());
+
+// The owner groups of the usage bars, in a fixed order. The color follows the group, never its rank.
+const OWN = [
+  { id: "session", name: "Claude sessions", color: "var(--c1)" },
+  { id: "editor", name: "Editor", color: "var(--c2)" },
+  { id: "browser", name: "Browser", color: "var(--c3)" },
+  { id: "docker", name: "Docker", color: "var(--c4)", dark: true },
+  { id: "service", name: "Services and MCP", color: "var(--c5)" },
+  { id: "system", name: "Windows", color: "var(--c6)" },
+  { id: "kernel", name: "Kernel and file cache", color: "var(--c7)" },
+  { id: "other", name: "Other programs", color: "var(--c8)", dark: true },
+];
+const GROUP = Object.fromEntries(OWN.map((g) => [g.id, g]));
+const groupOf = (kind) => (kind === "mcp" ? "service" : GROUP[kind] ? kind : "other");
+const ownerLabel = (o) => (o.startsWith("session:") ? o.slice(8) : o);
+
+// ---- the shared tooltip, and the mark of one owner or one group ----
+function tipAt(ev, lines) {
+  const t = $("tip");
+  t.replaceChildren(...lines.filter(Boolean).map((l, i) => h("div", { class: i ? null : "tt", text: l })));
+  t.hidden = false;
+  const r = t.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY + 16;
+  if (x + r.width > innerWidth - 8) x = Math.max(8, ev.clientX - r.width - 14);
+  if (y + r.height > innerHeight - 8) y = Math.max(8, ev.clientY - r.height - 12);
+  t.style.left = `${x}px`;
+  t.style.top = `${y}px`;
+}
+const hideTip = () => { $("tip").hidden = true; };
+function setFocus(f) {
+  const same = f && state.focus && f.owner === state.focus.owner && f.group === state.focus.group;
+  state.focus = same ? null : f;
+  applyFocus();
+}
+function applyFocus() {
+  const f = state.focus;
+  document.body.classList.toggle("focusing", !!f);
+  for (const e of document.querySelectorAll("[data-owner],[data-group]")) e.classList.toggle("hit", !!f && (f.owner ? e.dataset.owner === f.owner : e.dataset.group === f.group));
+  for (const e of document.querySelectorAll(".res")) e.classList.toggle("has-hit", !!e.querySelector(".hit"));
+  $("marked").replaceChildren(...(f ? [h("span", { text: `Marked: ${f.owner ? ownerLabel(f.owner) : GROUP[f.group].name}` }), h("button", { type: "button", text: "Clear", onclick: () => setFocus(null) })] : []));
+}
 
 // ---- the procedures ----
 async function call(path, input) {
@@ -290,14 +401,12 @@ async function call(path, input) {
 function markLive(ok) {
   state.ok = ok;
   if (ok) state.at = Date.now();
-  const live = $("live");
   const self = state.status?.self;
   const daemon = ok && self ? ` · the daemon uses ${mb(self.privateMb)}, up ${ago(self.startedAt)}` : "";
-  live.replaceChildren(h("span", { class: ok ? "dot" : "dot off" }), h("span", { text: ok ? `live · ${clockS(state.at)}${daemon}` : `no answer since ${state.at ? clockS(state.at) : "the start"}` }));
+  $("live").replaceChildren(h("span", { class: ok ? "dot" : "dot off" }), h("span", { text: ok ? `live · ${clockS(state.at)}${daemon}` : `no answer since ${state.at ? clockS(state.at) : "the start"}` }));
   document.querySelector(".wrap").classList.toggle("stale", !ok);
 }
 
-// ---- the window filter ----
 function renderWindows() {
   $("windows").replaceChildren(...WINDOWS.map((w) => h("button", {
     type: "button", "aria-pressed": String(w.minutes === state.window), text: w.label,
@@ -310,21 +419,22 @@ function niceStep(range) {
   const raw = range / 4, pow = 10 ** Math.floor(Math.log10(raw)), f = raw / pow;
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * pow;
 }
+const timeLabel = (t, span) => (span > 36 * 3600e3 ? dayClock(t) : clock(t));
 
 /**
- * A line chart over time: one y axis, 2px lines, a hairline grid, direct end labels when they do not collide,
+ * A line chart over time: one y axis from 0, 2px lines, a hairline grid, direct end labels when they do not collide,
  * a crosshair with one tooltip for every series, keyboard steps with the arrow keys, and a table of the data.
  */
-function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, reference, label }) {
-  legendHost.replaceChildren(...series.map((sr) => h("span", {}, h("i", { class: "key", style: `background:${sr.color}` }), sr.name)), h("span", { style: "margin-left:auto;color:var(--muted)", text: `in ${unit}` }));
+function lineChart(host, tableHost, { times, series, unit, toUnit, digits, reference, label }) {
   if (times.length < 2) { host.replaceChildren(h("div", { class: "empty", text: "No history yet in this window." })); tableHost.replaceChildren(); return; }
-  const W = Math.max(300, host.clientWidth || 600), H = 220, padL = 44, padR = 96, padT = 10, padB = 24;
+  const fmt = (v) => `${toUnit(v).toFixed(digits)}${unit ? ` ${unit}` : ""}`;
+  const W = Math.max(300, host.clientWidth || 600), H = 210, padL = 44, padR = 92, padT = 10, padB = 24;
   const pw = W - padL - padR, ph = H - padT - padB;
-  const t0 = times[0], t1 = times[times.length - 1];
-  let max = Math.max(...series.flatMap((sr) => sr.values.filter((v) => v != null)), reference ? reference.value : 0);
+  const t0 = times[0], t1 = times[times.length - 1], span = t1 - t0;
+  const max = Math.max(...series.flatMap((sr) => sr.values.filter((v) => v != null)), reference ? reference.value : 0);
   const step = niceStep(toUnit(max) || 1);
   const top = Math.ceil(toUnit(max) / step) * step || step;
-  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * pw;
+  const x = (t) => padL + ((t - t0) / (span || 1)) * pw;
   const y = (v) => padT + ph - (toUnit(v) / top) * ph;
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, tabindex: 0, role: "img", "aria-label": `${label}. Use the left and right arrow keys to read the values.` });
   for (let v = 0; v <= top + 1e-9; v += step) {
@@ -333,10 +443,10 @@ function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, r
     svg.append(s("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", style: "font-variant-numeric:tabular-nums" }, String(+v.toFixed(2))));
   }
   // The number of time labels follows the width, so the labels do not touch on a phone.
-  const span = t1 - t0, ticks = Math.max(2, Math.min(5, Math.floor(pw / 95)));
+  const ticks = Math.max(2, Math.min(5, Math.floor(pw / 95)));
   for (let i = 0; i <= ticks; i++) {
     const t = t0 + (span * i) / ticks;
-    svg.append(s("text", { x: x(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle", "font-size": 11, fill: "var(--muted)" }, span > 36 * 3600e3 ? dayClock(t) : clock(t)));
+    svg.append(s("text", { x: x(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle", "font-size": 11, fill: "var(--muted)" }, timeLabel(t, span)));
   }
   if (reference) {
     const yy = y(reference.value);
@@ -344,16 +454,21 @@ function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, r
     // A halo in the surface color keeps the label legible where a line crosses it.
     svg.append(s("text", { x: padL + pw - 4, y: yy - 5, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", stroke: "var(--surface)", "stroke-width": 4, "paint-order": "stroke" }, reference.label));
   }
-  // A gap in the samples (the daemon did not run) breaks the line.
-  const gap = Math.max(3 * ((t1 - t0) / Math.max(1, times.length - 1)), 3 * 60_000);
+  // A gap in the samples (the daemon did not run) breaks the line. A wash under a single series shows its area.
+  const gap = Math.max(3 * (span / Math.max(1, times.length - 1)), 3 * 60_000);
   const ends = [];
   for (const sr of series) {
     let d = "", prev = null;
+    const runs = [];
     sr.values.forEach((v, i) => {
       if (v == null) { prev = null; return; }
-      d += `${prev != null && times[i] - times[prev] <= gap ? "L" : "M"}${x(times[i]).toFixed(1)},${y(v).toFixed(1)}`;
+      const join = prev != null && times[i] - times[prev] <= gap;
+      if (!join) runs.push([]);
+      runs[runs.length - 1].push([x(times[i]), y(v)]);
+      d += `${join ? "L" : "M"}${x(times[i]).toFixed(1)},${y(v).toFixed(1)}`;
       prev = i;
     });
+    if (series.length === 1) for (const r of runs) if (r.length > 1) svg.append(s("path", { d: `M${r[0][0].toFixed(1)},${padT + ph}${r.map((p) => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("")}L${r[r.length - 1][0].toFixed(1)},${padT + ph}Z`, fill: sr.color, "fill-opacity": 0.1 }));
     svg.append(s("path", { d, fill: "none", stroke: sr.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
     const last = sr.values.length - 1;
     if (sr.values[last] != null) {
@@ -361,14 +476,13 @@ function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, r
       ends.push({ y: y(sr.values[last]), value: sr.values[last], name: sr.name });
     }
   }
-  // Direct end labels only when they do not collide; the legend carries the names in each case.
+  // Direct end labels only when they do not collide: the legend or the title carries the names in each case.
   const sorted = [...ends].sort((a, b) => a.y - b.y);
-  const clear = sorted.every((e, i) => i === 0 || e.y - sorted[i - 1].y >= 26);
-  if (clear) for (const e of ends) {
-    svg.append(s("text", { x: padL + pw + 10, y: e.y - 1, "font-size": 12, "font-weight": 650, fill: "var(--ink)" }, `${toUnit(e.value).toFixed(unit === "GB" ? 1 : 0)} ${unit}`));
+  if (sorted.every((e, i) => i === 0 || e.y - sorted[i - 1].y >= 26)) for (const e of ends) {
+    svg.append(s("text", { x: padL + pw + 10, y: e.y - 1, "font-size": 12, "font-weight": 650, fill: "var(--ink)" }, fmt(e.value)));
     svg.append(s("text", { x: padL + pw + 10, y: e.y + 12, "font-size": 11, fill: "var(--ink-2)" }, e.name));
   }
-  // The crosshair finds the nearest sample; one tooltip lists every series.
+  // The crosshair finds the nearest sample: one tooltip lists every series.
   const cross = s("line", { y1: padT, y2: padT + ph, stroke: "var(--axis)", "stroke-width": 1, visibility: "hidden" });
   const dots = series.map((sr) => s("circle", { r: 4, fill: sr.color, stroke: "var(--surface)", "stroke-width": 2, visibility: "hidden" }));
   svg.append(cross, ...dots);
@@ -383,18 +497,17 @@ function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, r
       dots[k].setAttribute("visibility", v == null ? "hidden" : "visible");
       if (v != null) { dots[k].setAttribute("cx", xx); dots[k].setAttribute("cy", y(v)); }
     });
-    tip.replaceChildren(h("div", { class: "t", text: span > 36 * 3600e3 ? dayClock(times[index]) : clock(times[index]) }),
-      ...series.map((sr) => h("div", { class: "row" }, h("i", { class: "key", style: `background:${sr.color}` }), h("b", { text: sr.values[index] == null ? "-" : `${toUnit(sr.values[index]).toFixed(unit === "GB" ? 1 : 0)} ${unit}` }), h("span", { text: sr.name }))));
+    tip.replaceChildren(h("div", { class: "t", text: timeLabel(times[index], span) }),
+      ...series.map((sr) => h("div", { class: "row" }, h("i", { class: "key", style: `background:${sr.color}` }), h("b", { text: sr.values[index] == null ? "-" : fmt(sr.values[index]) }), h("span", { text: sr.name }))));
     tip.hidden = false;
-    const left = (xx / W) * host.clientWidth;
-    tip.style.left = `${Math.min(host.clientWidth - 170, Math.max(0, left + 12))}px`;
+    tip.style.left = `${Math.min(host.clientWidth - 170, Math.max(0, (xx / W) * host.clientWidth + 12))}px`;
     tip.style.top = "8px";
   };
   const hide = () => { cross.setAttribute("visibility", "hidden"); dots.forEach((d) => d.setAttribute("visibility", "hidden")); tip.hidden = true; };
   const hit = s("rect", { x: padL, y: padT, width: pw, height: ph, fill: "transparent" });
   hit.addEventListener("pointermove", (ev) => {
     const box = svg.getBoundingClientRect();
-    const t = t0 + (((ev.clientX - box.left) / box.width) * W - padL) / pw * (t1 - t0);
+    const t = t0 + ((((ev.clientX - box.left) / box.width) * W - padL) / pw) * span;
     let lo = 0, hi = times.length - 1;
     while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (times[mid] < t) lo = mid; else hi = mid; }
     show(Math.abs(times[lo] - t) < Math.abs(times[hi] - t) ? lo : hi);
@@ -413,9 +526,9 @@ function lineChart(host, tableHost, legendHost, { times, series, unit, toUnit, r
   // The table view: the same values, at most 24 rows, the newest first.
   const every = Math.max(1, Math.ceil(times.length / 24));
   const rows = [];
-  for (let i = times.length - 1; i >= 0; i -= every) rows.push(h("tr", {}, h("td", { text: dayClock(times[i]) }), ...series.map((sr) => h("td", { class: "num", text: sr.values[i] == null ? "-" : `${toUnit(sr.values[i]).toFixed(unit === "GB" ? 1 : 0)}` }))));
+  for (let i = times.length - 1; i >= 0; i -= every) rows.push(h("tr", {}, h("td", { text: dayClock(times[i]) }), ...series.map((sr) => h("td", { class: "num", text: sr.values[i] == null ? "-" : toUnit(sr.values[i]).toFixed(digits) }))));
   tableHost.replaceChildren(h("details", {}, h("summary", { text: "The data as a table" }),
-    h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Time" }), ...series.map((sr) => h("th", { class: "num", text: `${sr.name} (${unit})` })))), h("tbody", {}, rows)))));
+    h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", { text: "Time" }), ...series.map((sr) => h("th", { class: "num", text: unit ? `${sr.name} (${unit})` : sr.name })))), h("tbody", {}, rows)))));
 }
 
 function sparkline(values, width = 88, height = 22) {
@@ -429,37 +542,75 @@ function sparkline(values, width = 88, height = 22) {
     s("circle", { cx: last[0], cy: last[1], r: 2.5, fill: "var(--s1)" }));
 }
 
-// ---- the sections ----
+// ---- the alerts ----
 function renderAlerts() {
   const alerts = state.status?.alerts || [];
   $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${alertLevel(a)}` },
-    ICON.alert(LEVEL[alertLevel(a)][0]), h("span", { class: "kind", text: a.kind }), h("span", { class: "msg", text: a.message }), h("span", { class: "since", text: `since ${clock(a.since)}` }))));
+    ICON.alert(LEVEL[alertLevel(a)][0]), h("div", {}, h("span", { class: "kind", text: a.kind }), h("span", { class: "since", text: `since ${clock(a.since)}` })), h("div", { class: "msg", text: a.message }))));
 }
 
-function tile(label, value, sub, extra, hero) {
-  return h("div", { class: `card tile${hero ? " hero" : ""}` }, h("div", { class: "label", text: label }), h("div", { class: "value", text: value }), sub ? h("div", { class: "sub", text: sub }) : null, extra);
+// ---- the answer: a stacked bar of the memory and of the processors, by owner ----
+/**
+ * One segment for each owner in the color of its group, a 2px gap between segments, the part that no owner
+ * explains, and the free part as the track. A segment below 6 px joins the "more" segment of its group.
+ */
+function usageBar(host, parts, rest, free, fmt, restText) {
+  const total = parts.reduce((a, p) => a + p.value, 0) + rest + free || 1;
+  const W = host.clientWidth || 600, min = (total * 6) / W;
+  const segs = [];
+  for (const g of OWN) {
+    const mine = parts.filter((p) => p.group === g.id && p.value > 0).sort((a, b) => b.value - a.value);
+    const small = mine.filter((p) => p.value < min);
+    segs.push(...mine.filter((p) => p.value >= min));
+    if (small.length) segs.push({ group: g.id, value: small.reduce((a, p) => a + p.value, 0), name: small.length === 1 ? ownerLabel(small[0].owner) : `${small.length} more`, list: small });
+  }
+  if (rest > total * 0.003) segs.push({ rest: true, value: rest, name: "Not counted" });
+  if (free > 0) segs.push({ free: true, value: free, name: "Free" });
+  host.replaceChildren(...segs.map((p) => {
+    const g = GROUP[p.group];
+    const text = p.free ? `${fmt(p.value)} free` : p.owner ? ownerLabel(p.owner) : p.name;
+    const lines = p.free ? ["Free", fmt(p.value)] : p.rest ? ["Not counted", fmt(p.value), restText]
+      : p.list ? [`${p.name} · ${g.name}`, fmt(p.value), p.list.slice(0, 6).map((o) => ownerLabel(o.owner)).join(", ") + (p.list.length > 6 ? ", …" : "")]
+      : [ownerLabel(p.owner), `${fmt(p.value)} · ${g.name}`, p.o ? `${mb(p.o.privateMb)} private · ${p.o.processes} processes` : null];
+    const e = h("div", { class: `seg2${p.free ? " free" : p.rest ? " rest" : ""}${g?.dark ? " dk" : ""}`, style: `flex-grow:${p.value};${g ? `background:${g.color}` : ""}`, "data-group": p.group || null, "data-owner": p.owner || null },
+      (p.value / total) * W > text.length * 6.8 + 14 ? h("span", { text }) : null);
+    e.addEventListener("pointermove", (ev) => tipAt(ev, lines));
+    e.addEventListener("click", (ev) => { if (g) setFocus(p.owner ? { owner: p.owner } : { group: p.group }); tipAt(ev, lines); });
+    return e;
+  }));
+  return total;
 }
-function meter(fraction, warnAt, critAt) {
-  const level = fraction >= critAt ? "crit" : fraction >= warnAt ? "warn" : "";
-  return h("div", { class: "meter", role: "meter", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(fraction * 100) }, h("div", { class: level, style: `width:${Math.min(100, fraction * 100).toFixed(1)}%` }));
-}
-function renderTiles() {
+
+function renderNow() {
   const st = state.status;
   if (!st) return;
-  const m = st.memory;
-  const used = 1 - m.availableMb / m.totalMb;
-  const granted = st.leases.filter((l) => l.state === "granted"), waiting = st.leases.filter((l) => l.state === "waiting");
-  const pool = (state.history?.memory || []).map((r) => r.kernelNonpagedMb);
-  const poolDelta = pool.length > 1 ? m.kernelNonpagedMb - pool[0] : null;
-  $("tiles").replaceChildren(
-    tile("Available memory", mb(m.availableMb), `of ${mb(m.totalMb)} RAM · ${Math.round(used * 100)}% in use`, meter(used, 0.85, 0.95), true),
-    tile("Free for a lease", mb(Math.max(0, st.free.memory ?? 0)), `after the reserve of ${mb(st.reserveMb)}`),
-    tile("Committed", mb(m.commitMb), `of the limit ${mb(m.commitLimitMb)}`, meter(m.commitMb / m.commitLimitMb, 0.8, 0.9)),
-    tile("Non-paged pool", mb(m.kernelNonpagedMb), poolDelta == null ? `paged ${mb(m.kernelPagedMb)}` : `${poolDelta >= 0 ? "+" : "-"}${mb(Math.abs(poolDelta))} in the window`, h("div", { style: "margin-top:6px" }, sparkline(pool, 120, 24))),
-    tile("Leases", `${granted.length} run · ${waiting.length} wait`, waiting.length ? `the first waits for ${ago(waiting[0].requestedAt)}` : "no job waits"),
-    tile("Processes", String(st.session?.processes ?? "-"), st.session?.userObjects == null ? "in this session" : `${st.session.userObjects} USER · ${st.session.gdiObjects} GDI objects`,
-      (st.disks || []).length ? h("div", { class: "sub", title: "The free space of each fixed drive", text: `Disks: ${st.disks.map((d) => `${d.mount} ${diskSize(d.freeMb)} free`).join(" · ")}` }) : null),
-  );
+  const m = st.memory, used = m.totalMb - m.availableMb;
+  const ram = (st.owners || []).map((o) => ({ owner: o.owner, group: groupOf(o.kind), value: o.workingMb, o }));
+  const ramRest = Math.max(0, used - ram.reduce((a, p) => a + p.value, 0));
+  const granted = st.leases.filter((l) => l.state === "granted").length, waiting = st.leases.filter((l) => l.state === "waiting").length;
+  $("hero").replaceChildren(h("b", { text: mb(m.availableMb) }), h("span", { text: `free of ${mb(m.totalMb)} of memory` }),
+    h("small", { text: `${mb(Math.max(0, st.free.memory ?? 0))} free for a new job, after the reserve of ${mb(st.reserveMb)}. ${mb(m.commitMb)} committed of the limit ${mb(m.commitLimitMb)}.` }));
+  $("ramText").replaceChildren(h("b", { text: mb(used) }), ` in use, ${Math.round((used / m.totalMb) * 100)}%`);
+  usageBar($("ramBar"), ram, ramRest, m.availableMb, mb, "Memory in use that the owners do not explain.");
+  const cpu = st.resources.find((r) => r.id === "cpu" && r.capacity);
+  const cpuParts = (cpu?.owners || []).map((o) => ({ owner: o.owner, group: groupOf(o.kind), value: o.value }));
+  $("cpuRow").hidden = !cpu;
+  if (cpu) {
+    $("cpuText").replaceChildren(h("b", { text: amount(cpu.used, "cores") }), ` of ${cpu.capacity} in use`);
+    usageBar($("cpuBar"), cpuParts, Math.max(0, cpu.used - cpuParts.reduce((a, p) => a + p.value, 0)), Math.max(0, cpu.free ?? 0), (v) => amount(v, "cores"), "The processor time of the owners after the top 10.");
+  }
+  const sum = (list, id) => list.filter((p) => p.group === id).reduce((a, p) => a + p.value, 0);
+  $("ownLegend").replaceChildren(...OWN.map((g) => [g, sum(ram, g.id), sum(cpuParts, g.id)]).filter(([, r, c]) => r > 0 || c > 0).map(([g, r, c]) =>
+    h("button", { type: "button", class: "lg", "data-group": g.id, title: `Mark ${g.name}`, onclick: () => setFocus({ group: g.id }) }, h("i", { class: "sw", style: `background:${g.color}` }), g.name, h("b", { text: mb(r) }), c ? h("small", { text: amount(c, "cores") }) : null)),
+    h("span", { class: "lg static" }, h("i", { class: "sw rest" }), "Not counted", h("b", { text: mb(ramRest) })),
+    h("span", { class: "lg static" }, h("i", { class: "sw free" }), "Free", h("b", { text: mb(m.availableMb) })));
+  const svc = st.resources.filter((r) => r.health);
+  $("strip").replaceChildren(
+    ...(svc.length ? [h("span", { class: "lab", text: "Services" })] : []),
+    ...svc.map((r) => h("button", { type: "button", class: `svc ${r.health.state}`, title: r.health.error || r.health.needs || r.health.title, onclick: () => openRes(r.id, true) },
+      stateIcon(r.health.state), h("span", { text: resName(r) }), h("b", { text: r.health.state }), r.health.latencyMs == null ? null : h("small", { text: `${r.health.latencyMs} ms` }))),
+    h("span", { class: "lab", text: "Jobs" }),
+    h("a", { class: "svc", href: "#jobs" }, ICON.good(), h("b", { text: `${granted} run` }), ICON.wait(), h("b", { text: `${waiting} wait` })));
 }
 
 // ---- the resources: one card for each instance of Status.resources, from the model ----
@@ -470,11 +621,17 @@ const NAMES = {
   "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports",
 };
 function resName(r) {
+  if (r.health?.title) { const t = r.health.title.replace(/^The /, ""); return t[0].toUpperCase() + t.slice(1); }
   const part = r.id.includes(":") ? r.id.slice(r.id.indexOf(":") + 1) : "";
   return NAMES[r.id] || (r.kind === "disk" ? `Drive ${part}` : r.kind === "slot" ? `Slot ${r.id}` : `${r.kind[0].toUpperCase()}${r.kind.slice(1)} ${part}`.trim());
 }
 // The instance of an alert: its id, except the alert "pool" (the non-paged pool) and the process outliers of the memory.
 const alertOf = (a) => (a.id === "pool" ? "pool:nonpaged" : a.kind === "runaway" || a.kind === "orphan" ? "memory" : a.id);
+// A resource with a capacity shows its free part. A kernel pool, the desktop or a rate (the network) shows its used part.
+function viewOf(r) {
+  const onFree = r.capacity != null && r.free != null && r.unit !== "MB/s";
+  return { onFree, k: onFree ? 2 : 1, word: onFree ? "free" : "used", value: onFree ? r.free : r.used };
+}
 
 /** The change in one hour: from the oldest point of the last hour that is 10 minutes old, else from the first point of the window. */
 function hourly(points, k, now, value) {
@@ -498,12 +655,35 @@ function trend(points, k, capacity, label) {
     s("path", { d, fill: "none", stroke: "var(--s1)", "stroke-width": 1.5, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }));
 }
 
+/** The users of a resource: one row for each owner, in the color of its group. A row marks its owner on the page. */
+function usersList(owners, full) {
+  const top = Math.max(...owners.map((o) => o.value), 1e-9);
+  const hist = new Map();
+  if (full) for (const r of state.history?.owners || []) { if (!hist.has(r.owner)) hist.set(r.owner, new Map()); hist.get(r.owner).set(r.at, r.privateMb); }
+  const times = (state.history?.memory || []).map((r) => r.at);
+  return h("div", { class: "list" }, h("div", { class: "t", text: full ? "Users, the largest first" : "Top users" }), ...owners.map((o) => h("button", {
+    type: "button", class: `row own${full ? " full" : ""}`, "data-owner": o.owner, "data-group": groupOf(o.kind), title: `Mark ${o.owner}`, onclick: () => setFocus({ owner: o.owner }),
+  },
+  h("span", { class: "clip", text: ownerLabel(o.owner) }),
+  h("span", {}, h("span", { class: "bar", style: `width:${((o.value / top) * 100).toFixed(1)}%;background:${GROUP[groupOf(o.kind)].color}` })),
+  h("b", { text: amount(o.value, o.unit) }),
+  full ? (o.unit === "MB" && hist.has(o.owner) ? sparkline(times.map((t) => hist.get(o.owner).get(t) ?? null)) : h("span")) : null)));
+}
+
+function openRes(id, scroll) {
+  state.open = id;
+  try { if (id) localStorage.setItem("headroom.open", id); else localStorage.removeItem("headroom.open"); } catch {}
+  renderResources();
+  applyFocus();
+  if (id && scroll) document.querySelector(".res.open")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
 function resCard(r, st, points) {
+  const open = state.open === r.id;
   const alerts = (st.alerts || []).filter((a) => alertOf(a) === r.id).sort((a, b) => LEVEL[alertLevel(a)][2] - LEVEL[alertLevel(b)][2]);
   const lv = alerts.length ? alertLevel(alerts[0]) : "";
   const u = (v) => amount(v, r.unit);
-  // A resource with a capacity shows its free part. A kernel pool, the desktop or a rate (the network) shows its used part.
-  const onFree = r.capacity != null && r.free != null && r.unit !== "MB/s", k = onFree ? 2 : 1, value = onFree ? r.free : r.used;
+  const { onFree, k, word, value } = viewOf(r);
   const used = r.capacity != null && r.used != null ? r.used / r.capacity : null;
   // A service (the unit "state") shows its state, and its latency as the used part (H27).
   const hl = r.health;
@@ -512,97 +692,136 @@ function resCard(r, st, points) {
     : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), "in use")
     : h("div", { class: "big" }, h("b", { text: u(r.capacity) }), "in total");
   const sub = hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`].filter(Boolean).join(" · ");
-  const word = onFree ? "free" : "used";
-  const line = trend(points, k, r.capacity, `The ${word} part in the window`);
   const change = r.unit === "MB" ? hourly(points, k, st.at, value) : null;
   const rate = !change ? null : Math.abs(change.rate) < 1 ? "steady" : `${word} ${change.rate < 0 ? "−" : "+"}${diskSize(Math.abs(change.rate))}/h`;
   const leases = (st.leases || []).filter((l) => (l.amounts?.[r.id] ?? 0) > 0);
   const root = state.config?.jobTemp;
   const sep = root && !root.includes("\\") ? "/" : "\\";
-  const owners = (r.owners || []).slice(0, 5);
-  const top = Math.max(...owners.map((o) => o.value), 1e-9);
-  return h("article", { class: `card res ${lv}` },
+  const owners = r.owners || [];
+  const main = [
     h("div", { class: "eye" }, h("span", { text: (GROUPS.find(([kind]) => kind === r.kind) || [0, r.kind])[1] }),
-      lv ? h("span", { class: "chip" }, ICON.alert(LEVEL[lv][0]), LEVEL[lv][1])
-        : hl && hl.state !== "ok" ? h("span", { class: "chip" }, hl.state === "idle" || hl.state === "absent" ? ICON.off() : ICON.wait(), hl.state)
-        : h("span", { class: "chip" }, ICON.good(), "ok")),
-    h("h3", { text: resName(r) }),
+      lv ? h("span", { class: "chip" }, ICON.alert(LEVEL[lv][0]), LEVEL[lv][1]) : h("span", { class: "chip" }, stateIcon(hl ? hl.state : "ok"), hl ? hl.state : "ok")),
+    h("div", { class: "ttl" }, h("h3", { text: resName(r) }), h("button", { type: "button", class: "more", "aria-expanded": String(open), text: open ? "Close" : "History", onclick: () => openRes(open ? null : r.id) })),
     big,
     used == null ? null : h("div", { class: "meter", role: "meter", "aria-label": `${resName(r)} in use`, "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(used * 100) },
       h("div", { class: lv === "crit" ? "crit" : lv ? "warn" : "", style: `width:${Math.min(100, used * 100).toFixed(1)}%` })),
     sub ? h("div", { class: "sub", text: sub }) : null,
-    value == null ? null : h("div", { class: "trend" }, line || h("span", { class: "sub", text: "No history yet in this window." }),
+    value == null || open ? null : h("div", { class: "trend" }, trend(points, k, r.capacity, `The ${word} part in the window`) || h("span", { class: "sub", text: "No history yet in this window." }),
       rate ? h("span", { title: `The change of the ${word} part in one hour, since ${clock(change.since)}`, class: Math.abs(change.rate) >= 1024 ? "up" : "", text: rate }) : null),
     ...alerts.map((a) => h("div", { class: `note ${alertLevel(a)}`, text: a.message })),
-    leases.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Leases" }), ...leases.map((l) => h("div", { class: "row" },
+    leases.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Leases" }), ...leases.map((l) => h("div", { class: "row", "data-owner": `session:${l.holder}` },
       l.state === "granted" ? ICON.good() : ICON.wait(),
       h("span", { class: "clip", title: `${l.holder} · ${l.job}`, text: `${l.holder} · ${l.job}` }),
       h("b", { text: u(l.amounts[r.id]) }),
       r.kind === "disk" && root && l.state === "granted" ? h("span", { class: "path", title: "The TEMP folder of the job", text: `${root.replace(/[\\/]+$/, "")}${sep}${l.id}` }) : null))) : null,
-    owners.length ? h("div", { class: "list" }, h("div", { class: "t", text: "Top users" }), ...owners.map((o) => h("div", { class: "row own" },
-      h("span", { class: "clip", title: o.owner, text: o.owner.startsWith("session:") ? o.owner.slice(8) : o.owner }),
-      h("div", {}, h("div", { class: "bar", style: `width:${((o.value / top) * 100).toFixed(1)}%` })),
-      h("b", { text: amount(o.value, o.unit) })))) : null);
+    owners.length && !open ? usersList(owners.slice(0, 5), false) : null,
+  ];
+  const card = open
+    ? h("article", { class: `card res open ${lv}`, "data-id": r.id }, h("div", { class: "sum" }, ...main),
+      h("div", { class: "det" }, h("div", { class: "dh", text: `The ${word === "free" ? "free" : hl ? "answer time" : "used"} part over the last ${windowLabel()}` }), h("div", { class: "detchart" }), owners.length ? usersList(owners, true) : null))
+    : h("article", { class: `card res ${lv}`, "data-id": r.id }, ...main);
+  // A select in the card opens or closes it. A row or a button in it keeps its own action.
+  card.addEventListener("click", (ev) => { if (!ev.target.closest("button, a, .det")) openRes(open ? null : r.id); });
+  return card;
 }
 
+/** The history of one resource, in a larger chart. A size in MB shows in GB from 2 GB. */
+function drawDetail(r, host, points) {
+  const { k, onFree } = viewOf(r);
+  const values = points.map((p) => p[k]);
+  const max = Math.max(0, ...values.filter((v) => v != null));
+  const [unit, toUnit, digits] = r.unit === "MB" ? (Math.max(max, r.capacity ?? 0) >= 2048 ? ["GB", (v) => v / 1024, 1] : ["MB", (v) => v, 0])
+    : [r.unit === "state" ? "ms" : r.unit === "count" ? "" : r.unit, (v) => v, r.unit === "MB/s" ? 2 : r.unit === "cores" ? 1 : 0];
+  const reference = r.capacity != null && r.unit !== "MB/s" && r.capacity <= max * 1.6 ? { value: r.capacity, label: `capacity ${amount(r.capacity, r.unit)}` } : null;
+  host.replaceChildren(h("div", { class: "chart" }), h("div"));
+  lineChart(host.firstChild, host.lastChild, { times: points.map((p) => p[0]), unit, toUnit, digits, reference, label: `${resName(r)} over time`,
+    series: [{ name: onFree ? "free" : r.health ? "answer time" : "in use", color: "var(--s1)", values }] });
+}
+
+const detail = { key: "", node: null };
 function renderResources() {
   const st = state.status;
   if (!st?.resources?.length) { $("resources").replaceChildren(h("div", { class: "empty", text: "No measurement yet." })); return; }
   const rank = (r) => { const i = GROUPS.findIndex(([kind]) => kind === r.kind); return i < 0 ? GROUPS.length : i; };
   const hist = state.history?.resources || {};
-  $("resources").replaceChildren(...st.resources.map((r, i) => [r, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([r]) => resCard(r, st, hist[r.id] || [])));
+  const grid = $("resources");
+  grid.replaceChildren(...st.resources.map((r, i) => [r, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(([r]) => resCard(r, st, hist[r.id] || [])));
+  // The chart of the open card stays between two reads of the status, so its crosshair stays under the pointer.
+  const r = st.resources.find((x) => x.id === state.open), slot = grid.querySelector(".res.open .detchart");
+  if (!r || !slot) return;
+  const key = `${r.id}|${state.historyAt}|${grid.clientWidth}`;
+  if (detail.key === key && detail.node) { slot.replaceWith(detail.node); return; }
+  detail.key = key;
+  detail.node = slot;
+  drawDetail(r, slot, hist[r.id] || []);
 }
 
-function renderCharts() {
-  const rows = state.history?.memory || [];
-  const times = rows.map((r) => r.at);
-  const total = rows.length ? rows[rows.length - 1].totalMb : state.status?.memory.totalMb;
-  lineChart($("memChart"), $("memTable"), $("memLegend"), {
-    label: "Available and committed memory over time",
-    times, unit: "GB", toUnit: (v) => v / 1024,
-    reference: total ? { value: total, label: `RAM ${gbNum(total)} GB` } : null,
-    series: [
-      { name: "Available", color: "var(--s1)", values: rows.map((r) => r.availableMb) },
-      { name: "Committed", color: "var(--s2)", values: rows.map((r) => r.commitMb) },
-    ],
-  });
-  lineChart($("poolChart"), $("poolTable"), $("poolLegend"), {
-    label: "The kernel pools over time",
-    times, unit: "MB", toUnit: (v) => v,
-    series: [
-      { name: "Non-paged", color: "var(--s1)", values: rows.map((r) => r.kernelNonpagedMb) },
-      { name: "Paged", color: "var(--s2)", values: rows.map((r) => r.kernelPagedMb) },
-    ],
-  });
+// ---- the jobs: the leases of the window as bars, one line for each holder ----
+const waitOf = (l, now) => (l.grantedAt ?? l.endedAt ?? now) - l.requestedAt;
+const failedOf = (l) => (l.exitCode != null && l.exitCode !== 0) || !!l.signal;
+function leaseTip(l, now) {
+  const w = waitOf(l, now), ran = l.grantedAt == null ? null : (l.endedAt ?? now) - l.grantedAt;
+  const waited = w >= 1000 ? `waited ${dur(w)}` : "no wait";
+  const run = l.endedAt == null ? (ran == null ? `Waits for room since ${dur(w)}` : `Runs for ${dur(ran)}, ${waited}`) : `${waited[0].toUpperCase()}${waited.slice(1)}, ${ran == null ? "did not run" : `ran ${dur(ran)}`}`;
+  const end = l.endedAt == null ? null : `Ended ${clock(l.endedAt)}${l.exitCode != null ? ` · exit code ${l.exitCode}` : l.signal ? ` · ${l.signal}` : ""}${l.peakMb != null ? ` · peak ${mb(l.peakMb)}` : ""}`;
+  return [`${l.holder} · ${l.job}`, run, end, `Asked for ${amounts(l.amounts)}`];
 }
-
-// The label of each owner kind that is not clear from its name. A kernel owner has no process.
-const KIND_LABEL = { service: "Service (a Node process with a title)", kernel: "Windows kernel, no process" };
-const KERNEL_LABEL = { kernel: "Kernel pools", "kernel:cache": "System file cache", "kernel:drivers": "Kernel and driver code" };
-
-function renderOwners() {
-  const owners = state.status?.owners || [];
-  if (!owners.length) { $("owners").replaceChildren(h("div", { class: "empty", text: "No sample yet." })); return; }
-  const top = owners.slice(0, 14), rest = owners.slice(14);
-  const rows = rest.length ? [...top, { owner: `${rest.length} more owners`, kind: "other", privateMb: rest.reduce((a, o) => a + o.privateMb, 0), workingMb: rest.reduce((a, o) => a + o.workingMb, 0), processes: rest.reduce((a, o) => a + o.processes, 0), rest: true }] : top;
-  const max = Math.max(...rows.map((o) => o.privateMb), 1);
-  // The history of each owner, for the line at the right of its row.
-  const series = new Map();
-  for (const r of state.history?.owners || []) {
-    if (!series.has(r.owner)) series.set(r.owner, new Map());
-    series.get(r.owner).set(r.at, r.privateMb);
+function renderTimeline() {
+  const host = $("timeline"), st = state.status;
+  if (!st) return;
+  const now = st.at, span = state.window * 60e3, t0 = now - span;
+  const byId = new Map();
+  for (const l of [...(state.history?.leases || []), ...(st.leases || [])]) byId.set(l.id, l);
+  const all = [...byId.values()].filter((l) => (l.endedAt ?? now) >= t0).sort((a, b) => a.requestedAt - b.requestedAt);
+  const waited = all.filter((l) => waitOf(l, now) >= 1000).sort((a, b) => waitOf(b, now) - waitOf(a, now));
+  const failed = all.filter(failedOf).length, long = waited[0];
+  $("jobsSum").textContent = !all.length ? "" : [`${all.length} jobs in the last ${windowLabel()}.`,
+    long ? `${waited.length} waited for room, the longest ${dur(waitOf(long, now))} (${long.holder} · ${long.job}).` : "No job waited for room.",
+    failed ? `${failed} ended with an error.` : "No job ended with an error.",
+    (state.history?.leases || []).length >= 100 ? "The bars show the last 100 ended jobs." : ""].filter(Boolean).join(" ");
+  if (!all.length) { host.replaceChildren(h("div", { class: "empty", text: "No job of headroom run in this window." })); return; }
+  const W = Math.max(280, host.clientWidth || 600), LW = W < 560 ? 80 : 130, pw = W - LW - 12;
+  const x = (t) => LW + (Math.max(0, Math.min(span, t - t0)) / span) * pw;
+  const rows = new Map();
+  for (const l of all) { if (!rows.has(l.holder)) rows.set(l.holder, []); rows.get(l.holder).push(l); }
+  const holders = [...rows].map(([holder, ls]) => ({ holder, ls, last: Math.max(...ls.map((l) => l.endedAt ?? now)) })).sort((a, b) => b.last - a.last);
+  const LANE = 14, PAD = 6, marks = [];
+  let y = 0;
+  for (const g of holders) {
+    // Each lease gets the first lane that is free at its start, so two jobs of one holder at one time do not overlap.
+    const ends = [], lane = new Map();
+    for (const l of g.ls) {
+      const a = x(l.requestedAt);
+      let i = ends.findIndex((e) => e + 3 <= a);
+      if (i < 0) i = ends.length < 4 ? ends.length : ends.indexOf(Math.min(...ends));
+      ends[i] = Math.max(x(l.endedAt ?? now), a + 2);
+      lane.set(l, i);
+    }
+    const hgt = ends.length * LANE + PAD * 2;
+    marks.push(s("text", { x: 0, y: y + hgt / 2 + 4, "font-size": 12, fill: "var(--ink-2)" }, s("title", {}, g.holder), fit(g.holder, Math.floor((LW - 10) / 7))),
+      s("line", { x1: 0, x2: W, y1: y + hgt, y2: y + hgt, stroke: "var(--grid)", "stroke-width": 1 }));
+    for (const l of g.ls) {
+      const cy = y + PAD + lane.get(l) * LANE + LANE / 2;
+      const qa = x(l.requestedAt), ga = x(l.grantedAt ?? l.endedAt ?? now), ea = x(l.endedAt ?? now);
+      if (ga - qa >= 1) marks.push(s("rect", { x: qa, y: cy - 2, width: ga - qa, height: 4, rx: 1, fill: "var(--warn)" }));
+      if (l.grantedAt != null) marks.push(s("rect", { x: ga, y: cy - 5, width: Math.max(2, ea - ga), height: 10, rx: 2, fill: "var(--s1)" }));
+      if (l.endedAt != null) marks.push(l.exitCode == null && !l.signal
+        ? s("circle", { cx: ea, cy, r: 3.2, fill: "var(--surface)", stroke: "var(--muted)", "stroke-width": 1.5 })
+        : s("circle", { cx: ea, cy, r: 4, fill: failedOf(l) ? "var(--crit)" : "var(--good)", stroke: "var(--surface)", "stroke-width": 1.5 }));
+      const hit = s("rect", { x: qa - 4, y: cy - 7, width: Math.max(10, ea - qa + 8), height: 14, fill: "transparent", style: "cursor:pointer" });
+      hit.addEventListener("pointermove", (ev) => tipAt(ev, leaseTip(l, now)));
+      hit.addEventListener("click", (ev) => tipAt(ev, leaseTip(l, now)));
+      marks.push(hit);
+    }
+    y += hgt;
   }
-  const times = (state.history?.memory || []).map((r) => r.at);
-  $("owners").replaceChildren(...rows.map((o) => {
-    const hist = series.get(o.owner);
-    const label = o.owner.startsWith("session:") ? o.owner.slice(8) : o.owner;
-    const kind = o.rest ? "" : o.owner.startsWith("session:") ? "Claude Code session" : o.owner.startsWith("mcp:") ? "MCP server of the gateway" : KERNEL_LABEL[o.owner] || KIND_LABEL[o.kind] || o.kind;
-    return h("div", { class: "owner" },
-      h("div", { class: "name", title: o.owner }, h("span", { text: label }), h("small", { text: `${kind}${kind ? " · " : ""}${o.processes} processes · ${mb(o.workingMb)} in RAM` })),
-      h("div", { class: "bar" }, h("div", { style: `width:${((o.privateMb / max) * 100).toFixed(1)}%` })),
-      h("div", { class: "val", text: mb(o.privateMb) }),
-      h("div", { class: "spark" }, hist ? sparkline(times.map((t) => hist.get(t) ?? null)) : null));
-  }));
+  const ticks = Math.max(2, Math.min(6, Math.floor(pw / 90)));
+  for (let i = 0; i <= ticks; i++) {
+    const xx = LW + (pw * i) / ticks;
+    marks.unshift(s("line", { x1: xx, x2: xx, y1: 0, y2: y, stroke: "var(--grid)", "stroke-width": 1 }));
+    marks.push(s("text", { x: xx, y: y + 16, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle", "font-size": 11, fill: "var(--muted)" }, timeLabel(t0 + (span * i) / ticks, span)));
+  }
+  host.replaceChildren(s("svg", { viewBox: `0 0 ${W} ${y + 22}`, height: y + 22, role: "img", "aria-label": `The jobs of the window by holder. ${$("jobsSum").textContent}` }, ...marks));
 }
 
 function leaseTable(leases, ended) {
@@ -622,10 +841,35 @@ function leaseTable(leases, ended) {
         h("td", { class: "clip", title: l.reason || "", text: l.reason || "" }));
     })));
 }
-function renderLeases() {
+function renderJobs() {
   const leases = [...(state.status?.leases || [])].sort((a, b) => (a.state === b.state ? a.requestedAt - b.requestedAt : a.state === "granted" ? -1 : 1));
   $("leases").replaceChildren(leaseTable(leases, false));
-  $("ended").replaceChildren(leaseTable((state.history?.leases || []).slice(0, 20), true));
+  $("ended").replaceChildren(leaseTable((state.history?.leases || []).slice(0, 50), true));
+  renderTimeline();
+}
+
+// ---- the owners: the memory in RAM of each owner, and its line over the window ----
+// The label of each owner kind that is not clear from its name. A kernel owner has no process.
+const KIND_LABEL = { service: "Service (a Node process with a title)", kernel: "Windows kernel, no process" };
+const KERNEL_LABEL = { kernel: "Kernel pools", "kernel:cache": "System file cache", "kernel:drivers": "Kernel and driver code" };
+function renderOwners() {
+  const owners = [...(state.status?.owners || [])].sort((a, b) => b.workingMb - a.workingMb);
+  if (!owners.length) { $("owners").replaceChildren(h("div", { class: "empty", text: "No sample yet." })); return; }
+  const top = owners.slice(0, 14), rest = owners.slice(14);
+  const rows = rest.length ? [...top, { owner: `${rest.length} more owners`, kind: "other", privateMb: rest.reduce((a, o) => a + o.privateMb, 0), workingMb: rest.reduce((a, o) => a + o.workingMb, 0), processes: rest.reduce((a, o) => a + o.processes, 0), rest: true }] : top;
+  const max = Math.max(...rows.map((o) => o.workingMb), 1);
+  const series = new Map();
+  for (const r of state.history?.owners || []) { if (!series.has(r.owner)) series.set(r.owner, new Map()); series.get(r.owner).set(r.at, r.workingMb); }
+  const times = (state.history?.memory || []).map((r) => r.at);
+  $("owners").replaceChildren(...rows.map((o) => {
+    const hist = series.get(o.owner);
+    const kind = o.rest ? "" : o.owner.startsWith("session:") ? "Claude Code session" : o.owner.startsWith("mcp:") ? "MCP server of the gateway" : KERNEL_LABEL[o.owner] || KIND_LABEL[o.kind] || o.kind;
+    return h(o.rest ? "div" : "button", o.rest ? { class: "owner" } : { type: "button", class: "owner", "data-owner": o.owner, "data-group": groupOf(o.kind), onclick: () => setFocus({ owner: o.owner }) },
+      h("span", { class: "name", title: o.owner }, h("span", { text: ownerLabel(o.owner) }), h("small", { text: `${kind}${kind ? " · " : ""}${o.processes} processes · ${mb(o.privateMb)} private` })),
+      h("span", {}, h("span", { class: "bar", style: `width:${((o.workingMb / max) * 100).toFixed(1)}%;background:${o.rest ? "var(--c8)" : GROUP[groupOf(o.kind)].color}` })),
+      h("span", { class: "val", text: mb(o.workingMb) }),
+      h("span", { class: "spark" }, hist ? sparkline(times.map((t) => hist.get(t) ?? null)) : null));
+  }));
 }
 
 function renderMcp() {
@@ -674,18 +918,19 @@ function renderTags() {
 }
 
 // ---- the refresh loops ----
+function renderAll() { renderAlerts(); renderNow(); renderResources(); renderJobs(); renderOwners(); applyFocus(); }
 async function refreshStatus() {
-  try { state.status = await call("resources/status"); markLive(true); renderAlerts(); renderTiles(); renderResources(); renderOwners(); renderLeases(); }
+  try { state.status = await call("resources/status"); markLive(true); renderAll(); }
   catch { markLive(false); }
 }
 async function refreshHistory() {
   const w = WINDOWS.find((x) => x.minutes === state.window) || WINDOWS[1];
-  try { state.history = await call("resources/history", { minutes: w.minutes, step: w.step }); renderCharts(); renderTiles(); renderResources(); renderOwners(); renderLeases(); }
+  try { state.history = await call("resources/history", { minutes: w.minutes, step: w.step }); state.historyAt = Date.now(); if (state.status) renderAll(); }
   catch { markLive(false); }
 }
 async function refreshMcp() { try { state.mcp = await call("mcp/list"); renderMcp(); } catch {} }
 async function refreshTags() { try { state.tags = await call("resources/pooltags", { limit: 10 }); renderTags(); } catch {} }
-async function refreshConfig() { try { state.config = await call("config/get"); renderResources(); } catch {} }
+async function refreshConfig() { try { state.config = await call("config/get"); if (state.status) renderResources(); } catch {} }
 
 const LOOPS = [[refreshStatus, 3000], [refreshMcp, 10000], [refreshHistory, 60000], [refreshTags, 60000], [refreshConfig, 60000]];
 let timers = [];
@@ -696,8 +941,17 @@ function start() {
 function stop() { timers.forEach(clearInterval); timers = []; }
 // A hidden tab makes no requests, so the dashboard costs nothing when nobody looks at it.
 document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
-let resizeTimer = 0;
-new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderCharts, 150); }).observe(document.querySelector(".grid2"));
+for (const id of ["ramBar", "cpuBar", "timeline"]) $(id).addEventListener("pointerleave", hideTip);
+addEventListener("scroll", hideTip, { passive: true });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { hideTip(); if (state.focus) setFocus(null); } });
+let lastWidth = 0, resizeTimer = 0;
+new ResizeObserver(([entry]) => {
+  const w = Math.round(entry.contentRect.width);
+  if (w === lastWidth) return;
+  lastWidth = w;
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (state.status) renderAll(); }, 150);
+}).observe(document.querySelector(".wrap"));
 
 renderWindows();
 if (!document.hidden) start();

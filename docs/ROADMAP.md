@@ -46,7 +46,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H5 | The hub: the organizer writes the state of headroom into the `resources` collection of the Fleet Hub | later |
 | H6 | Enforce on Windows: a job object with a memory limit, and a stop when the job closes | done: the job object, `--limit` and `--keep` |
 | H7 | Enforce on Linux and WSL: a cgroup with `MemoryMax` | later |
-| H8 | A Claude Code hook that sends each heavy command through `headroom run` | waits for Mark: the plugin is ready, and Mark decides to turn it on |
+| H8 | A Claude Code hook that sends each heavy command through `headroom run` | done: the hook fix is merged. Mark installs the plugin. |
 | H9 | Alerts: kernel pool growth and a commit charge near its limit, sent with `notify.send` | done: the alerts, and the pool tags with their drivers |
 | H10 | More resource kinds: Docker, the npm publish quota, GitHub Actions minutes | in progress: the slot `browser` for browser tests, by itself. Each other slot works with `--slot`. |
 | H11 | The MCP gateway: one copy of each local MCP server for all the sessions, over HTTP | in progress: the gateway works, the rollout waits for the owners |
@@ -59,12 +59,14 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H19 | Disk: each job gets its own `TEMP` and `TMP` folder on the Dev Drive `D:`. The release removes it. | done: `headroom config job-temp`, a temp folder for each lease, `--keep-temp`, and the sweep of the daemon every 10 minutes |
 | H20 | Disk: who writes. The bytes that each session, MCP server and job writes, from the I/O counters of its processes. | done: one counter tracker gives the writes and the cores of each owner. `Status.writes`, the owners of each instance in `Status.resources`, the disk alert and `headroom status` name the owners. The store keeps the writes of each owner each minute. |
 | H21 | Disk: a report of what uses the space, and a safe cleanup. It removes only data that is disposable by definition. All other data goes to Mark first. The `*.before-devdrive` copies stay. | later |
-| H22 | One resource model: memory, disk, then CPU and more. Each resource has the same five parts: measure, attribute, alert, admit and enforce. | in progress: memory, disk, CPU and network are on the model. Steps 1 to 7 are done. The design is `docs/RESOURCES.md`. Steps 1 to 4 shipped in #29, #30 and #31: the types, the broker on two admit modes, `Status.resources` and the alert rules. Step 5 makes disk a lease resource (`--disk 5g`, `--disk D:=5g`). Step 6 is H19. Step 7 is H20. Next: step 8, H21. |
+| H22 | One resource model: memory, disk, then CPU and more. Each resource has the same five parts: measure, attribute, alert, admit and enforce. | done: memory, disk, CPU, network and services are on the model. The design is `docs/RESOURCES.md`. Steps 1 to 4 shipped in #29, #30 and #31: the types, the broker on two admit modes, `Status.resources` and the alert rules. Step 5 makes disk a lease resource (`--disk 5g`, `--disk D:=5g`). Step 6 is H19. Step 7 is H20. Step 8 has its own item, H21. |
 | H23 | CPU on the resource model: the processors get the five parts of the model | in progress: the measure and the attribute part came with H20. They give the cores in use and the cores of each owner. Next: the CPU alert, then the admit part and the enforce part. |
 | H24 | The network on the resource model: the throughput of the adapters, the dynamic TCP ports and the listening ports | done: `net:in` and `net:out` in MB/s, `ports:tcp` with the connections of each owner, the `ports` alert, `headroom ports` and `resources.ports` |
 | H25 | The dashboard: one panel for each resource, from the model | done |
 | H26 | The state of a job: `headroom job <name\|id>`, for the fleet's typed wait `job:<name>` | done |
 | H27 | Service health: Docker, the MCP servers of the gateway, the fleet site | done |
+| H28 | UX round 1: the dashboard and the tracker. The dashboard shows what uses the computer, opens each panel to its history and shows the jobs on a timeline. | done |
+| H29 | Process starts by owner | later |
 
 ## The MCP gateway (H11)
 
