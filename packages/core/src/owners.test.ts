@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { attribute, childrenOf, fileTimeMs, isParent, kernelOwners, readSessions, titleOf, treeMb } from "./owners.ts";
+import { attribute, childrenOf, fileTimeMs, isParent, kernelOwners, readSessions, titleOf, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb / 2 });
@@ -100,6 +100,61 @@ describe("attribute", () => {
     expect(ownerOf.get(70)).toBe("other");
     expect(owners.find((owner) => owner.owner === "service:headroom-daemon")).toMatchObject({ kind: "service", privateMb: 73, processes: 2 });
   });
+
+  it("gives each minimal process of Windows its own owner, and sums the owners with the kernel owners (H49)", () => {
+    // The values of a read on 2026-10-25: the system read gives the memory of these processes, with no open.
+    const minimal: ProcessInfo[] = [
+      { pid: 4, ppid: 0, name: "System", privateMb: 0, workingMb: 0 },
+      { pid: 180, ppid: 4, name: "Registry", privateMb: 7, workingMb: 2 },
+      { pid: 3140, ppid: 4, name: "Memory Compression", privateMb: 5, workingMb: 197 },
+      { pid: 160, ppid: 4, name: "Secure System", privateMb: 0, workingMb: 113 },
+      { pid: 2200, ppid: 900, name: "svchost.exe", privateMb: 3861, workingMb: 3071 },
+      { pid: 900, ppid: 4, name: "services.exe", privateMb: 10, workingMb: 4 },
+    ];
+    const memory = { totalMb: 28_310, availableMb: 5959, commitMb: 37_992, commitLimitMb: 60_000, kernelPagedMb: 1500, kernelNonpagedMb: 4718, kernelPagedResidentMb: 766, cacheMb: 1913, driversMb: 60 };
+    const { owners, ownerOf } = attribute(minimal, [], memory);
+    expect(ownerOf.get(3140)).toBe("system:memory compression");
+    expect(ownerOf.get(180)).toBe("system:registry");
+    expect(ownerOf.get(160)).toBe("system:secure system");
+    expect(ownerOf.get(2200)).toBe("system");
+    expect(owners.find((owner) => owner.owner === "system:memory compression")).toEqual({ owner: "system:memory compression", kind: "system", privateMb: 5, workingMb: 197, processes: 1 });
+    expect(owners.find((owner) => owner.owner === "system")).toMatchObject({ privateMb: 3871, workingMb: 3075, processes: 3 });
+    // The owners in RAM: the processes 3387 MB, the kernel 5484 MB, the cache 1913 MB and the drivers 60 MB.
+    expect(owners.reduce((sum, owner) => sum + owner.workingMb, 0)).toBe(10_844);
+    expect(unattributedMb(memory, owners)).toBe(28_310 - 5959 - 10_844);
+  });
+});
+
+describe("unattributedMb (H49)", () => {
+  const memory = { totalMb: 28_000, availableMb: 6000 };
+
+  it("gives the memory in use less the memory in RAM of the owners", () => {
+    const owners = [
+      { owner: "kernel", kind: "kernel" as const, privateMb: 6000, workingMb: 5400, processes: 0 },
+      { owner: "browser", kind: "browser" as const, privateMb: 2700, workingMb: 1600, processes: 40 },
+      { owner: "docker (VM)", kind: "docker" as const, privateMb: 2200, workingMb: 1400, processes: 3 },
+    ];
+    expect(unattributedMb(memory, owners)).toBe(22_000 - 8400);
+    expect(unattributedMb(memory, [])).toBe(22_000);
+  });
+
+  it("gives a negative value when the owners count more than the memory in use", () => {
+    expect(unattributedMb(memory, [{ workingMb: 23_000 }])).toBe(-1000);
+  });
+});
+
+describe("unattributedRow (H49)", () => {
+  const mb = (value: number): string => (Math.abs(value) >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`);
+
+  it("gives the row of the table of the owners, with no private memory", () => {
+    expect(unattributedRow(4200, mb)).toBe(`  ${"unattributed".padEnd(32)}         -    4.1 GB  in use, in no owner: mostly the pages that processes share`);
+    expect(unattributedRow(-600, mb)).toContain("-600 MB  the owners count more than the memory in use");
+  });
+
+  it("gives no row without an amount, for example from a daemon of an older version", () => {
+    expect(unattributedRow(null, mb)).toBeNull();
+    expect(unattributedRow(undefined, mb)).toBeNull();
+  });
 });
 
 describe("titleOf", () => {
@@ -121,6 +176,18 @@ describe("kernelOwners", () => {
       { owner: "kernel", kind: "kernel", privateMb: 2915, workingMb: 2711, processes: 0 },
       { owner: "kernel:cache", kind: "kernel", privateMb: 10_100, workingMb: 10_100, processes: 0 },
       { owner: "kernel:drivers", kind: "kernel", privateMb: 60, workingMb: 60, processes: 0 },
+    ]);
+  });
+
+  it("gives the locked pages, the PFN database and the page tables of Windows 11 22H2 and later (H49)", () => {
+    const owners = kernelOwners({ ...memory, kernelPagedResidentMb: 1278, cacheMb: 1913, driversMb: 60, driverLockedMb: 410, pfnDatabaseMb: 336, pageTablesMb: 148 });
+    expect(owners.map((owner) => [owner.owner, owner.workingMb])).toEqual([
+      ["kernel", 2711],
+      ["kernel:cache", 1913],
+      ["kernel:drivers", 60],
+      ["kernel:driver locked", 410],
+      ["kernel:pfn database", 336],
+      ["kernel:page tables", 148],
     ]);
   });
 

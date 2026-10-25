@@ -104,7 +104,7 @@ export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
 export type { Alerts, ConfigChange, DiskStatus, EcoState, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
-export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, ORPHAN_LABEL, orphanName, parentOf, processKey, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
+export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, ORPHAN_LABEL, orphanName, parentOf, processKey, programName, readSessions, sessionsDir, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
 export { COMMAND_MAX, isOrphanOwner, OwnerRecords, ownerText, RECORD_AFTER_MS, RECORDS_MAX, shortCommand } from "./orphans.ts";
 export type { ProcessRecord, RecordChanges } from "./orphans.ts";
 export { gainAt, gainPerMinute, HANDLE_HOLDERS_SHOWN, HandleTracker, handleStatus, handlesLines, handlesText, HANDLES_FLOOR, HANDLES_TRAIL_MS } from "./handles.ts";

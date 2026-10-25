@@ -32,6 +32,7 @@ import {
   type DockerGet,
 } from "./docker.ts";
 import { Engine } from "./engine.ts";
+import { attribute, unattributedMb } from "./owners.ts";
 import type { FleetRole } from "./peer.ts";
 import type { OwnerUse } from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
@@ -460,6 +461,29 @@ describe("the split of the Docker VM", () => {
       { resource: "memory", owner: "docker:mongo", kind: "docker", amount: 500, processes: 0 },
       { resource: "memory", owner: "lease:abc", kind: "lease", amount: 200, processes: 2 },
     ]);
+  });
+
+  it("counts the memory of the VM one time: the containers take their part of it and add none (H49)", () => {
+    // The system read gives the memory of vmmemWSL. The containers run in that memory, so the split moves a part of it.
+    const processes: ProcessInfo[] = [
+      { pid: 7804, ppid: 4, name: "vmmemWSL", privateMb: 2238, workingMb: 1417 },
+      { pid: 5228, ppid: 1, name: "com.docker.backend.exe", privateMb: 180, workingMb: 157 },
+      { pid: 6000, ppid: 1, name: "chrome.exe", privateMb: 900, workingMb: 600 },
+    ];
+    const memory = { totalMb: 28_000, availableMb: 6000, commitMb: 30_000, commitLimitMb: 60_000, kernelPagedMb: 1000, kernelNonpagedMb: 4000 };
+    const { owners: before } = attribute(processes, [], memory);
+    const sum = (list: readonly OwnerUsage[], key: "privateMb" | "workingMb"): number => list.reduce((total, each) => total + each[key], 0);
+    for (const running of [shares, dockerShares([container("big", "session:graph", 5000, 1)])]) {
+      const after = splitOwners(before, running);
+      expect(sum(after, "privateMb")).toBeCloseTo(sum(before, "privateMb"), 6);
+      expect(sum(after, "workingMb")).toBeCloseTo(sum(before, "workingMb"), 6);
+      expect(unattributedMb(memory, after)).toBe(unattributedMb(memory, before));
+    }
+    // The VM and the Docker programs hold 2418 MB private and 1574 MB in RAM. The containers have 2000 MB.
+    const split = splitOwners(before, shares);
+    expect(split.find((each) => each.owner === DOCKER_VM)).toMatchObject({ privateMb: 418, workingMb: 0 });
+    expect(split.find((each) => each.owner === "session:graph")?.workingMb).toBeCloseTo(1574 * 0.75, 6);
+    expect(sum(split.filter((each) => each.owner !== "browser" && each.owner !== "kernel"), "workingMb")).toBeCloseTo(1574, 6);
   });
 
   it("gives the VM processes", () => {

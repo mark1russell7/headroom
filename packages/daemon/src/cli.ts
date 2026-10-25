@@ -79,6 +79,7 @@ import {
   thermalLine,
   thermalLines,
   SUM_WAIT_START,
+  unattributedRow,
   type Alert,
   type Alerts,
   type Config,
@@ -231,7 +232,7 @@ async function holderOf(): Promise<string> {
 }
 
 function mb(value: number): string {
-  return value >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`;
+  return Math.abs(value) >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${Math.round(value)} MB`;
 }
 
 /** This function writes a throughput in MB/s, with 2 decimals below 0.1 MB/s. */
@@ -335,6 +336,9 @@ function printStatus(status: DaemonStatus): void {
   for (const owner of status.owners.slice(0, 14)) {
     console.log(`  ${owner.owner.slice(0, 32).padEnd(32)} ${mb(owner.privateMb).padStart(9)} ${mb(owner.workingMb).padStart(9)}  ${owner.processes} processes`);
   }
+  // H49: the memory in use that no owner holds. A daemon of an older version gives none.
+  const gap = unattributedRow(status.unattributedMb, mb);
+  if (gap !== null) console.log(gap);
 }
 
 /** The end of a command: the exit code that `headroom run` gives, and the exit of the command itself. */

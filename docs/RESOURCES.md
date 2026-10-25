@@ -107,7 +107,7 @@ Each kind reads one counter of the processes:
 
 | Kind | Counter | Windows | Linux |
 |---|---|---|---|
-| `memory` | The private bytes | `K32GetProcessMemoryInfo`, `PrivateUsage` (today) | `RssAnon` of `/proc/<pid>/status` (today) |
+| `memory` | The private bytes | `SystemProcessInformation`, `PagefileUsage` (H49) | `RssAnon` of `/proc/<pid>/status` (today) |
 | `disk` | The bytes that the process wrote | `GetProcessIoCounters`, `WriteTransferCount` | `write_bytes` of `/proc/<pid>/io` |
 | `cpu` | The processor time | `GetProcessTimes`, the kernel time and the user time | `utime` and `stime` of `/proc/<pid>/stat` |
 | `handles` | The open handles (H48) | `SystemProcessInformation`, `HandleCount` | None |
@@ -473,8 +473,12 @@ On 2026-10-24, after a start of the computer, the owners held approximately 16 G
 | `kernel` | The size of the two pools, as before | The non-paged pool and the paged pool in RAM | `Pool Nonpaged Bytes`, `Pool Paged Resident Bytes` |
 | `kernel:cache` | The same as in RAM | The working set of the system cache | `System Cache Resident Bytes` |
 | `kernel:drivers` | The same as in RAM | The code of the kernel and of the drivers | `System Driver Resident Bytes`, `System Code Resident Bytes` |
+| `kernel:driver locked` (H49) | The same as in RAM | The pages that drivers allocate and lock, for example for the GPU | `MdlPagesAllocated` |
+| `kernel:pfn database` (H49) | The same as in RAM | The record of each physical page | `PfnDatabaseCommittedPages` |
+| `kernel:page tables` (H49) | The same as in RAM | The page tables of the system address space | `SystemPageTableCommittedPages` |
 
-- The sampler reads the three amounts with one call of `NtQuerySystemInformation(SystemPerformanceInformation)`. The call gives the same page counts as the counters, and it needs no admin rights.
+- The sampler reads the amounts with one call of `NtQuerySystemInformation(SystemPerformanceInformation)`. The call gives the same page counts as the counters, and it needs no admin rights.
+- The three counts of H49 are in the struct only on Windows 11 22H2 and later, at the offsets 344, 352 and 360. A shorter struct gives no such owners.
 - `SystemCache` of `GetPerformanceInfo` also counts the standby pages of the cache. The standby pages are available memory, so headroom does not use that field.
 - `SystemMemory` has `cacheMb`, `kernelPagedResidentMb` and `driversMb`. Linux does not give them, so Linux has only the owner `kernel`.
 - On this computer on 2026-10-25, the owners held 19.4 GB in RAM, and 7.2 GB was available, of 27.6 GB. The difference of approximately 1.7 GB is the pages that wait for a disk write, the page tables and the shared pages.
@@ -1262,7 +1266,7 @@ Docker Desktop keeps the containers in the WSL 2 VM. Windows shows the VM as one
 
 **The memory of the VM.** `vmmemWSL` is a minimal process. `K32GetProcessMemoryInfo` gives it no counters, so its memory was 0 before H38. The sampler reads `WorkingSetSize` and `PagefileUsage` of the VM process from `SystemProcessInformation`. On this laptop on 2026-10-25, the VM had 1.3 GB in RAM and 2.2 GB committed.
 
-The other protected processes still count as 0. The daemon has no admin rights, so it cannot open many services. On 2026-10-25, they held approximately 7.5 GB of working set. A sum of their working sets also counts the shared pages again, so the top bar of the dashboard goes above the RAM. Their memory needs the private working set, in a later item.
+The other protected processes counted as 0 until H49. The daemon has no admin rights, so it cannot open many services. On 2026-10-25, they held approximately 7.5 GB of working set. A sum of their working sets also counts the shared pages again, so the top bar of the dashboard goes above the RAM. H49 reads the private working set of each process, with no open.
 
 **The alerts** (kind `docker`, level warning): `docker:build-cache` above 20 GB of build cache, and `docker:images` above 10 GB of images with no container. The limits are `dockerBuildCacheMb` and `dockerUnusedImagesMb` of `AlertRules`. `detect()` adds them after the rules of the kinds.
 
@@ -1278,6 +1282,59 @@ The other protected processes still count as 0. The daemon has no admin rights, 
 - The disk use: images 33.1 GB (102), images with no container 26.2 GB (99), build cache 17.1 GB (6.6 GB not in use), volumes 2.4 GB (34). The alert `docker:images` starts.
 - The cost: the version, the list and one stats request took 45 to 65 ms. The CPU of the read in the daemon was below the resolution of the counter, 16 ms.
 - `GET /system/df` took 4.6 to 5.0 s in the engine, and 322 KB. The sizes of the images took 3.8 s of it. The parse took approximately 15 ms of CPU in the daemon, one time each 10 minutes.
+- `headroom docker` gives the times of its reads in the local clock, as the other commands do (H49).
+
+### H49: the memory of each process
+
+Before H49, the sampler opened each process for `K32GetProcessMemoryInfo`. The daemon has no admin rights, so it could not open the protected services and the minimal processes. Their memory counted as 0: approximately 7.5 GB on 2026-10-25. H49 shipped in one change. These parts are as built:
+
+**The source of each number.**
+
+| Number | Windows source | Note |
+|---|---|---|
+| The private memory of a process | `PagefileUsage` of `SystemProcessInformation`, offset `0xb8` | The same value as `PrivateUsage` of `K32GetProcessMemoryInfo` |
+| The memory in RAM of a process | `WorkingSetPrivateSize` of `SystemProcessInformation`, offset `0x08` | The private working set, as the column "Memory" of Task Manager |
+| The kernel owners | `K32GetPerformanceInfo` and `SystemPerformanceInformation` | The table of "The kernel owners and the services" gives each owner |
+| The memory in use | `PhysicalTotal` less `PhysicalAvailable` of `K32GetPerformanceInfo` | The same amount as "In use" and "Modified" of Task Manager |
+| `unattributed` | The memory in use less the memory in RAM of all the owners | `unattributedMb()` in `owners.ts`, after the split of Docker |
+
+- The read of the processor times already calls `SystemProcessInformation`. Thus H49 adds no call, no process and no timer. It removes one open of each process at each read.
+- An open of one process stays only for its command line (the title of a Node process, the record of an orphan) and for the sequence number of the newest process. The memory needs no open.
+- The offsets agree with `SYSTEM_PROCESS_INFORMATION` of `winternl.h` for 64-bit Windows. `winternl.h` calls the bytes at `0x08` reserved, and `ntexapi.h` of phnt names them `WorkingSetPrivateSize`.
+- `parseSystemProcesses()` and `parseResident()` in `system-information.ts` read the buffers. They load no library, so the tests read fake buffers on each platform.
+- A process that starts between the system read and the Toolhelp snapshot has no totals. Its memory is 0 until the next read.
+
+**The minimal processes.** They have their own owners: `system:memory compression` (the compressed pages of the other processes), `system:registry` and `system:secure system` (the secure kernel of VBS).
+
+- The VM process `vmmemWSL` stays in the owner `docker`. The split of H38 moves a part of it to the containers, and the rest is `docker (VM)`.
+- The split keeps the sum of the owners, so the VM counts one time. A test examines the sum before and after the split, also with containers above the memory of the VM.
+- The read of the VM of H38 was this same read, so it has no better number.
+
+**The row `unattributed`.** `headroom status` gives it as the last row of "Memory by owner". The top bar of the dashboard and the memory card give it as "Unattributed".
+
+- It compares the memory in RAM, not the private memory. The private memory also counts the pages in the page file and in the compressed store. Its sum was 32 GB, above the RAM.
+- It is mostly the pages that processes share: the code of programs and DLLs, mapped files and shared memory. It also holds the page tables of the processes and the pages that wait for a write to the page file.
+- A negative value tells that the owners count more than the memory in use. The status then says so.
+
+**The check on 2026-10-25.** One read compared the two sources for each process that both can read:
+
+- `PagefileUsage` and `PrivateUsage`: 315 of 318 processes in 3%. `WorkingSetSize`: 316 of 318. The other processes changed between the two reads.
+- `WorkingSetPrivateSize` and `PrivateWorkingSetSize` of `PROCESS_MEMORY_COUNTERS_EX2`: 291 of 291 processes in 3%.
+- `PrivatePageCount` at offset `0xc8` had the same value as `PagefileUsage` for each process.
+
+**The read on this laptop on 2026-10-25**, with 20.1 GB in use of 27.6 GB:
+
+| | Before H49 | After H49 |
+|---|---|---|
+| Processes at 0 | 176, with 4.0 GB of private memory | None |
+| The top owners in RAM | kernel 5.2 GB, docker 1.9 GB, browser 1.6 GB, editor 1.5 GB, system 1.4 GB | kernel 5.2 GB, docker 1.5 GB, system 1.3 GB, browser 0.7 GB, editor 0.7 GB |
+| Unattributed | 0.6 GB | 4.0 GB |
+
+- The small gap before H49 was an accident. The memory that the sampler could not read and the shared pages that each working set counted again were both approximately 4 GB.
+- In one read, the full working sets had 8.2 GB of shareable pages. They count each shared page one time for each process that maps it. The unique shared pages are a part of the 4.0 GB.
+- The private memory of `system` went from 1.5 GB to 4.8 GB. The services that the daemon cannot open held 3.3 GB of it.
+- The three kernel owners of H49 held 0.9 GB: the locked pages 410 MB, the PFN database 336 MB and the page tables 147 MB.
+- The system read of all the processes took 22 ms.
 
 ## Decisions
 
@@ -1337,4 +1394,5 @@ These were the open questions. The session decided each one as a technical call.
 | Who owns a container? | The fleet role of the folder of its compose project, else the role with its project name, else `docker:<project>`. | The compose label gives the folder, and the role files give the folders of each session. A container has no process on Windows, so a process tree cannot tell. |
 | Who gets the memory of the Docker VM? | The owners of the containers, by their memory. The rest is `docker (VM)`. | The VM is one process. Its memory is the memory of the containers, of the VM kernel and cache, and of the other distributions. |
 | Does headroom prune Docker? | No. The alert gives the size and the commands. | A prune removes the images and the cache of all the sessions. The owner of the work decides. |
-| Does the sampler read the memory of each protected process? | Only of the VM process (H38). | The daemon has no admin rights, so many services are protected for it. Their working sets with the shared pages add up to more than the RAM. |
+| Does the sampler read the memory of each protected process? | Yes (H49): the private memory and the private working set of each process, from one read of `SystemProcessInformation`. | The read opens no process, so it needs no admin rights. The private working sets add up to less than the RAM in use, because a shared page is in no process. |
+| What is the memory in RAM of a Windows process? | Its private working set (H49), as the column "Memory" of Task Manager. | The full working set counts a shared page one time for each process that maps it. On 2026-10-25, the full working sets added up to 3.2 GB more than the memory in use. |

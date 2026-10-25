@@ -270,7 +270,7 @@ div.owner { cursor: default; }
 
   <section class="card">
     <h2>Memory by owner</h2>
-    <p class="hint">The memory in RAM of each Claude Code session, MCP server, service and program group. The kernel owners hold the pools, the file cache and the drivers. The line at the right shows the window.</p>
+    <p class="hint">The private memory in RAM of each Claude Code session, MCP server, service and program group. The kernel owners hold the pools, the file cache, the drivers and the page records. A page that processes share is in no owner: it is in the part "Unattributed" of the bar at the top. The line at the right shows the window.</p>
     <div class="owners" id="owners"></div>
   </section>
 
@@ -629,7 +629,7 @@ function renderAlerts() {
  * One segment for each owner in the color of its group, a 2px gap between segments, the part that no owner
  * explains, and the free part as the track. A segment below 6 px joins the "more" segment of its group.
  */
-function usageBar(host, parts, rest, free, fmt, restText) {
+function usageBar(host, parts, rest, free, fmt, restText, restName = "Not counted") {
   const total = parts.reduce((a, p) => a + p.value, 0) + rest + free || 1;
   const W = host.clientWidth || 600, min = (total * 6) / W;
   const segs = [];
@@ -639,12 +639,12 @@ function usageBar(host, parts, rest, free, fmt, restText) {
     segs.push(...mine.filter((p) => p.value >= min));
     if (small.length) segs.push({ group: g.id, value: small.reduce((a, p) => a + p.value, 0), name: small.length === 1 ? ownerLabel(small[0].owner) : `${small.length} more`, list: small });
   }
-  if (rest > total * 0.003) segs.push({ rest: true, value: rest, name: "Not counted" });
+  if (rest > total * 0.003) segs.push({ rest: true, value: rest, name: restName });
   if (free > 0) segs.push({ free: true, value: free, name: "Free" });
   host.replaceChildren(...segs.map((p) => {
     const g = GROUP[p.group];
     const text = p.free ? `${fmt(p.value)} free` : p.owner ? ownerLabel(p.owner) : p.name;
-    const lines = p.free ? ["Free", fmt(p.value)] : p.rest ? ["Not counted", fmt(p.value), restText]
+    const lines = p.free ? ["Free", fmt(p.value)] : p.rest ? [restName, fmt(p.value), restText]
       : p.list ? [`${p.name} · ${g.name}`, fmt(p.value), p.list.slice(0, 6).map((o) => ownerLabel(o.owner)).join(", ") + (p.list.length > 6 ? ", …" : "")]
       : [ownerLabel(p.owner), `${fmt(p.value)} · ${g.name}`, p.o ? `${mb(p.o.privateMb)} private · ${p.o.processes} processes` : null];
     const e = h("div", { class: `seg2${p.free ? " free" : p.rest ? " rest" : ""}${g?.dark ? " dk" : ""}`, style: `flex-grow:${p.value};${g ? `background:${g.color}` : ""}`, "data-group": p.group || null, "data-owner": p.owner || null },
@@ -661,12 +661,13 @@ function renderNow() {
   if (!st) return;
   const m = st.memory, used = m.totalMb - m.availableMb;
   const ram = (st.owners || []).map((o) => ({ owner: o.owner, group: groupOf(o.kind), value: o.workingMb, o }));
-  const ramRest = Math.max(0, used - ram.reduce((a, p) => a + p.value, 0));
+  // H49: the memory in use that no owner holds, from the daemon. A daemon of an older version gives none.
+  const ramRest = Math.max(0, st.unattributedMb ?? used - ram.reduce((a, p) => a + p.value, 0));
   const granted = st.leases.filter((l) => l.state === "granted").length, waiting = st.leases.filter((l) => l.state === "waiting").length;
   $("hero").replaceChildren(h("b", { text: mb(m.availableMb) }), h("span", { text: `free of ${mb(m.totalMb)} of memory` }),
     h("small", { text: `${mb(Math.max(0, st.free.memory ?? 0))} free for a new job, after the reserve of ${mb(st.reserveMb)}. ${mb(m.commitMb)} committed of the limit ${mb(m.commitLimitMb)}.` }));
   $("ramText").replaceChildren(h("b", { text: mb(used) }), ` in use, ${Math.round((used / m.totalMb) * 100)}%`);
-  usageBar($("ramBar"), ram, ramRest, m.availableMb, mb, "Memory in use that the owners do not explain.");
+  usageBar($("ramBar"), ram, ramRest, m.availableMb, mb, "Memory in use that no owner holds: mostly the pages that processes share.", "Unattributed");
   const cpu = st.resources.find((r) => r.id === "cpu" && r.capacity);
   const cpuParts = (cpu?.owners || []).map((o) => ({ owner: o.owner, group: groupOf(o.kind), value: o.value }));
   $("cpuRow").hidden = !cpu;
@@ -681,7 +682,7 @@ function renderNow() {
   const sum = (list, id) => list.filter((p) => p.group === id).reduce((a, p) => a + p.value, 0);
   $("ownLegend").replaceChildren(...OWN.map((g) => [g, sum(ram, g.id), sum(cpuParts, g.id)]).filter(([, r, c]) => r > 0 || c > 0).map(([g, r, c]) =>
     h("button", { type: "button", class: "lg", "data-group": g.id, title: `Mark ${g.name}`, onclick: () => setFocus({ group: g.id }) }, h("i", { class: "sw", style: `background:${g.color}` }), g.name, h("b", { text: mb(r) }), c ? h("small", { text: amount(c, "cores") }) : null)),
-    h("span", { class: "lg static" }, h("i", { class: "sw rest" }), "Not counted", h("b", { text: mb(ramRest) })),
+    h("span", { class: "lg static" }, h("i", { class: "sw rest" }), "Unattributed", h("b", { text: mb(ramRest) })),
     h("span", { class: "lg static" }, h("i", { class: "sw free" }), "Free", h("b", { text: mb(m.availableMb) })));
   const svc = st.resources.filter((r) => r.health);
   const bat = st.resources.find((r) => r.battery)?.battery;
@@ -832,7 +833,9 @@ function resCard(r, st, points) {
     : onFree ? h("div", { class: "big" }, h("b", { text: u(r.free) }), `free of ${u(r.capacity)}`)
     : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), r.unit === "per minute" ? "on average over 10 minutes" : r.unit === "W" ? "for the whole computer" : "in use")
     : h("div", { class: "big" }, h("b", { text: u(r.capacity) }), "in total");
-  const sub = bt ? batteryLine(bt) : th ? heatLine(th) : hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`, r.gpu ? gpuSub(r.gpu) : ""].filter(Boolean).join(" · ");
+  const sub = bt ? batteryLine(bt) : th ? heatLine(th) : hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`, r.gpu ? gpuSub(r.gpu) : "",
+    // H49: the memory in use that no owner holds (mostly the pages that processes share).
+    r.id === "memory" && st.unattributedMb != null ? `${mb(Math.max(0, st.unattributedMb))} unattributed` : ""].filter(Boolean).join(" · ");
   // H32: the forecast to the nearest limit. The battery line already gives the time left of Windows.
   const fc = bt ? null : forecastLine(r);
   const change = r.unit === "MB" ? hourly(points, k, st.at, value) : null;

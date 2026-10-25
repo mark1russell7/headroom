@@ -26,7 +26,7 @@ import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
-import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
+import { attribute, readSessions, sessionsDir, treeMb, unattributedMb } from "./owners.ts";
 import { OwnerRecords } from "./orphans.ts";
 import { HandleTracker, handleStatus, type HandleStatus } from "./handles.ts";
 import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
@@ -173,6 +173,11 @@ export interface Status {
   readonly pools: Record<string, number>;
   readonly leases: readonly Lease[];
   readonly owners: readonly OwnerUsage[];
+  /**
+   * The memory in use that no owner holds, in MB (H49): the total less the available memory, less the memory in RAM of
+   * the owners. It is mostly the pages that processes share. It is `null` before the first read of the processes.
+   */
+  readonly unattributedMb: number | null;
   readonly sessions: readonly SessionInfo[];
   /** The active alerts, the oldest first. */
   readonly alerts: readonly Alert[];
@@ -395,6 +400,8 @@ export class Engine {
   /** The owner of each process, from the last read of the processes. */
   #ownership: Owners = { ownerOf: new Map(), kindOf: new Map(), leaseOf: new Map() };
   #owners: readonly OwnerUsage[] = [];
+  /** The memory in use that no owner holds at the last read of the processes (H49), or `null` before the first read. */
+  #unattributedMb: number | null = null;
   /** The change of the processor time and of the written bytes of each owner (H20). */
   readonly #counters = new CounterTracker(["cpuMs", "writeBytes"]);
   /** The owners that wrote most in the last hour, from the last read of the processes. */
@@ -735,6 +742,8 @@ export class Engine {
       // Docker keep the owner `docker`, so the kinds keep it too.
       const docker = this.#readDocker();
       this.#owners = docker === null ? owners : splitOwners(owners, docker.shares);
+      // H49: the split keeps the sum of the owners, so the VM of Docker counts one time.
+      this.#unattributedMb = unattributedMb(this.#memory, this.#owners);
       this.#ownership = {
         ownerOf,
         kindOf: new Map([...owners, ...this.#owners].map((owner) => [owner.owner, owner.kind])),
@@ -1011,6 +1020,7 @@ export class Engine {
       pools: { ...capacity.pools },
       leases: this.#broker.leases().filter(isActive),
       owners: this.#owners,
+      unattributedMb: this.#unattributedMb,
       sessions: this.#sessions,
       alerts: [...this.#alerts.values()],
       session: this.#load,
