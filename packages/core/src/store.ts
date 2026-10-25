@@ -15,6 +15,7 @@ import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
+import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } from "./presence.ts";
 import { parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
@@ -96,12 +97,34 @@ export interface Config {
    * do not take them. The default is 2, and 0 turns the reserve off.
    */
   readonly cpuReserve: number;
+  /**
+   * The presence rules (H33): true by default. While Mark works or is on a call, heavy jobs wait or run slower. False:
+   * the daemon measures the presence, but the state changes no admission, no efficiency mode and no reserve.
+   */
+  readonly presence: boolean;
+  /** The time with no input after which Mark is away, in ms (H33). The default is 5 minutes. */
+  readonly awayAfterMs: number;
+  /** The longest wait of a new heavy lease while Mark is busy, in ms (H33). The default is 20 minutes. */
+  readonly busyWaitMs: number;
+  /** The cores that the CPU reserve gets while Mark is present or busy (H33). The default is 2. */
+  readonly presentReserve: number;
 }
 
-/** This function reads the setting `cpuReserve`. A negative value or a value that is not a number gives the default. */
-function cpuReserveOf(value: string | undefined): number {
+/** The longest time of the settings `awayAfterMs` and `busyWaitMs`: one day. */
+export const PRESENCE_TIME_MAX_MS = 86_400_000;
+/** The shortest time of the setting `awayAfterMs`: 30 seconds. */
+export const AWAY_AFTER_MIN_MS = 30_000;
+
+/** This function reads a setting in ms. A value that is not a whole number from `min` to one day gives the default. */
+function msOf(value: string | undefined, min: number, fallback: number): number {
+  const ms = Number(value);
+  return value !== undefined && Number.isInteger(ms) && ms >= min && ms <= PRESENCE_TIME_MAX_MS ? ms : fallback;
+}
+
+/** This function reads the setting `cpuReserve` or `presentReserve`. A negative value or a value that is not a number gives the default. */
+function cpuReserveOf(value: string | undefined, fallback: number = CPU_RESERVE_DEFAULT): number {
   const reserve = Number(value);
-  return value !== undefined && Number.isFinite(reserve) && reserve >= 0 ? reserve : CPU_RESERVE_DEFAULT;
+  return value !== undefined && Number.isFinite(reserve) && reserve >= 0 ? reserve : fallback;
 }
 
 /** This function reads the setting `batteryFloor`. A value that is not a whole number from 0 to 100 gives the default. */
@@ -249,12 +272,16 @@ export class Store {
       batteryFloor: batteryFloorOf(values.get("batteryFloor")),
       usageFile: values.get("usageFile") ?? defaultUsageFile(),
       cpuReserve: cpuReserveOf(values.get("cpuReserve")),
+      presence: values.get("presence") !== "off",
+      awayAfterMs: msOf(values.get("awayAfterMs"), AWAY_AFTER_MIN_MS, AWAY_AFTER_DEFAULT_MS),
+      busyWaitMs: msOf(values.get("busyWaitMs"), 0, BUSY_WAIT_DEFAULT_MS),
+      presentReserve: cpuReserveOf(values.get("presentReserve"), PRESENT_RESERVE_DEFAULT),
     };
   }
 
   /**
-   * This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The values of
-   * `spawnHeavy`, `batteryFloor` and `cpuReserve` are numbers as text.
+   * This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The value of
+   * `presence` is `on` or `off`. The values of the other settings are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);

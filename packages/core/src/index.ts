@@ -102,7 +102,7 @@ export type {
 export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
-export type { Alerts, ConfigChange, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
+export type { Alerts, ConfigChange, DiskStatus, EcoState, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
 export { attribute, childrenOf, DEFAULT_RULES, fileTimeMs, isParent, parentOf, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
 export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, rolesDir, rolesFile } from "./peer.ts";
@@ -258,6 +258,53 @@ export {
   wattsText,
 } from "./power.ts";
 export type { BatteryState, OwnerWatts, PowerEvent, PowerMode, PowerStatus } from "./power.ts";
+export {
+  AWAY_AFTER_DEFAULT_MS,
+  BUSY_WAIT_DEFAULT_MS,
+  busyText,
+  CALL_EVERY_MS,
+  callDevice,
+  classify,
+  CONSENT_STORE,
+  DEFAULT_PRESENCE,
+  deviceInUse,
+  elapsedText,
+  GUID_SESSION_DISPLAY_STATUS,
+  GUID_SESSION_USER_PRESENCE,
+  isPresenceWait,
+  PRESENCE_HISTORY,
+  PRESENCE_WAIT,
+  presenceEco,
+  presenceHistoryLines,
+  presenceLine,
+  presenceReserve,
+  presenceStatus,
+  PresenceTracker,
+  presenceWait,
+  PRESENT_RESERVE_DEFAULT,
+  QUNS_BUSY,
+  QUNS_NOT_PRESENT,
+  QUNS_PRESENTATION_MODE,
+  QUNS_RUNNING_D3D_FULL_SCREEN,
+  readCall,
+  sessionEvent,
+  stateText,
+} from "./presence.ts";
+export type {
+  BusyKind,
+  CallDevice,
+  CallRead,
+  ConsentRegistry,
+  DisplayState,
+  PresenceChange,
+  PresenceEvent,
+  PresenceFacts,
+  PresencePolicy,
+  PresenceRead,
+  PresenceSnapshot,
+  PresenceState,
+  PresenceStatus,
+} from "./presence.ts";
 export { createSampler, MB, takeSample } from "./sampler.ts";
 export {
   CHECK_EVERY_MS,
@@ -274,7 +321,7 @@ export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, 
 export type { Sampler } from "./sampler.ts";
 export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, RECENT_STARTS_MS, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
 export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
-export { Store } from "./store.ts";
+export { AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow, Sleep } from "./store.ts";
 export {
   checkJobTemp,

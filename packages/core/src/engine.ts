@@ -34,6 +34,19 @@ import {
 } from "./resources.ts";
 import { batteryState, keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
 import {
+  busyText,
+  CALL_EVERY_MS,
+  presenceEco,
+  presenceReserve,
+  presenceStatus,
+  PresenceTracker,
+  presenceWait,
+  type CallRead,
+  type PresencePolicy,
+  type PresenceRead,
+  type PresenceStatus,
+} from "./presence.ts";
+import {
   DRAIN_ALERT,
   DRAIN_ENDED_ALERT,
   DRAIN_READY_ALERT,
@@ -52,7 +65,7 @@ import {
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
-import type { Config, MemoryRow, OwnerRow, Sleep, Store } from "./store.ts";
+import { AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
 import {
@@ -165,8 +178,13 @@ export interface Status {
    * power request that keeps the computer awake, and the last sleep. The battery and the power are entries of `resources`.
    */
   readonly power: PowerStatus;
-  /** The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). `free.cpu` is after this reserve. */
+  /**
+   * The cores that the broker keeps out of the counted `cpu` pool for Mark at this time (H23). `free.cpu` is after this
+   * reserve. While Mark is present, it is the setting plus `presentReserve`. While Mark is away, it is 0 (H33).
+   */
   readonly cpuReserve: number;
+  /** The presence of Mark at the laptop (H33): the state, its start and reason, the time since the last input and the history. */
+  readonly presence: PresenceStatus;
   /**
    * The reboot budget (H34): the kernel pools with their growth and forecast, a waiting Windows update and the uptime. It
    * also has a recommendation, the planned drain and the file of the resume plan.
@@ -186,6 +204,26 @@ export interface ConfigChange {
   readonly usageFile?: string | null | undefined;
   /** The cores that the broker keeps for Mark (H23): a number from 0 to the count of processors. `null` gives the default of 2. */
   readonly cpuReserve?: number | null | undefined;
+  /** The presence rules (H33): true for on, false for off. `null` gives the default: on. */
+  readonly presence?: boolean | null | undefined;
+  /** The time with no input after which Mark is away, in ms (H33): 30 seconds to one day. `null` gives the default of 5 minutes. */
+  readonly awayAfterMs?: number | null | undefined;
+  /** The longest wait of a heavy lease while Mark is busy, in ms (H33): 0 to one day. `null` gives the default of 20 minutes. */
+  readonly busyWaitMs?: number | null | undefined;
+  /** The cores that the reserve gets while Mark is present (H33): 0 to the count of processors. `null` gives the default of 2. */
+  readonly presentReserve?: number | null | undefined;
+}
+
+/** This function gives the presence rules from the settings (H33). */
+function policyOf(config: Config): PresencePolicy {
+  return { enabled: config.presence, awayAfterMs: config.awayAfterMs, busyWaitMs: config.busyWaitMs, presentReserve: config.presentReserve };
+}
+
+/** The efficiency mode of the job of a lease, with the reason for a person (H30, H33). */
+export interface EcoState {
+  readonly on: boolean;
+  /** The reason, for example "the laptop runs on battery" or "Mark works at the laptop", or `null` when the mode is off. */
+  readonly reason: string | null;
 }
 
 /** An alert that ended. */
@@ -316,6 +354,13 @@ export class Engine {
   #leaseCores: ReadonlyMap<string, number> = new Map();
   /** The cores that the broker keeps for Mark (H23), from the settings. */
   #cpuReserve: number;
+  /** The state of Mark at the laptop (H33), with the last events and a short history. */
+  readonly #presence = new PresenceTracker();
+  /** The presence rules from the settings (H33). */
+  #policy: PresencePolicy;
+  /** The last read of the camera and the microphone, and its time (H33). */
+  #call: CallRead | null = null;
+  #callAt = Number.NEGATIVE_INFINITY;
   /** The process starts of each owner and each leased job (H29). */
   readonly #startTracker = new StartTracker();
   /** The process starts of the last 10 minutes, from the last read of the processes or the last count of a job. */
@@ -420,7 +465,8 @@ export class Engine {
         const drained = drainWait(lease, this.#drain, this.#now());
         if (drained !== null) return drained;
         const { facts, floor } = this.#conditionFacts();
-        return conditionWait(lease, facts, floor);
+        // H33: while Mark is busy, a new heavy lease waits, for at most the busy wait.
+        return conditionWait(lease, facts, floor) ?? presenceWait(lease, this.#presence.current, this.#policy, facts.now);
       },
     });
     this.#broker.restore(this.#store.activeLeases());
@@ -439,7 +485,9 @@ export class Engine {
     // The writes of the last hour continue after a restart, so a disk alert names the owners that filled the drive.
     this.#counters.restore("writeBytes", this.#store.writesSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
     this.#writes = this.#counters.writes(this.#startedAt);
-    this.#cpuReserve = this.#store.config().cpuReserve;
+    const config = this.#store.config();
+    this.#cpuReserve = config.cpuReserve;
+    this.#policy = policyOf(config);
     this.#memory = this.#sampler.memory();
     this.#seedTrends();
   }
@@ -510,13 +558,12 @@ export class Engine {
     const ids = new Set<ResourceId>(measurements.filter((each) => resourceOf(each.id).admit !== null).map((each) => each.id));
     for (const id of Object.keys(readings.pools)) ids.add(id);
     for (const lease of this.#broker.leases()) if (isActive(lease)) for (const id of Object.keys(lease.amounts)) ids.add(id);
-    return {
-      totalMb: this.#memory.totalMb,
-      availableMb: this.#memory.availableMb,
-      pools: readings.pools,
-      // The reserve of a drive is the critical limit of the disk alert. The reserve of `cpu` is the cores for Mark (H23).
-      rooms: rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb, cpu: this.#cpuReserve }, this.#alertRules),
-    };
+    // The reserve of a drive is the critical limit of the disk alert. The reserve of `cpu` is the cores for Mark (H23).
+    const result = rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb, cpu: this.#reserveNow() }, this.#alertRules);
+    // H33: the reserve is 0 while Mark is away, so a lease above the reserve of this time waits and is not cancelled.
+    const cpu = result["cpu"];
+    if (cpu !== undefined && this.#policy.enabled && this.#presence.current !== null) result["cpu"] = { ...cpu, lowestReserve: 0 };
+    return { totalMb: this.#memory.totalMb, availableMb: this.#memory.availableMb, pools: readings.pools, rooms: result };
   }
 
   /** This function gives the reads of this time from the last samples, and keeps them for the admit parts. */
@@ -602,6 +649,8 @@ export class Engine {
       this.#readBattery();
       if (this.#checkDue) this.#check(now, this.#ownership.ownerOf);
     }
+    // H33: the presence of this tick comes before the admission, so a lease that waits for Mark starts at once.
+    this.#readPresence(now);
     // H34: the end of a drain at its time --until, and its start, come before the admission of this tick.
     this.#drainBefore(now);
     const changed = this.#broker.tick(this.capacity());
@@ -624,7 +673,7 @@ export class Engine {
 
   /** This function adds a request and grants it at once when it fits. The past runs of its job give its spawn class (H47). */
   request(request: LeaseRequest): Lease {
-    this.#clock();
+    this.#readPresence(this.#clock());
     const lease = this.#broker.request(request, this.spawnClass(request.job, request.holder, request.spawnHeavy));
     this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
@@ -661,7 +710,10 @@ export class Engine {
     return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(Math.max(...peaks)), ...cpu };
   }
 
-  /** This function gives the cores that the leases can get together (H23): the processors or the pool `cpu`, less the reserve for Mark. */
+  /**
+   * This function gives the cores that the leases can get together (H23): the processors or the pool `cpu`, less the reserve
+   * for Mark. It uses the reserve of the settings, not the reserve of this time (H33).
+   */
   #leasableCores(): number {
     const pool = this.#store.pools()["cpu"];
     return Math.max(0, Math.min(this.#processors, pool ?? this.#processors) - this.#cpuReserve);
@@ -744,6 +796,7 @@ export class Engine {
     if (typeof reserve === "number" && !(Number.isFinite(reserve) && reserve >= 0 && reserve <= this.#processors)) {
       throw new RangeError(`The CPU reserve must be a number from 0 to ${this.#processors}, the count of processors`);
     }
+    const presence = this.#checkPresence(change);
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -753,8 +806,18 @@ export class Engine {
       this.#store.setConfig("cpuReserve", reserve === null ? null : String(reserve));
       this.#cpuReserve = this.#store.config().cpuReserve;
     }
-    // H31: a new floor or a new usage file can let a waiting lease start. H23: a smaller CPU reserve can too. H47: a higher limit can too.
-    if (floor !== undefined || usageFile !== undefined || reserve !== undefined || limit !== undefined) {
+    if (presence) {
+      if (change.presence !== undefined) this.#store.setConfig("presence", change.presence === null ? null : change.presence ? "on" : "off");
+      if (change.awayAfterMs !== undefined) this.#store.setConfig("awayAfterMs", change.awayAfterMs === null ? null : String(change.awayAfterMs));
+      if (change.busyWaitMs !== undefined) this.#store.setConfig("busyWaitMs", change.busyWaitMs === null ? null : String(change.busyWaitMs));
+      if (change.presentReserve !== undefined) this.#store.setConfig("presentReserve", change.presentReserve === null ? null : String(change.presentReserve));
+      this.#policy = policyOf(this.#store.config());
+      // A new time for away can change the state at once.
+      this.#readPresence(this.#now(), true);
+    }
+    // H31: a new floor or a new usage file can let a waiting lease start. H23: a smaller CPU reserve can too. H47: a higher
+    // limit can too. H33: a change of the presence rules can too.
+    if (floor !== undefined || usageFile !== undefined || reserve !== undefined || limit !== undefined || presence) {
       this.#facts = null;
       this.#persist(this.#broker.tick(this.capacity()));
     }
@@ -817,7 +880,8 @@ export class Engine {
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
       power: this.powerStatus(),
-      cpuReserve: this.#cpuReserve,
+      cpuReserve: this.#reserveNow(),
+      presence: presenceStatus(this.#presence, this.#policy),
       reboot: this.#rebootBudget(now, forecasts),
       self: {
         pid: process.pid,
@@ -1155,7 +1219,71 @@ export class Engine {
         this.#resumePending = true;
         this.#processesAt = 0;
         break;
+      case "presence":
+      case "display":
+        // H33: the tick that the daemon asks for classifies the state again and runs the admission.
+        this.#presence.event(event, this.#now());
+        break;
     }
+  }
+
+  /**
+   * This function gives the efficiency mode of the job of a lease (H30, H33). On battery, each job runs in efficiency
+   * mode. While Mark is present or busy, each heavy job does, unless it has `--ignore-presence`.
+   */
+  ecoOf(lease: Lease): EcoState {
+    if (this.powerStatus().eco) return { on: true, reason: "the laptop runs on battery" };
+    const current = this.#presence.current;
+    if (current === null || !presenceEco(lease, current, this.#policy)) return { on: false, reason: null };
+    return { on: true, reason: current.state === "busy" ? `Mark ${busyText(current.busy)}` : "Mark works at the laptop" };
+  }
+
+  /** This function gives the CPU reserve for Mark at this time (H23, H33): larger while Mark is present, 0 while Mark is away. */
+  #reserveNow(): number {
+    return presenceReserve(this.#cpuReserve, this.#presence.current, this.#policy, this.#processors);
+  }
+
+  /**
+   * This function reads the presence of Mark and classifies it (H33). It reads the time since the last input and the
+   * notification state at each call. It reads the camera and the microphone at most one time in 30 seconds, or at once with
+   * `fresh`. A new state makes new facts for the conditions.
+   */
+  #readPresence(now: number, fresh = false): void {
+    const sampler = this.#sampler;
+    if (sampler.presence === undefined) return;
+    if (sampler.calls !== undefined && (fresh || now - this.#callAt >= CALL_EVERY_MS || now < this.#callAt)) {
+      this.#callAt = now;
+      try {
+        this.#call = sampler.calls();
+      } catch {
+        this.#call = null;
+      }
+    }
+    let read: PresenceRead;
+    try {
+      read = sampler.presence();
+    } catch {
+      read = { idleMs: null, notification: null };
+    }
+    if (this.#presence.update(now, read, this.#call, this.#policy.awayAfterMs)) this.#facts = null;
+  }
+
+  /**
+   * This function checks the presence settings of a change (H33). It throws a `RangeError` for a wrong value. It gives true
+   * when the change has a presence setting.
+   */
+  #checkPresence(change: ConfigChange): boolean {
+    const { awayAfterMs, busyWaitMs, presentReserve } = change;
+    if (typeof awayAfterMs === "number" && !(Number.isInteger(awayAfterMs) && awayAfterMs >= AWAY_AFTER_MIN_MS && awayAfterMs <= PRESENCE_TIME_MAX_MS)) {
+      throw new RangeError("The time for away must be a whole number of ms from 30 seconds to one day");
+    }
+    if (typeof busyWaitMs === "number" && !(Number.isInteger(busyWaitMs) && busyWaitMs >= 0 && busyWaitMs <= PRESENCE_TIME_MAX_MS)) {
+      throw new RangeError("The busy wait must be a whole number of ms from 0 to one day");
+    }
+    if (typeof presentReserve === "number" && !(Number.isFinite(presentReserve) && presentReserve >= 0 && presentReserve <= this.#processors)) {
+      throw new RangeError(`The present reserve must be a number from 0 to ${this.#processors}, the count of processors`);
+    }
+    return change.presence !== undefined || awayAfterMs !== undefined || busyWaitMs !== undefined || presentReserve !== undefined;
   }
 
   /** This function gives the power state (H30). On battery, the clients of `headroom run` put their jobs in efficiency mode. */
@@ -1216,6 +1344,7 @@ export class Engine {
       now,
       ac: this.powerStatus().ac,
       percent: this.#battery === undefined ? null : batteryState(this.#battery).percent,
+      presence: this.#sampler.presence === undefined ? null : (this.#presence.current?.state ?? null),
       get usage(): UsageFacts {
         usage ??= reader.read(config.usageFile, now);
         return usage;

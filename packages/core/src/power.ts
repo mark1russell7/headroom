@@ -11,6 +11,7 @@
  */
 
 import type { OwnerCores } from "./counters.ts";
+import { GUID_SESSION_DISPLAY_STATUS, GUID_SESSION_USER_PRESENCE, sessionEvent, type PresenceEvent } from "./presence.ts";
 import type { BatteryRead, OwnerKind, PowerMeters } from "./types.ts";
 
 /** The effective power mode of Windows, in the order of `EFFECTIVE_POWER_MODE`. */
@@ -19,14 +20,18 @@ export type PowerMode = "battery saver" | "better battery" | "balanced" | "high 
 /** The power modes by their value in `EFFECTIVE_POWER_MODE`. */
 export const POWER_MODES: readonly PowerMode[] = ["battery saver", "better battery", "balanced", "high performance", "max performance", "game mode", "mixed reality"];
 
-/** One power event of Windows (H30). The handler of an event only sets the state and asks for a sample. */
+/**
+ * One power event of Windows (H30). The handler of an event only sets the state and asks for a sample. The user presence
+ * and the display of the session (H33) come through the same power settings.
+ */
 export type PowerEvent =
   | { readonly type: "source"; readonly ac: boolean }
   | { readonly type: "percent"; readonly percent: number }
   | { readonly type: "lid"; readonly open: boolean }
   | { readonly type: "mode"; readonly mode: PowerMode }
   | { readonly type: "suspend" }
-  | { readonly type: "resume" };
+  | { readonly type: "resume" }
+  | PresenceEvent;
 
 /** `GUID_ACDC_POWER_SOURCE`: the power source changed. The data is 0 for AC, 1 for the battery and 2 for a UPS. */
 export const GUID_ACDC_POWER_SOURCE = "5d3e9a59-e9d5-4b00-a6bd-ff34ff516548";
@@ -34,8 +39,14 @@ export const GUID_ACDC_POWER_SOURCE = "5d3e9a59-e9d5-4b00-a6bd-ff34ff516548";
 export const GUID_BATTERY_PERCENTAGE_REMAINING = "a7ad8041-b45a-4cae-87a3-eecbb468a9e1";
 /** `GUID_LIDSWITCH_STATE_CHANGE`: the lid opened or closed. The data is 0 for closed and 1 for open. */
 export const GUID_LIDSWITCH_STATE_CHANGE = "ba3e0f4d-b817-4094-a2d1-d56379e6a0f3";
-/** The three power settings that the daemon watches. */
-export const POWER_SETTINGS: readonly string[] = [GUID_ACDC_POWER_SOURCE, GUID_BATTERY_PERCENTAGE_REMAINING, GUID_LIDSWITCH_STATE_CHANGE];
+/** The power settings that the daemon watches: the power source, the charge, the lid, and the user presence and the display (H33). */
+export const POWER_SETTINGS: readonly string[] = [
+  GUID_ACDC_POWER_SOURCE,
+  GUID_BATTERY_PERCENTAGE_REMAINING,
+  GUID_LIDSWITCH_STATE_CHANGE,
+  GUID_SESSION_USER_PRESENCE,
+  GUID_SESSION_DISPLAY_STATUS,
+];
 
 /** The suspend event of `PowerRegisterSuspendResumeNotification`: `PBT_APMSUSPEND`. */
 export const PBT_APMSUSPEND = 4;
@@ -78,7 +89,7 @@ export function settingEvent(guid: string, value: number): PowerEvent | null {
     case GUID_LIDSWITCH_STATE_CHANGE:
       return { type: "lid", open: value !== 0 };
     default:
-      return null;
+      return sessionEvent(guid, value);
   }
 }
 

@@ -41,7 +41,7 @@ const HEAVY: SpawnClass = { heavy: true, source: "history", perMinute: 1870, run
 const OK_USAGE: UsageFacts = { state: "ok", path: "D:\\usage.json", ratio: 0.91, resetsAt: NOW + 50 * MINUTE, updatedAt: NOW - 10 * MINUTE };
 
 function facts(fields: Partial<ConditionFacts> = {}): ConditionFacts {
-  return { now: NOW, ac: true, percent: 92, usage: OK_USAGE, starts: 320, ...fields };
+  return { now: NOW, ac: true, percent: 92, usage: OK_USAGE, starts: 320, presence: "present", ...fields };
 }
 
 function lease(id: string, fields: Partial<Lease> = {}): Lease {
@@ -52,14 +52,15 @@ function lease(id: string, fields: Partial<Lease> = {}): Lease {
 }
 
 describe("the registry of the conditions (H31)", () => {
-  it("knows ac, battery>=N, usage<N and starts<N, each with a reason in STE", () => {
-    expect(CONDITIONS.map((each) => each.name)).toEqual(["ac", "battery", "usage", "starts"]);
+  it("knows ac, battery>=N, usage<N, starts<N and away, each with a reason in STE", () => {
+    expect(CONDITIONS.map((each) => each.name)).toEqual(["ac", "battery", "usage", "starts", "away"]);
+    expect(parseCondition("Away")).toEqual({ name: "away", value: null, text: "away" });
     expect(parseCondition("starts < 700")).toEqual({ name: "starts", value: 700, text: "starts<700" });
     expect(parseCondition("ac")).toEqual({ name: "ac", value: null, text: "ac" });
     expect(parseCondition(" Battery >= 50 ")).toEqual({ name: "battery", value: 50, text: "battery>=50" });
     expect(parseCondition("usage<80")).toEqual({ name: "usage", value: 80, text: "usage<80" });
     expect(knownConditionsText()).toBe(
-      "The known conditions: ac (the laptop is plugged in), battery>=N (the battery is at N% or more, or the laptop is plugged in), usage<N (the five-hour usage window of Claude is under N%), starts<N (the computer starts fewer than N processes a minute). Planned: away (H33), cool (H35), unmetered (H39), night (H42).",
+      "The known conditions: ac (the laptop is plugged in), battery>=N (the battery is at N% or more, or the laptop is plugged in), usage<N (the five-hour usage window of Claude is under N%), starts<N (the computer starts fewer than N processes a minute), away (Mark is away from the laptop). Planned: cool (H35), unmetered (H39), night (H42).",
     );
   });
 
@@ -70,8 +71,7 @@ describe("the registry of the conditions (H31)", () => {
   });
 
   it("names the item that adds a planned condition", () => {
-    expect(() => parseCondition("away")).toThrow(/^"away" is a planned condition: H33 adds it\. The known conditions:/);
-    expect(() => parseCondition("cool")).toThrow(/H35 adds it/);
+    expect(() => parseCondition("cool")).toThrow(/^"cool" is a planned condition: H35 adds it\. The known conditions:/);
     expect(() => parseCondition("unmetered")).toThrow(/H39 adds it/);
     expect(() => parseCondition("night")).toThrow(/H42 adds it/);
   });
@@ -92,7 +92,8 @@ describe("--when (H31)", () => {
   it("reads lists with commas and repeated options, and removes a condition that comes twice", () => {
     expect(parseWhen(["ac,usage<80", "battery>=50", "AC", " "]).map((spec) => spec.text)).toEqual(["ac", "usage<80", "battery>=50"]);
     expect(parseWhen([])).toEqual([]);
-    expect(() => parseWhen(["ac,away"])).toThrow(/H33/);
+    expect(() => parseWhen(["ac,cool"])).toThrow(/H35/);
+    expect(parseWhen(["ac,away"]).map((spec) => spec.text)).toEqual(["ac", "away"]);
   });
 
   it("gives the conditions of a new lease, or none", () => {
@@ -304,7 +305,7 @@ describe("Broker conditions (H31)", () => {
 
   it("refuses an unknown condition at the request", () => {
     const { broker } = setup();
-    expect(() => broker.request({ holder: "graph", job: "bench", amounts: {}, when: ["away"] })).toThrow(/H33/);
+    expect(() => broker.request({ holder: "graph", job: "bench", amounts: {}, when: ["cool"] })).toThrow(/H35/);
     expect(broker.leases()).toEqual([]);
   });
 

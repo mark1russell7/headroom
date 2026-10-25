@@ -45,6 +45,8 @@ export interface LeaseRequest {
   readonly batteryOk?: boolean | undefined;
   /** `--during-drain` (H34): the job starts also in a planned drain for a reboot. */
   readonly duringDrain?: boolean | undefined;
+  /** `--ignore-presence` (H33): a heavy job does not wait while Mark is busy, and gets no efficiency mode for Mark. */
+  readonly ignorePresence?: boolean | undefined;
   /** The hard cap of the job in cores, with `--cpu N --limit` (H23). The client of `headroom run` sets it on the job object. */
   readonly cpuCap?: number | undefined;
 }
@@ -247,7 +249,7 @@ export class Broker {
       if (!Number.isFinite(amount) || amount < 0) throw new RangeError(`The amount of ${name} must be a number of 0 or more`);
     }
     if (request.cpuCap !== undefined && !(Number.isFinite(request.cpuCap) && request.cpuCap > 0)) throw new RangeError("The CPU cap must be a number above 0");
-    const conditions = leaseConditions(request.when, request.timing, request.batteryOk, request.duringDrain);
+    const conditions = leaseConditions(request.when, request.timing, request.batteryOk, request.duringDrain, request.ignorePresence);
     const now = this.#now();
     const lease: Lease = {
       id: this.#newId(),
@@ -454,7 +456,8 @@ export class Broker {
   #neverFits(lease: Lease, capacity: Capacity): string | null {
     for (const [name, amount] of Object.entries(lease.amounts)) {
       const room = this.#room(name, capacity);
-      const limit = room.capacity - room.reserve;
+      // H33: a reserve that is larger while Mark works does not cancel a lease. The lease waits until Mark is away.
+      const limit = room.capacity - Math.min(room.reserve, room.lowestReserve ?? room.reserve);
       if (amount > limit) return `${name}: ${amount} is more than the capacity of ${limit}`;
     }
     return null;

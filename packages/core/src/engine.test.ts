@@ -9,6 +9,9 @@ import { Engine } from "./engine.ts";
 import { DEFAULT_HEALTH, type ServiceHealth } from "./services.ts";
 import type { Sampler } from "./sampler.ts";
 import { Store } from "./store.ts";
+
+/** The presence settings of H33 by default. */
+const PRESENCE_SETTINGS = { presence: true, awayAfterMs: 300_000, busyWaitMs: 1_200_000, presentReserve: 2 };
 import type { BatteryRead, PoolTag, ProcessInfo } from "./types.ts";
 
 describe("Engine stop alerts", () => {
@@ -492,7 +495,7 @@ describe("Engine disk leases and temp folders", () => {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
       expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2 });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });
