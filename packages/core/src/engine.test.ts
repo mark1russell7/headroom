@@ -57,8 +57,9 @@ describe("Engine process starts (H29)", () => {
     expect(engine.renew(lease.id, 120)?.processes).toBe(120);
     const status = engine.status();
     expect(status.starts).toMatchObject({ perMinute: 1500, exact: true, spanMs: 10_000 });
-    // The lease has no process in the read, so the session of its holder owns the job.
-    expect(status.starts.jobs[0]).toMatchObject({ job: "coeval-063-test-compiler", owner: "session:client", processes: 120, perMinute: 720 });
+    // The holder owns the job. No session has the name of the holder, so the owner is the holder.
+    expect(status.starts.jobs[0]).toMatchObject({ job: "coeval-063-test-compiler", owner: "client", processes: 120, perMinute: 720 });
+    expect(status.starts.owners).toContainEqual({ owner: "client", kind: "other", perMinute: 720, jobsPerMinute: 720, ownPerMinute: 0 });
     expect(status.resources.find((each) => each.id === "procs")).toMatchObject({ kind: "procs", unit: "per minute", used: 1500, capacity: null });
     expect(engine.jobs({ query: lease.id })[0]?.processes).toBe(120);
     expect(engine.release(lease.id, "the job ended with code 0", null, undefined, { code: 0, signal: null }, 300)?.processes).toBe(300);

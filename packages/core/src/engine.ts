@@ -370,7 +370,7 @@ export class Engine {
       this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf);
       this.#writes = this.#counters.writes(now);
       this.#cores = this.#counters.cores(now);
-      this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.());
+      this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
       this.#starts = this.#startTracker.summary(now);
       const gui = this.#sampler.gui?.();
       this.#load = { processes: this.#processes.length, userObjects: gui?.userObjects ?? null, gdiObjects: gui?.gdiObjects ?? null };

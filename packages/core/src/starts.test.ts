@@ -12,15 +12,15 @@ const sessions = [
   { pid: 20, name: "organizer", sessionId: "b", status: null, cwd: null },
 ];
 
-function ownersOf(processes: readonly ProcessInfo[], leases: readonly Lease[]): Owners {
-  const { owners, ownerOf } = attribute(processes, sessions);
+function ownersOf(processes: readonly ProcessInfo[], leases: readonly Lease[], list: typeof sessions = sessions): Owners {
+  const { owners, ownerOf } = attribute(processes, list);
   return { ownerOf, kindOf: new Map(owners.map((owner) => [owner.owner, owner.kind])), leaseOf: leasesOf(processes, leases) };
 }
 
 /** The lease of `headroom run` (process 30, under the session client), with the name of a job of another project. */
-function grantedLease(pid = 30): Lease {
+function grantedLease(pid = 30, holder = "client", job = "coeval-063-test-compiler"): Lease {
   const broker = new Broker({ now: () => 0, newId: () => "L1", isAlive: () => true });
-  broker.request({ holder: "client", job: "coeval-063-test-compiler", amounts: {}, pid });
+  broker.request({ holder, job, amounts: {}, pid });
   broker.tick({ totalMb: 1000, availableMb: 1000, pools: {} });
   const lease = broker.get("L1");
   if (lease === undefined) throw new Error("no lease");
@@ -58,12 +58,12 @@ describe("StartTracker", () => {
     tracker.read(0, first, ownersOf(first, [lease]), 1000);
     expect(tracker.summary(0)).toMatchObject({ perMinute: 0, spanMs: 0, owners: [], jobs: [] });
     const owners = ownersOf(second, [lease]);
-    tracker.read(10 * S, second, owners, 1100);
+    tracker.read(10 * S, second, owners, 1100, [lease]);
     tracker.report(lease, 10 * S, 50, owners);
     const starts = tracker.summary(10 * S);
     // 100 sequence numbers in 10 seconds.
     expect(starts).toMatchObject({ perMinute: 600, exact: true, spanMs: 10 * S });
-    // The holder and the process tree decide the owner of the job, not the name of the job.
+    // The holder decides the owner of the job, not the name of the job.
     expect(starts.jobs).toEqual([{ id: "L1", job: "coeval-063-test-compiler", holder: "client", owner: "session:client", processes: 50, perMinute: 300 }]);
     // The test of the lease (43) counts in the job, not in the own commands: 41, 42 and 60 are the own commands.
     expect(starts.owners).toEqual([
@@ -79,7 +79,7 @@ describe("StartTracker", () => {
     const lease = grantedLease();
     const tracker = new StartTracker();
     tracker.read(0, first, ownersOf(first, [lease]));
-    tracker.read(10 * S, second, ownersOf(second, [lease]));
+    tracker.read(10 * S, second, ownersOf(second, [lease]), undefined, [lease]);
     const starts = tracker.summary(10 * S);
     // 4 own commands and 1 process of the lease in 10 seconds.
     expect(starts).toMatchObject({ perMinute: 30, exact: false, jobs: [] });
@@ -95,6 +95,43 @@ describe("StartTracker", () => {
     tracker.report(lease, 10 * S, 20, ownersOf(first, [lease]));
     expect(tracker.summary(10 * S).jobs[0]).toMatchObject({ owner: "session:client", processes: 20 });
     expect(tracker.summary(10 * S).owners).toEqual([{ owner: "session:client", kind: "session", perMinute: 120, jobsPerMinute: 120, ownPerMinute: 0 }]);
+  });
+
+  // The session s7-site (70). The shell between the session and its `headroom run` (31) stopped, so the process tree gives
+  // the job to other. The job starts 383 processes in one minute, and each one ends before a read.
+  const siteSessions = [...sessions, { pid: 70, name: "s7-site", sessionId: "c", status: null, cwd: null }];
+  const site = [...first, p(70, 1, "claude.exe", -300 * S), p(31, 999, "node.exe", -2 * S)];
+
+  it("gives the starts of a job to the session of its holder when the process tree gives the job to other", () => {
+    const lease = grantedLease(31, "s7-site", "pnpm test:scripts");
+    const tracker = new StartTracker();
+    const owners = ownersOf(site, [lease], siteSessions);
+    expect(owners.ownerOf.get(31)).toBe("other");
+    tracker.read(0, site, owners, 1000, [lease]);
+    tracker.read(60 * S, site, owners, 1400, [lease]);
+    tracker.report(lease, 60 * S, 383, owners);
+    const starts = tracker.summary(60 * S);
+    expect(starts.jobs).toEqual([{ id: "L1", job: "pnpm test:scripts", holder: "s7-site", owner: "session:s7-site", processes: 383, perMinute: 383 }]);
+    expect(starts.owners).toEqual([{ owner: "session:s7-site", kind: "session", perMinute: 383, jobsPerMinute: 383, ownPerMinute: 0 }]);
+    expect(startsLine(starts)).toBe("Process starts: 400 a minute. Most (at least): session:s7-site 383 (jobs 383, own commands 0, job pnpm test:scripts: 383 so far).");
+  });
+
+  it("gives the new processes of a lease with no count to its holder, and a holder with no session is its own owner", () => {
+    const lease = grantedLease(31, "s7-site", "pnpm test:scripts");
+    // A test of the job (32) under the `headroom run` with no parent.
+    const busy = [...site, p(32, 31, "node.exe", 5 * S)];
+    const withSession = new StartTracker();
+    withSession.read(0, site, ownersOf(site, [lease], siteSessions), undefined, [lease]);
+    withSession.read(10 * S, busy, ownersOf(busy, [lease], siteSessions), undefined, [lease]);
+    expect(withSession.summary(10 * S).owners).toEqual([{ owner: "session:s7-site", kind: "session", perMinute: 6, jobsPerMinute: 6, ownPerMinute: 0 }]);
+    // No session has the name s7-site.
+    const noSession = new StartTracker();
+    noSession.read(0, site, ownersOf(site, [lease]), undefined, [lease]);
+    noSession.read(10 * S, busy, ownersOf(busy, [lease]), undefined, [lease]);
+    noSession.report(lease, 10 * S, 383, ownersOf(busy, [lease]));
+    const starts = noSession.summary(10 * S);
+    expect(starts.jobs[0]).toMatchObject({ holder: "s7-site", owner: "s7-site", processes: 383 });
+    expect(starts.owners[0]).toMatchObject({ owner: "s7-site", kind: "other", jobsPerMinute: 2298, ownPerMinute: 0 });
   });
 
   it("forgets the reads and the jobs after the window, and keeps the highest sequence number", () => {
