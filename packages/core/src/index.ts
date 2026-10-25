@@ -105,7 +105,7 @@ export { Engine } from "./engine.ts";
 export type { Alerts, ConfigChange, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
 export { attribute, childrenOf, DEFAULT_RULES, fileTimeMs, isParent, parentOf, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
-export { isLoopback, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, rolesFile } from "./peer.ts";
+export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, rolesDir, rolesFile } from "./peer.ts";
 export type { FleetRole, Peer, PeerErrorCode, PeerInput, PeerSources } from "./peer.ts";
 export {
   DEFAULT_DYNAMIC_PORTS,

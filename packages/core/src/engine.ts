@@ -88,7 +88,10 @@ export interface EngineOptions {
    * daemon ticks every 2 seconds and sets 60 seconds. The default is no limit: only a resume event marks a sleep.
    */
   readonly sleepGapMs?: number | undefined;
-  /** The fleet registry of the roles for `resources.peer` (H46). The default is `~/git/fleet/registry/roles.json`. */
+  /**
+   * The fleet registry of the roles for `resources.peer` (H46). The default is `~/git/fleet/registry/roles.json`.
+   * The folder `roles` next to this file holds the role files.
+   */
   readonly rolesFile?: string | undefined;
   /** This function reads the usage file for `usage<N` (H31). The default reads the file. The engine keeps each read for 30 seconds. */
   readonly readUsage?: ((path: string) => UsageFacts) | undefined;

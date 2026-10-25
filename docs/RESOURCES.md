@@ -877,10 +877,15 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 **The session and the role.**
 
 - The session is the session file of `claude.exe` in `~/.claude/sessions`, with the same process ID. On Windows, `procStart` of the file must be the start of that `claude.exe`.
-- The role comes from the fleet registry `~/git/fleet/registry/roles.json`. The daemon reads the file again only after a change of its time or its size.
+- The role comes from the fleet registry. The registry has two sources: the role files `~/git/fleet/registry/roles/<id>.json` and the old file `~/git/fleet/registry/roles.json`.
+- The file of a role wins over the entry of that role in `roles.json`. The other roles come from `roles.json`. These are the rules of `readRoleDocs` of the fleet.
+- The name of a role file without `.json` is the ID of its role. A file with a different `id` in it does not count.
+- The daemon skips a file that is not JSON, a hidden file and a temporary file. The entry in `roles.json` then applies.
+- Each call reads the names of the role files, and the time and the size of each source. The daemon reads the two sources again only after a change.
 - The role with the ID of the session wins. Then the role with the name of the session as its session name wins. For example, the session `strategies` gives the role `strategist`.
 - Then the role with the name of the session as its ID wins, for a parked role with no session name. A retired role does not match.
-- `EngineOptions.rolesFile` sets another registry.
+- A role file can retire a role. Then that role does not match, also when `roles.json` gives the role as `active`.
+- `EngineOptions.rolesFile` sets another registry. The folder `roles` next to that file holds its role files.
 
 **Cost and the caches.**
 
