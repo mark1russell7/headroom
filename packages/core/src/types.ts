@@ -30,6 +30,21 @@ export interface SystemMemory {
    * Bytes` and `\Memory\System Code Resident Bytes`.
    */
   readonly driversMb?: number | undefined;
+  /**
+   * The PFN database in physical memory: the record of each physical page (H49). Only Windows 11 22H2 and later give it:
+   * `PfnDatabaseCommittedPages` of `SystemPerformanceInformation`.
+   */
+  readonly pfnDatabaseMb?: number | undefined;
+  /**
+   * The pages that drivers allocate and lock in physical memory (H49), for example for the GPU. Only Windows 11 22H2 and
+   * later give it: `MdlPagesAllocated` of `SystemPerformanceInformation`.
+   */
+  readonly driverLockedMb?: number | undefined;
+  /**
+   * The page tables of the system address space (H49). Only Windows 11 22H2 and later give it:
+   * `SystemPageTableCommittedPages` of `SystemPerformanceInformation`.
+   */
+  readonly pageTablesMb?: number | undefined;
 }
 
 /** One process, with its parent and its memory in MB. */
@@ -37,9 +52,16 @@ export interface ProcessInfo {
   readonly pid: number;
   readonly ppid: number;
   readonly name: string;
-  /** The private memory of the process: the part that no other process shares. */
+  /**
+   * The private memory of the process: the part that no other process shares, in RAM or in the page file. Windows:
+   * `PagefileUsage` of `SystemProcessInformation` (H49). Linux: `RssAnon` of `/proc/<pid>/status`.
+   */
   readonly privateMb: number;
-  /** The working set of the process: the part in physical memory at this time. */
+  /**
+   * The memory of the process in RAM at this time. Windows: the private working set, `WorkingSetPrivateSize` of
+   * `SystemProcessInformation` (H49). A page that processes share is in no process, so the sum of the processes is not
+   * more than the memory in use. Linux: the resident set, `VmRSS`.
+   */
   readonly workingMb: number;
   /** The start of the process, in milliseconds since the epoch. A new process with the ID of an ended process has a different start. */
   readonly startedAt?: number | undefined;

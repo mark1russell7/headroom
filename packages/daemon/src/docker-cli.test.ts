@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DockerReader, dockerShares, dockerStatus, type DockerContainerStatus, type DockerStatus } from "@headroom/core";
+import { DockerReader, dockerShares, dockerStatus, localClock, type DockerContainerStatus, type DockerStatus } from "@headroom/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Connection } from "./client.ts";
 import { dockerCommand, dockerLinesOf } from "./docker-cli.ts";
@@ -48,13 +48,16 @@ const DOCKER: DockerStatus = dockerStatus({
 describe("headroom docker (H38)", () => {
   it("writes each container with its owner, the owners, the VM, the disk use and the cost", () => {
     const lines = dockerLinesOf(DOCKER);
-    expect(lines[0]).toBe("Docker 29.9.2 (API 1.56), read at 09:57 UTC: 1 of 2 containers run, 566 MB, 0.55 cores.");
+    // H49: the times are in the local clock, as in the other commands.
+    const at = localClock(Date.parse("2026-10-25T09:57:00Z"));
+    expect(lines[0]).toBe(`Docker 29.9.2 (API 1.56), read at ${at}: 1 of 2 containers run, 566 MB, 0.55 cores.`);
     expect(lines.some((line) => line.startsWith("graph-mongo-1") && line.includes("session:graph") && line.includes("566 MB") && line.endsWith("graph"))).toBe(true);
     expect(lines.some((line) => line.startsWith("dynamodb-local") && line.includes("docker:dynamodb-local") && line.includes("exited"))).toBe(true);
     expect(lines).toContain("  session:graph                   566 MB   0.55 cores  1 container");
     expect(lines).toContain("VM: vmmemWSL 1.3 GB in RAM, 2.1 GB committed.");
     expect(lines).toContain("docker (VM) keeps 1.4 GB in RAM and 0.30 cores: the VM, its cache and the Docker programs of Windows, less the containers.");
-    expect(lines).toContain("Disk, read at 09:57 UTC: images 33.1 GB (102), images with no container 26.2 GB (99).");
+    expect(lines).toContain(`Disk, read at ${at}: images 33.1 GB (102), images with no container 26.2 GB (99).`);
+    expect(lines.join("\n")).not.toContain("UTC");
     expect(lines).toContain("Cost: the last read of the containers took 65 ms, and the last disk read 4.6 s.");
     expect(lines.at(-1)).toContain("headroom does not prune, stop or start a container.");
   });

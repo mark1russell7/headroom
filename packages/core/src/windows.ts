@@ -4,8 +4,9 @@
  * - `K32GetPerformanceInfo` gives the physical memory, the commit charge and the kernel pools.
  * - `NtQuerySystemInformation` with `SystemPerformanceInformation` gives the file cache, the paged pool and the drivers in RAM.
  * - A Toolhelp snapshot gives each process with its parent.
- * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
- * - The VM process `vmmemWSL` is a minimal process with no such counters. `SystemProcessInformation` gives its memory (H38).
+ * - `NtQuerySystemInformation` with `SystemProcessInformation` gives the private memory and the private working set of each
+ *   process (H49). It opens no process, so it also reads the protected processes and the minimal processes: `vmmemWSL`,
+ *   `Memory Compression`, `Registry` and `Secure System`. The parsers are in `system-information.ts`.
  * - `NtQueryInformationProcess` gives the command line of each new `node.exe`, for its `--title` (the owner `service:<name>`).
  * - `NtQueryInformationProcess` with `ProcessSequenceNumber` gives the sequence number of the newest process (H29).
  * - `GetTickCount64` gives the start of the computer.
@@ -33,8 +34,8 @@ import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpEndpoin
 import { fileTimeMs, programName, titleOf } from "./owners.ts";
 import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
+import { parseResident, parseSystemProcesses, type ProcessTotals, type ResidentMemory } from "./system-information.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
-import { VM_PROCESSES } from "./docker.ts";
 import { readGpu } from "./windows-gpu.ts";
 import { closePower, keepAwake, readBattery, readMeters, readThermal, watchPower } from "./windows-power.ts";
 import { readCalls, readPresence } from "./windows-presence.ts";
@@ -76,32 +77,16 @@ const PROCESSENTRY32W = koffi.struct("PROCESSENTRY32W", {
   dwFlags: "uint32_t",
   szExeFile: koffi.array("char16_t", 260),
 });
-const PROCESS_MEMORY_COUNTERS_EX = koffi.struct("PROCESS_MEMORY_COUNTERS_EX", {
-  cb: "uint32_t",
-  PageFaultCount: "uint32_t",
-  PeakWorkingSetSize: "size_t",
-  WorkingSetSize: "size_t",
-  QuotaPeakPagedPoolUsage: "size_t",
-  QuotaPagedPoolUsage: "size_t",
-  QuotaPeakNonPagedPoolUsage: "size_t",
-  QuotaNonPagedPoolUsage: "size_t",
-  PagefileUsage: "size_t",
-  PeakPagefileUsage: "size_t",
-  PrivateUsage: "size_t",
-});
-
 // The handles are numbers here (intptr_t), so the code compares them with 0 and -1.
 const getPerformanceInfo = kernel32.func("int __stdcall K32GetPerformanceInfo(_Out_ PERFORMANCE_INFORMATION *info, uint32_t cb)");
 const createSnapshot = kernel32.func("intptr_t __stdcall CreateToolhelp32Snapshot(uint32_t flags, uint32_t pid)");
 const processFirst = kernel32.func("int __stdcall Process32FirstW(intptr_t snapshot, _Inout_ PROCESSENTRY32W *entry)");
 const processNext = kernel32.func("int __stdcall Process32NextW(intptr_t snapshot, _Inout_ PROCESSENTRY32W *entry)");
 const openProcess = kernel32.func("intptr_t __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
-const getMemoryInfo = kernel32.func("int __stdcall K32GetProcessMemoryInfo(intptr_t process, _Out_ PROCESS_MEMORY_COUNTERS_EX *counters, uint32_t cb)");
 const closeHandle = kernel32.func("int __stdcall CloseHandle(intptr_t handle)");
 
 const performanceSize = koffi.sizeof(PERFORMANCE_INFORMATION);
 const entrySize = koffi.sizeof(PROCESSENTRY32W);
-const countersSize = koffi.sizeof(PROCESS_MEMORY_COUNTERS_EX);
 
 interface PerformanceInformation {
   CommitTotal: number | bigint;
@@ -120,11 +105,6 @@ interface ProcessEntry {
   szExeFile: string;
 }
 
-interface MemoryCounters {
-  WorkingSetSize: number | bigint;
-  PrivateUsage: number | bigint;
-}
-
 /** This function reads the memory of the computer. */
 function memory(): SystemMemory {
   const info = {} as PerformanceInformation;
@@ -138,25 +118,19 @@ function memory(): SystemMemory {
     commitLimitMb: mb(info.CommitLimit),
     kernelPagedMb: mb(info.KernelPaged),
     kernelNonpagedMb: mb(info.KernelNonpaged),
-    ...resident(mb),
+    ...resident(page),
   };
 }
 
 const SYSTEM_PERFORMANCE_INFORMATION = 2;
-// The offsets of page counts (ULONG) in SYSTEM_PERFORMANCE_INFORMATION. The struct has 376 bytes on Windows 11.
-// The four counts give the same values as the counters "System Code Resident Bytes", "System Cache Resident Bytes",
-// "Pool Paged Resident Bytes" and "System Driver Resident Bytes" of the object Memory.
-const SPI_RESIDENT_CODE = 140;
-const SPI_RESIDENT_CACHE = 164;
-const SPI_RESIDENT_PAGED_POOL = 168;
-const SPI_RESIDENT_DRIVER = 172;
 let performanceBuffer = Buffer.alloc(512);
 
 /**
- * This function reads the file cache, the paged pool and the code of the kernel and the drivers in RAM, with one call of
- * `NtQuerySystemInformation(SystemPerformanceInformation)`. A failed read gives no amounts.
+ * This function reads the file cache, the paged pool, the code of the kernel and the drivers in RAM, with one call of
+ * `NtQuerySystemInformation(SystemPerformanceInformation)`. On Windows 11 22H2 and later, the read also gives three more
+ * amounts (H49): the PFN database, the locked pages and the page tables. A failed read gives no amounts.
  */
-function resident(mb: (pages: number) => number): Pick<SystemMemory, "cacheMb" | "kernelPagedResidentMb" | "driversMb"> {
+function resident(pageBytes: number): ResidentMemory {
   for (let attempt = 0; attempt < 3; attempt++) {
     const returned = [0];
     const status = querySystemInformation(SYSTEM_PERFORMANCE_INFORMATION, performanceBuffer, performanceBuffer.length, returned);
@@ -164,13 +138,7 @@ function resident(mb: (pages: number) => number): Pick<SystemMemory, "cacheMb" |
       performanceBuffer = Buffer.alloc(Math.max(performanceBuffer.length * 2, returned[0] ?? 0));
       continue;
     }
-    if (status !== 0 || (returned[0] ?? 0) < SPI_RESIDENT_DRIVER + 4) return {};
-    const pages = (offset: number): number => performanceBuffer.readUInt32LE(offset);
-    return {
-      cacheMb: mb(pages(SPI_RESIDENT_CACHE)),
-      kernelPagedResidentMb: mb(pages(SPI_RESIDENT_PAGED_POOL)),
-      driversMb: mb(pages(SPI_RESIDENT_DRIVER) + pages(SPI_RESIDENT_CODE)),
-    };
+    return status === 0 ? parseResident(performanceBuffer, returned[0] ?? 0, pageBytes) : {};
   }
   return {};
 }
@@ -182,19 +150,11 @@ function bootedAt(): number {
   return Date.now() - Number(getTickCount64());
 }
 
-/** This function reads the memory of one process, or gives `null` when the process is protected or ended. */
-function memoryOf(pid: number): MemoryCounters | null {
-  const handle = Number(openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
-  if (handle === 0) return null;
-  try {
-    const counters = {} as MemoryCounters;
-    return getMemoryInfo(handle, counters, countersSize) === 0 ? null : counters;
-  } finally {
-    closeHandle(handle);
-  }
-}
-
-/** This function reads the processes with their parents, their memory, their start, their processor time and their I/O bytes. */
+/**
+ * This function reads the processes with their parents, their memory, their start, their processor time and their I/O bytes.
+ * The memory comes from `SystemProcessInformation` (H49), with no open of a process. A process that starts after that
+ * read and before the Toolhelp snapshot has no totals, so its memory is 0 until the next read.
+ */
 function processes(): ProcessInfo[] {
   const totals = processTotals();
   // The newest process can end in a moment, so its sequence number comes first.
@@ -207,19 +167,15 @@ function processes(): ProcessInfo[] {
     for (let more = processFirst(snapshot, entry); more !== 0; more = processNext(snapshot, entry)) {
       const pid = Number(entry.th32ProcessID);
       const name = String(entry.szExeFile);
-      // The memory of a protected process is not readable, so it counts as 0. The totals come from the kernel for each process.
-      const counters = pid === 0 ? null : memoryOf(pid);
+      // H49: the kernel gives the memory of each process, also of a protected process and of a minimal process (H38: the VM).
       const total = totals.get(pid);
-      const program = programName(name);
-      const title = program === "node" ? titleOfProcess(pid, total?.startedAt) : null;
-      // H38: the memory of the VM of Docker and WSL comes from the kernel, because the VM process gives no counters.
-      const vm = counters === null && VM_PROCESSES.has(program) ? total : undefined;
+      const title = programName(name) === "node" ? titleOfProcess(pid, total?.startedAt) : null;
       list.push({
         pid,
         ppid: Number(entry.th32ParentProcessID),
         name,
-        privateMb: counters ? Number(counters.PrivateUsage) / MB : vm ? vm.privateBytes / MB : 0,
-        workingMb: counters ? Number(counters.WorkingSetSize) / MB : vm ? vm.workingBytes / MB : 0,
+        privateMb: (total?.privateBytes ?? 0) / MB,
+        workingMb: (total?.privateWorkingBytes ?? 0) / MB,
         startedAt: total?.startedAt,
         cpuMs: total?.cpuMs,
         readBytes: total?.readBytes,
@@ -316,41 +272,15 @@ function newestSequence(totals: ReadonlyMap<number, ProcessTotals>): number | un
 const SYSTEM_POOL_TAG_INFORMATION = 22;
 
 const SYSTEM_PROCESS_INFORMATION = 5;
-// The offsets in SYSTEM_PROCESS_INFORMATION on 64-bit Windows. The entry of a process is at least 0x100 bytes, and its threads follow it.
-const SPI_CREATE_TIME = 0x20;
-const SPI_USER_TIME = 0x28;
-const SPI_KERNEL_TIME = 0x30;
-const SPI_PROCESS_ID = 0x50;
-const SPI_HANDLE_COUNT = 0x60;
-const SPI_WORKING_SET = 0x90;
-const SPI_PAGEFILE_USAGE = 0xb8;
-const SPI_READ_TRANSFER = 0xe8;
-const SPI_WRITE_TRANSFER = 0xf0;
-const SPI_SIZE = 0x100;
 let processBuffer = Buffer.alloc(256 * 1024);
 
-/** The totals of one process since its start. */
-interface ProcessTotals {
-  readonly startedAt: number;
-  readonly cpuMs: number;
-  readonly readBytes: number;
-  readonly writeBytes: number;
-  /** The count of the open handles of the process at the read (H48). */
-  readonly handles: number;
-  /** The working set: `WorkingSetSize`. */
-  readonly workingBytes: number;
-  /** The private memory: `PagefileUsage`, the same value as `PrivateUsage` of `K32GetProcessMemoryInfo`. */
-  readonly privateBytes: number;
-}
-
 /**
- * This function reads the start, the processor time, the I/O bytes and the handles of each process with one call of
- * `NtQuerySystemInformation(SystemProcessInformation)`. It opens no process, so it also reads the protected processes.
- * The I/O bytes are `ReadTransferCount` and `WriteTransferCount`: each read and write, also to a pipe or a device.
- * The idle process (ID 0) is absent, because its processor time is the idle time. A failed read gives no totals.
+ * This function reads the start, the processor time, the I/O bytes, the handles and the memory of each process with one
+ * call of `NtQuerySystemInformation(SystemProcessInformation)`. It opens no process, so it also reads the protected
+ * processes. The I/O bytes are `ReadTransferCount` and `WriteTransferCount`: each read and write, also to a pipe or a
+ * device. `parseSystemProcesses()` reads the buffer. A failed read gives no totals.
  */
 function processTotals(): Map<number, ProcessTotals> {
-  const totals = new Map<number, ProcessTotals>();
   for (let attempt = 0; attempt < 5; attempt++) {
     const returned = [0];
     const status = querySystemInformation(SYSTEM_PROCESS_INFORMATION, processBuffer, processBuffer.length, returned);
@@ -358,29 +288,9 @@ function processTotals(): Map<number, ProcessTotals> {
       processBuffer = Buffer.alloc(Math.max(processBuffer.length * 2, (returned[0] ?? 0) + 64 * 1024));
       continue;
     }
-    if (status !== 0) return totals;
-    const buffer = processBuffer;
-    for (let at = 0; at + SPI_SIZE <= buffer.length; ) {
-      const pid = Number(buffer.readBigUInt64LE(at + SPI_PROCESS_ID));
-      if (pid !== 0) {
-        // The times count units of 100 nanoseconds. The start counts them from 1601-01-01.
-        totals.set(pid, {
-          startedAt: fileTimeMs(buffer.readBigInt64LE(at + SPI_CREATE_TIME)),
-          cpuMs: Number(buffer.readBigInt64LE(at + SPI_USER_TIME) + buffer.readBigInt64LE(at + SPI_KERNEL_TIME)) / 10_000,
-          readBytes: Number(buffer.readBigInt64LE(at + SPI_READ_TRANSFER)),
-          writeBytes: Number(buffer.readBigInt64LE(at + SPI_WRITE_TRANSFER)),
-          handles: buffer.readUInt32LE(at + SPI_HANDLE_COUNT),
-          workingBytes: Number(buffer.readBigUInt64LE(at + SPI_WORKING_SET)),
-          privateBytes: Number(buffer.readBigUInt64LE(at + SPI_PAGEFILE_USAGE)),
-        });
-      }
-      const next = buffer.readUInt32LE(at);
-      if (next === 0) break;
-      at += next;
-    }
-    return totals;
+    return status === 0 ? parseSystemProcesses(processBuffer, returned[0] ?? 0) : new Map();
   }
-  return totals;
+  return new Map();
 }
 // One entry of SYSTEM_POOLTAG on 64-bit Windows: the tag, the paged counts and size, then the non-paged counts and size.
 const TAG_ENTRY = 40;

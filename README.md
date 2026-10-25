@@ -45,11 +45,14 @@ headroom status
 headroom history --minutes 120
 ```
 
-The list "Memory by owner" gives the private memory and the memory in RAM of each owner. The owners and the available memory add up to approximately the physical memory:
+The list "Memory by owner" gives the private memory and the memory in RAM of each owner. Its last row, `unattributed`, gives the memory in use that no owner holds (H49):
 
 - A process belongs to its Claude Code session, its MCP server of the gateway, or a group, for example `docker`, `browser`, `editor` or `system`.
 - A Node process with `--title=<name>` that Task Scheduler, a service or Explorer starts is the owner `service:<name>`, for example `service:headroom-daemon`.
-- On Windows, three owners have no process: `kernel` (the kernel pools), `kernel:cache` (the system file cache in RAM) and `kernel:drivers` (the code of the kernel and of the drivers).
+- On Windows, the minimal processes have their own owners: `system:memory compression`, `system:registry` and `system:secure system`. The Docker VM is in `docker (VM)`.
+- On Windows, some owners have no process: `kernel` (the kernel pools), `kernel:cache` (the system file cache in RAM), `kernel:drivers` (the code of the kernel and of the drivers), `kernel:driver locked`, `kernel:pfn database` and `kernel:page tables`.
+- On Windows, one read of `SystemProcessInformation` gives the memory of each process, also of a protected process. The daemon opens no process for it.
+- The memory in RAM of a process is its private working set, as the column "Memory" of Task Manager. A page that processes share is in no owner, so it is in `unattributed`.
 
 `headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network, the TCP connections and the shared services:
 
@@ -225,7 +228,7 @@ Docker Desktop keeps its containers in one VM. Windows shows the VM as one proce
 - **The disk use**: every 10 minutes, `GET /system/df` gives the images, the images with no container, the build cache, the volumes and the writable layers.
 - **The owner** of a container is the session of its compose project. The folder of the project in a folder of a fleet role gives `session:<role>`. A project with the name of a role also gives that role. Else the owner is `docker:<project>` or `docker:<name>`.
 - **The split.** In the memory and the CPU of the owners, the containers get their part of the owner `docker`. The rest is `docker (VM)`: the VM, its cache and the Docker programs of Windows.
-- **The VM memory.** `vmmemWSL` gives no memory counters to `K32GetProcessMemoryInfo`. The sampler reads its memory from `SystemProcessInformation`.
+- **The VM memory.** `vmmemWSL` gives no memory counters to `K32GetProcessMemoryInfo`. The sampler reads its memory from `SystemProcessInformation`, as for each process (H49). The split moves a part of the VM memory to the containers, so the VM counts one time.
 - No pipe or no answer: no Docker read and no split. The log of the daemon gets one line for each change of the state of the engine.
 
 The line `Docker` of `headroom status` gives the state, for example `Docker: 1 container, 0.6 GB, 0.55 cores. Most: session:graph graph-mongo-1 0.6 GB. Build cache 17.1 GB. Unused images 26.2 GB`. `headroom docker` gives each container with its owner, memory, cores and state, the VM, the disk use and the cost of the reads. `--json` gives `Status.docker`. The dashboard has one card, after the card of the Docker engine.
@@ -562,7 +565,7 @@ To turn it on in Claude Code: `/plugin marketplace add C:\Users\markt\git\headro
 
 The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the alerts and what uses the computer. Then it shows one panel for each resource, the jobs, the owners, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
 
-- The top section shows what uses the computer. One bar shows the memory in RAM by owner, and the free memory. A second bar shows the processors by owner.
+- The top section shows what uses the computer. One bar shows the memory in RAM by owner, the unattributed memory and the free memory. A second bar shows the processors by owner. The memory card also gives the unattributed memory (H49).
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
 - A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site. On a laptop, a chip gives the power source and the charge. The chip `Heat` gives the speed of the CPU and its hottest zone (H35).

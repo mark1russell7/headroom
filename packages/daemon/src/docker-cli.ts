@@ -7,7 +7,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { diskSize, DOCKER_VM, type DockerContainerStatus, type DockerStatus } from "@headroom/core";
+import { diskSize, DOCKER_VM, localClock, type DockerContainerStatus, type DockerStatus } from "@headroom/core";
 import type { Connection } from "./client.ts";
 import type { DaemonStatus } from "./procedures.ts";
 
@@ -24,8 +24,6 @@ const CONSOLE: DockerOutput = { out: (text) => console.log(text), err: (text) =>
 /** This function writes cores with two decimals: "0.25". */
 const coresOf = (cores: number | null): string => (cores === null ? "-" : cores.toFixed(2));
 
-/** This function writes a time of the day in UTC: "09:42". */
-const clock = (at: number): string => new Date(at).toISOString().slice(11, 16);
 
 /** This function writes a time in milliseconds: "85 ms", or "4.6 s" from one second. */
 const msText = (ms: number): string => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
@@ -44,7 +42,7 @@ export function dockerLinesOf(docker: DockerStatus | null | undefined): string[]
   }
   const cores = docker.cores === null ? "" : `, ${coresOf(docker.cores)} cores`;
   const lines = [
-    `Docker ${docker.version} (API ${docker.api}), read at ${clock(docker.at)} UTC: ${docker.running} of ${docker.containers.length} containers run, ${diskSize(docker.memoryMb)}${cores}.`,
+    `Docker ${docker.version} (API ${docker.api}), read at ${localClock(docker.at)}: ${docker.running} of ${docker.containers.length} containers run, ${diskSize(docker.memoryMb)}${cores}.`,
   ];
   if (docker.containers.length > 0) {
     lines.push("", `${"NAME".padEnd(28)} ${"OWNER".padEnd(28)} ${"STATE".padEnd(10)} ${"MEMORY".padStart(9)} ${"CORES".padStart(6)}  PROJECT`);
@@ -69,7 +67,7 @@ export function dockerLinesOf(docker: DockerStatus | null | undefined): string[]
   if (disk === null) lines.push("Disk: no read yet. The daemon reads the disk use every 10 minutes.");
   else {
     lines.push(
-      `Disk, read at ${clock(disk.at)} UTC: images ${diskSize(disk.imagesMb)} (${disk.images}), images with no container ${diskSize(disk.unusedImagesMb)} (${disk.unusedImages}).`,
+      `Disk, read at ${localClock(disk.at)}: images ${diskSize(disk.imagesMb)} (${disk.images}), images with no container ${diskSize(disk.unusedImagesMb)} (${disk.unusedImages}).`,
       `  Build cache ${diskSize(disk.buildCacheMb)}, ${diskSize(disk.buildCacheUnusedMb)} of it not in use. Volumes ${diskSize(disk.volumesMb)} (${disk.volumes}), ${diskSize(disk.unusedVolumesMb)} with no container. Writable layers ${diskSize(disk.containersMb)}.`,
     );
   }

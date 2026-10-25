@@ -15,13 +15,23 @@ export interface OwnerRule {
   readonly names: readonly string[];
 }
 
-/** The default rules. The names are lower case, with no `.exe`. */
+/**
+ * The default rules. The names are lower case, with no `.exe`.
+ *
+ * The minimal processes of Windows have their own owners (H49).
+ * `system:memory compression` holds the compressed pages of the other processes. `system:registry` holds the registry.
+ * `system:secure system` holds the memory of the secure kernel. The VM processes go to `docker`, and the split of H38
+ * gives that memory to the containers and to `docker (VM)`.
+ */
 export const DEFAULT_RULES: readonly OwnerRule[] = [
   { owner: "docker", kind: "docker", names: ["vmmem", "vmmemwsl", "com.docker.backend", "com.docker.build", "docker desktop", "dockerd", "containerd"] },
   { owner: "browser", kind: "browser", names: ["chrome", "msedge", "firefox", "msedgewebview2"] },
   { owner: "editor", kind: "editor", names: ["code", "cursor"] },
   { owner: "steam", kind: "other", names: ["steam", "steamwebhelper"] },
-  { owner: "system", kind: "system", names: ["system", "registry", "memory compression", "msmpeng", "searchindexer", "svchost", "explorer", "dwm"] },
+  { owner: "system:memory compression", kind: "system", names: ["memory compression"] },
+  { owner: "system:registry", kind: "system", names: ["registry"] },
+  { owner: "system:secure system", kind: "system", names: ["secure system"] },
+  { owner: "system", kind: "system", names: ["system", "msmpeng", "searchindexer", "svchost", "explorer", "dwm"] },
 ];
 
 /** The folder where Claude Code writes one file for each live session. */
@@ -182,6 +192,9 @@ export function titleOf(commandLine: string): string | null {
  *   non-paged pool and the part of the paged pool in RAM.
  * - `kernel:cache` is the system file cache in RAM. Its private memory is the same amount.
  * - `kernel:drivers` is the code of the kernel and of the drivers in RAM. Its private memory is the same amount.
+ * - `kernel:driver locked` is the pages that drivers lock in RAM, for example for the GPU (H49).
+ * - `kernel:pfn database` is the record of each physical page (H49).
+ * - `kernel:page tables` is the page tables of the system address space (H49).
  *
  * A platform that does not give an amount gives no owner for it. Without the paged pool in RAM, the memory in RAM of
  * `kernel` is the size of the two pools.
@@ -195,7 +208,34 @@ export function kernelOwners(memory: SystemMemory): OwnerUsage[] {
   };
   resident("kernel:cache", memory.cacheMb);
   resident("kernel:drivers", memory.driversMb);
+  resident("kernel:driver locked", memory.driverLockedMb);
+  resident("kernel:pfn database", memory.pfnDatabaseMb);
+  resident("kernel:page tables", memory.pageTablesMb);
   return owners;
+}
+
+/**
+ * This function gives the memory in use that no owner holds, in MB (H49). The memory in use is the total less the
+ * available memory. The function subtracts the memory in RAM of each owner, also of the kernel owners.
+ *
+ * On Windows, the memory in RAM of a process is its private working set. Thus the rest is mostly the pages that processes
+ * share: the code of programs and DLLs, mapped files and shared memory. It also holds the page tables of the processes and
+ * the pages that wait for a write to the page file. A negative value tells that the owners count more than the memory in use.
+ */
+export function unattributedMb(memory: Pick<SystemMemory, "totalMb" | "availableMb">, owners: readonly Pick<OwnerUsage, "workingMb">[]): number {
+  const inUseMb = memory.totalMb - memory.availableMb;
+  return Math.round(inUseMb - owners.reduce((sum, owner) => sum + owner.workingMb, 0));
+}
+
+/**
+ * This function gives the row `unattributed` of the table of the owners in `headroom status` (H49), or `null` with no
+ * amount. The row has no private memory, because it compares the memory in RAM with the memory in use. `mbText` writes
+ * an amount in MB, as in the other rows.
+ */
+export function unattributedRow(unattributed: number | null | undefined, mbText: (mb: number) => string): string | null {
+  if (unattributed === null || unattributed === undefined) return null;
+  const note = unattributed < 0 ? "the owners count more than the memory in use" : "in use, in no owner: mostly the pages that processes share";
+  return `  ${"unattributed".padEnd(32)} ${"-".padStart(9)} ${mbText(unattributed).padStart(9)}  ${note}`;
 }
 
 /**
