@@ -15,7 +15,7 @@ import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
 import { serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
-import { databasePath, headroomHome, readDiscovery, removeDiscovery, takePlannedStop, writeDiscovery } from "./paths.ts";
+import { announceDaemon, databasePath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
 import { gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 
@@ -48,8 +48,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     return options.mode === "background" ? 0 : 1;
   }
   // The daemon before this one did not remove its discovery file: another process stopped it,
-  // unless `headroom service restart` marked the stop as planned.
-  const planned = takePlannedStop();
+  // unless `headroom service restart` marked the stop as planned. The mark stays until the new discovery file exists.
+  const planned = readPlannedStop()?.pid ?? null;
   const unclean = running && running.pid !== process.pid && running.pid !== planned ? running.pid : null;
   if (planned !== null && running?.pid === planned) log(`The planned restart stopped the daemon before this one (process ${planned}).`);
   process.title = DAEMON_TITLE;
@@ -126,7 +126,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     return 1;
   }
 
-  writeDiscovery({ pid: process.pid, endpoint: `http://${host}:${port}/api`, token, startedAt: new Date().toISOString() });
+  announceDaemon({ pid: process.pid, endpoint: `http://${host}:${port}/api`, token, startedAt: new Date().toISOString() }, planned);
   log(`headroom runs at http://${host}:${port}/api (process ${process.pid})`);
   stopSelf = () => void started.life.shutdown("the restart for an idle queue", { code: 0 });
   const timer = setInterval(() => {
@@ -162,20 +162,32 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
 /** The size at which the log file moves to `<file>.1`. */
 const LOG_LIMIT = 1024 * 1024;
 
-/** This function gives a log that adds each line to a file, with the time. */
-export function fileLog(path: string): (line: string) => void {
-  let size = 0;
+/** This function gives the size of a file, or 0 when the file does not exist. */
+function sizeOf(path: string): number {
   try {
-    size = statSync(path).size;
+    return statSync(path).size;
   } catch {
-    // The file does not exist yet.
+    return 0;
   }
+}
+
+/**
+ * This function gives a log that adds each line to a file, with the time. At `limit` bytes, the file moves to `<file>.1`.
+ * When the move fails, the log reads the real size of the file and writes the line all the same.
+ */
+export function fileLog(path: string, limit: number = LOG_LIMIT): (line: string) => void {
+  let size = sizeOf(path);
   return (line) => {
     const text = `${new Date().toISOString()} ${line}\n`;
     try {
-      if (size + text.length > LOG_LIMIT) {
-        renameSync(path, `${path}.1`);
-        size = 0;
+      if (size + text.length > limit) {
+        try {
+          renameSync(path, `${path}.1`);
+          size = 0;
+        } catch {
+          // Another process removed the file, moved it or holds it open.
+          size = sizeOf(path);
+        }
       }
       appendFileSync(path, text);
       size += text.length;

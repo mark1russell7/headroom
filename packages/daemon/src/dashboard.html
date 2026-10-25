@@ -271,6 +271,14 @@ div.owner { cursor: default; }
 // Names and jobs come from other processes: the page writes them with textContent, never as HTML.
 
 const TOKEN = document.querySelector('meta[name="headroom-token"]').content;
+// The key of the dashboard: keep it for the next visit to "/", and then remove it from the address bar.
+try {
+  const key = new URLSearchParams(location.search).get("k");
+  if (key) {
+    localStorage.setItem("headroom.key", key);
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
+} catch {}
 const WINDOWS = [
   { minutes: 60, label: "1 h", step: 1 },
   { minutes: 360, label: "6 h", step: 3 },

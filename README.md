@@ -218,7 +218,10 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
 - The page is one HTML file of approximately 69 KB, with no framework and no build step. The daemon keeps it as one string.
 - The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
-- Only a request to `127.0.0.1` or `localhost` gets the page, because the page holds the token of the daemon.
+- The page holds the token of the daemon. Thus only a request to `127.0.0.1` or `localhost` with the key of the dashboard gets the page.
+- The key is in `~/.headroom/dashboard.key`, and only this user can read it. `headroom dashboard` opens the page with the key.
+- The browser keeps the key. A later visit to `http://127.0.0.1:4730/` in the same browser opens the dashboard.
+- A request without the key gets a page with no token. A process that can connect to the port but cannot read the key file thus gets no token.
 
 ## The MCP gateway
 

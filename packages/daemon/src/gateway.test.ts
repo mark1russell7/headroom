@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -9,7 +10,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { HostFaceContext } from "@procedures/peer";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { killTree, McpGateway } from "./gateway.ts";
+import { descendantsOf, killTree, McpGateway } from "./gateway.ts";
 
 const fixture = join(import.meta.dirname, "fixtures", "counter-server.mjs");
 const specs = { counter: { command: process.execPath, args: [fixture] } };
@@ -180,6 +181,80 @@ describe("the stdio bridge", () => {
     const after = counted(await client.callTool({ name: "count", arguments: {} }));
     expect(after.pid).not.toBe(before.pid);
     expect(after.count).toBe(1);
+  });
+
+  it("opens one new session for two requests that lost the old session at the same time", async () => {
+    const client = await bridged();
+    await client.callTool({ name: "count", arguments: {} });
+    await gateway.reset("counter");
+    const results = await Promise.all([client.callTool({ name: "count", arguments: {} }), client.callTool({ name: "count", arguments: {} })]);
+    expect(results.map((result) => counted(result).count).sort()).toEqual([1, 2]);
+    expect(gateway.list().find((state) => state.name === "counter")?.sessions).toBe(1);
+  });
+});
+
+describe("the idle sweep", () => {
+  it("does not stop a server while a call is open, and stops it after the call", async () => {
+    const swept = new McpGateway({ specs: () => specs });
+    const face = swept.face()({ policy: { token: undefined } } as unknown as HostFaceContext);
+    const server = createServer((req, res) => {
+      if (!face.handler?.(req, res)) {
+        res.statusCode = 404;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = new Client({ name: "test", version: "1.0.0" });
+    const url = new URL(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp/counter`);
+    await client.connect(new StreamableHTTPClientTransport(url) as unknown as Parameters<Client["connect"]>[0]);
+    try {
+      // The default idle time is 30 minutes. The sweep runs 31 minutes later, while the call sends its progress.
+      const later = (): number => Date.now() + 31 * 60_000;
+      let progressed = (): void => undefined;
+      const started = new Promise<void>((resolve) => {
+        progressed = () => resolve();
+      });
+      const call = client.callTool({ name: "count", arguments: { steps: 5 } }, undefined, { onprogress: () => progressed() });
+      await started;
+      await swept.sweep(later());
+      const result = counted(await call);
+      expect(swept.list()[0]).toMatchObject({ state: "running", pid: result.pid });
+      await swept.sweep(later());
+      expect(swept.list()[0]?.state).toBe("stopped");
+    } finally {
+      await client.close();
+      await swept.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+describe("killTree", () => {
+  it("finds the descendants of a process in the table of ps", () => {
+    const table = "    1     0\n   10     1\n   11    10\n   12    11\n   13    10\n   20     1\n";
+    expect(descendantsOf(10, table).sort((a, b) => a - b)).toEqual([11, 12, 13]);
+    expect(descendantsOf(20, table)).toEqual([]);
+  });
+
+  it("stops a process and its grandchild", async () => {
+    const script =
+      'const c = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); console.log(c.pid); setInterval(() => {}, 1000);';
+    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+    const grandchild = await new Promise<number>((resolve) => child.stdout.once("data", (chunk: Buffer) => resolve(Number(String(chunk).trim()))));
+    const alive = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(alive(grandchild)).toBe(true);
+    killTree(child.pid ?? 0);
+    const deadline = Date.now() + 5000;
+    while (alive(grandchild) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(alive(grandchild)).toBe(false);
   });
 });
 
