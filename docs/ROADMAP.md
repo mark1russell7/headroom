@@ -78,12 +78,12 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H37 | Disk speed, SSD wear and disk limits for jobs. A cap on the disk rate of a job keeps the computer fast for the other jobs. | later |
 | H38 | Docker inside: the memory, CPU and disk of each container, by session. The Docker VM shows as one big process, so headroom asks the Docker engine. | later |
 | H39 | Network cost: on a metered network, big downloads wait. While the network is offline, the jobs that need it wait and do not fail. | later |
-| H40 | Budgets outside this computer: the GitHub API quota that all sessions share, and Claude usage. A big multi-agent run can lease a share of Claude usage first. | later |
+| H40 | Budgets outside this computer: the GitHub API quota that all sessions share. A job can wait for room in it. Claude usage stays with the usage meter of the organizer. | later |
 | H41 | Things that expire: certificates, the npm trust, tokens and keys. headroom shows the time left and alerts before each one ends. | later |
 | H42 | Quiet hours and the overnight window: a CPU cap at night for quiet fans, or big test suites that wait for the night. Mark picks the hours. | later |
 | H43 | Clean-grid timing: jobs that can wait run when the New England grid is cleanest. The effect is small, so this item is last. | later |
 | H44 | Fix: the Angular completion in `~/.bashrc` starts node in each new shell, and each node process leaks kernel memory. Mark runs the two commands of the hub ask. | waits for Mark |
-| H45 | Fix: VS Code polls Docker every 2 seconds. Mark turns off the Docker and Container Tools extensions in the workspaces that do not use Docker. | waits for Mark |
+| H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when he does not use it. If the poll continues, he turns off the extension in the workspaces that do not use Docker. | waits for Mark |
 
 ## The MCP gateway (H11)
 
