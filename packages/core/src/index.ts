@@ -125,7 +125,28 @@ export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary
 export { createJob, startOutsideJob } from "./enforce.ts";
 export type { Job, JobLimits, StartedProcess } from "./enforce.ts";
 export {
+  fitTrend,
+  forecast,
+  FORECAST_GAP_MS,
+  FORECAST_MAX_MS,
+  FORECAST_MIN_CONFIDENCE,
+  FORECAST_MIN_POINTS,
+  FORECAST_MIN_SPAN_MS,
+  FORECAST_WINDOW_MS,
+  forecastFrom,
+  forecastLine,
+  forecastPhrase,
+  forecastText,
+  rateText,
+  spanText,
+} from "./forecast.ts";
+export type { FitOptions, Forecast, ForecastEntry, ForecastTarget, Part, TargetName, Trend } from "./forecast.ts";
+export {
+  batteryForecast,
   batteryLevel,
+  fitsHistory,
+  forecastsOf,
+  forecastTargets,
   healthLevel,
   kindOf,
   leasesOf,
@@ -149,6 +170,7 @@ export type {
   CheckRule,
   CpuTimes,
   Enforce,
+  ForecastPart,
   GrowthRule,
   HealthRule,
   InstanceFacts,

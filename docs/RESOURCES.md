@@ -787,6 +787,63 @@ The first check that does not hold gives the reason. Each reason starts with "wa
 
 **Cost.** The facts come from the last battery read and the power state, one time for each tick. The settings are one read of the store for each tick with a waiting lease or a lease with conditions. The usage file is approximately 50 KB, at most one read in 30 seconds while a usage condition waits.
 
+### H32: forecasts
+
+Mark approved this item on 2026-10-24. Each resource gets a time to a limit from its history, so the fleet acts before the limit. H34 builds on the forecast of the non-paged pool: the AMD display driver leaks kernel memory with each new process until a reboot.
+
+**The forecast part.** A kind can have a sixth part, `forecast` (`ForecastPart` in `resources.ts`). A kind with no forecast part has no forecast.
+
+- The targets of an instance are the warning and the critical limits of the level rules of its kind. `forecastTargets()` gives them. A rule with a duration does not count, because a level of one read does not start its alert.
+- `more()` adds targets: a drive gets `empty`, a free part of 0.
+- `given()` gives a forecast with no fit. The battery uses it: on battery, the forecast is the time left that Windows estimates. Its confidence is 1, and its source is `windows`.
+
+| Kind | Targets |
+|---|---|
+| `disk` | 20 GB free and 5 GB free (20% and 5% on a small drive), and full |
+| `pool` | the alert level of each pool: 3 GB non-paged, 4 GB paged |
+| `commit` | 90% of the commit limit |
+| `memory` | 1 GB available |
+| `ports` | 80% and 95% of the dynamic ports |
+| `battery` | the time left of Windows, on battery only |
+
+The processors, the network, the process starts, the services, the power, the desktop and the slots have no forecast.
+
+**The fit.** `forecast.ts` has the pure functions. `fitTrend()` fits one part, used or free, of the points of one instance:
+
+- The points are the last 60 minutes before the last point, after the last gap. A step of more than 5 minutes between two points is a gap: a sleep, or a stop of the daemon. The caller also gives the start of the computer and the last wake.
+- The slope is the Theil–Sen slope: the median of the slopes of all the pairs of points. One outlier does not move it. At one point each minute, a fit has at most 1770 pairs.
+- The confidence is Kendall's tau in the direction of the slope. It is the part of the pairs that move with the trend, less the part that moves against it.
+- The fit gives no trend with fewer than 10 points or with less than 30 minutes of points. A slope of 0 or a confidence below 0.5 also gives no trend.
+- The newer half of the window must move with the trend. Thus a single step, for example one download, or a trend that stopped gives no trend.
+
+`forecastFrom()` gives the time from a trend to a target, from the measurement at this time. It gives `null` in three cases:
+
+- The trend moves away from the target.
+- The instance is at or past the target.
+- The target is more than 30 days away.
+
+`forecast()` does both steps on the points of one instance.
+
+**The engine.** The engine adds no timer. The store gets one sample each minute. At each sample, the engine adds the measurement of each instance with a fit to a cache of the last hour. Then it fits each instance again.
+
+- A start of the daemon reads the points of the last hour from the table `resource_samples`. The points start after the start of the computer and after the last sleep.
+- A wake empties the cache, so a fit does not span a sleep.
+- `status()` and each check of the alerts give the forecasts from the fits of the last sample and the measurement at that time.
+- The cache has approximately 8 instances of 60 points each.
+
+**Status.** Each entry of `Status.resources` with a forecast gets the field `forecast`: `{ minutes, at, target, rate, confidence, source }`. It is the forecast to the nearest target. `target` is `{ on, amount, name }`, and `rate` is the change of the part of the target in one hour. A loss of free space has a negative rate.
+
+**Alert.** The kind `forecast` has a check rule in the alert part of three kinds. The id is `forecast:<instance>`, and the level is `warning`.
+
+- A drive reaches its critical level within 24 hours (`forecastDiskMs`). The message names the loss in one hour, the time, and the top writers of the last hour.
+- A kernel pool reaches its alert level within 2 hours (`forecastPoolMs`). The message of the non-paged pool names the owners with the most process starts. The engine adds the pool tags that grow.
+- The commit charge reaches 90% of its limit within 30 minutes (`forecastCommitMs`). The message names the owners with the most private memory.
+- An active forecast alert ends past 1.25 times its horizon, so a small change of the rate does not end it and start it again. The check rule reads the level of the active alert from the field `active` of the facts.
+
+**Faces.** `headroom forecast [--json]` lists the forecast of each instance, the nearest first. `headroom status` adds the line `Forecast (24 h)`. Each card of the dashboard shows its forecast in one line, with a dot under 24 hours. The battery card already gives the time left, so it has no extra line.
+
+**The numbers on 2026-10-25.** A read-only fit of the live store at 05:13 UTC gave one forecast: `Drive D: 20 GB free in 4 days (at 1.1 GB an hour, confidence 0.65).` Drive C: lost 210 MB an hour with a confidence of 0.98. Its 20 GB target was 51 days away, so it got no forecast. The commit charge, the memory, the pools and the ports had no clear trend.
+
 ### H46: the peer of a local connection
 
 The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP tools over Streamable HTTP to `claude.exe`. Each call needs the fleet role of the caller, from the TCP peer and not from a header. The step fp-identity of the organizer (`principalOf`) uses the same answer. The daemon reads the TCP table and the process tree already, so the procedure `resources.peer` gives the answer.
@@ -923,3 +980,6 @@ These were the open questions. The session decided each one as a technical call.
 | Does a job stop when its condition stops? | No. The lease records the time, and the status shows it. | Pausing a job is not in H31. A stopped benchmark loses its work, and the record tells that its numbers are suspect. |
 | What does `usage<N` do without fresh data? | It waits, with the path or the age in the reason. After the reset time of fresh data, it holds. | A job that spends usage does not start on old data. A new window starts with no use. |
 | Does a restart for an idle queue wait for a lease that waits for a condition? | No. | A condition can take hours. The new daemon keeps the lease, and its client connects again. |
+| Which fit gives a forecast? | The Theil–Sen slope of the last hour, with Kendall's tau as its confidence. | The median of the pair slopes ignores outliers, for example one large download. Tau is a plain count of the pairs that agree with the trend. |
+| Does the battery get a fit? | No. Its forecast is the time left that Windows estimates. | Windows knows the rate of the battery at this time. A fit of the charge lags behind a change of the load. |
+| How far does a forecast go? | At most 30 days. | One hour of history tells little about next month. |
