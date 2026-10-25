@@ -14,6 +14,7 @@
  * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
  * - `GetIfTable2` of `iphlpapi.dll` gives the byte counters of the adapters, and `GetExtendedTcpTable` gives the TCP connections (H24).
  * - `windows-power.ts` gives the battery, the Energy Meter, the power events and the power request (H30).
+ * - For `resources.peer` (H46), `GetExtendedTcpTable` gives the rows of one connection, and `GetProcessTimes` gives the start of one process.
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
@@ -22,10 +23,10 @@
 import { execFileSync } from "node:child_process";
 import { statfsSync } from "node:fs";
 import koffi from "koffi";
-import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpTable } from "./network.ts";
-import { programName, titleOf } from "./owners.ts";
+import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpEndpoints, parseTcpTable } from "./network.ts";
+import { fileTimeMs, programName, titleOf } from "./owners.ts";
 import { MB, type Sampler } from "./sampler.ts";
-import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, SystemMemory, TcpConnection, TcpTable } from "./types.ts";
+import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
 import { closePower, keepAwake, readBattery, readMeters, watchPower } from "./windows-power.ts";
 
 const TH32CS_SNAPPROCESS = 0x2;
@@ -309,8 +310,6 @@ const SPI_PROCESS_ID = 0x50;
 const SPI_READ_TRANSFER = 0xe8;
 const SPI_WRITE_TRANSFER = 0xf0;
 const SPI_SIZE = 0x100;
-/** The time between 1601-01-01, the start of a FILETIME, and 1970-01-01, in milliseconds. */
-const FILETIME_EPOCH_MS = 11_644_473_600_000;
 let processBuffer = Buffer.alloc(256 * 1024);
 
 /** The totals of one process since its start. */
@@ -343,7 +342,7 @@ function processTotals(): Map<number, ProcessTotals> {
       if (pid !== 0) {
         // The times count units of 100 nanoseconds. The start counts them from 1601-01-01.
         totals.set(pid, {
-          startedAt: Math.round(Number(buffer.readBigInt64LE(at + SPI_CREATE_TIME)) / 10_000 - FILETIME_EPOCH_MS),
+          startedAt: fileTimeMs(buffer.readBigInt64LE(at + SPI_CREATE_TIME)),
           cpuMs: Number(buffer.readBigInt64LE(at + SPI_USER_TIME) + buffer.readBigInt64LE(at + SPI_KERNEL_TIME)) / 10_000,
           readBytes: Number(buffer.readBigInt64LE(at + SPI_READ_TRANSFER)),
           writeBytes: Number(buffer.readBigInt64LE(at + SPI_WRITE_TRANSFER)),
@@ -455,8 +454,11 @@ function network(): NetAdapter[] {
   }
 }
 
-/** This function reads one table of `GetExtendedTcpTable`. A table that grows between the calls makes the buffer larger. */
-function tcpTable(family: number): TcpConnection[] {
+/**
+ * This function reads one table of `GetExtendedTcpTable` into the shared buffer, or gives `null` when the read fails. A
+ * table that grows between the calls makes the buffer larger. The caller parses the buffer before the next read.
+ */
+function readTcp(family: number): Buffer | null {
   for (let attempt = 0; attempt < 5; attempt++) {
     const size = [tcpBuffer.length];
     const status = getExtendedTcpTable(tcpBuffer, size, 0, family, TCP_TABLE_OWNER_PID_ALL, 0);
@@ -464,9 +466,25 @@ function tcpTable(family: number): TcpConnection[] {
       tcpBuffer = Buffer.alloc((size[0] ?? tcpBuffer.length) + 16 * 1024);
       continue;
     }
-    return status === 0 ? parseTcpTable(tcpBuffer, family === AF_INET6) : [];
+    return status === 0 ? tcpBuffer : null;
   }
-  return [];
+  return null;
+}
+
+/** This function reads the connections of one table of `GetExtendedTcpTable`. */
+function tcpTable(family: number): TcpConnection[] {
+  const buffer = readTcp(family);
+  return buffer === null ? [] : parseTcpTable(buffer, family === AF_INET6);
+}
+
+/** This function reads the rows of IPv4 and IPv6 with this local port and this remote port (H46). It reads each table one time. */
+function tcpEndpoints(localPort: number, remotePort: number): TcpEndpoints[] {
+  const rows: TcpEndpoints[] = [];
+  for (const family of [AF_INET, AF_INET6]) {
+    const buffer = readTcp(family);
+    if (buffer !== null) rows.push(...parseTcpEndpoints(buffer, family === AF_INET6, localPort, remotePort));
+  }
+  return rows;
 }
 
 /**
@@ -489,6 +507,52 @@ function tcp(): TcpTable {
   return { dynamic: dynamicPorts(), connections: [...tcpTable(AF_INET), ...tcpTable(AF_INET6)] };
 }
 
+/**
+ * This function reads the process tree with no read of the memory and no open of a process (H46). The Toolhelp snapshot
+ * comes first, so each process of the snapshot that still runs has its start in the totals that come next.
+ */
+function processTree(): ProcessLink[] {
+  const snapshot = Number(createSnapshot(TH32CS_SNAPPROCESS, 0));
+  if (snapshot === -1 || snapshot === 0) throw new Error("CreateToolhelp32Snapshot failed");
+  const list: { pid: number; ppid: number; name: string }[] = [];
+  try {
+    const entry = { dwSize: entrySize } as ProcessEntry;
+    for (let more = processFirst(snapshot, entry); more !== 0; more = processNext(snapshot, entry)) {
+      list.push({ pid: Number(entry.th32ProcessID), ppid: Number(entry.th32ParentProcessID), name: String(entry.szExeFile) });
+      entry.dwSize = entrySize;
+    }
+  } finally {
+    closeHandle(snapshot);
+  }
+  const totals = processTotals();
+  return list.map((info) => ({ ...info, startedAt: totals.get(info.pid)?.startedAt }));
+}
+
+const getProcessTimes = kernel32.func(
+  "int __stdcall GetProcessTimes(intptr_t process, _Out_ uint8_t *creation, _Out_ uint8_t *exit, _Out_ uint8_t *kernel, _Out_ uint8_t *user)",
+);
+const creationTime = Buffer.alloc(8);
+const exitTime = Buffer.alloc(8);
+const kernelTime = Buffer.alloc(8);
+const userTime = Buffer.alloc(8);
+
+/**
+ * This function gives the start of a live process with `GetProcessTimes` (H46). A process that ended has an exit time,
+ * even while another process holds a handle to it. Thus it gives `undefined` for it, and for a protected process.
+ */
+function processStart(pid: number): number | undefined {
+  if (pid === 0) return undefined;
+  const handle = Number(openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
+  if (handle === 0) return undefined;
+  try {
+    if (getProcessTimes(handle, creationTime, exitTime, kernelTime, userTime) === 0) return undefined;
+    if (exitTime.readBigUInt64LE(0) !== 0n) return undefined;
+    return fileTimeMs(creationTime.readBigInt64LE(0));
+  } finally {
+    closeHandle(handle);
+  }
+}
+
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
   return {
@@ -500,6 +564,9 @@ export function windowsSampler(): Sampler {
     disks,
     network,
     tcp,
+    tcpEndpoints,
+    processTree,
+    processStart,
     bootedAt,
     battery: readBattery,
     power: readMeters,

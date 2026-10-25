@@ -107,7 +107,15 @@ export interface SessionInfo {
   readonly sessionId: string;
   readonly status: string | null;
   readonly cwd: string | null;
+  /**
+   * The start of the session process, in milliseconds since the epoch, from the field `procStart` of a Windows session
+   * file. It is absent in an older file and on Linux. `resources.peer` uses it to find a process ID that is in use again (H46).
+   */
+  readonly startedAt?: number | undefined;
 }
+
+/** The process ID, the parent, the name and the start of one process: the part of `ProcessInfo` that a walk up the tree uses (H46). */
+export type ProcessLink = Pick<ProcessInfo, "pid" | "ppid" | "name" | "startedAt">;
 
 /**
  * The use of the kernel pools by one pool tag. A driver marks each of its kernel allocations with a tag
@@ -162,6 +170,18 @@ export interface TcpConnection {
   readonly pid: number;
   /** The local address of a listening port, for example "127.0.0.1" or "::". The other rows have no address, so a read stays small. */
   readonly address?: string | undefined;
+}
+
+/** One TCP row of IPv4 or IPv6 with its two ends and its process (H46). `resources.peer` reads only the rows of one connection. */
+export interface TcpEndpoints {
+  /** The local address, for example "127.0.0.1" or "::1". */
+  readonly localAddress: string;
+  readonly localPort: number;
+  readonly remoteAddress: string;
+  readonly remotePort: number;
+  readonly state: TcpState;
+  /** The process that holds the connection, or 0 without a process: TIME_WAIT on Windows. */
+  readonly pid: number;
 }
 
 /** The dynamic (ephemeral) TCP ports: the first port and the count of ports. The Windows default is 49152 and 16384. */

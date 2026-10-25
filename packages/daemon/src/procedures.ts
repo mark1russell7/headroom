@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*` and `service.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { Alerts, Config, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
@@ -98,6 +98,14 @@ const SuggestInput = z.object({
   holder: z.string().min(1).max(200).optional().describe("The holder: its own runs come first"),
 });
 type SuggestInput = z.infer<typeof SuggestInput>;
+
+const Port = z.number().int().min(1).max(65_535);
+
+const PeerInput = z.object({
+  localPort: Port.describe("The local port that the site sees: the port of its listener"),
+  remotePort: Port.describe("The remote port that the site sees: the port of the client"),
+});
+type PeerInput = z.infer<typeof PeerInput>;
 
 const Empty = z.object({}).strict();
 type Empty = z.infer<typeof Empty>;
@@ -291,6 +299,20 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .handler(async (): Promise<TcpPorts> => engine.ports())
     .build() as AnyProcedure;
 
+  const peer = createProcedure()
+    .path(["resources", "peer"])
+    .input(zodAdapter<PeerInput>(PeerInput))
+    .output(anything<Peer>())
+    .meta({
+      description:
+        "Give the process at the other end of a loopback TCP connection, the nearest claude.exe above it, its session and its fleet role (H46). Errors: NO_CONNECTION, PEER_GONE, NOT_SUPPORTED.",
+      args: ["localPort", "remotePort"],
+      output: "json",
+      effects: { reads: ["headroom", "process"], writes: [], destructive: false },
+    })
+    .handler(async (input: PeerInput): Promise<Peer> => engine.peer(input))
+    .build() as AnyProcedure;
+
   const services = createProcedure()
     .path(["resources", "services"])
     .input(zodAdapter<Empty>(Empty))
@@ -343,7 +365,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .handler(async (input: ConfigSetInput): Promise<Config> => engine.setConfig({ jobTemp: input.jobTemp, health: input.health }))
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, services, suggest, configGet, configSet];
+  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet];
 }
 
 const RestartWhenIdleInput = z.object({

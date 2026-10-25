@@ -3,7 +3,19 @@
  */
 
 import type { PowerEvent } from "./power.ts";
-import type { BatteryRead, DiskSpace, NetAdapter, PoolTag, PowerMeters, ProcessInfo, Sample, SystemMemory, TcpTable } from "./types.ts";
+import type {
+  BatteryRead,
+  DiskSpace,
+  NetAdapter,
+  PoolTag,
+  PowerMeters,
+  ProcessInfo,
+  ProcessLink,
+  Sample,
+  SystemMemory,
+  TcpEndpoints,
+  TcpTable,
+} from "./types.ts";
 
 /** A sampler of one platform. */
 export interface Sampler {
@@ -26,6 +38,15 @@ export interface Sampler {
   network?(): NetAdapter[];
   /** This function reads the TCP connections of IPv4 and IPv6 with their processes, and the dynamic port range (H24). */
   tcp?(): TcpTable;
+  /**
+   * This function reads the TCP rows of IPv4 and IPv6 with this local port and this remote port, with their addresses and
+   * processes (H46). Only Windows has it, because the files of Linux give no process.
+   */
+  tcpEndpoints?(localPort: number, remotePort: number): TcpEndpoints[];
+  /** This function reads the process ID, the parent, the name and the start of each process, with no read of the memory (H46). */
+  processTree?(): ProcessLink[];
+  /** This function gives the start of a live process, or `undefined` when the process ended or is protected (H46). */
+  processStart?(pid: number): number | undefined;
   /**
    * This function gives the start of the computer, in milliseconds since the epoch. The engine compares no pool tags
    * and no kernel pools across a start, because a start empties the pools.

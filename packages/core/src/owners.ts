@@ -45,18 +45,42 @@ export function readSessions(dir: string = sessionsDir()): SessionInfo[] {
       if (!Number.isInteger(pid) || pid <= 0) continue;
       const sessionId = typeof data["sessionId"] === "string" ? data["sessionId"] : "";
       const name = typeof data["name"] === "string" && data["name"] !== "" ? data["name"] : sessionId.slice(0, 8) || `pid-${pid}`;
+      const startedAt = sessionStart(data);
       sessions.push({
         pid,
         name,
         sessionId,
         status: typeof data["status"] === "string" ? data["status"] : null,
         cwd: typeof data["cwd"] === "string" ? data["cwd"] : null,
+        ...(startedAt === undefined ? {} : { startedAt }),
       });
     } catch {
       // The session ended while the file was read.
     }
   }
   return sessions;
+}
+
+/** The time between 1601-01-01, the start of a FILETIME, and 1970-01-01, in milliseconds. */
+const FILETIME_EPOCH_MS = 11_644_473_600_000;
+
+/**
+ * This function changes a FILETIME of Windows to milliseconds since the epoch. A FILETIME counts units of 100
+ * nanoseconds from 1601-01-01. The sampler and the session files use this one function, so their starts agree.
+ */
+export function fileTimeMs(ticks: bigint): number {
+  return Math.round(Number(ticks) / 10_000 - FILETIME_EPOCH_MS);
+}
+
+/**
+ * This function gives the start of the process of a session file. Claude Code writes `procStart` as a FILETIME in
+ * decimal digits on Windows (`pidDomain` "win32:..."). Another file gives no start.
+ */
+function sessionStart(data: Record<string, unknown>): number | undefined {
+  const raw = data["procStart"];
+  const domain = data["pidDomain"];
+  if (typeof raw !== "string" || !/^\d{1,20}$/.test(raw) || typeof domain !== "string" || !domain.startsWith("win32:")) return undefined;
+  return fileTimeMs(BigInt(raw));
 }
 
 /** This function gives the name of a program in lower case, with no `.exe`. */

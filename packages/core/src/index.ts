@@ -15,8 +15,10 @@ export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
 export type { Alerts, ConfigChange, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
-export { attribute, childrenOf, DEFAULT_RULES, isParent, parentOf, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
+export { attribute, childrenOf, DEFAULT_RULES, fileTimeMs, isParent, parentOf, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
+export { isLoopback, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, rolesFile } from "./peer.ts";
+export type { FleetRole, Peer, PeerErrorCode, PeerInput, PeerSources } from "./peer.ts";
 export {
   DEFAULT_DYNAMIC_PORTS,
   dynamicUse,
@@ -29,6 +31,7 @@ export {
   parseNetDev,
   parsePortRange,
   parseProcTcp,
+  parseTcpEndpoints,
   parseTcpTable,
   tcpByOwner,
   tcpSummary,
@@ -139,11 +142,13 @@ export type {
   PortRange,
   PowerMeters,
   ProcessInfo,
+  ProcessLink,
   Sample,
   SessionInfo,
   SessionLoad,
   SystemMemory,
   TcpConnection,
+  TcpEndpoints,
   TcpState,
   TcpTable,
 } from "./types.ts";

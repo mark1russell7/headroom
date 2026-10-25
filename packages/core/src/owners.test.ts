@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { attribute, childrenOf, isParent, kernelOwners, readSessions, titleOf, treeMb } from "./owners.ts";
+import { attribute, childrenOf, fileTimeMs, isParent, kernelOwners, readSessions, titleOf, treeMb } from "./owners.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb / 2 });
@@ -148,5 +148,16 @@ describe("readSessions", () => {
       { pid: 12, name: "12345678", sessionId: "1234567890", status: null, cwd: null },
     ]);
     expect(readSessions(join(dir, "missing"))).toEqual([]);
+  });
+
+  it("reads the start of the process of a Windows session file from procStart (H46)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-"));
+    // 134373587570538346 is a FILETIME: 2026-10-24 in units of 100 nanoseconds since 1601-01-01.
+    writeFileSync(join(dir, "a.json"), JSON.stringify({ pid: 15, sessionId: "s", name: "crawler", procStart: "134373587570538346", pidDomain: "win32:host" }));
+    writeFileSync(join(dir, "b.json"), JSON.stringify({ pid: 16, sessionId: "t", name: "linux", procStart: "12345", pidDomain: "linux:host" }));
+    const sessions = readSessions(dir).sort((a, b) => a.pid - b.pid);
+    expect(sessions[0]?.startedAt).toBe(fileTimeMs(134373587570538346n));
+    expect(sessions[0]?.startedAt).toBe(1_792_885_157_054);
+    expect(sessions[1]?.startedAt).toBeUndefined();
   });
 });
