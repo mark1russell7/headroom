@@ -59,6 +59,8 @@ describe("jobState", () => {
       // H31: a job with no conditions.
       conditions: null,
       unmet: null,
+      peakCores: null,
+      cpuCap: null,
     });
   });
 

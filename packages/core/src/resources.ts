@@ -13,6 +13,7 @@ import { MB } from "./sampler.ts";
 import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
 import type { OwnerCores, OwnerWrites } from "./counters.ts";
+import { coresText, cpuRateOf, CPU_RESERVE_DEFAULT, heldMs, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
 import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, powerOwners, systemWatts, type BatteryState } from "./power.ts";
 import type { ServiceHealth, ServiceState } from "./services.ts";
@@ -92,6 +93,15 @@ export interface Readings {
   readonly meters?: PowerMeters | undefined;
   /** The granted leases. The battery alert names the jobs that run on battery (H30). */
   readonly leases?: readonly Lease[] | undefined;
+  /**
+   * The trail of each instance: the used part at each read of the last minutes, the oldest first (H23). A level rule with
+   * a duration reads it. Only `cpu` has a trail at this time.
+   */
+  readonly trails?: ReadonlyMap<ResourceId, readonly TrailPoint[]> | undefined;
+  /** The process trees with no lease that used many cores in the last 11 minutes (H23). The runaway rule of the CPU reads them. */
+  readonly trees?: readonly TreeUse[] | undefined;
+  /** The cores of each granted lease over the last minute, by lease id (H23). The CPU alert names the leased jobs. */
+  readonly leaseCores?: ReadonlyMap<string, number> | undefined;
 }
 
 /** The level of one instance at one tick, in the unit of its kind. */
@@ -199,14 +209,19 @@ export interface InstanceFacts {
   readonly readings: Readings;
   /** The owner of each process. The text of the ports alert names the owners with the most connections. */
   readonly owners: Owners;
+  /** The level of the alert. The text of the CPU alert names the limit of its level (H23). */
+  readonly level?: Level | undefined;
 }
 
-/** The facts of an alert on one process. */
+/** The facts of an alert on one process, or on one process tree (H23). */
 export interface ProcessFacts {
+  /** The process, or the root of the tree. */
   readonly process: ProcessInfo;
   readonly owner: string;
-  /** The counter of the process, in the unit of the kind. */
+  /** The counter of the process, in the unit of the kind. A tree gives its cores over the last minute. */
   readonly amount: number;
+  /** The live processes of the tree. A rule on one process has none. */
+  readonly processes?: number | undefined;
 }
 
 /** The fields of each rule. */
@@ -227,8 +242,16 @@ export interface LevelRule extends RuleBase {
   readonly instance?: ResourceId | undefined;
   readonly warning?: Limit | undefined;
   readonly critical?: Limit | undefined;
-  /** The condition must continue for this time (H23). CPU uses it, because short peaks are normal. */
+  /**
+   * The condition must continue for this time (H23). CPU uses it, because short peaks are normal. The rule reads the trail
+   * of the instance. Without a trail, the rule gives no alert.
+   */
   readonly forMs?: number | undefined;
+  /**
+   * An active alert of a rule with `forMs` ends only after this time below the limit of its level (H23). Thus a short dip
+   * does not end the alert.
+   */
+  readonly clearMs?: number | undefined;
   /**
    * With less history than this, the rule gives no alert (H29). The history is the window of the change of the instance.
    * The churn rule uses it, because its rate is an average over 10 minutes.
@@ -252,12 +275,17 @@ export interface GrowthRule extends RuleBase {
   text(facts: InstanceFacts): AlertText;
 }
 
-/** A rule on one process. */
+/** A rule on one process, or on one process tree with no lease (H23). */
 export interface OutlierRule extends RuleBase {
   readonly type: "outlier";
-  readonly subject: "process" | "owner";
+  /** `process`: the counter of each process. `tree`: the cores of each tree of `Readings.trees`, with `forMs`. */
+  readonly subject: "process" | "owner" | "tree";
   /** A counter above this amount starts the alert. */
   readonly above: number;
+  /** A tree must stay above the amount for this time (H23). */
+  readonly forMs?: number | undefined;
+  /** An active alert on a tree ends only after this time below the amount (H23). */
+  readonly clearMs?: number | undefined;
   /** The owner kinds that the rule does not examine. `runaway` skips docker, system and kernel. */
   readonly skip: readonly OwnerKind[];
   /** With this list, the rule examines only these owner kinds. `orphan` examines only `other`. */
@@ -353,8 +381,11 @@ export interface JobUsage {
 
 /** The enforce part of a kind: what the job object of `headroom run` can limit. */
 export interface Enforce {
-  /** This function gives the limit for an amount, with `--limit`. `null`: the kind has no limit, so headroom only reports. */
-  limit(amount: number): Partial<JobLimits> | null;
+  /**
+   * This function gives the limit for an amount, with `--limit`. `null`: the kind has no limit, so headroom only reports.
+   * The CPU rate needs the count of logical processors (H23).
+   */
+  limit(amount: number, processors: number): Partial<JobLimits> | null;
   /** This function gives the setup of a job for its lease. */
   setup?(lease: Lease): JobSetup;
   /** The fields of `JobUsage` that the kind reports at the release. */
@@ -642,9 +673,59 @@ const DISK: Resource = {
   enforce: { limit: () => null, report: ["tempMb"] },
 };
 
+/** The count of owners that the text of the CPU alert names. */
+const CPU_OWNERS_SHOWN = 3;
+
+/** This function gives a part of the capacity as a whole percent. */
+const percentOf = (part: number, whole: number): number => (whole > 0 ? Math.round((part / whole) * 100) : 0);
+
 /**
- * The processors. The broker counts them until H23: the capacity is the count of logical processors, less the granted
- * amounts. A configured pool `cpu` is a cap. The measure gives the cores in use, from the processor time of the processes.
+ * This function gives the text of the CPU alert (H23): the cores in use and the limit of its level. It also names the 3
+ * owners with the most cores, and the leased jobs of those owners.
+ */
+function cpuText({ measurement, readings, owners, level }: InstanceFacts, limits: AlertRules): AlertText {
+  const used = measurement.used ?? 0;
+  const capacity = measurement.capacity ?? 0;
+  const line = Math.round((level === "critical" ? limits.cpuCriticalRatio : limits.cpuWarnRatio) * 100);
+  const minutes = Math.round(limits.cpuForMs / 60_000);
+  // The process of `headroom run` holds each leased job, so its owner is the owner of the job.
+  const leased = new Map<string, string[]>();
+  for (const lease of readings.leases ?? []) {
+    const owner = lease.pid === null ? undefined : owners.ownerOf.get(lease.pid);
+    if (owner === undefined) continue;
+    const cores = readings.leaseCores?.get(lease.id);
+    leased.set(owner, [...(leased.get(owner) ?? []), `${lease.job.slice(0, 40)}${cores === undefined ? "" : ` ${cores.toFixed(1)}`}`]);
+  }
+  const top = (readings.cores ?? []).filter((each) => each.cores >= 0.05).slice(0, CPU_OWNERS_SHOWN);
+  const named = top.map((each) => {
+    const jobs = leased.get(each.owner);
+    return `${each.owner} ${each.cores.toFixed(1)}${jobs === undefined ? "" : ` (leased: ${jobs.join(", ")})`}`;
+  });
+  const most = named.length === 0 ? "" : ` Most cores: ${named.join(", ")}.`;
+  return {
+    subject: "processors",
+    mb: 0,
+    message: `${used.toFixed(1)} of ${capacity} cores are in use (${percentOf(used, capacity)}%), above ${line}% for ${minutes} minutes.${most} A full processor makes the laptop slow for Mark, and timing tests of other sessions fail.`,
+  };
+}
+
+/** This function gives the text of the runaway alert on a process tree with no lease (H23), in the style of the memory runaway alert. */
+function runawayTreeText({ process, owner, amount, processes }: ProcessFacts, limits: AlertRules): AlertText {
+  const subject = `${process.name} (${process.pid})`;
+  const others = (processes ?? 1) - 1;
+  const tree = others <= 0 ? "" : ` and its ${others} child ${others === 1 ? "process" : "processes"}`;
+  const minutes = Math.round(limits.runawayCoresMs / 60_000);
+  return {
+    subject,
+    mb: 0,
+    message: `${subject} of ${owner}${tree} ${others <= 0 ? "uses" : "use"} ${coresText(amount)} with no lease, above ${coresText(limits.runawayCores)} for ${minutes} minutes. Run such work with headroom run --cpu.`,
+  };
+}
+
+/**
+ * The processors (H23). The capacity is the count of logical processors, and the used part is the cores in use, as an
+ * average over the last minute. The broker counts the `cpu` amounts of the leases. It keeps a reserve for Mark out of
+ * the count: 2 cores by default, or the setting `cpuReserve`. A configured pool `cpu` is a cap.
  */
 const CPU: Resource = {
   kind: "cpu",
@@ -658,9 +739,39 @@ const CPU: Resource = {
     },
   },
   attribute: CPU_USE,
-  alert: NO_ALERTS,
-  admit: { mode: "counted", reserve: {} },
-  enforce: null,
+  alert: {
+    rules: (limits) => [
+      {
+        // The level of a minute of builds and tests is often high, so the level must stay for some minutes.
+        type: "level",
+        alert: "cpu",
+        alertId: () => "cpu",
+        on: "used",
+        severity: true,
+        warning: { ratio: limits.cpuWarnRatio },
+        critical: { ratio: limits.cpuCriticalRatio },
+        forMs: limits.cpuForMs,
+        clearMs: limits.cpuClearMs,
+        text: (facts) => cpuText(facts, limits),
+      },
+      {
+        // Docker and WSL have caps of their own, and the system is not a job.
+        type: "outlier",
+        alert: "runaway",
+        alertId: (pid) => `runaway:cpu:${pid}`,
+        subject: "tree",
+        above: limits.runawayCores,
+        forMs: limits.runawayCoresMs,
+        clearMs: limits.cpuClearMs,
+        skip: ["docker", "system", "kernel"],
+        when: "unleased",
+        text: (facts) => runawayTreeText(facts, limits),
+      },
+    ],
+  },
+  admit: { mode: "counted", reserve: { amount: CPU_RESERVE_DEFAULT } },
+  // `--limit` gives a hard cap of the CPU rate. Without it, `headroom run` gives the job the default weight.
+  enforce: { limit: (amount, processors) => ({ cpuRate: cpuRateOf(amount, processors) }), report: ["cpuMs"] },
 };
 
 /**
@@ -1040,6 +1151,42 @@ export function levelOf(rule: LevelRule, measurement: Measurement): Level | null
   return null;
 }
 
+/** The order of the levels: an active critical alert also holds the warning. */
+const RANK: Readonly<Record<Level, number>> = { warning: 1, critical: 2 };
+
+/**
+ * This function gives the level of an instance for a level rule with a duration (H23), or `null`. A level starts when the
+ * trail stays past its limit for `forMs`. An active level ends after `clearMs` inside its limit. `active` is the level of
+ * the active alert of the rule. A rule with no `forMs` gives `levelOf()`, and a rule with no trail gives `null`.
+ */
+export function sustainedLevel(rule: LevelRule, measurement: Measurement, trail: readonly TrailPoint[] | undefined, now: number, active: Level | null): Level | null {
+  if (rule.forMs === undefined) return levelOf(rule, measurement);
+  if (trail === undefined || trail.length === 0) return null;
+  // A capacity of 0 is no capacity, for example the processors of a check with no count of them.
+  const capacity = measurement.capacity !== null && measurement.capacity > 0 ? measurement.capacity : null;
+  for (const level of ["critical", "warning"] as const) {
+    const limit = rule[level];
+    const amount = limit === undefined ? null : limitOf(limit, capacity);
+    if (amount === null) continue;
+    // The trail gives the used part. The free part is the capacity less the used part.
+    const past = (used: number): boolean => (rule.on === "free" ? capacity !== null && capacity - used < amount : used > amount);
+    if (heldMs(trail, now, past) >= rule.forMs) return level;
+    if (active !== null && RANK[active] >= RANK[level] && heldMs(trail, now, (used) => !past(used)) < (rule.clearMs ?? 0)) return level;
+  }
+  return null;
+}
+
+/**
+ * This function tells if a process tree stays above the amount of a tree rule (H23). It starts after `forMs` above the
+ * amount. An active alert ends after `clearMs` at or below the amount.
+ */
+export function treeAbove(rule: OutlierRule, trail: readonly TrailPoint[], now: number, active: boolean): boolean {
+  if (trail.length === 0) return false;
+  const above = (cores: number): boolean => cores > rule.above;
+  if (heldMs(trail, now, above) >= (rule.forMs ?? 0)) return true;
+  return active && heldMs(trail, now, (cores) => !above(cores)) < (rule.clearMs ?? 0);
+}
+
 /** This function gives the level of a service for a health rule, or `null` when the service has not had the state for enough checks. */
 export function healthLevel(rule: HealthRule, measurement: Measurement): Level | null {
   const health = measurement.health;
@@ -1137,8 +1284,15 @@ export function roomOf(id: ResourceId, measurement: Measurement | undefined, poo
   }
   // A counted instance with a measured capacity uses the configured pool as a cap.
   const measured = measurement?.capacity ?? null;
-  const capacity = measured === null ? (configured ?? admit.defaultCapacity ?? 1) : Math.min(measured, configured ?? measured);
-  return { mode: "counted", capacity, free: null, reserve: reserve ?? reserveOf(id, capacity, limits) };
+  if (measured === null) {
+    const capacity = configured ?? admit.defaultCapacity ?? 1;
+    return { mode: "counted", capacity, free: null, reserve: reserve ?? reserveOf(id, capacity, limits) };
+  }
+  // The reserve keeps the last units of the measured capacity (H23). A pool below them already keeps them, so the
+  // reserve is only the part above the pool: 16 processors, a pool of 15 and a reserve of 2 give 14 cores.
+  const capacity = Math.min(measured, configured ?? measured);
+  const kept = reserve ?? reserveOf(id, measured, limits);
+  return { mode: "counted", capacity, free: null, reserve: Math.max(0, kept - (measured - capacity)) };
 }
 
 /**

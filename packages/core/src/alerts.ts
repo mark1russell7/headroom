@@ -17,6 +17,9 @@
  *   kernel memory in the AMD display driver. The message names the owners and the leased jobs with the most starts.
  * - `battery`: on battery, little time or charge left, or leased jobs that run on battery (H30). The message of the jobs
  *   alert names the owners that use the most power, as an estimate. Each battery alert ends when AC power returns.
+ * - `cpu`: the cores in use stay above 85% of the processors for 5 minutes, or critical above 95% (H23). The message
+ *   names the 3 owners with the most cores and their leased jobs. The alert ends after 2 minutes below the limit.
+ * - `runaway` also covers a process tree with no lease that uses more than 4 cores for 10 minutes (H23).
  * - `stop`: an event, not a condition. Another process stopped the daemon or the clients of `headroom run`.
  *   An event alert stays active for some minutes.
  *
@@ -27,12 +30,15 @@
  */
 
 import type { Lease } from "./broker.ts";
+import type { TrailPoint, TreeUse } from "./cpu.ts";
 import {
   grows,
   healthLevel,
   leasesOf,
   levelOf,
   RESOURCES,
+  sustainedLevel,
+  treeAbove,
   type Change,
   type Level,
   type LevelRule,
@@ -50,7 +56,7 @@ import type { OwnerCores, OwnerWrites } from "./counters.ts";
 export { diskSize } from "./units.ts";
 
 /** The kind of an alert. */
-export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "stop";
+export type AlertKind = "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "stop";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -112,6 +118,18 @@ export interface AlertRules {
   readonly batteryCriticalMinutes: number;
   /** On battery, a charge below this percent starts a critical battery alert. The default is 10. */
   readonly batteryCriticalPercent: number;
+  /** Cores in use above this part of the processors start a CPU warning (H23). The default is 0.85. */
+  readonly cpuWarnRatio: number;
+  /** Cores in use above this part of the processors start a critical CPU alert. The default is 0.95. */
+  readonly cpuCriticalRatio: number;
+  /** The CPU level must stay above its limit for this time, in ms. The default is 300000, 5 minutes. */
+  readonly cpuForMs: number;
+  /** An active CPU alert ends after this time below its limit, in ms. The default is 120000, 2 minutes. */
+  readonly cpuClearMs: number;
+  /** A process tree with no lease above this count of cores is a runaway (H23). The default is 4. */
+  readonly runawayCores: number;
+  /** The tree must stay above `runawayCores` for this time, in ms. The default is 600000, 10 minutes. */
+  readonly runawayCoresMs: number;
 }
 
 /** The default limits. */
@@ -135,6 +153,12 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   batteryWarnMinutes: 30,
   batteryCriticalMinutes: 10,
   batteryCriticalPercent: 10,
+  cpuWarnRatio: 0.85,
+  cpuCriticalRatio: 0.95,
+  cpuForMs: 300_000,
+  cpuClearMs: 120_000,
+  runawayCores: 4,
+  runawayCoresMs: 600_000,
 };
 
 /** One fixed drive, with the free space that it lost over the last hour. */
@@ -186,6 +210,18 @@ export interface AlertInput {
   readonly meters?: PowerMeters | undefined;
   /** The cores of each owner over the last minute. The power of an owner is an estimate from them (H30). */
   readonly cores?: readonly OwnerCores[] | undefined;
+  /** The time of the check (H23). The rules with a duration need it. Without it, each trail ends at its last point. */
+  readonly at?: number | undefined;
+  /** The count of logical processors: the capacity of `cpu` (H23). Without it, the CPU has no capacity, and its level rule gives no alert. */
+  readonly processors?: number | undefined;
+  /** The active alerts before this check (H23). An active alert of a rule with a duration ends only after its clear time. */
+  readonly active?: readonly Pick<Alert, "id" | "severity">[] | undefined;
+  /** The trail of each instance (H23), for example the cores in use at each read of the last 11 minutes. */
+  readonly trails?: ReadonlyMap<ResourceId, readonly TrailPoint[]> | undefined;
+  /** The process trees with no lease and their cores (H23). */
+  readonly trees?: readonly TreeUse[] | undefined;
+  /** The cores of each granted lease over the last minute, by lease id (H23). */
+  readonly leaseCores?: ReadonlyMap<string, number> | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -194,14 +230,19 @@ const HOUR_MS = 3_600_000;
 
 /** This function gives the reads of one check for the measure parts of the kinds. */
 function readingsOf(
-  input: Pick<AlertInput, "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "cores"> & {
+  input: Pick<
+    AlertInput,
+    | "memory" | "processes" | "load" | "disks" | "writes" | "tcp" | "services" | "starts" | "battery" | "meters" | "cores" | "at" | "processors"
+    | "trails" | "trees" | "leaseCores"
+  > & {
     readonly leases?: readonly Lease[] | undefined;
   },
 ): Readings {
   return {
-    at: 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
-    processors: 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
+    at: input.at ?? 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
+    processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
+    trails: input.trails, trees: input.trees, leaseCores: input.leaseCores,
   };
 }
 
@@ -260,6 +301,26 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
     });
   }
 
+  // The rules on the process trees with no lease (H23). The tree must stay above the amount, and an active alert ends
+  // after its clear time.
+  const activeLevel = new Map((input.active ?? []).map((alert) => [alert.id, alert.severity ?? "warning"] as const));
+  const endOf = (trail: readonly TrailPoint[]): number => input.at ?? trail.at(-1)?.at ?? 0;
+  for (const { rules: each } of kinds) {
+    for (const rule of each) {
+      if (rule.type !== "outlier" || rule.subject !== "tree") continue;
+      for (const tree of input.trees ?? []) {
+        const info = byPid.get(tree.pid);
+        if (info === undefined) continue;
+        const owner = input.ownerOf.get(info.pid) ?? "other";
+        if (!examines(rule, info, input.kindOf.get(owner) ?? "other", owners, byPid)) continue;
+        const id = rule.alertId?.(String(tree.pid)) ?? `${rule.alert}:${tree.pid}`;
+        if (!treeAbove(rule, tree.trail, endOf(tree.trail), activeLevel.has(id))) continue;
+        const text = rule.text({ process: info, owner, amount: tree.trail.at(-1)?.value ?? 0, processes: tree.processes });
+        alerts.push({ id, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
+      }
+    }
+  }
+
   // The rules on the instances. The first rule that gives an alert id wins, so a pool with two rules gives one alert.
   const ids = new Set<string>();
   for (const { resource, rules: each } of kinds) {
@@ -271,10 +332,11 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         if (rule.instance !== undefined && rule.instance !== measurement.id) continue;
         const id = rule.alertId?.(measurement.id) ?? measurement.id;
         if (ids.has(id)) continue;
+        const trail = readings.trails?.get(measurement.id);
         const level: Level | null =
           rule.type === "level"
             ? (change?.windowMs ?? 0) >= (rule.minHistoryMs ?? 0)
-              ? levelOf(rule, measurement)
+              ? sustainedLevel(rule, measurement, trail, endOf(trail ?? []), activeLevel.get(id) ?? null)
               : null
             : rule.type === "health"
               ? healthLevel(rule, measurement)
@@ -285,7 +347,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
                   : null;
         if (level === null) continue;
         ids.add(id);
-        const text = rule.text({ measurement, change, readings, owners });
+        const text = rule.text({ measurement, change, readings, owners, level });
         const severity = rule.severity === true ? { severity: level } : {};
         alerts.push({ id, kind: rule.alert, subject: text.subject, pid: null, mb: text.mb, ...severity, message: text.message });
       }

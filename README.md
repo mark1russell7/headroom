@@ -55,7 +55,7 @@ The list "Memory by owner" gives the private memory and the memory in RAM of eac
 
 ```text
 Writes (last hour): session:graph 31.2 GB, mcp:vex 2.1 GB.
-CPU: 3.4 of 16 cores in use. Most: session:graph 2.1, mcp:vex 0.4.
+CPU: 11.2 of 16 cores in use (2 kept for Mark). Most: session:graph 6.1, mcp:vex 2.0. Capped: graph-e2e 4 cores.
 Process starts: 1,450 a minute. Most (at least): session:client 410 (jobs 12, own commands 398, job e2e: 9,800 so far), session:organizer 120.
 Network: 1.2 MB/s in, 0.3 MB/s out.
 TCP: 812 connections (120 waiting to close), 2% of the dynamic ports.
@@ -103,6 +103,21 @@ Role: headroom
 ```
 
 **The limit.** This attribution is as strong as "the same Windows user". It is not a security boundary. A process of that user can choose its parent with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and it can write a session file. `docs/RESOURCES.md` gives the details.
+
+### Processors (H23)
+
+headroom watches the cores in use, and keeps some cores for Mark:
+
+- **The CPU alert.** A warning comes when the cores in use stay above 85% of the processors for 5 minutes. A critical alert comes above 95% for 5 minutes.
+- The alert names the 3 owners with the most cores, and their leased jobs. It clears after 2 minutes below its line.
+- **Runaway trees.** A process tree with no lease that uses more than 4 cores for 10 minutes gives a runaway alert. A tree is the top process of an owner and its child processes.
+- **The reserve for Mark.** The cpu amounts of the running leases do not take the last 2 cores. `headroom config cpu-reserve <cores>` changes the count, and `0` turns the reserve off.
+- **A hard cap.** `headroom run --cpu 4 --limit` puts the job into a job object that cannot use more than 4 cores.
+- **A weight.** Without `--limit`, each job object gets the weight 5 of 9. Thus the leased jobs get equal parts of the processors when they compete.
+- **`--cpu auto`** gives the cores from the peak cores of the last runs of the job, with the rule of `--mem auto`. A job with no run gets 2 cores.
+- `headroom job` names the peak cores and the cap of a job, for example `peak 3.5 cores, capped at 4 cores`.
+
+The alerts use the reads of the processor times that the daemon already makes each 10 seconds. The 1-minute average at each read gives the time above a line.
 
 ### Process starts (H29)
 
@@ -231,6 +246,7 @@ On Windows, `headroom run` puts the job into a job object:
 
 - When the run ends, Windows stops each process that the job started and that still runs. Thus a test server or a search does not stay as an orphan. `--keep` turns this off, for a command that starts a service on purpose.
 - `--limit` makes the memory of the lease a hard limit: the job cannot commit more. An allocation above the limit fails, and the job stops with its own error.
+- With `--cpu N`, `--limit` also puts a hard cap of N cores on the job (H23). Without `--limit`, the job object gets the default weight. The run writes the average cores of the job.
 - The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak.
 - The run also writes the count of processes that the job started (H29). The lease keeps the count.
 - On battery, the run puts the processes of the job in efficiency mode (EcoQoS), and writes one line when the mode changes (H30). `--no-eco` turns this off.
@@ -239,7 +255,7 @@ On Windows, `headroom run` puts the job into a job object:
 - `--when ac,usage<80` makes the job wait for its conditions, and `--timing` makes it wait for AC power (H31). On a low battery, a heavy job waits. `--battery-ok` starts it.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
-A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
+A pool with no capacity is a lock of 1. Set a capacity with `headroom pool docker 2`. The processors are different: their count is the capacity of `cpu`, and `headroom pool cpu 8` sets a lower cap.
 
 A queued job can run after the shell that started it stops. `headroom job` gives the state of a job, so a session can wait for the end of the job and read its exit code:
 

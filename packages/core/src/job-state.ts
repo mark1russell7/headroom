@@ -54,6 +54,10 @@ export interface JobState {
   readonly conditions: LeaseConditions | null;
   /** The record of a time when the job ran without one of its conditions (H31), or `null`. */
   readonly unmet: UnmetCondition | null;
+  /** The highest cores of the job over one minute, or over its run at the release (H23), or `null` before a measure. */
+  readonly peakCores: number | null;
+  /** The hard cap of the job in cores (H23), or `null` for a job with no cap. */
+  readonly cpuCap: number | null;
 }
 
 /** A query for jobs. */
@@ -101,6 +105,8 @@ export function jobState(lease: Lease, now: number): JobState {
     log: lease.log ?? null,
     conditions: lease.conditions ?? null,
     unmet: lease.unmet ?? null,
+    peakCores: lease.peakCores ?? null,
+    cpuCap: lease.cpuCap ?? null,
   };
 }
 

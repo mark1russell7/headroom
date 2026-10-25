@@ -6,7 +6,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { conditionsText, countText, diskSize, spawnClassText, unmetText, type JobState } from "@headroom/core";
+import { conditionsText, coresText, countText, diskSize, spawnClassText, unmetText, type JobState } from "@headroom/core";
 import type { Connection } from "./client.ts";
 
 /** The exit code of `headroom job` when no job matches the query. */
@@ -60,6 +60,9 @@ export function jobLine(state: JobState, now: number): string {
     parts.push(how, `waited ${span(state.waitedMs)}`, state.ranMs === null ? "did not start" : `ran ${span(state.ranMs)}`);
   }
   if (state.peakMb !== null) parts.push(`peak ${diskSize(state.peakMb)}`);
+  // H23: the peak cores and the hard cap of the job. A daemon of an older version gives neither.
+  if (typeof state.peakCores === "number") parts.push(`peak ${coresText(state.peakCores)}`);
+  if (typeof state.cpuCap === "number") parts.push(`capped at ${coresText(state.cpuCap)}`);
   // H29: the processes that the job started, from its job object. A daemon of an older version gives none.
   if (typeof state.processes === "number") parts.push(`${countText(state.processes)} ${state.processes === 1 ? "process" : "processes"} started`);
   // H47: the peak starts in one minute and the spawn class. A daemon of an older version gives neither.

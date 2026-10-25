@@ -299,3 +299,95 @@ describe("battery alerts (H30)", () => {
     expect(detect(input([], {}, { leases: [lease(0)] }))).toEqual([]);
   });
 });
+
+describe("CPU alerts (H23)", () => {
+  const MIN = 60_000;
+  /** A trail with one point each 10 seconds: each part is a count of cores for a count of minutes. */
+  const trailOf = (...parts: [cores: number, minutes: number][]): { at: number; value: number }[] => {
+    const points: { at: number; value: number }[] = [];
+    let at = 0;
+    for (const [cores, minutes] of parts) {
+      for (let step = 0; step < (minutes * MIN) / 10_000; step++, at += 10_000) points.push({ at, value: cores });
+    }
+    return points;
+  };
+  const endOf = (trail: readonly { at: number }[]): number => (trail.at(-1)?.at ?? 0) + 10_000;
+  const owners: Record<number, [string, OwnerKind]> = { 1: ["session:graph", "session"], 2: ["mcp:vex", "mcp"], 3: ["docker", "docker"], 4: ["session:client", "session"] };
+  const processes = [p(1, 0, "node.exe", 100), p(2, 0, "vex.exe", 100), p(3, 0, "dockerd.exe", 100), p(4, 0, "node.exe", 100)];
+  const cores = [
+    { owner: "session:graph", kind: "session" as const, cores: 8 },
+    { owner: "mcp:vex", kind: "mcp" as const, cores: 4 },
+    { owner: "docker", kind: "docker" as const, cores: 2 },
+    { owner: "session:client", kind: "session" as const, cores: 0.4 },
+  ];
+  const cpuAlerts = (trail: { at: number; value: number }[], active: AlertInput["active"] = [], extra: Partial<AlertInput> = {}) =>
+    detect(input(processes, owners, { at: endOf(trail), processors: 16, cores, trails: new Map([["cpu", trail]]), active, ...extra })).filter(
+      (alert) => alert.kind === "cpu",
+    );
+
+  it("gives a warning above 85% of the cores for 5 minutes, and a critical alert above 95% for 5 minutes", () => {
+    expect(cpuAlerts(trailOf([8, 5], [14, 4.5]))).toEqual([]);
+    expect(cpuAlerts(trailOf([8, 5], [14, 5]))).toMatchObject([{ id: "cpu", kind: "cpu", subject: "processors", severity: "warning" }]);
+    expect(cpuAlerts(trailOf([14, 1], [15.5, 4.5]))).toMatchObject([{ severity: "warning" }]);
+    expect(cpuAlerts(trailOf([14, 1], [15.5, 5]))).toMatchObject([{ severity: "critical" }]);
+    // Without the count of processors, the CPU has no capacity and gives no alert.
+    expect(cpuAlerts(trailOf([15.5, 6]), [], { processors: undefined })).toEqual([]);
+  });
+
+  it("keeps an active alert through a dip of less than 2 minutes, and clears it after 2 minutes below the line", () => {
+    const warning = [{ id: "cpu", severity: "warning" as const }];
+    expect(cpuAlerts(trailOf([14, 6], [10, 1.5]))).toEqual([]);
+    expect(cpuAlerts(trailOf([14, 6], [10, 1.5]), warning)).toMatchObject([{ severity: "warning" }]);
+    expect(cpuAlerts(trailOf([14, 6], [10, 2]), warning)).toEqual([]);
+    // A critical alert falls to a warning after 2 minutes below 95%, while the cores stay above 85%.
+    const critical = [{ id: "cpu", severity: "critical" as const }];
+    expect(cpuAlerts(trailOf([15.5, 6], [14, 1.5]), critical)).toMatchObject([{ severity: "critical" }]);
+    expect(cpuAlerts(trailOf([15.5, 6], [14, 2]), critical)).toMatchObject([{ severity: "warning" }]);
+  });
+
+  it("names the top 3 owners with their cores, and their leased jobs", () => {
+    const leased: Lease = { ...lease(1), id: "l9", job: "graph-e2e", amounts: { cpu: 4 } };
+    const [alert] = cpuAlerts(trailOf([14.4, 5]), [], { leases: [leased], leaseCores: new Map([["l9", 3.96]]) });
+    expect(alert?.message).toBe(
+      "14.4 of 16 cores are in use (90%), above 85% for 5 minutes. Most cores: session:graph 8.0 (leased: graph-e2e 4.0), mcp:vex 4.0, docker 2.0." +
+        " A full processor makes the laptop slow for Mark, and timing tests of other sessions fail.",
+    );
+  });
+});
+
+describe("runaway process trees (H23)", () => {
+  const MIN = 60_000;
+  const trailOf = (cores: number, minutes: number, from = 0): { at: number; value: number }[] =>
+    Array.from({ length: (minutes * MIN) / 10_000 }, (_, step) => ({ at: from + step * 10_000, value: cores }));
+  const owners: Record<number, [string, OwnerKind]> = { 10: ["session:graph", "session"], 11: ["session:graph", "session"], 30: ["docker", "docker"] };
+  const processes = [p(10, 1, "node.exe", 100), p(11, 10, "node.exe", 100), p(30, 1, "vmmem.exe", 100)];
+  const treeAlerts = (trail: { at: number; value: number }[], pid = 10, active: AlertInput["active"] = [], extra: Partial<AlertInput> = {}) =>
+    detect(input(processes, owners, { at: (trail.at(-1)?.at ?? 0) + 10_000, processors: 16, trees: [{ pid, processes: 2, trail }], active, ...extra })).filter(
+      (alert) => alert.id.startsWith("runaway:cpu:"),
+    );
+
+  it("gives a runaway alert for a tree with no lease above 4 cores for 10 minutes", () => {
+    expect(treeAlerts(trailOf(6, 9.5))).toEqual([]);
+    expect(treeAlerts(trailOf(4, 12))).toEqual([]);
+    expect(treeAlerts(trailOf(6.04, 10))).toEqual([
+      {
+        id: "runaway:cpu:10",
+        kind: "runaway",
+        subject: "node.exe (10)",
+        pid: 10,
+        mb: 0,
+        message: "node.exe (10) of session:graph and its 1 child process use 6 cores with no lease, above 4 cores for 10 minutes. Run such work with headroom run --cpu.",
+      },
+    ]);
+  });
+
+  it("clears after 2 minutes below 4 cores, and skips docker and the trees of a lease", () => {
+    const active = [{ id: "runaway:cpu:10", severity: "warning" as const }];
+    const dip = (minutes: number) => [...trailOf(6, 10), ...trailOf(1, minutes, 10 * MIN)];
+    expect(treeAlerts(dip(1.5), 10, active)).toHaveLength(1);
+    expect(treeAlerts(dip(2), 10, active)).toEqual([]);
+    expect(treeAlerts(dip(1.5))).toEqual([]);
+    expect(treeAlerts(trailOf(8, 11), 30)).toEqual([]);
+    expect(treeAlerts(trailOf(8, 11), 10, [], { leases: [lease(10)] })).toEqual([]);
+  });
+});

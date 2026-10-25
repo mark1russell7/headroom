@@ -8,6 +8,7 @@ import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRe
 import { conditionWait, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
+import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TreeUse } from "./cpu.ts";
 import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
@@ -138,6 +139,8 @@ export interface Status {
    * power request that keeps the computer awake, and the last sleep. The battery and the power are entries of `resources`.
    */
   readonly power: PowerStatus;
+  /** The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). `free.cpu` is after this reserve. */
+  readonly cpuReserve: number;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -150,6 +153,8 @@ export interface ConfigChange {
   readonly batteryFloor?: number | null | undefined;
   /** The usage file for `usage<N` (H31): an absolute path. `null` gives the default file of the fleet. */
   readonly usageFile?: string | null | undefined;
+  /** The cores that the broker keeps for Mark (H23): a number from 0 to the count of processors. `null` gives the default of 2. */
+  readonly cpuReserve?: number | null | undefined;
 }
 
 /** An alert that ended. */
@@ -157,7 +162,7 @@ export interface EndedAlert extends Alert {
   readonly endedAt: number;
 }
 
-/** A memory amount for a job, from the peaks of its last runs. */
+/** A memory amount and a CPU amount for a job, from the peaks of its last runs. */
 export interface Suggestion {
   /** The amount in MB, or `null` when no run of the job has a peak. */
   readonly memoryMb: number | null;
@@ -165,6 +170,12 @@ export interface Suggestion {
   readonly runs: number;
   /** The highest peak of those runs in MB. */
   readonly peakMb: number | null;
+  /** The cores of `--cpu auto` (H23), or `null` when no run of the job has peak cores. */
+  readonly cores: number | null;
+  /** The number of runs that the cores use. */
+  readonly coreRuns: number;
+  /** The highest peak cores of those runs. */
+  readonly peakCores: number | null;
 }
 
 /** One pool tag: its non-paged size and its change over the window, in MB. */
@@ -265,6 +276,12 @@ export class Engine {
   #writes: readonly OwnerWrites[] = [];
   /** The cores of each owner over the last minute, from the last read of the processes. */
   #cores: readonly OwnerCores[] | undefined;
+  /** The CPU group of each process at the last read (H23): a leased job or a process tree. */
+  #groups: ReadonlyMap<number, string> = new Map();
+  /** The cores of each granted lease over the last minute, by lease id (H23). */
+  #leaseCores: ReadonlyMap<string, number> = new Map();
+  /** The cores that the broker keeps for Mark (H23), from the settings. */
+  #cpuReserve: number;
   /** The process starts of each owner and each leased job (H29). */
   readonly #startTracker = new StartTracker();
   /** The process starts of the last 10 minutes, from the last read of the processes or the last count of a job. */
@@ -361,6 +378,7 @@ export class Engine {
     // The writes of the last hour continue after a restart, so a disk alert names the owners that filled the drive.
     this.#counters.restore("writeBytes", this.#store.writesSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
     this.#writes = this.#counters.writes(this.#startedAt);
+    this.#cpuReserve = this.#store.config().cpuReserve;
     this.#memory = this.#sampler.memory();
   }
 
@@ -379,8 +397,8 @@ export class Engine {
       totalMb: this.#memory.totalMb,
       availableMb: this.#memory.availableMb,
       pools: readings.pools,
-      // The reserve of a drive is the critical limit of the disk alert.
-      rooms: rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb }, this.#alertRules),
+      // The reserve of a drive is the critical limit of the disk alert. The reserve of `cpu` is the cores for Mark (H23).
+      rooms: rooms(ids, measurements, readings.pools, { [MEMORY]: this.#reserveMb, cpu: this.#cpuReserve }, this.#alertRules),
     };
   }
 
@@ -436,9 +454,13 @@ export class Engine {
         kindOf: new Map(owners.map((owner) => [owner.owner, owner.kind])),
         leaseOf: leasesOf(this.#processes, this.#broker.leases()),
       };
-      this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf);
+      // H23: the tracker keeps the processor time of each leased job and of each process tree.
+      this.#groups = cpuGroups(this.#processes, this.#ownership);
+      this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf, this.#groups);
       this.#writes = this.#counters.writes(now);
       this.#cores = this.#counters.cores(now);
+      this.#leaseCores = new Map([...this.#counters.groupCores(now, LEASE_GROUP)].map(([group, cores]) => [group.slice(LEASE_GROUP.length), cores]));
+      this.#recordPeakCores();
       this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
       this.#starts = this.#startTracker.summary(now);
       const gui = this.#sampler.gui?.();
@@ -493,7 +515,7 @@ export class Engine {
   release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage, exit?: JobExit, processes?: number): Lease | undefined {
     this.#clock();
     const released = this.#broker.release(id, reason, peakMb ?? null, usage, exit, processes);
-    const lease = released === undefined ? undefined : this.#measureStarts(released, processes);
+    const lease = released === undefined ? undefined : this.#releasePeakCores(this.#measureStarts(released, processes));
     if (lease) this.#persist([lease]);
     this.#persist(this.#broker.tick(this.capacity()));
     return lease ? (this.#broker.get(id) ?? lease) : undefined;
@@ -502,13 +524,24 @@ export class Engine {
   /**
    * This function gives a memory amount for a job from the peaks of its last runs. The amount is the 90th percentile
    * and 25% more, rounded up to 64 MB. It prefers the runs of the same holder. Without a run, it gives `null`.
+   * The cores of `--cpu auto` use the same rule on the peak cores, up to a whole core and the cores that leases can get (H23).
    */
   suggest(job: string, holder?: string): Suggestion {
     const own = holder === undefined ? [] : this.#store.peaksOf(job, holder);
     const peaks = own.length > 0 ? own : this.#store.peaksOf(job);
+    const ownCores = holder === undefined ? [] : this.#store.corePeaksOf(job, holder);
+    const corePeaks = ownCores.length > 0 ? ownCores : this.#store.corePeaksOf(job);
+    const cores = suggestCores(corePeaks, this.#leasableCores());
+    const cpu = { cores, coreRuns: cores === null ? 0 : corePeaks.length, peakCores: cores === null ? null : Math.max(...corePeaks) };
     const p90 = percentile90(peaks);
-    if (p90 === null) return { memoryMb: null, runs: 0, peakMb: null };
-    return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(Math.max(...peaks)) };
+    if (p90 === null) return { memoryMb: null, runs: 0, peakMb: null, ...cpu };
+    return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(Math.max(...peaks)), ...cpu };
+  }
+
+  /** This function gives the cores that the leases can get together (H23): the processors or the pool `cpu`, less the reserve for Mark. */
+  #leasableCores(): number {
+    const pool = this.#store.pools()["cpu"];
+    return Math.max(0, Math.min(this.#processors, pool ?? this.#processors) - this.#cpuReserve);
   }
 
   /**
@@ -584,13 +617,21 @@ export class Engine {
     if (typeof floor === "number" && !(Number.isInteger(floor) && floor >= 0 && floor <= 100)) throw new RangeError("The battery floor must be a whole number from 0 to 100");
     const usageFile = change.usageFile;
     if (typeof usageFile === "string" && !isAbsolute(usageFile)) throw new RangeError(`The usage file must be an absolute path: ${usageFile}`);
+    const reserve = change.cpuReserve;
+    if (typeof reserve === "number" && !(Number.isFinite(reserve) && reserve >= 0 && reserve <= this.#processors)) {
+      throw new RangeError(`The CPU reserve must be a number from 0 to ${this.#processors}, the count of processors`);
+    }
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
     if (floor !== undefined) this.#store.setConfig("batteryFloor", floor === null ? null : String(floor));
     if (usageFile !== undefined) this.#store.setConfig("usageFile", usageFile);
-    // H31: a new floor or a new usage file can let a waiting lease start.
-    if (floor !== undefined || usageFile !== undefined) {
+    if (reserve !== undefined) {
+      this.#store.setConfig("cpuReserve", reserve === null ? null : String(reserve));
+      this.#cpuReserve = this.#store.config().cpuReserve;
+    }
+    // H31: a new floor or a new usage file can let a waiting lease start. H23: a smaller CPU reserve can too.
+    if (floor !== undefined || usageFile !== undefined || reserve !== undefined) {
       this.#facts = null;
       this.#persist(this.#broker.tick(this.capacity()));
     }
@@ -650,6 +691,7 @@ export class Engine {
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
       power: this.powerStatus(),
+      cpuReserve: this.#cpuReserve,
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -781,6 +823,9 @@ export class Engine {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
         load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
         battery: this.#battery, meters: this.#meters, cores: this.#cores,
+        // H23: the CPU rules read the trails of the counter tracker, and an active alert ends only after its clear time.
+        at: now, processors: this.#processors, active: [...this.#alerts.values()], leaseCores: this.#leaseCores,
+        trails: this.#cores === undefined ? new Map() : new Map([["cpu", this.#counters.coresTrail(now)]]), trees: this.#trees(now),
       },
       this.#alertRules,
     );
@@ -805,6 +850,50 @@ export class Engine {
       this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
     }
     for (const alert of found) this.#alerts.set(alert.id, { ...alert, since: this.#alerts.get(alert.id)?.since ?? now });
+  }
+
+  /**
+   * This function gives the process trees with no lease and their trails (H23). Only a tree that went above the runaway
+   * amount in the trail, and that still runs, needs its trail.
+   */
+  #trees(now: number): TreeUse[] {
+    const counts = new Map<string, number>();
+    for (const group of this.#groups.values()) if (group.startsWith(TREE_GROUP)) counts.set(group, (counts.get(group) ?? 0) + 1);
+    const trees: TreeUse[] = [];
+    for (const group of this.#counters.groupsSeen(now, TREE_GROUP)) {
+      const processes = counts.get(group);
+      if (processes === undefined) continue;
+      const trail = this.#counters.coresTrail(now, group);
+      if (!trail.some((point) => point.value > this.#alertRules.runawayCores)) continue;
+      trees.push({ pid: Number(group.slice(TREE_GROUP.length)), processes, trail });
+    }
+    return trees;
+  }
+
+  /**
+   * This function keeps the highest cores of each granted lease over one minute (H23). It writes a lease only when its
+   * peak grows by 0.1 core or more, so the store gets few writes.
+   */
+  #recordPeakCores(): void {
+    for (const [id, cores] of this.#leaseCores) {
+      const lease = this.#broker.get(id);
+      if (lease === undefined || lease.state !== "granted" || cores < (lease.peakCores ?? 0) + 0.1) continue;
+      const next = this.#broker.update(id, { peakCores: Math.round(cores * 100) / 100 });
+      if (next !== undefined) this.#store.saveLease(next);
+    }
+  }
+
+  /**
+   * This function keeps the average cores of a job over its run as its peak, when they are higher (H23). The client of
+   * `headroom run` gives the processor time of the job object at the release. A short job has no read of one minute.
+   */
+  #releasePeakCores(lease: Lease): Lease {
+    const cpuMs = lease.usage?.cpuMs;
+    const ranMs = lease.grantedAt === null || lease.endedAt === null ? 0 : lease.endedAt - lease.grantedAt;
+    if (cpuMs === undefined || ranMs < 1000) return lease;
+    const cores = Math.round((cpuMs / ranMs) * 100) / 100;
+    if (cores <= (lease.peakCores ?? 0)) return lease;
+    return this.#broker.update(lease.id, { peakCores: cores }) ?? lease;
   }
 
   /** This function closes the minute of the counter tracker. It gives the MB that each owner wrote in the minute, for the store. */

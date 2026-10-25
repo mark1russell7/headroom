@@ -1,10 +1,10 @@
 /**
- * The parts of `headroom run` around its job: the disk amounts of `--disk`, the environment of the job, and the temp
- * folder of its lease (H19).
+ * The parts of `headroom run` around its job: the disk amounts of `--disk` and the environment of the job. Also the temp
+ * folder of its lease (H19) and the limits of its job object (H23).
  */
 
 import { mkdirSync, realpathSync } from "node:fs";
-import { diskSize, folderSizeMb, jobTempSetup, keepJobTemp, removeJobTemp, type Config } from "@headroom/core";
+import { CPU_WEIGHT_DEFAULT, cpuRateOf, diskSize, folderSizeMb, jobTempSetup, keepJobTemp, removeJobTemp, type Config, type JobLimits } from "@headroom/core";
 import type { Connection } from "./client.ts";
 import { mountOf, parseDisk } from "./parse.ts";
 
@@ -17,6 +17,30 @@ export function jobEnv(more: Readonly<Record<string, string>>, base: NodeJS.Proc
   const names = new Set(Object.keys(more).map((name) => name.toUpperCase()));
   for (const name of Object.keys(env)) if (names.has(name.toUpperCase())) delete env[name];
   return { ...env, ...more };
+}
+
+/** The limits that `headroom run` asks for: `--limit`, and the memory and the cores of the lease. */
+export interface LimitOptions {
+  /** True (--limit): the job cannot commit more memory than its lease, and cannot use more cores than its lease (H23). */
+  readonly limit: boolean;
+  readonly leaseMb: number | null;
+  /** The cores of the lease (H23). With --limit, they are the hard cap of the job. */
+  readonly leaseCores?: number | null | undefined;
+}
+
+/**
+ * This function gives the limits of the job object of a run. With --limit, the memory of the lease is a memory limit.
+ * The cores of the lease are a hard cap of the CPU rate (H23). The process of headroom is also in the job. Thus the memory
+ * limit adds its memory and a margin. Without a cap, the job gets the default weight, so the leased jobs share the
+ * processors fairly.
+ */
+export function jobLimits(options: LimitOptions, selfMb: number, processors: number): JobLimits {
+  const memoryMb = options.limit && options.leaseMb !== null ? options.leaseMb + selfMb + 64 : undefined;
+  const cores = options.limit ? (options.leaseCores ?? null) : null;
+  return {
+    ...(memoryMb === undefined ? {} : { memoryMb }),
+    ...(cores === null ? { cpuWeight: CPU_WEIGHT_DEFAULT } : { cpuRate: cpuRateOf(cores, processors) }),
+  };
 }
 
 /** The options of `diskAmounts()`. The tests set them. */
