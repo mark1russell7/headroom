@@ -242,7 +242,7 @@ describe("the forecast alerts", () => {
     expect(rest).toEqual([]);
     expect(alert).toMatchObject({ id: "forecast:disk:C:", kind: "forecast", severity: "warning", subject: "drive C:", mb: 26_000 });
     expect(alert?.message).toBe(
-      "Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB.",
+      "Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB. Run `headroom disk report` to see what uses the space.",
     );
     // The warning level alone does not alert, and a critical level after 24 hours does not alert.
     expect(forecastAlerts(detect(input({ "disk:C:": [warning] })))).toEqual([]);

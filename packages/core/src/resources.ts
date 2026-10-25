@@ -569,6 +569,9 @@ export function writersText(writes: readonly OwnerWrites[] | undefined): string 
   return top.length === 0 ? "" : ` Most writes in the last hour: ${top.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`;
 }
 
+/** The last sentence of the disk alerts (H21). It tells the reader the command that shows what uses the space. */
+export const DISK_HINT = "Run `headroom disk report` to see what uses the space.";
+
 /** An active forecast alert ends only past this part of its horizon. Thus a small change of the rate does not end it and start it again. */
 const FORECAST_CLEAR = 1.25;
 
@@ -611,7 +614,7 @@ function diskForecastText({ measurement, readings }: InstanceFacts, forecast: Fo
   return {
     subject: `drive ${mount}`,
     mb: Math.round(measurement.free ?? 0),
-    message: `Drive ${mount} loses ${rateText(forecast.rate, "MB")}. At this rate, it has ${diskSize(forecast.target.amount)} free ${whenText(forecast)}.${writersText(readings.writes)}`,
+    message: `Drive ${mount} loses ${rateText(forecast.rate, "MB")}. At this rate, it has ${diskSize(forecast.target.amount)} free ${whenText(forecast)}.${writersText(readings.writes)} ${DISK_HINT}`,
   };
 }
 
@@ -862,7 +865,7 @@ const DISK: Resource = {
           return {
             subject: `drive ${mount}`,
             mb: Math.round(free),
-            message: `Drive ${mount} has ${diskSize(free)} free of ${diskSize(measurement.capacity ?? 0)}${drop}.${writers}`,
+            message: `Drive ${mount} has ${diskSize(free)} free of ${diskSize(measurement.capacity ?? 0)}${drop}.${writers} ${DISK_HINT}`,
           };
         },
       },

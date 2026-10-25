@@ -32,6 +32,16 @@ export function resumePlanPath(): string {
   return join(headroomHome(), "resume-plan.md");
 }
 
+/** The last disk report (H21). `headroom disk report` writes it, and the dashboard shows its summary. */
+export function diskReportPath(): string {
+  return join(headroomHome(), "disk-report.json");
+}
+
+/** The log of the cleanup (H21): one line for each delete of `headroom disk clean --apply`. */
+export function diskCleanLogPath(): string {
+  return join(headroomHome(), "disk-clean.log");
+}
+
 /** The key of the dashboard. Only this user can read it. `headroom dashboard` puts it in the URL of the page. */
 export function dashboardKeyPath(): string {
   return join(headroomHome(), "dashboard.key");
