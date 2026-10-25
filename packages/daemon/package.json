@@ -19,9 +19,9 @@
   "dependencies": {
     "@headroom/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.32.1",
-    "@procedures/client": "^0.13.2",
-    "@procedures/peer": "^0.13.2",
-    "@procedures/server": "^0.13.2",
+    "@procedures/client": "^0.28.1",
+    "@procedures/peer": "^0.28.1",
+    "@procedures/server": "^0.28.1",
     "zod": "^4.6.7"
   },
   "bin": {
