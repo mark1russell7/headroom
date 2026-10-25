@@ -713,8 +713,8 @@ function drainText(d) {
   const when = clock(d.at), until = d.until ? ` It ends at ${clock(d.until)} if no reboot comes.` : "";
   if (d.state === "planned") return `Drain planned for the reboot at ${when}: from ${when}, new jobs wait.${until}`;
   const n = d.running.length;
-  // H34: the kernel pools started an automatic drain. A reboot or headroom drain --cancel ends it.
-  if (d.auto) return `Automatic drain since ${when}: the kernel pools were at ${mb(d.auto.poolsMb)}. ${n === 0 ? "No job runs, ready for the reboot." : `${n} ${n === 1 ? "job still runs" : "jobs still run"}.`}`;
+  // H34: the kernel pools started an automatic drain. A reboot or headroom drain --cancel ends it. Only heavy jobs wait.
+  if (d.auto) return `Automatic drain since ${when} (automatic: heavy jobs wait, and light jobs start): the kernel pools were at ${mb(d.auto.poolsMb)}. ${n === 0 ? "No job runs, ready for the reboot." : `${n} ${n === 1 ? "job still runs" : "jobs still run"}.`}`;
   if (n === 0) return `Drain for the reboot at ${when}: no job runs, ready for the reboot.${until}`;
   return `Drain for the reboot at ${when}: ${n} ${n === 1 ? "job still runs" : "jobs still run"} (${d.running.map((j) => `${j.job.slice(0, 30)} · ${j.holder}`).join(", ")}).${until}`;
 }

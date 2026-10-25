@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, Config, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { Alerts, CancelResult, Config, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
@@ -75,6 +75,15 @@ const RenewInput = IdInput.extend({
   processes: z.number().int().min(0).optional().describe("The processes that the job started so far, from its job object"),
 });
 type RenewInput = z.infer<typeof RenewInput>;
+
+const CancelInput = z.object({
+  id: z.string().min(1).max(100).optional().describe("The id of a waiting lease, or its first 8 characters or more"),
+  job: z.string().min(1).max(500).optional().describe("The name of the job of a waiting lease"),
+  holder: z.string().min(1).max(200).optional().describe("Only the leases of this holder"),
+  all: z.boolean().default(false).describe("True: cancel each waiting match. False: a query with more than one match cancels none (default: false)"),
+  by: z.string().min(1).max(200).default("cli").describe("Who cancels: the holder of the caller (default: cli)"),
+});
+type CancelInput = z.infer<typeof CancelInput>;
 
 const JobInput = z.object({
   query: z.string().min(1).max(500).describe("The id of a lease, a prefix of 8 or more characters of it, or the name of a job"),
@@ -315,6 +324,22 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     })
     .build() as AnyProcedure;
 
+  const cancel = createProcedure()
+    .path(["resources", "cancel"])
+    .input(zodAdapter<CancelInput>(CancelInput))
+    .output(anything<CancelResult>())
+    .meta({
+      description:
+        "Take a waiting lease off the queue by its id or by its job: its job does not start, and its client of headroom run exits with code 75. More than one match cancels none, unless all is true. A granted lease does not change: use resources.release.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom"], destructive: true },
+    })
+    .handler(async (input: CancelInput): Promise<CancelResult> =>
+      engine.cancel({ id: input.id, job: input.job, holder: input.holder, all: input.all, by: input.by }),
+    )
+    .build() as AnyProcedure;
+
   const job = createProcedure()
     .path(["resources", "job"])
     .input(zodAdapter<JobInput>(JobInput))
@@ -518,7 +543,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     })
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain];
+  return [status, lease, wait, release, cancel, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain];
 }
 
 const RestartWhenIdleInput = z.object({

@@ -16,7 +16,8 @@
 
 import type { Alert } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
-import { localClock } from "./conditions.ts";
+import { heavyWhy, localClock } from "./conditions.ts";
+import { coresText } from "./cpu.ts";
 import { spanText, type Forecast, type ResourcePoint } from "./forecast.ts";
 import { gb } from "./units.ts";
 
@@ -263,6 +264,35 @@ export function autoDrainEndedText(auto: AutoDrainStart): string {
   return `The kernel pools stayed under ${gb(auto.levelMb - AUTO_DRAIN_MARGIN_MB)} for 10 minutes, so the automatic drain ended. New jobs start again.`;
 }
 
+/** A lease that asks for this count of cores or more is heavy for an automatic drain. */
+export const DRAIN_HEAVY_CORES = 4;
+
+/** The text of an automatic drain about the jobs that wait: the alert and the status line give it. */
+export const AUTO_DRAIN_HOLDS = "automatic: heavy jobs wait";
+
+/** The start of the waiting reason of a lease that an automatic drain holds. */
+export const AUTO_DRAIN_WAIT = "waits for a reboot:";
+
+/**
+ * This function tells why a lease is heavy for an automatic drain, or gives `null` for a light lease. A heavy lease asks
+ * for 2 GB of memory or more, 4 cores or more, or the slot browser, or it is spawn-heavy (H47).
+ */
+export function drainHeavyWhy(lease: Pick<Lease, "amounts" | "spawn">): string | null {
+  const why = heavyWhy(lease);
+  if (why !== null) return why;
+  const cores = lease.amounts["cpu"] ?? 0;
+  return cores >= DRAIN_HEAVY_CORES ? `it asks for ${coresText(cores)}` : null;
+}
+
+/**
+ * This function tells if a drain holds a lease. A drain of `headroom drain` holds each lease. An automatic drain holds only
+ * the heavy leases, because browsers and test workers caused the failed process starts (0xC0000142). `--during-drain` passes.
+ */
+export function drainHolds(lease: Pick<Lease, "conditions" | "amounts" | "spawn">, drain: Drain): boolean {
+  if (lease.conditions?.duringDrain === true) return false;
+  return !drain.auto || drainHeavyWhy(lease) !== null;
+}
+
 /** This function tells if a drain holds new leases at a time: after its start and before its end. */
 export function isDrainActive(drain: Drain | null, now: number): drain is Drain {
   return drain !== null && now >= drain.at && (drain.until === null || now < drain.until);
@@ -271,26 +301,30 @@ export function isDrainActive(drain: Drain | null, now: number): drain is Drain 
 /**
  * This function gives the waiting reason of a lease in a drain: "waits for the planned reboot at 02:30 (headroom drain)".
  * The reason does not start with "waits for memory", because the hook of the plugin counts only memory waits. An automatic
- * drain gives "waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)", with `poolsMb` when known.
+ * drain gives "waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic: heavy jobs wait)", with
+ * `poolsMb` when known. `why` tells why the job is heavy, for example "it runs browser tests".
  */
-export function drainReason(drain: Drain, clock: (at: number) => string = localClock, poolsMb: number | null = null): string {
-  if (drain.auto) return `waits for a reboot: the kernel pools are at ${gb(poolsMb ?? drain.auto.poolsMb)} (headroom drain, automatic)`;
+export function drainReason(drain: Drain, clock: (at: number) => string = localClock, poolsMb: number | null = null, why: string | null = null): string {
+  if (drain.auto) {
+    const heavy = why === null ? "" : `, and this job is heavy: ${why}`;
+    return `${AUTO_DRAIN_WAIT} the kernel pools are at ${gb(poolsMb ?? drain.auto.poolsMb)}${heavy} (headroom drain, ${AUTO_DRAIN_HOLDS})`;
+  }
   return `waits for the planned reboot at ${clock(drain.at)} (headroom drain)`;
 }
 
 /**
  * This function tells why a lease waits for a drain, or gives `null`. A lease of `headroom run --during-drain` does not wait.
- * `poolsMb` is the current size of the two kernel pools together, for the reason of an automatic drain.
+ * In an automatic drain, a light lease does not wait. `poolsMb` is the current size of the two kernel pools together.
  */
 export function drainWait(
-  lease: Pick<Lease, "conditions">,
+  lease: Pick<Lease, "conditions" | "amounts" | "spawn">,
   drain: Drain | null,
   now: number,
   clock: (at: number) => string = localClock,
   poolsMb: number | null = null,
 ): string | null {
-  if (!isDrainActive(drain, now) || lease.conditions?.duringDrain === true) return null;
-  return drainReason(drain, clock, poolsMb);
+  if (!isDrainActive(drain, now) || !drainHolds(lease, drain)) return null;
+  return drainReason(drain, clock, poolsMb, drain.auto ? drainHeavyWhy(lease) : null);
 }
 
 /** One running job of a drain: the lease id, the job and its holder. */
@@ -306,7 +340,7 @@ export interface DrainStatus extends Drain {
   readonly state: "planned" | "active";
   /** The granted leases: the jobs that still run. */
   readonly running: readonly DrainJob[];
-  /** The count of waiting leases that the drain holds. A lease of `--during-drain` does not count. */
+  /** The count of waiting leases that the drain holds. A lease of `--during-drain`, or a light lease in an automatic drain, does not count. */
   readonly waiting: number;
 }
 
@@ -315,7 +349,7 @@ export function drainStatus(drain: Drain | null, leases: readonly Lease[], now: 
   if (drain === null || (drain.until !== null && now >= drain.until)) return null;
   const running = leases.filter((lease) => lease.state === "granted").map((lease) => ({ id: lease.id, job: lease.job, holder: lease.holder }));
   const active = isDrainActive(drain, now);
-  const waiting = active ? leases.filter((lease) => lease.state === "waiting" && lease.conditions?.duringDrain !== true).length : 0;
+  const waiting = active ? leases.filter((lease) => lease.state === "waiting" && drainHolds(lease, drain)).length : 0;
   return { ...drain, state: active ? "active" : "planned", running, waiting };
 }
 
@@ -324,9 +358,12 @@ function jobsText(count: number): string {
   return `${count} ${count === 1 ? "job" : "jobs"}`;
 }
 
+/** The text of an automatic drain that tells which jobs are heavy. */
+const HEAVY_TEXT = `A heavy job asks for 2 GB of memory or more, ${DRAIN_HEAVY_CORES} cores or more, or the slot browser, or it is spawn-heavy.`;
+
 /**
  * This function gives the drain line of `headroom status`, or `null` without a drain. An example is "Drain for the reboot
- * at 02:30: 2 jobs still run."
+ * at 02:30: 2 jobs still run." The line of an automatic drain tells that only heavy jobs wait.
  */
 export function drainLine(drain: DrainStatus | null, clock: (at: number) => string = localClock): string | null {
   if (drain === null) return null;
@@ -334,10 +371,13 @@ export function drainLine(drain: DrainStatus | null, clock: (at: number) => stri
   const until = drain.until === null ? "" : ` The drain ends at ${clock(drain.until)} if no reboot comes.`;
   if (drain.state === "planned") return `Drain planned for the reboot at ${when}: from ${when}, new jobs wait.${until}`;
   const auto = drain.auto ?? null;
-  const waits = drain.waiting === 0 ? "" : ` ${jobsText(drain.waiting)} ${drain.waiting === 1 ? "waits" : "wait"} for ${auto === null ? "the" : "a"} reboot.`;
+  const heavy = auto === null ? "" : "heavy ";
+  const waits = drain.waiting === 0 ? "" : ` ${drain.waiting} ${heavy}${drain.waiting === 1 ? "job waits" : "jobs wait"} for ${auto === null ? "the" : "a"} reboot.`;
   const count = drain.running.length;
   const runs = count === 0 ? "no job runs, ready for the reboot" : `${jobsText(count)} still ${count === 1 ? "runs" : "run"}`;
-  if (auto !== null) return `Automatic drain since ${when} (the kernel pools were at ${gb(auto.poolsMb)}): ${runs}.${waits} ${autoEndText(auto)}`;
+  if (auto !== null) {
+    return `Automatic drain since ${when} (${AUTO_DRAIN_HOLDS}, and light jobs start). The kernel pools were at ${gb(auto.poolsMb)}. ${capital(runs)}.${waits} ${autoEndText(auto)}`;
+  }
   return `Drain for the reboot at ${when}: ${runs}.${waits}${until}`;
 }
 
@@ -357,10 +397,11 @@ export function drainAlerts(drain: DrainStatus | null, clock: (at: number) => st
   const started =
     auto === null
       ? `The drain for the planned reboot at ${when} started: new jobs wait. ${runs}`
-      : `The kernel pools reached ${gb(auto.poolsMb)} and stayed at or above ${gb(auto.levelMb)} for 2 minutes. An automatic drain started at ${when}: new jobs wait for a reboot. ${runs} ${autoEndText(auto)}`;
+      : `The kernel pools reached ${gb(auto.poolsMb)} and stayed at or above ${gb(auto.levelMb)} for 2 minutes. An automatic drain started at ${when} ` +
+        `(${AUTO_DRAIN_HOLDS}, and light jobs start). ${HEAVY_TEXT} ${runs} ${autoEndText(auto)}`;
   const alerts: Omit<Alert, "since">[] = [{ ...base, id: DRAIN_ALERT, message: started }];
   if (count === 0) {
-    const waits = auto === null ? `New jobs wait for the reboot at ${when}.` : "New jobs wait for a reboot (automatic drain).";
+    const waits = auto === null ? `New jobs wait for the reboot at ${when}.` : "New heavy jobs wait for a reboot (automatic drain), and light jobs start.";
     alerts.push({ ...base, id: DRAIN_READY_ALERT, message: `Ready for the reboot: no job runs. ${waits} headroom does not reboot the computer: Mark does it.` });
   }
   return alerts;

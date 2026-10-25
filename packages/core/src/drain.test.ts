@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isConditionWait, localClock } from "./conditions.ts";
 import { Engine, type EngineOptions } from "./engine.ts";
-import { REBOOT_KEYS, rebootLines, type KeyState } from "./reboot.ts";
+import { drainHeavyWhy, drainHolds, drainLine, REBOOT_KEYS, rebootLines, type Drain, type KeyState } from "./reboot.ts";
 import type { Sampler } from "./sampler.ts";
 import { Store } from "./store.ts";
 
@@ -171,6 +171,8 @@ describe("Engine automatic drain (H34)", () => {
     new Engine({ sampler: poolSampler(pools), store: new Store(":memory:"), now: () => clock.now, sessionsDir: "/nowhere", ...extra });
   const ask = (engine: Engine, job: string, duringDrain = false) =>
     engine.request({ holder: "client", job, amounts: {}, ttlMs: 24 * HOUR, ...(duringDrain ? { duringDrain } : {}) });
+  /** A heavy job for an automatic drain: it says that it starts many processes. */
+  const heavy = (engine: Engine, job: string) => engine.request({ holder: "client", job, amounts: {}, ttlMs: 24 * HOUR, spawnHeavy: true });
 
   it("starts after 2 minutes at the level, with no end time, its reason and its alert", () => {
     clock.now = START;
@@ -188,16 +190,22 @@ describe("Engine automatic drain (H34)", () => {
     const alert = engine.alerts().active.find((each) => each.id === "drain");
     expect(alert).toMatchObject({ kind: "drain", since: at });
     expect(alert?.message).toBe(
-      `The kernel pools reached 6.1 GB and stayed at or above 6.0 GB for 2 minutes. An automatic drain started at ${localClock(at)}: new jobs wait for a reboot. ` +
-        "1 job still runs: pnpm test (client). A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
+      `The kernel pools reached 6.1 GB and stayed at or above 6.0 GB for 2 minutes. An automatic drain started at ${localClock(at)} ` +
+        "(automatic: heavy jobs wait, and light jobs start). A heavy job asks for 2 GB of memory or more, 4 cores or more, or the slot browser, " +
+        "or it is spawn-heavy. 1 job still runs: pnpm test (client). A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
     );
-    // The reason gives the current pools.
+    // The reason gives the current pools and why the job is heavy.
     pools.nonpaged = 4600;
     engine.tick();
-    const held = ask(engine, "tsc");
-    expect(held).toMatchObject({ state: "waiting", reason: "waits for a reboot: the kernel pools are at 6.2 GB (headroom drain, automatic)" });
+    const held = heavy(engine, "tsc");
+    expect(held).toMatchObject({
+      state: "waiting",
+      reason: "waits for a reboot: the kernel pools are at 6.2 GB, and this job is heavy: it starts many processes (headroom drain, automatic: heavy jobs wait)",
+    });
     expect(isConditionWait(held.reason)).toBe(true);
-    expect(ask(engine, "git status", true).state).toBe("granted");
+    expect(engine.request({ holder: "client", job: "e2e", amounts: {}, ttlMs: 24 * HOUR, spawnHeavy: true, duringDrain: true }).state).toBe("granted");
+    // A light job starts in an automatic drain, and the drain does not count it.
+    expect(ask(engine, "git status").state).toBe("granted");
     // The drain has no end time: an hour at the level changes nothing.
     pass(engine, HOUR, 5 * MINUTE);
     expect(engine.drain()).toMatchObject({ at, until: null, waiting: 1 });
@@ -250,7 +258,7 @@ describe("Engine automatic drain (H34)", () => {
     engine.tick();
     pass(engine, 2 * MINUTE);
     expect(engine.drain()?.auto).toBeTruthy();
-    const held = ask(engine, "tsc");
+    const held = heavy(engine, "tsc");
     expect(held.state).toBe("waiting");
     // 5900 MB is under the level, but not under the end level of 5844 MB.
     pools.nonpaged = 4200;
@@ -357,5 +365,111 @@ describe("Engine automatic drain (H34)", () => {
     const line = rebootLines(engine.status().reboot).find((each) => each.startsWith("Automatic drain:"));
     expect(line).toMatch(/^Automatic drain: at 6\.0 GB of the kernel pools together, now 4\.7 GB\. The forecast reaches it at \d+ \w+ \d\d:\d\d, in 1 h \d+ min\.$/);
     engine.close();
+  });
+});
+
+describe("Automatic drain: only heavy jobs wait", () => {
+  const clock = { now: START };
+  const pass = (engine: Engine, ms: number, step = 30_000): void => {
+    for (let spent = 0; spent < ms; spent += step) {
+      clock.now += Math.min(step, ms - spent);
+      engine.tick();
+    }
+  };
+  /** An engine with 16 processors and a cpu reserve of 0, in an automatic drain. */
+  const drained = (store: Store = new Store(":memory:")): Engine => {
+    clock.now = START;
+    store.setConfig("cpuReserve", "0");
+    const engine = new Engine({ sampler: poolSampler({ ...HIGH }), store, now: () => clock.now, sessionsDir: "/nowhere", processors: 16 });
+    engine.tick();
+    pass(engine, 2 * MINUTE);
+    expect(engine.drain()?.auto).toBeTruthy();
+    return engine;
+  };
+  const ask = (engine: Engine, job: string, amounts: Record<string, number>, more: { spawnHeavy?: boolean } = {}) =>
+    engine.request({ holder: "client", job, amounts, ttlMs: 24 * HOUR, ...more });
+  const reasonOf = (why: string): string =>
+    `waits for a reboot: the kernel pools are at 6.1 GB, and this job is heavy: ${why} (headroom drain, automatic: heavy jobs wait)`;
+
+  it("holds each kind of heavy job, and starts a light job", () => {
+    const engine = drained();
+    expect(ask(engine, "browser e2e", { browser: 1 })).toMatchObject({ state: "waiting", reason: reasonOf("it runs browser tests") });
+    expect(ask(engine, "vitest", {}, { spawnHeavy: true })).toMatchObject({ state: "waiting", reason: reasonOf("it starts many processes") });
+    expect(ask(engine, "build", { memory: 2048 })).toMatchObject({ state: "waiting", reason: reasonOf("it asks for 2.0 GB of memory") });
+    expect(ask(engine, "compile", { cpu: 4 })).toMatchObject({ state: "waiting", reason: reasonOf("it asks for 4 cores") });
+    // A light job: under 2 GB, under 4 cores, no browser and not spawn-heavy.
+    expect(ask(engine, "pnpm lint", {}).state).toBe("granted");
+    expect(ask(engine, "tsc", { memory: 2047, cpu: 3 }).state).toBe("granted");
+    expect(ask(engine, "vitest small", {}, { spawnHeavy: false }).state).toBe("granted");
+    // The drain counts only the heavy jobs that it holds.
+    const drain = engine.drain();
+    expect(drain).toMatchObject({ state: "active", waiting: 4 });
+    expect(drainLine(drain)).toBe(
+      `Automatic drain since ${localClock(drain?.at ?? 0)} (automatic: heavy jobs wait, and light jobs start). The kernel pools were at 6.1 GB. ` +
+        "3 jobs still run. 4 heavy jobs wait for a reboot. A reboot or `headroom drain --cancel` ends it. It also ends after 10 minutes with the pools under 5.7 GB.",
+    );
+    engine.close();
+  });
+
+  it("holds a job that its past runs make heavy: spawn-heavy, or the memory of --mem auto", () => {
+    const store = new Store(":memory:");
+    const past = { holder: "client", amounts: {}, priority: 0, pid: null, ttlMs: 60_000, state: "released" as const, heartbeatAt: 0, reason: null };
+    const at = START - HOUR;
+    store.saveLease({ ...past, id: "past-1", job: "jest", requestedAt: at, grantedAt: at, endedAt: at + MINUTE, peakMb: 300, peakStartsPerMin: 1870 });
+    store.saveLease({ ...past, id: "past-2", job: "next build", requestedAt: at, grantedAt: at, endedAt: at + MINUTE, peakMb: 1800 });
+    const engine = drained(store);
+    expect(ask(engine, "jest", {})).toMatchObject({ state: "waiting", reason: reasonOf("it starts many processes") });
+    // --mem auto: the client asks for the amount of the past peaks, 1800 MB and 25% more.
+    const auto = engine.suggest("next build", "client").memoryMb ?? 0;
+    expect(auto).toBe(2304);
+    expect(ask(engine, "next build", { memory: auto })).toMatchObject({ state: "waiting", reason: reasonOf("it asks for 2.3 GB of memory") });
+    engine.close();
+  });
+
+  it("holds each job in a drain of headroom drain, light or heavy", () => {
+    clock.now = START;
+    const engine = new Engine({ sampler: poolSampler({ nonpaged: 1000, paged: 1000 }), store: new Store(":memory:"), now: () => clock.now, sessionsDir: "/nowhere" });
+    engine.tick();
+    engine.setDrain(clock.now);
+    const reason = `waits for the planned reboot at ${localClock(clock.now)} (headroom drain)`;
+    expect(ask(engine, "pnpm lint", {})).toMatchObject({ state: "waiting", reason });
+    expect(ask(engine, "e2e", { browser: 1 })).toMatchObject({ state: "waiting", reason });
+    expect(engine.drain()).toMatchObject({ waiting: 2 });
+    engine.close();
+  });
+
+  it("starts the light jobs that waited under the old rule at the first tick after a restart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-heavy-drain-"));
+    try {
+      const path = join(dir, "headroom.db");
+      clock.now = START;
+      const store = new Store(path);
+      const drain: Drain = { at: START - HOUR, until: null, setAt: START - HOUR, startedAt: START - HOUR, readyAt: null, auto: { levelMb: 6144, poolsMb: 6200 } };
+      store.setDrain(drain);
+      const old = "waits for a reboot: the kernel pools are at 6.1 GB (headroom drain, automatic)";
+      const waiting = { holder: "client", priority: 0, pid: null, ttlMs: HOUR, state: "waiting" as const, requestedAt: START - 30 * MINUTE, grantedAt: null, endedAt: null };
+      store.saveLease({ ...waiting, id: "light-1", job: "pnpm lint", amounts: {}, heartbeatAt: START - MINUTE, reason: old, peakMb: null });
+      store.saveLease({ ...waiting, id: "heavy-1", job: "e2e", amounts: { browser: 1 }, heartbeatAt: START - MINUTE, reason: old, peakMb: null });
+      store.close();
+      const engine = new Engine({ sampler: poolSampler({ ...HIGH }), store: new Store(path), now: () => clock.now, sessionsDir: "/nowhere" });
+      engine.tick();
+      expect(engine.get("light-1")).toMatchObject({ state: "granted", reason: null });
+      expect(engine.get("heavy-1")).toMatchObject({ state: "waiting", reason: reasonOf("it runs browser tests") });
+      engine.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("gives the heavy rule and the hold rule as functions", () => {
+    const auto: Drain = { at: 0, until: null, setAt: 0, auto: { levelMb: 6144, poolsMb: 6200 } };
+    const manual: Drain = { at: 0, until: null, setAt: 0 };
+    const light = { amounts: { memory: 1024, cpu: 2 } };
+    expect(drainHeavyWhy(light)).toBeNull();
+    expect(drainHeavyWhy({ amounts: { cpu: 6 } })).toBe("it asks for 6 cores");
+    expect(drainHolds(light, auto)).toBe(false);
+    expect(drainHolds(light, manual)).toBe(true);
+    expect(drainHolds({ amounts: { browser: 1 } }, auto)).toBe(true);
+    expect(drainHolds({ amounts: { browser: 1 }, conditions: { when: [], duringDrain: true } }, auto)).toBe(false);
   });
 });

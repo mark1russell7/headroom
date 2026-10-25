@@ -162,6 +162,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     }
   };
   const timer = setInterval(tick, options.tickMs ?? 2000);
+  // The first admission runs at once, so the waiting leases from the store get the rules of this version without a wait.
+  setImmediate(tick);
   // H30: a power event sets the state of the engine and asks for a tick at once. The handler does not wait, because the
   // thread of Windows that gives the event waits for it.
   const unwatch = sampler.watchPower?.((event) => {

@@ -211,9 +211,11 @@ export class Store {
     // A database of an older version has no columns for the conditions of a lease (H31).
     // A database of an older version has no columns for the CPU cap and the peak cores of a lease (H23).
     // A database of an older version has no column for the peak GPU memory of a lease (H36).
+    // A database of an older version has no column for who cancelled a waiting lease (`headroom cancel`).
     const added = [
       ["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"], ["peak_starts_per_min", "REAL"], ["spawn", "TEXT"],
       ["conditions", "TEXT"], ["conditions_met_at", "INTEGER"], ["unmet", "TEXT"], ["cpu_cap", "REAL"], ["peak_cores", "REAL"], ["peak_gpu_mb", "REAL"],
+      ["cancelled_by", "TEXT"],
     ] as const;
     for (const [column, type] of added) {
       if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
@@ -233,13 +235,13 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores, peak_gpu_mb)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores, peak_gpu_mb, cancelled_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
            usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes,
            peak_starts_per_min = excluded.peak_starts_per_min, spawn = excluded.spawn, conditions_met_at = excluded.conditions_met_at,
-           unmet = excluded.unmet, peak_cores = excluded.peak_cores, peak_gpu_mb = excluded.peak_gpu_mb`,
+           unmet = excluded.unmet, peak_cores = excluded.peak_cores, peak_gpu_mb = excluded.peak_gpu_mb, cancelled_by = excluded.cancelled_by`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
@@ -249,6 +251,7 @@ export class Store {
         lease.peakStartsPerMin ?? null, lease.spawn === undefined ? null : JSON.stringify(lease.spawn),
         lease.conditions === undefined ? null : JSON.stringify(lease.conditions), lease.conditionsMetAt ?? null,
         lease.unmet === undefined ? null : JSON.stringify(lease.unmet), lease.cpuCap ?? null, lease.peakCores ?? null, lease.peakGpuMb ?? null,
+        lease.cancelledBy ?? null,
       );
   }
 
@@ -656,5 +659,6 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["cpu_cap"] === null || row["cpu_cap"] === undefined ? {} : { cpuCap: Number(row["cpu_cap"]) }),
     ...(row["peak_cores"] === null || row["peak_cores"] === undefined ? {} : { peakCores: Number(row["peak_cores"]) }),
     ...(row["peak_gpu_mb"] === null || row["peak_gpu_mb"] === undefined ? {} : { peakGpuMb: Number(row["peak_gpu_mb"]) }),
+    ...(row["cancelled_by"] === null || row["cancelled_by"] === undefined ? {} : { cancelledBy: String(row["cancelled_by"]) }),
   };
 }

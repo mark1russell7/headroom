@@ -103,7 +103,7 @@ export function isBrowserLease(lease: Lease): boolean {
 }
 
 /** This function tells if a lease is spawn-heavy. */
-export function isSpawnHeavy(lease: Lease): boolean {
+export function isSpawnHeavy(lease: Pick<Lease, "spawn">): boolean {
   return lease.spawn?.heavy === true;
 }
 

@@ -112,6 +112,8 @@ export interface Lease {
   readonly peakCores?: number | undefined;
   /** The highest GPU memory of the job in MB (H36): the dedicated and the shared GPU memory of its processes at one read. */
   readonly peakGpuMb?: number | undefined;
+  /** Who took the waiting lease off the queue with `headroom cancel`: the holder of the caller, or "cli". */
+  readonly cancelledBy?: string | undefined;
 }
 
 /** The fields of a lease that the engine measures while its job runs (H47, H23, H36), and the record of a condition that stops (H31). */
@@ -177,6 +179,9 @@ export interface BrokerOptions {
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
 
+/** The reason of a waiting lease from the store that no client called for in its heartbeat limit after a restart of the daemon. */
+export const NO_REJOIN_REASON = "no client came back after a restart of the daemon";
+
 /** This function gives the field `processes` of a report. A count only grows, so a smaller count keeps the count of the lease. */
 function processesOf(lease: Lease, processes: number | undefined): { processes?: number } {
   if (processes === undefined) return {};
@@ -222,6 +227,11 @@ export class Broker {
   readonly #condition: (lease: Lease) => string | null;
   /** The waiting leases that waited for a condition at the last tick (H31). */
   readonly #held = new Set<string>();
+  /**
+   * The leases that waited at a restart of the daemon, until their client calls again. Such a lease ends after its
+   * heartbeat limit with no call, also when a process has its process ID.
+   */
+  readonly #rejoin = new Set<string>();
 
   constructor(options: BrokerOptions = {}) {
     this.#now = options.now ?? Date.now;
@@ -238,9 +248,21 @@ export class Broker {
     this.#condition = options.condition ?? (() => null);
   }
 
-  /** This function adds leases that a store kept, for example after a restart of the daemon. */
+  /**
+   * This function adds leases that a store kept, for example after a restart of the daemon. While the daemon was stopped,
+   * no heartbeat came, so each active lease gets a new heartbeat limit from this time. A waiting lease ends after
+   * that limit when its client does not call `renew()` again, also when a process has its process ID.
+   */
   restore(leases: readonly Lease[]): void {
-    for (const lease of leases) this.#leases.set(lease.id, lease);
+    const now = this.#now();
+    for (const lease of leases) {
+      if (!isActive(lease)) {
+        this.#leases.set(lease.id, lease);
+        continue;
+      }
+      if (lease.state === "waiting") this.#rejoin.add(lease.id);
+      this.#leases.set(lease.id, { ...lease, heartbeatAt: Math.max(lease.heartbeatAt, now) });
+    }
   }
 
   /**
@@ -300,10 +322,22 @@ export class Broker {
     });
   }
 
+  /**
+   * This function cancels a waiting lease: it leaves the queue, and its job does not start. `by` is who cancelled it. It
+   * gives the lease, or `undefined` for an unknown id. A lease that does not wait does not change.
+   */
+  cancel(id: string, by: string): Lease | undefined {
+    const lease = this.#leases.get(id);
+    if (!lease || lease.state !== "waiting") return lease;
+    this.#held.delete(id);
+    return this.#set({ ...lease, state: "cancelled", endedAt: this.#now(), reason: `cancelled by ${by} (headroom cancel)`, cancelledBy: by });
+  }
+
   /** This function records a heartbeat of an active lease. `processes` is the count of processes that its job started so far (H29). */
   renew(id: string, processes?: number): Lease | undefined {
     const lease = this.#leases.get(id);
     if (!lease || !isActive(lease)) return lease;
+    this.#rejoin.delete(id);
     return this.#set({ ...lease, heartbeatAt: this.#now(), ...processesOf(lease, processes) });
   }
 
@@ -399,9 +433,8 @@ export class Broker {
     const changed: Lease[] = [];
     for (const lease of this.#leases.values()) {
       if (!isActive(lease)) continue;
-      const ended = lease.pid !== null ? !this.#isAlive(lease.pid) : now - lease.heartbeatAt > lease.ttlMs;
-      if (ended) {
-        const reason = lease.pid !== null ? "the process exited" : "no heartbeat";
+      const reason = this.#endOf(lease, now);
+      if (reason !== null) {
         this.#held.delete(lease.id);
         changed.push(this.#set({ ...lease, state: "expired", endedAt: now, reason }));
       }
@@ -451,6 +484,18 @@ export class Broker {
     return changed;
   }
 
+  /**
+   * This function tells why an active lease ends at a time, or gives `null`. A lease with a process ends when the process
+   * exits. A lease without a process ends when no heartbeat comes in its limit. A lease that waited at a restart of
+   * the daemon also ends when its client does not call in that limit.
+   */
+  #endOf(lease: Lease, now: number): string | null {
+    if (lease.pid !== null && !this.#isAlive(lease.pid)) return "the process exited";
+    if (now - lease.heartbeatAt <= lease.ttlMs) return null;
+    if (this.#rejoin.has(lease.id)) return NO_REJOIN_REASON;
+    return lease.pid === null ? "no heartbeat" : null;
+  }
+
   #rank(lease: Lease, now: number): number {
     return lease.priority + Math.floor((now - lease.requestedAt) / this.#agingMs);
   }
@@ -489,6 +534,7 @@ export class Broker {
 
   #set(lease: Lease): Lease {
     this.#leases.set(lease.id, lease);
+    if (!isActive(lease)) this.#rejoin.delete(lease.id);
     return lease;
   }
 }
