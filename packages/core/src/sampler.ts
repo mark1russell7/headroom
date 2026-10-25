@@ -20,6 +20,11 @@ export interface Sampler {
   network?(): NetAdapter[];
   /** This function reads the TCP connections of IPv4 and IPv6 with their processes, and the dynamic port range (H24). */
   tcp?(): TcpTable;
+  /**
+   * This function gives the start of the computer, in milliseconds since the epoch. The engine compares no pool tags
+   * and no kernel pools across a start, because a start empties the pools.
+   */
+  bootedAt?(): number;
   /** This function frees the resources of the sampler. */
   close(): void;
 }

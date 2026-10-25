@@ -201,6 +201,8 @@ export class Engine {
   /** The snapshots of the non-paged pool by tag, in MB, of the last hour. */
   #tags: { readonly at: number; readonly tags: ReadonlyMap<string, number>; readonly paged: ReadonlyMap<string, number> }[] = [];
   #tagsAt = 0;
+  /** The start of the computer, from the sampler, or 0 when the sampler does not give it. */
+  readonly #bootedAt: number;
   readonly #recordEveryMs: number;
   readonly #retentionMs: number;
   readonly #sessionsDir: string;
@@ -276,8 +278,10 @@ export class Engine {
       },
     });
     this.#broker.restore(this.#store.activeLeases());
-    // The snapshots of the last hour continue after a restart, so the change of each tag has its full window.
-    this.#tags = this.#store.poolTagsSince(this.#startedAt - POOL_TAGS_KEEP_MS);
+    this.#bootedAt = this.#sampler.bootedAt?.() ?? 0;
+    // The snapshots of the last hour continue after a restart, so the change of each tag has its full window. A start of
+    // the computer empties the pools, so the snapshots before it do not continue.
+    this.#tags = this.#store.poolTagsSince(Math.max(this.#startedAt - POOL_TAGS_KEEP_MS, this.#bootedAt));
     this.#tagsAt = this.#tags.at(-1)?.at ?? 0;
     // The writes of the last hour continue after a restart, so a disk alert names the owners that filled the drive.
     this.#counters.restore("writeBytes", this.#store.writesSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
@@ -552,10 +556,12 @@ export class Engine {
   /**
    * This function gives the non-paged pool by tag: the largest tags, and the change of each tag over the
    * snapshots of the last hour. A driver that leaks shows as a tag that grows. Only Windows has tags.
+   * The window starts at the start of the computer or later, so it compares no snapshots across a start.
    */
   poolTags(limit = 20): PoolTags {
-    const last = this.#tags.at(-1);
-    const first = this.#tags[0];
+    const window = this.#tags.filter((snapshot) => snapshot.at >= this.#bootedAt);
+    const last = window.at(-1);
+    const first = window[0];
     if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [] };
     const rows = [...last.tags].map(([tag, mb]) => ({ tag, nonPagedMb: round(mb), growthMb: round(mb - (first.tags.get(tag) ?? 0)) }));
     return {
@@ -589,8 +595,9 @@ export class Engine {
   /** This function checks the conditions of the alerts. A condition that continues keeps its start time. */
   #check(now: number, ownerOf: ReadonlyMap<number, string>): void {
     const kindOf = new Map(this.#owners.map((owner) => [owner.owner, owner.kind]));
-    // The growth of the pool is measured over one hour. A history shorter than 50 minutes gives no growth.
-    const first = this.#store.memorySince(now - 3_600_000)[0];
+    // The growth of the pool is measured over one hour. A history shorter than 50 minutes gives no growth. A start of the
+    // computer empties the pools, so the history starts at the start of the computer or later.
+    const first = this.#store.memorySince(Math.max(now - 3_600_000, this.#bootedAt))[0];
     const hourOld = first !== undefined && now - first.at > 50 * 60_000;
     const poolHourAgoMb = hourOld ? first.kernelNonpagedMb : undefined;
     const pagedHourAgoMb = hourOld ? first.kernelPagedMb : undefined;

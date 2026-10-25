@@ -10,7 +10,7 @@ This document gives one model for all of them. Memory is the first resource on t
 - An **instance** is one resource that headroom measures or counts. A kind can have several instances, for example one disk for each mount.
 - The **id** of an instance is the kind, or the kind and a colon and the instance: `memory`, `cpu`, `disk:C:`, `disk:D:`. A lease amount names an id.
 - An id with no known kind is a **slot**, as today: `browser`, `docker`, `npm-publish`.
-- An **owner** is a Claude Code session, an MCP server of the gateway, a lease, Docker or the system.
+- An **owner** is a Claude Code session, an MCP server of the gateway, a service, a lease, Docker, the system or the kernel.
 
 ## The model
 
@@ -435,6 +435,36 @@ Step 7 (H20) differs from the design above in these points:
 - The text of the disk rule names the owners, not `explain()`.
 - The outlier rule on an owner (20 GB in one hour) and the lease rows of disk and `cpu` are not in this step.
 - The process `System` writes the file cache and the pages of mapped files. Thus one write can count for its process and for the owner `system`.
+- The Windows counters charge to `system` the disk writes of cached files and of the page file. The lazy writer and the memory manager write them, so `system` can hide the real writer.
+
+### The kernel owners and the services
+
+On 2026-10-24, after a start of the computer, the owners held approximately 16 GB of 27.6 GB of RAM. The file cache held 10.1 GB, and no owner had it. Since this step, the RAM of the owners and the available memory add up to approximately the physical memory.
+
+**The kernel owners.** `kernelOwners()` in `owners.ts` gives the memory that no process holds. Each owner has the kind `kernel` and no process.
+
+| Owner | Private | In RAM | Windows counter |
+|---|---|---|---|
+| `kernel` | The size of the two pools, as before | The non-paged pool and the paged pool in RAM | `Pool Nonpaged Bytes`, `Pool Paged Resident Bytes` |
+| `kernel:cache` | The same as in RAM | The working set of the system cache | `System Cache Resident Bytes` |
+| `kernel:drivers` | The same as in RAM | The code of the kernel and of the drivers | `System Driver Resident Bytes`, `System Code Resident Bytes` |
+
+- The sampler reads the three amounts with one call of `NtQuerySystemInformation(SystemPerformanceInformation)`. The call gives the same page counts as the counters, and it needs no admin rights.
+- `SystemCache` of `GetPerformanceInfo` also counts the standby pages of the cache. The standby pages are available memory, so headroom does not use that field.
+- `SystemMemory` has `cacheMb`, `kernelPagedResidentMb` and `driversMb`. Linux does not give them, so Linux has only the owner `kernel`.
+- On this computer on 2026-10-25, the owners held 19.4 GB in RAM, and 7.2 GB was available, of 27.6 GB. The difference of approximately 1.7 GB is the pages that wait for a disk write, the page tables and the shared pages.
+
+**The services.** Task Scheduler starts the daemon of headroom and the fleet site. Before this step, their owner was `system`, because `svchost.exe` is their ancestor.
+
+- The Windows sampler reads the command line of each new `node.exe` with `NtQueryInformationProcess(ProcessCommandLineInformation)`. It keeps the option `--title=<name>` for each process ID and start, and it forgets the processes that stopped.
+- A title replaces the rule `system` farther up. Thus `node --title=headroom-daemon` from Task Scheduler is the owner `service:headroom-daemon`, with its descendants. The kind is `service`.
+- A session and a server of the MCP gateway win over a title. A title under another rule, for example the editor, gives that rule. A title with no rule farther up is an orphan, so it stays `other`.
+- The runaway rule examines the services, because a service is not the system.
+
+**The pool tags after a start.** The store keeps the pool tag snapshots (PR #26). A start of the computer empties the pools, so the change of a tag across a start is not a change.
+
+- The sampler gives `bootedAt()`: the time of the read less `GetTickCount64`. Linux uses `os.uptime()`.
+- The engine loads only the snapshots after the start. `poolTags()` and the growth rules of the pools compare only reads after the start.
 
 ### H19: the temp folder of each job
 
@@ -588,3 +618,6 @@ These were the open questions. The session decided each one as a technical call.
 | When is an MCP server down? | When its start failed, or after 3 exits in 10 minutes. A server that the gateway stopped for idle, or that exited one time, is `idle`. | The gateway starts a server again at the next request. Thus one exit is not a failure of the service, but a start that fails is. |
 | Does headroom restart a service that is down? | No. The alert only reports. | A restart of Docker stops the containers of all the sessions. The owner of the service decides. |
 | How does the store keep the new data? | New tables `resource_samples` and `owner_use`, and a column `usage` in `leases`. The old tables stay. | The history, the dashboard and the tests of today keep their data and their queries. |
+| What is the name of the owner of the kernel pools? | `kernel`, as before. The file cache and the drivers are new owners `kernel:cache` and `kernel:drivers`. | The history of `kernel` stays comparable: its private memory is still the size of the two pools. Only its memory in RAM changes, to the part in RAM. |
+| What is the private memory of the file cache and of the drivers? | The same as their memory in RAM. | They have no commit charge. With 0, the list sorts the largest owner of RAM last, and the dashboard shows no bar. |
+| Which processes are services? | A Node process with a title under the rule `system`, with its descendants. | The title names the program. An orphan with a title stays `other`, so the orphan rule still finds it. |

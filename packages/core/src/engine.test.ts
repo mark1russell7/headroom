@@ -165,6 +165,37 @@ describe("Engine pool tags after a restart", () => {
     });
     second.close();
   });
+
+  it("drops the snapshots and the pool history from before a start of the computer", () => {
+    let now = 1_000_000;
+    let bootedAt = 0;
+    let tags: PoolTag[] = [{ tag: "File", nonPagedMb: 900, pagedMb: 10 }];
+    let nonPagedMb = 1000;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: nonPagedMb }),
+      processes: () => [],
+      poolTags: () => tags,
+      bootedAt: () => bootedAt,
+      close: () => undefined,
+    };
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-boot-")), "boot.db");
+    const first = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    first.tick();
+    first.close();
+
+    // The computer starts again 55 minutes later, and the daemon starts 1 minute after it.
+    now += 56 * 60_000;
+    bootedAt = now - 60_000;
+    tags = [{ tag: "File", nonPagedMb: 40, pagedMb: 1 }];
+    nonPagedMb = 1600;
+    const second = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    expect(second.poolTags().at).toBeNull();
+    second.tick();
+    expect(second.poolTags()).toMatchObject({ at: now, sinceAt: now, largest: [{ tag: "File", nonPagedMb: 40, growthMb: 0 }] });
+    // The pool grew 600 MB since the sample of the first engine, but a start of the computer is between them.
+    expect(second.alerts().active).toEqual([]);
+    second.close();
+  });
 });
 
 describe("Engine disks", () => {

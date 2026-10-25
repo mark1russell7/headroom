@@ -180,7 +180,7 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 
   <section class="card">
     <h2>Memory by owner</h2>
-    <p class="hint">The private memory of each Claude Code session, MCP server and program group, now. The line at the right shows the window.</p>
+    <p class="hint">The private memory of each Claude Code session, MCP server, service and program group, now. The kernel owners hold the pools, the file cache and the drivers. The line at the right shows the window.</p>
     <div class="owners" id="owners"></div>
   </section>
 
@@ -576,6 +576,10 @@ function renderCharts() {
   });
 }
 
+// The label of each owner kind that is not clear from its name. A kernel owner has no process.
+const KIND_LABEL = { service: "Service (a Node process with a title)", kernel: "Windows kernel, no process" };
+const KERNEL_LABEL = { kernel: "Kernel pools", "kernel:cache": "System file cache", "kernel:drivers": "Kernel and driver code" };
+
 function renderOwners() {
   const owners = state.status?.owners || [];
   if (!owners.length) { $("owners").replaceChildren(h("div", { class: "empty", text: "No sample yet." })); return; }
@@ -592,7 +596,7 @@ function renderOwners() {
   $("owners").replaceChildren(...rows.map((o) => {
     const hist = series.get(o.owner);
     const label = o.owner.startsWith("session:") ? o.owner.slice(8) : o.owner;
-    const kind = o.rest ? "" : o.owner.startsWith("session:") ? "Claude Code session" : o.owner.startsWith("mcp:") ? "MCP server of the gateway" : o.kind;
+    const kind = o.rest ? "" : o.owner.startsWith("session:") ? "Claude Code session" : o.owner.startsWith("mcp:") ? "MCP server of the gateway" : KERNEL_LABEL[o.owner] || KIND_LABEL[o.kind] || o.kind;
     return h("div", { class: "owner" },
       h("div", { class: "name", title: o.owner }, h("span", { text: label }), h("small", { text: `${kind}${kind ? " · " : ""}${o.processes} processes · ${mb(o.workingMb)} in RAM` })),
       h("div", { class: "bar" }, h("div", { style: `width:${((o.privateMb / max) * 100).toFixed(1)}%` })),

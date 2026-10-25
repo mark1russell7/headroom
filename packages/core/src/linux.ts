@@ -3,7 +3,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, uptime } from "node:os";
 import { parseNetDev, parsePortRange, parseProcTcp } from "./network.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, ProcessInfo, SystemMemory, TcpTable } from "./types.ts";
@@ -146,7 +146,7 @@ export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
     };
   }
 
-  return { memory, processes, disks: () => linuxDisks(), network, tcp, close: () => {} };
+  return { memory, processes, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
 }
 
 /** The default dynamic port range of Linux: the ports 32768 to 60999. */

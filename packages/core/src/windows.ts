@@ -2,8 +2,11 @@
  * The sampler of Windows. It calls `kernel32.dll` through the FFI of koffi, so it starts no process.
  *
  * - `K32GetPerformanceInfo` gives the physical memory, the commit charge and the kernel pools.
+ * - `NtQuerySystemInformation` with `SystemPerformanceInformation` gives the file cache, the paged pool and the drivers in RAM.
  * - A Toolhelp snapshot gives each process with its parent.
  * - `K32GetProcessMemoryInfo` gives the private memory and the working set of each process.
+ * - `NtQueryInformationProcess` gives the command line of each new `node.exe`, for its `--title` (the owner `service:<name>`).
+ * - `GetTickCount64` gives the start of the computer.
  * - `NtQuerySystemInformation` with `SystemProcessInformation` gives the start, the processor time and the I/O bytes of each process (H20).
  * - `NtQuerySystemInformation` of `ntdll.dll` also gives the use of the kernel pools by each pool tag.
  * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
@@ -18,6 +21,7 @@ import { execFileSync } from "node:child_process";
 import { statfsSync } from "node:fs";
 import koffi from "koffi";
 import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpTable } from "./network.ts";
+import { programName, titleOf } from "./owners.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, SystemMemory, TcpConnection, TcpTable } from "./types.ts";
 
@@ -25,6 +29,10 @@ const TH32CS_SNAPPROCESS = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 
 const kernel32 = koffi.load("kernel32.dll");
+const ntdll = koffi.load("ntdll.dll");
+const querySystemInformation = ntdll.func("int32 __stdcall NtQuerySystemInformation(uint32 cls, _Out_ uint8_t *buffer, uint32 length, _Out_ uint32 *returned)");
+const STATUS_INFO_LENGTH_MISMATCH = -1073741820;
+const STATUS_BUFFER_TOO_SMALL = -1073741789;
 
 const PERFORMANCE_INFORMATION = koffi.struct("PERFORMANCE_INFORMATION", {
   cb: "uint32_t",
@@ -116,7 +124,48 @@ function memory(): SystemMemory {
     commitLimitMb: mb(info.CommitLimit),
     kernelPagedMb: mb(info.KernelPaged),
     kernelNonpagedMb: mb(info.KernelNonpaged),
+    ...resident(mb),
   };
+}
+
+const SYSTEM_PERFORMANCE_INFORMATION = 2;
+// The offsets of page counts (ULONG) in SYSTEM_PERFORMANCE_INFORMATION. The struct has 376 bytes on Windows 11.
+// The four counts give the same values as the counters "System Code Resident Bytes", "System Cache Resident Bytes",
+// "Pool Paged Resident Bytes" and "System Driver Resident Bytes" of the object Memory.
+const SPI_RESIDENT_CODE = 140;
+const SPI_RESIDENT_CACHE = 164;
+const SPI_RESIDENT_PAGED_POOL = 168;
+const SPI_RESIDENT_DRIVER = 172;
+let performanceBuffer = Buffer.alloc(512);
+
+/**
+ * This function reads the file cache, the paged pool and the code of the kernel and the drivers in RAM, with one call of
+ * `NtQuerySystemInformation(SystemPerformanceInformation)`. A failed read gives no amounts.
+ */
+function resident(mb: (pages: number) => number): Pick<SystemMemory, "cacheMb" | "kernelPagedResidentMb" | "driversMb"> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const returned = [0];
+    const status = querySystemInformation(SYSTEM_PERFORMANCE_INFORMATION, performanceBuffer, performanceBuffer.length, returned);
+    if (status === STATUS_INFO_LENGTH_MISMATCH) {
+      performanceBuffer = Buffer.alloc(Math.max(performanceBuffer.length * 2, returned[0] ?? 0));
+      continue;
+    }
+    if (status !== 0 || (returned[0] ?? 0) < SPI_RESIDENT_DRIVER + 4) return {};
+    const pages = (offset: number): number => performanceBuffer.readUInt32LE(offset);
+    return {
+      cacheMb: mb(pages(SPI_RESIDENT_CACHE)),
+      kernelPagedResidentMb: mb(pages(SPI_RESIDENT_PAGED_POOL)),
+      driversMb: mb(pages(SPI_RESIDENT_DRIVER) + pages(SPI_RESIDENT_CODE)),
+    };
+  }
+  return {};
+}
+
+const getTickCount64 = kernel32.func("uint64_t __stdcall GetTickCount64()");
+
+/** This function gives the start of the computer: the time of the read less the milliseconds since the start. */
+function bootedAt(): number {
+  return Date.now() - Number(getTickCount64());
 }
 
 /** This function reads the memory of one process, or gives `null` when the process is protected or ended. */
@@ -141,33 +190,77 @@ function processes(): ProcessInfo[] {
     const entry = { dwSize: entrySize } as ProcessEntry;
     for (let more = processFirst(snapshot, entry); more !== 0; more = processNext(snapshot, entry)) {
       const pid = Number(entry.th32ProcessID);
+      const name = String(entry.szExeFile);
       // The memory of a protected process is not readable, so it counts as 0. The totals come from the kernel for each process.
       const counters = pid === 0 ? null : memoryOf(pid);
       const total = totals.get(pid);
+      const title = programName(name) === "node" ? titleOfProcess(pid, total?.startedAt) : null;
       list.push({
         pid,
         ppid: Number(entry.th32ParentProcessID),
-        name: String(entry.szExeFile),
+        name,
         privateMb: counters ? Number(counters.PrivateUsage) / MB : 0,
         workingMb: counters ? Number(counters.WorkingSetSize) / MB : 0,
         startedAt: total?.startedAt,
         cpuMs: total?.cpuMs,
         readBytes: total?.readBytes,
         writeBytes: total?.writeBytes,
+        ...(title === null ? {} : { title }),
       });
       entry.dwSize = entrySize;
     }
   } finally {
     closeHandle(snapshot);
   }
+  // The cache of the titles keeps only the live processes.
+  const live = new Set(list.map((info) => info.pid));
+  for (const pid of titles.keys()) if (!live.has(pid)) titles.delete(pid);
   return list;
 }
 
-const ntdll = koffi.load("ntdll.dll");
-const querySystemInformation = ntdll.func("int32 __stdcall NtQuerySystemInformation(uint32 cls, _Out_ uint8_t *buffer, uint32 length, _Out_ uint32 *returned)");
+const queryInformationProcess = ntdll.func(
+  "int32 __stdcall NtQueryInformationProcess(intptr_t process, uint32 cls, _Out_ uint8_t *buffer, uint32 length, _Out_ uint32 *returned)",
+);
+const PROCESS_COMMAND_LINE_INFORMATION = 60;
+/** The UNICODE_STRING at the start of the buffer has 16 bytes on 64-bit Windows. The text of the command line follows it. */
+const COMMAND_LINE_TEXT = 16;
+let commandLineBuffer = Buffer.alloc(4096);
+/** The title of each `node.exe`, by process ID, with the start of the process. A new process with the same ID has a different start. */
+const titles = new Map<number, { readonly startedAt: number | undefined; readonly title: string | null }>();
+
+/** This function gives the `--title` of a Node process from its command line, one read for each process. */
+function titleOfProcess(pid: number, startedAt: number | undefined): string | null {
+  const cached = titles.get(pid);
+  if (cached !== undefined && cached.startedAt === startedAt) return cached.title;
+  const line = commandLine(pid);
+  const title = line === null ? null : titleOf(line);
+  titles.set(pid, { startedAt, title });
+  return title;
+}
+
+/** This function reads the command line of a process, or gives `null` when the process is protected or ended. */
+function commandLine(pid: number): string | null {
+  const handle = Number(openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid));
+  if (handle === 0) return null;
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const returned = [0];
+      const status = queryInformationProcess(handle, PROCESS_COMMAND_LINE_INFORMATION, commandLineBuffer, commandLineBuffer.length, returned);
+      if (status === STATUS_INFO_LENGTH_MISMATCH || status === STATUS_BUFFER_TOO_SMALL) {
+        commandLineBuffer = Buffer.alloc(Math.max(commandLineBuffer.length * 2, (returned[0] ?? 0) + 64));
+        continue;
+      }
+      if (status !== 0) return null;
+      const length = commandLineBuffer.readUInt16LE(0);
+      return commandLineBuffer.toString("utf16le", COMMAND_LINE_TEXT, COMMAND_LINE_TEXT + length);
+    }
+    return null;
+  } finally {
+    closeHandle(handle);
+  }
+}
+
 const SYSTEM_POOL_TAG_INFORMATION = 22;
-const STATUS_INFO_LENGTH_MISMATCH = -1073741820;
-const STATUS_BUFFER_TOO_SMALL = -1073741789;
 
 const SYSTEM_PROCESS_INFORMATION = 5;
 // The offsets in SYSTEM_PROCESS_INFORMATION on 64-bit Windows. The entry of a process is at least 0x100 bytes, and its threads follow it.
@@ -360,5 +453,5 @@ function tcp(): TcpTable {
 
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
-  return { memory, processes, poolTags, gui, disks, network, tcp, close: () => {} };
+  return { memory, processes, poolTags, gui, disks, network, tcp, bootedAt, close: () => {} };
 }

@@ -1,6 +1,6 @@
 /**
- * The owners of memory: it gives each process tree to a Claude Code session, Docker, the browser,
- * the editor or the system.
+ * The owners of memory. Each process tree goes to a Claude Code session, an MCP server, a service, Docker, the browser,
+ * the editor or the system. The kernel owners hold the memory that no process holds.
  */
 
 import { readdirSync, readFileSync } from "node:fs";
@@ -72,11 +72,50 @@ export interface Attribution {
   readonly ownerOf: ReadonlyMap<number, string>;
 }
 
+/** The longest title that becomes the name of a service. */
+const TITLE_MAX = 64;
+
 /**
- * This function gives each process to an owner. A process that has a session as an ancestor
- * belongs to that session. A process under a server of the MCP gateway belongs to `mcp:<name>`.
- * Otherwise the first rule that matches the process or an ancestor wins. The kernel pools become
- * the owner `kernel`.
+ * This function gives the name in the option `--title=<name>` or `--title <name>` of a Node command line. Without the
+ * option, it gives `null`.
+ */
+export function titleOf(commandLine: string): string | null {
+  const match = /(?:^|\s)"?--title(?:=|\s+)(?:"([^"]*)"|([^\s"]+))/.exec(commandLine);
+  const title = (match?.[1] ?? match?.[2] ?? "").trim();
+  return title === "" ? null : title.slice(0, TITLE_MAX);
+}
+
+/**
+ * This function gives the owners of the memory that no process holds. They have the kind `kernel`.
+ *
+ * - `kernel` is the kernel pools. Its private memory is the size of the two pools, as before. Its memory in RAM is the
+ *   non-paged pool and the part of the paged pool in RAM.
+ * - `kernel:cache` is the system file cache in RAM. Its private memory is the same amount.
+ * - `kernel:drivers` is the code of the kernel and of the drivers in RAM. Its private memory is the same amount.
+ *
+ * A platform that does not give an amount gives no owner for it. Without the paged pool in RAM, the memory in RAM of
+ * `kernel` is the size of the two pools.
+ */
+export function kernelOwners(memory: SystemMemory): OwnerUsage[] {
+  const poolsMb = memory.kernelNonpagedMb + memory.kernelPagedMb;
+  const inRamMb = memory.kernelPagedResidentMb === undefined ? poolsMb : memory.kernelNonpagedMb + memory.kernelPagedResidentMb;
+  const owners: OwnerUsage[] = [{ owner: "kernel", kind: "kernel", privateMb: Math.round(poolsMb), workingMb: Math.round(inRamMb), processes: 0 }];
+  const resident = (owner: string, mb: number | undefined): void => {
+    if (mb !== undefined) owners.push({ owner, kind: "kernel", privateMb: Math.round(mb), workingMb: Math.round(mb), processes: 0 });
+  };
+  resident("kernel:cache", memory.cacheMb);
+  resident("kernel:drivers", memory.driversMb);
+  return owners;
+}
+
+/**
+ * This function gives each process to an owner. A process that has a session as an ancestor belongs to that session.
+ * A process under a server of the MCP gateway belongs to `mcp:<name>`. Otherwise the first rule that matches the
+ * process or an ancestor wins.
+ *
+ * A title replaces the rule `system` farther up. Thus a Node process with the title `<name>` that Task Scheduler, a
+ * service or Explorer starts belongs to `service:<name>`, with its descendants. A title with no rule farther up gives no
+ * owner, so an orphan stays `other`. The memory that no process holds goes to the owners of `kernelOwners()`.
  */
 export function attribute(
   processes: readonly ProcessInfo[],
@@ -95,6 +134,8 @@ export function attribute(
   for (const info of processes) {
     let owner: { name: string; kind: OwnerKind } | null = null;
     let rule: OwnerRule | null = null;
+    // The nearest title below the nearest rule.
+    let title: string | null = null;
     const seen = new Set<number>();
     for (let at: ProcessInfo | undefined = info; at && !seen.has(at.pid) && seen.size < 64; at = byPid.get(at.ppid)) {
       seen.add(at.pid);
@@ -109,8 +150,10 @@ export function attribute(
         break;
       }
       rule ??= ruleOf.get(programName(at.name)) ?? null;
+      if (rule === null && title === null && at.title !== undefined) title = at.title;
     }
-    owner ??= rule ? { name: rule.owner, kind: rule.kind } : { name: "other", kind: "other" };
+    if (owner === null && rule !== null) owner = title !== null && rule.kind === "system" ? { name: `service:${title}`, kind: "service" } : { name: rule.owner, kind: rule.kind };
+    owner ??= { name: "other", kind: "other" };
     ownerOf.set(info.pid, owner.name);
     kindOf.set(owner.name, owner.kind);
   }
@@ -125,10 +168,7 @@ export function attribute(
     sums.set(owner, sum);
   }
   const owners: OwnerUsage[] = [...sums].map(([owner, sum]) => ({ owner, kind: kindOf.get(owner) ?? "other", ...round(sum) }));
-  if (memory) {
-    const kernelMb = memory.kernelNonpagedMb + memory.kernelPagedMb;
-    owners.push({ owner: "kernel", kind: "kernel", privateMb: Math.round(kernelMb), workingMb: Math.round(kernelMb), processes: 0 });
-  }
+  if (memory) owners.push(...kernelOwners(memory));
   owners.sort((a, b) => b.privateMb - a.privateMb);
   return { owners, ownerOf };
 }
