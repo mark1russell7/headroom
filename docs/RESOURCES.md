@@ -323,6 +323,8 @@ export interface JobLimits {
   readonly memoryMb?: number | undefined;
   /** JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, in cycles for each 10,000 (H23). */
   readonly cpuRate?: number | undefined;
+  /** JOB_OBJECT_CPU_RATE_CONTROL_WEIGHT_BASED, from 1 to 9 (H23). A cap wins over a weight. */
+  readonly cpuWeight?: number | undefined;
 }
 
 /** The environment of a job, from its lease. The release removes the folders. */
@@ -364,7 +366,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `pool:nonpaged`, `pool:paged` (MB) | Used only. Windows tells no capacity. | By pool tag, not by process. A tag names its driver. | Level: used above 3 GB or 4 GB. Growth: 500 MB in one hour. | None. | None. Report only. |
 | `desktop` (count) | Used: the processes of the session, and the USER and GDI objects. | The processes of each owner. | Level: used above 1000 processes. | None. The `browser` slot limits the largest cause. | Later: `JOB_OBJECT_LIMIT_ACTIVE_PROCESS`. |
 | `disk:<mount>` (MB) | One instance for each fixed drive. Capacity: the size. Free: the space for this user. | H20: the bytes that each owner writes, in MB/h. The counters do not name the drive. | Level on free: a warning below 20 GB or 20%, critical below 5 GB or 5%. Outlier: an owner writes more than 20 GB in one hour. | Measured. Reserve: the critical limit. Gate: at critical, no job starts. | No quota. H19: `TEMP` and `TMP` of the job on `D:`. Report: the bytes written. |
-| `cpu` (cores) | H23. Capacity: the logical processors. Used: the busy processors, as a 1-minute average. | The processor time of each process tree. | Level: free below 10% for 5 minutes. Outlier: a process above 4 cores for 10 minutes with no lease. | Measured. Reserve: 1 core. A configured pool `cpu` is a cap. | `JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP` with `--limit`. Report: the processor time. |
+| `cpu` (cores) | H23. Capacity: the logical processors. Used: the cores in use, as a 1-minute average. | The processor time of each owner, of each leased job and of each process tree with no lease. | Level `cpu`: used above 85% (warning) or 95% (critical) for 5 minutes, clear after 2 minutes below. Outlier: a process tree above 4 cores for 10 minutes with no lease. | Counted. Reserve: 2 cores for Mark, from `headroom config cpu-reserve`. A configured pool `cpu` is a cap. | With `--limit`: a hard cap of the CPU rate on the job object. Without it: the weight 5 of 9. Report: the processor time and the peak cores. |
 | Slots: `browser`, `docker`, each name (count) | Capacity: configured with `headroom pool`, else 1. Used: the granted leases. | The holders of the granted leases. | Later: a lease that waits more than 30 minutes for a slot. | Counted. A command pattern takes a slot by itself, as `browser` does. | None on the job. The lease ends with its process. |
 | `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
 | `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
@@ -416,7 +418,7 @@ Steps 1 to 4 shipped in #29, #30 and #31. The code in `packages/core/src/resourc
 - `Attribute.counter` gives the counter of one process. The outlier rules compare it with their limit.
 - `Measurement.used` can be `null`. The processors have no used part until H23.
 - `Readings` has `processors`, the count of logical processors, and `granted`, the sum of the granted amounts of each id.
-- `cpu` is counted until H23, with the count of processors as its capacity.
+- `cpu` is counted, with the count of processors as its capacity. H23 keeps it counted and adds a reserve of 2 cores for Mark.
 - `detect()` gives at most one alert for each process, and one alert for each alert id. The first rule wins.
 - `explain()` has no implementation yet. The engine still adds the pool tags and the large files to the messages.
 
@@ -536,13 +538,23 @@ All other data goes to Mark first. The report gives Mark the size of each folder
 
 ### H23: CPU on the model
 
-- **Measure**: `os.cpus()` gives the processor times on Windows and on Linux, with no FFI. The capacity is `os.availableParallelism()`. The used part is the average of the last minute.
-- **Attribute**: the processor time of each process, from `GetProcessTimes` or `/proc/<pid>/stat`. The use of an owner is in cores.
-- **Alert**: free below 10% for 5 minutes. An outlier is one process above 4 cores for 10 minutes with no lease, for example a loop that does not stop.
-- **Admit**: measured, with a reserve of 1 core. The unspent part of a lease is its amount less the cores of its tree.
-- **Enforce**: with `--limit`, a hard cap of the CPU rate on the job object. Without it, headroom reports the processor time of the job.
+H23 shipped in one change. These parts are as built:
 
-Before step 2, `cpu` was a counted pool with the capacity 1 when no pool set it. Thus `headroom run --cpu 2` without `headroom pool cpu 8` got cancelled. Step 2 corrects this: `cpu` is a counted kind, and its capacity is the count of logical processors. A configured pool `cpu` stays, as a cap. H23 makes `cpu` a measured kind.
+- **Measure**: the counter tracker of H20 reads the processor time of each process each 10 seconds. The used part is the sum of the cores of all the owners over the last minute. The capacity is `os.availableParallelism()`.
+- **Attribute**: the cores of each owner. The tracker also keeps the processor time of two kinds of groups: each leased job (`lease:<id>`) and each process tree with no lease (`tree:<pid>`).
+- **The root of a tree** is the top process of the same owner with no lease. For a session, the root is one level below the session process. Thus each command of a session is its own tree.
+- **Alert `cpu`**: a warning when the cores in use stay above 85% of the capacity for 5 minutes, and a critical alert above 95% for 5 minutes. The alert names the 3 owners with the most cores, and their leased jobs.
+- **Runaway tree**: a tree with no lease above 4 cores for 10 minutes gives the alert `runaway:cpu:<pid>`. Docker, the system and the kernel are not examined.
+- **The time above a line** comes from a trail: the 1-minute average at each read of the last 11 minutes. The daemon has no new timer for it.
+- **Clear**: an active alert stays until its trail is below its line for 2 minutes. The engine passes its active alerts to `detect()`, so a short dip does not clear an alert.
+- **Admit**: counted, with a reserve of 2 cores. Thus the sum of the `--cpu` amounts of the running leases does not take the last 2 cores. `headroom config cpu-reserve <cores>` changes the reserve, and `0` turns it off.
+- **A pool cap**: a pool `cpu` below the processors is a cap. Only the part of the reserve above the cores outside the pool counts. Thus a pool of 8 on 16 processors keeps all 8 for the leases.
+- **Enforce**: `headroom run --cpu N --limit` sets `JobObjectCpuRateControlInformation` (class 15) with `ENABLE | HARD_CAP` and the rate N / processors × 10,000.
+- **The weight**: without `--limit`, each job object gets `ENABLE | WEIGHT_BASED` with the weight 5. A failed call does not stop the job. The run writes a warning.
+- **Report**: the run gives the processor time of the job object at the release. The lease keeps its peak cores: the highest 1-minute average of its group, or the average over the run for a short job.
+- **`--cpu auto`** gives the 90th percentile of the peak cores of the last 20 runs and 25% more, the rule of `--mem auto`. The amount is at most the processors less the reserve. A job with no run gets 2 cores.
+
+Before step 2, `cpu` was a counted pool with the capacity 1 when no pool set it. Thus `headroom run --cpu 2` without `headroom pool cpu 8` got cancelled. Step 2 corrects this: `cpu` is a counted kind, and its capacity is the count of logical processors. A configured pool `cpu` stays, as a cap. H23 keeps `cpu` counted, because the cpu amount of a lease is a promise of cores, not a measure of them.
 
 ### H24: the network and the TCP ports
 
@@ -889,7 +901,7 @@ These were the open questions. The session decided each one as a technical call.
 | The release removes the temp folder. A tool with a cache in `TEMP` then starts cold. Is that correct? | Yes. A tool that needs its cache gets a cache folder in its own settings. | The folder of a lease is disposable by definition only when nothing else uses it. |
 | Does disk attribution split the writes by drive? | No. The use of an owner is for all the drives. A drive gets its large files and the size of the temp root. | The process counters do not name the drive. ETW gives each file, but it needs admin rights or the group `Performance Log Users`. |
 | Does the daemon clean by itself? | Only the folders of ended leases. Each other class waits for `headroom disk clean --apply`. | headroom deletes nothing that a person did not ask for, except the data of its own leases. |
-| Does a CPU lease get a limit without `--limit`? | No. | A full processor slows the jobs, but it does not stop them. Memory is different: when it is full, jobs stop. |
+| Does a CPU lease get a limit without `--limit`? | No hard cap, but a weight (H23). | A full processor slows the jobs, but it does not stop them. Memory is different: when it is full, jobs stop. The weight 5 gives the leased jobs equal parts when they compete. |
 | Does a configured pool `cpu` stay? | Yes, as a cap: the capacity is the lower of the pool and the processors. | `headroom pool cpu 8` keeps its meaning. |
 | How does the model show the two directions of the network? | Two instances, `net:in` and `net:out`, in MB/s. | Each direction gets its own history and panel. One instance with the split in a detail field loses the split in the history. |
 | Which network adapters count? | The adapters that are up, with a hardware interface and with no filter interface. | The filter rows and the virtual adapters count the same bytes again. The traffic of Tailscale and of WSL goes through the Wi-Fi adapter. |

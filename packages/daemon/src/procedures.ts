@@ -29,6 +29,12 @@ const LeaseInput = z.object({
     .describe("The conditions of the job (H31), for example ac, battery>=50 or usage<80. The lease waits until each one holds."),
   timing: z.boolean().optional().describe("True: the job measures time, so it waits for AC power (H31)"),
   batteryOk: z.boolean().optional().describe("True: a heavy job starts also on battery below the floor (H31)"),
+  cpuCap: z
+    .number()
+    .positive()
+    .max(1024)
+    .optional()
+    .describe("The hard cap of the job in cores, with --cpu N --limit (H23). The client sets it on the job object, and the status names the capped jobs."),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -107,6 +113,13 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The usage file of the fleet for the condition usage<N (H31). null gives the default file."),
+  cpuReserve: z
+    .number()
+    .min(0)
+    .max(1024)
+    .nullable()
+    .optional()
+    .describe("The cores that the broker keeps out of the cpu amounts of the leases for Mark (H23). 0 turns it off. null gives the default: 2."),
 });
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -206,6 +219,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         when: input.when,
         timing: input.timing,
         batteryOk: input.batteryOk,
+        cpuCap: input.cpuCap,
       }),
     )
     .build() as AnyProcedure;
@@ -369,7 +383,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .input(zodAdapter<SuggestInput>(SuggestInput))
     .output(anything<Suggestion>())
     .meta({
-      description: "Give a memory amount for a job from the peaks of its last runs (the 90th percentile and 25% more)",
+      description: "Give a memory amount and the cores for a job from the peaks of its last runs (the 90th percentile and 25% more)",
       args: ["job"],
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },
@@ -396,7 +410,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N.",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. cpuReserve: the cores kept for Mark.",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -409,6 +423,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           spawnHeavy: input.spawnHeavy,
           batteryFloor: input.batteryFloor,
           usageFile: input.usageFile,
+          cpuReserve: input.cpuReserve,
         }),
     )
     .build() as AnyProcedure;

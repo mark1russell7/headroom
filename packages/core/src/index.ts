@@ -5,8 +5,32 @@
 
 export { DEFAULT_ALERT_RULES, detect, diskLevel, diskSize } from "./alerts.ts";
 export type { Alert, AlertInput, AlertKind, AlertRules, AlertSeverity, DiskInput } from "./alerts.ts";
-export { counterDelta, CounterTracker } from "./counters.ts";
+export { counterDelta, CounterTracker, TRAIL_MS } from "./counters.ts";
 export type { Counter, CounterRow, OwnerCores, OwnerWrites } from "./counters.ts";
+export {
+  accountingCpuMs,
+  applyCpuControl,
+  coresOfRate,
+  coresText,
+  CPU_AUTO_DEFAULT,
+  CPU_RATE_CONTROL_ENABLE,
+  CPU_RATE_CONTROL_HARD_CAP,
+  CPU_RATE_CONTROL_WEIGHT_BASED,
+  CPU_RATE_INFO_SIZE,
+  CPU_RESERVE_DEFAULT,
+  CPU_WEIGHT_DEFAULT,
+  cpuControlOf,
+  cpuGroups,
+  cpuLine,
+  cpuRateInfo,
+  cpuRateOf,
+  heldMs,
+  JOB_OBJECT_CPU_RATE_CONTROL_INFORMATION,
+  LEASE_GROUP,
+  suggestCores,
+  TREE_GROUP,
+} from "./cpu.ts";
+export type { CpuControl, CpuRateBinding, TrailPoint, TreeUse } from "./cpu.ts";
 export { largeFileDirs, largeFiles } from "./disks.ts";
 export type { LargeFile } from "./disks.ts";
 export { Broker, isActive, processIsAlive } from "./broker.ts";
@@ -100,7 +124,22 @@ export {
 export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary } from "./network.ts";
 export { createJob, startOutsideJob } from "./enforce.ts";
 export type { Job, JobLimits, StartedProcess } from "./enforce.ts";
-export { batteryLevel, healthLevel, kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds } from "./resources.ts";
+export {
+  batteryLevel,
+  healthLevel,
+  kindOf,
+  leasesOf,
+  limitOf,
+  measure,
+  reserveOf,
+  RESOURCES,
+  resourceOf,
+  roomOf,
+  rooms,
+  sustainedLevel,
+  treeAbove,
+  withKinds,
+} from "./resources.ts";
 export type {
   Admit,
   AlertPart,

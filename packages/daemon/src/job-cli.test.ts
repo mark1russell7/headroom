@@ -55,7 +55,7 @@ describe("headroom job", () => {
     const state = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(state)).toEqual([
       "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes",
-      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log", "conditions", "unmet",
+      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log", "conditions", "unmet", "peakCores", "cpuCap",
     ]);
     // H29: a lease of a job with no count of processes gives null. H47: so do its rates and a class of an older version.
     expect(state["processes"]).toBeNull();
@@ -102,7 +102,7 @@ describe("jobLine", () => {
   const state = {
     id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
     queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null, peakStartsPerMin: null, averageStartsPerMin: null, spawn: null,
-    conditions: null, unmet: null,
+    conditions: null, unmet: null, peakCores: null, cpuCap: null,
   } as const;
 
   it("names the conditions of a job, and a time when it ran without one of them (H31)", () => {
@@ -129,6 +129,13 @@ describe("jobLine", () => {
     expect(jobLine({ ...running, spawn: { heavy: true, source: "live", perMinute: 900, runs: 0 } }, NOW)).toContain("spawn-heavy (about 900 a minute in this run).");
     expect(jobLine({ ...running, spawn: { heavy: true, source: "declared", perMinute: null, runs: 0 } }, NOW)).toContain("spawn-heavy (--spawn-heavy).");
     expect(jobLine({ ...running, spawn: { heavy: false, source: "opted-out", perMinute: 2000, runs: 3 } }, NOW)).toContain("normal (--no-spawn-heavy).");
+  });
+
+  it("names the peak cores and the CPU cap of a job (H23)", () => {
+    const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
+    const running = { ...state, state: "running", reason: null, startedAt, waitedMs: 0, ranMs: 5 * MINUTE } as const;
+    expect(jobLine({ ...running, peakCores: 3.46 }, NOW)).toBe("e2e (3f2a9c1e) of graph: running since 17:55, waited 0 s, ran 5 min so far, peak 3.5 cores.");
+    expect(jobLine({ ...running, peakCores: 1, cpuCap: 4 }, NOW)).toContain("ran 5 min so far, peak 1 core, capped at 4 cores.");
   });
 
   it("names a queued, a running and a stopped job", () => {

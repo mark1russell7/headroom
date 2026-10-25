@@ -1,6 +1,7 @@
 /**
  * The lease broker: it grants leases on the resources, in the order of their priority. Each id has a room with an
  * admit mode. A measured id, for example the memory, uses its measured free part. A counted id, for example `cpu` or a slot, uses its capacity.
+ * Each room keeps its reserve out of the leases: the memory for the system, and the cores for Mark (H23).
  *
  * The broker has no clock, no timer and no input or output of its own. The caller gives the time,
  * the measured capacity and the liveness of the processes, and calls `tick()` after each change.
@@ -42,6 +43,8 @@ export interface LeaseRequest {
   readonly timing?: boolean | undefined;
   /** `--battery-ok` (H31): a heavy job starts also on battery below the floor. */
   readonly batteryOk?: boolean | undefined;
+  /** The hard cap of the job in cores, with `--cpu N --limit` (H23). The client of `headroom run` sets it on the job object. */
+  readonly cpuCap?: number | undefined;
 }
 
 /** The exit of a job, from its holder at the release (H26). */
@@ -96,10 +99,18 @@ export interface Lease {
   readonly conditionsMetAt?: number | undefined;
   /** The record of a granted lease that runs without one of its conditions (H31). */
   readonly unmet?: UnmetCondition | undefined;
+  /** The hard cap of the job in cores (H23). `headroom status` names the capped jobs. A job with no cap has none. */
+  readonly cpuCap?: number | undefined;
+  /**
+   * The highest cores of the job (H23): the cores of its processes over one minute, or its processor time over its run
+   * time at the release. `--cpu auto` learns from it.
+   */
+  readonly peakCores?: number | undefined;
 }
 
-/** The fields of a lease that the engine measures while its job runs (H47), and the record of a condition that stops (H31). */
+/** The fields of a lease that the engine measures while its job runs (H47, H23), and the record of a condition that stops (H31). */
 export interface LeaseMeasures {
+  readonly peakCores?: number | undefined;
   readonly peakStartsPerMin?: number | undefined;
   readonly spawn?: SpawnClass | undefined;
   readonly unmet?: UnmetCondition | undefined;
@@ -226,6 +237,7 @@ export class Broker {
     for (const [name, amount] of Object.entries(request.amounts)) {
       if (!Number.isFinite(amount) || amount < 0) throw new RangeError(`The amount of ${name} must be a number of 0 or more`);
     }
+    if (request.cpuCap !== undefined && !(Number.isFinite(request.cpuCap) && request.cpuCap > 0)) throw new RangeError("The CPU cap must be a number above 0");
     const conditions = leaseConditions(request.when, request.timing, request.batteryOk);
     const now = this.#now();
     const lease: Lease = {
@@ -246,6 +258,7 @@ export class Broker {
       ...(request.log === undefined ? {} : { log: request.log }),
       ...spawnOf(request, spawn),
       ...(conditions === undefined ? {} : { conditions }),
+      ...(request.cpuCap === undefined ? {} : { cpuCap: request.cpuCap }),
     };
     this.#leases.set(lease.id, lease);
     return lease;
@@ -323,7 +336,8 @@ export class Broker {
 
   /**
    * This function gives the amounts that a new lease can get at this time. A measured id gives its free part less
-   * the reserve, less the part of each granted lease that its job does not use yet. A counted id gives its capacity less the granted amounts.
+   * the reserve, less the part of each granted lease that its job does not use yet. A counted id gives its capacity less
+   * the reserve and the granted amounts.
    */
   free(capacity: Capacity): Record<string, number> {
     return this.#free(capacity, []);
@@ -341,7 +355,7 @@ export class Broker {
     const free: Record<string, number> = {};
     for (const id of ids) {
       const room = this.#room(id, capacity, base);
-      let left = room.mode === "measured" ? (room.free ?? 0) - room.reserve : room.capacity;
+      let left = room.mode === "measured" ? (room.free ?? 0) - room.reserve : room.capacity - room.reserve;
       for (const lease of granted) {
         const amount = lease.amounts[id];
         if (amount === undefined) continue;

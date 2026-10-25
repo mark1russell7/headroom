@@ -154,15 +154,31 @@ describe("Broker", () => {
     expect(broker.get(lease.id)?.reason).toMatch(/more than the capacity/);
   });
 
-  it("grants --cpu 2 with no pool cpu: the capacity is the count of processors", () => {
+  it("grants --cpu 2 with no pool cpu: the capacity is the count of processors, less the reserve of 2 cores (H23)", () => {
     const { broker } = setup();
     const a = broker.request({ holder: "a", job: "x", amounts: { cpu: 2 } });
-    const b = broker.request({ holder: "b", job: "y", amounts: { cpu: 15 } });
+    const b = broker.request({ holder: "b", job: "y", amounts: { cpu: 13 } });
     broker.tick(cpuCap({}));
     expect(broker.get(a.id)?.state).toBe("granted");
     expect(broker.get(b.id)?.state).toBe("waiting");
-    expect(broker.get(b.id)?.reason).toBe("waits for cpu: needs 15, 14 free");
-    expect(broker.free(cpuCap({}))["cpu"]).toBe(14);
+    expect(broker.get(b.id)?.reason).toBe("waits for cpu: needs 13, 12 free");
+    expect(broker.free(cpuCap({}))["cpu"]).toBe(12);
+  });
+
+  it("keeps the reserve out of the cpu amounts: the granted leases do not take the last cores (H23)", () => {
+    const { broker } = setup();
+    const a = broker.request({ holder: "a", job: "x", amounts: { cpu: 8 } });
+    const b = broker.request({ holder: "b", job: "y", amounts: { cpu: 6 } });
+    const c = broker.request({ holder: "c", job: "z", amounts: { cpu: 1 } });
+    const whole = broker.request({ holder: "d", job: "all", amounts: { cpu: 15 } });
+    broker.tick(cpuCap({}));
+    expect([a, b].map((each) => broker.get(each.id)?.state)).toEqual(["granted", "granted"]);
+    // 8 and 6 take the 14 cores that leases can get. The last 2 cores stay for Mark.
+    expect(broker.get(c.id)?.reason).toBe("waits for cpu: needs 1, 0 free");
+    expect(broker.get(whole.id)).toMatchObject({ state: "cancelled", reason: "cpu: 15 is more than the capacity of 14" });
+    broker.release(a.id);
+    broker.tick(cpuCap({}));
+    expect(broker.get(c.id)?.state).toBe("granted");
   });
 
   it("cancels --cpu 2 when the pool cpu is 1, because a configured pool cpu is a cap", () => {

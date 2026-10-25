@@ -10,7 +10,7 @@
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
- * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>]`: show or change the settings.
+ * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
@@ -19,7 +19,7 @@
 
 import { spawn, type StdioOptions } from "node:child_process";
 import { closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
-import { userInfo } from "node:os";
+import { availableParallelism, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -33,6 +33,10 @@ import {
   isBrowserLease,
   isSpawnWait,
   BATTERY_FLOOR_DEFAULT,
+  coresText,
+  CPU_AUTO_DEFAULT,
+  CPU_RESERVE_DEFAULT,
+  cpuLine,
   conditionsText,
   defaultUsageFile,
   parseWhen,
@@ -61,7 +65,7 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
-import { diskAmounts, finishTemp, jobEnv, prepareTemp } from "./job.ts";
+import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
@@ -80,11 +84,14 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom mcp list | add | remove | restart | warm | config   (the MCP gateway)
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
   headroom status [--json]
-  headroom run [--mem 2g|auto] [--cpu 2] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
+  headroom run [--mem 2g|auto] [--cpu 2|auto] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
                [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
                [--battery-ok] -- <command> [args...]
-               --limit: the job cannot use more memory than --mem. --keep: no job object.
+               --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
+               Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
+               --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
+               The leases do not take the last ${CPU_RESERVE_DEFAULT} cores: headroom config cpu-reserve changes them.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
                --log file: the output of the job also goes to the end of the file.
                The run prints the lease id first: headroom job <id> gives the state of the job.
@@ -112,6 +119,8 @@ const HELP = `headroom: the memory and job broker of this computer
                On battery below this charge, a heavy job waits. 0: no floor. The default: ${BATTERY_FLOOR_DEFAULT}.
   headroom config usage-file [<path> | --clear]
                The usage file of the fleet for --when usage<N.
+  headroom config cpu-reserve [<cores> | --clear]
+               The cores that the leases do not take, for Mark. 0: no reserve. The default: ${CPU_RESERVE_DEFAULT}.
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
@@ -190,12 +199,9 @@ function printStatus(status: DaemonStatus): void {
     const writers = status.writes.filter((each) => each.mbLastHour >= 10).slice(0, 5);
     console.log(`Writes (last hour): ${writers.length === 0 ? "none above 10 MB" : writers.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`);
   }
-  const cpu = (status.resources ?? []).find((each) => each.id === "cpu");
-  if (cpu !== undefined && cpu.used !== null && cpu.capacity !== null) {
-    const most = (cpu.owners ?? []).filter((each) => each.value >= 0.05).slice(0, 3);
-    const named = most.length === 0 ? "" : ` Most: ${most.map((each) => `${each.owner} ${each.value.toFixed(1)}`).join(", ")}.`;
-    console.log(`CPU: ${cpu.used.toFixed(1)} of ${cpu.capacity} cores in use.${named}`);
-  }
+  // H23: the reserve for Mark and the capped jobs. A daemon of an older version gives no reserve.
+  const cpu = cpuLine((status.resources ?? []).find((each) => each.id === "cpu"), status.cpuReserve, status.leases);
+  if (cpu !== null) console.log(cpu);
   // H30: the battery and the power. A computer with no battery and no Energy Meter has no line.
   const power = powerLine(status.resources ?? [], status.power);
   if (power !== null) console.log(power);
@@ -296,13 +302,10 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
 /** The amount of `--mem auto` for a job with no run that has a peak, in MB. */
 const AUTO_DEFAULT_MB = 1024;
 
-/** How `headroom run` holds its job: a job object, and a memory limit with --limit. */
-interface Enforcement {
+/** How `headroom run` holds its job: a job object, and a memory limit and a CPU cap with --limit (H23). */
+interface Enforcement extends LimitOptions {
   /** True (--keep): no job object, so the processes of the job can stay after the run. */
   readonly keep: boolean;
-  /** True (--limit): the job cannot commit more memory than its lease. */
-  readonly limit: boolean;
-  readonly leaseMb: number | null;
   /** True (--no-eco): the job keeps its full speed on battery (H30). */
   readonly noEco?: boolean | undefined;
 }
@@ -312,10 +315,11 @@ const PROCESS_REPORT_MS = 30_000;
 /** The time from the start of a job to its first heartbeat, so a job on battery gets efficiency mode soon (H30). */
 const FIRST_REPORT_MS = 3000;
 
-/** The end of a job in a job object: the end of its command, its peak memory and the processes that it started (H29). */
+/** The end of a job in a job object: the end of its command and its peak memory. It also has the processes that it started (H29) and its processor time (H23). */
 interface EnforcedEnd extends CommandEnd {
   readonly peakMb: number | null;
   readonly processes: number | null;
+  readonly cpuMs: number | null;
 }
 
 /**
@@ -335,19 +339,28 @@ async function runEnforced(
   report?: (processes: number) => Promise<boolean | undefined>,
 ): Promise<EnforcedEnd> {
   let held: Job | null = null;
+  const processors = availableParallelism();
   if (!enforcement.keep) {
-    // The process of headroom is in the job too: the limit adds its memory and a margin.
-    const selfMb = process.memoryUsage().rss / MB;
-    const limitMb = enforcement.limit && enforcement.leaseMb !== null ? enforcement.leaseMb + selfMb + 64 : undefined;
+    const limits = jobLimits(enforcement, process.memoryUsage().rss / MB, processors);
     try {
-      held = await createJob(limitMb === undefined ? {} : { memoryMb: limitMb });
+      held = await createJob(limits);
     } catch (error) {
       console.error(`headroom: no job object (${error instanceof Error ? error.message : String(error)}). The job runs without one.`);
+    }
+    // H23: a refused CPU rate does not stop the job. Only a refused cap needs a word.
+    if (held !== null && limits.cpuRate !== undefined) {
+      console.error(
+        held.cpu === null
+          ? `headroom: Windows refused the CPU cap (${held.cpuError ?? "no reason"}). The job runs without it.`
+          : `headroom: the job cannot use more than ${coresText(enforcement.leaseCores ?? 0)} (--limit).`,
+      );
     }
   }
   const base = held?.peakMb() ?? 0;
   const job = held;
   const baseProcesses = job?.processes() ?? 0;
+  const baseCpuMs = job?.cpuMs() ?? 0;
+  const startedAt = Date.now();
   const started = (): number => Math.max(0, (job?.processes() ?? 0) - baseProcesses);
   let eco = false;
   const heartbeat = (): void => {
@@ -378,15 +391,20 @@ async function runEnforced(
     if (first !== null) clearTimeout(first);
   }
   const { code, exit } = end;
-  if (!job) return { code, exit, peakMb: null, processes: null };
+  if (!job) return { code, exit, peakMb: null, processes: null, cpuMs: null };
   const peakMb = Math.max(0, job.peakMb() - base);
   const processes = started();
+  // H23: the processor time of the job object, also of the processes that ended. The daemon keeps the average as a peak.
+  const cpuMs = Math.max(0, Math.round(job.cpuMs() - baseCpuMs));
+  const ranMs = Math.max(1, Date.now() - startedAt);
   const of = enforcement.leaseMb === null ? "" : ` of its lease of ${mb(enforcement.leaseMb)}`;
-  console.error(`headroom: the job used at most ${mb(peakMb)}${of}. It started ${processes} ${processes === 1 ? "process" : "processes"}.`);
+  console.error(
+    `headroom: the job used at most ${mb(peakMb)}${of}. It started ${processes} ${processes === 1 ? "process" : "processes"}, and used ${coresText(cpuMs / ranMs)} on average.`,
+  );
   if (job.limitMb !== null && job.peakMb() >= job.limitMb * 0.97) {
     console.error(`headroom: the job reached its memory limit. Ask for a larger lease, for example --mem ${Math.ceil((enforcement.leaseMb ?? 0) * 1.5 / 1024)}g.`);
   }
-  return { code, exit, peakMb, processes };
+  return { code, exit, peakMb, processes, cpuMs };
 }
 
 /** This function opens a log file of `headroom run --log` to append, with its folder. It gives the absolute path, or an error text. */
@@ -528,7 +546,14 @@ async function run(argv: string[]): Promise<number> {
   const log = opened?.path ?? null;
   const amounts: Record<string, number> = {};
   if (values.mem && values.mem !== "auto") amounts["memory"] = parseMemory(values.mem);
-  if (values.cpu) amounts["cpu"] = Number(values.cpu);
+  if (values.cpu && values.cpu !== "auto") {
+    const cores = Number(values.cpu);
+    if (!(Number.isFinite(cores) && cores > 0)) {
+      console.error(`headroom: --cpu needs a count of cores above 0, or auto, not ${values.cpu}.`);
+      return 2;
+    }
+    amounts["cpu"] = cores;
+  }
   for (const slot of values.slot ?? []) amounts[slot] = (amounts[slot] ?? 0) + 1;
   // Browser tests of two sessions at the same time start many browser processes, and process starts can fail
   // (0xC0000142). The slot `browser` is a lock of 1 unless a pool sets more.
@@ -538,8 +563,8 @@ async function run(argv: string[]): Promise<number> {
     if (slot === BROWSER_SLOT) console.error(`headroom: this job runs browser tests, so it takes the slot "${BROWSER_SLOT}": one browser test job at a time.`);
   }
   const job = values.job ?? positionals.join(" ").slice(0, 500);
-  if (values.limit && !values.mem) {
-    console.error("headroom run --limit needs --mem: the limit is the memory of the lease.");
+  if (values.limit && !values.mem && !values.cpu) {
+    console.error("headroom run --limit needs --mem or --cpu: the limit is the memory or the cores of the lease.");
     return 2;
   }
   const keep = values.keep === true;
@@ -569,9 +594,10 @@ async function run(argv: string[]): Promise<number> {
   }
   Object.assign(amounts, disks);
   const holder = values.holder ?? (await holderOf());
-  // --mem auto: the peaks of the last runs of this job give the amount.
+  // --mem auto and --cpu auto: the peaks of the last runs of this job give the amounts.
+  const suggestion =
+    values.mem === "auto" || values.cpu === "auto" ? await connection.call<Suggestion>(["resources", "suggest"], { job, holder }).catch(() => null) : null;
   if (values.mem === "auto") {
-    const suggestion = await connection.call<Suggestion>(["resources", "suggest"], { job, holder }).catch(() => null);
     amounts["memory"] = suggestion?.memoryMb ?? AUTO_DEFAULT_MB;
     console.error(
       suggestion?.memoryMb
@@ -579,7 +605,19 @@ async function run(argv: string[]): Promise<number> {
         : `headroom: --mem auto gives ${mb(AUTO_DEFAULT_MB)}, because no run of this job has a peak yet.`,
     );
   }
-  const enforcement: Enforcement = { keep, limit: values.limit === true, leaseMb: amounts["memory"] ?? null, noEco: values["no-eco"] === true };
+  // H23: a daemon of an older version gives no cores.
+  if (values.cpu === "auto") {
+    const cores = typeof suggestion?.cores === "number" ? suggestion.cores : null;
+    amounts["cpu"] = cores ?? CPU_AUTO_DEFAULT;
+    console.error(
+      cores !== null && suggestion !== null
+        ? `headroom: --cpu auto gives ${coresText(cores)}, from the peak cores of ${suggestion.coreRuns} ${suggestion.coreRuns === 1 ? "run" : "runs"} (the highest ${coresText(suggestion.peakCores ?? 0)}).`
+        : `headroom: --cpu auto gives ${coresText(CPU_AUTO_DEFAULT)}, because no run of this job has peak cores yet.`,
+    );
+  }
+  const limit = values.limit === true;
+  const leaseCores = amounts["cpu"] ?? null;
+  const enforcement: Enforcement = { keep, limit, leaseMb: amounts["memory"] ?? null, leaseCores, noEco: values["no-eco"] === true };
   const request = {
     holder,
     job,
@@ -591,6 +629,8 @@ async function run(argv: string[]): Promise<number> {
     ...(when.length === 0 ? {} : { when }),
     ...(timing ? { timing } : {}),
     ...(batteryOk ? { batteryOk } : {}),
+    // H23: the status names the capped jobs. The job object of this process holds the cap.
+    ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
   };
   let first: Lease;
   try {
@@ -631,7 +671,7 @@ async function run(argv: string[]): Promise<number> {
   // H19: with a temp root, the job writes its temp files under its lease. With --keep, the job keeps the TEMP of its
   // parent, because a service that it starts on purpose can use its temp folder after the job ends.
   const temp = keep ? null : await prepareTemp(latest, lease.id);
-  let result: EnforcedEnd = { code: 1, exit: { code: null, signal: null }, peakMb: null, processes: null };
+  let result: EnforcedEnd = { code: 1, exit: { code: null, signal: null }, peakMb: null, processes: null, cpuMs: null };
   let tempMb: number | null = null;
   // H29: the heartbeat gives the daemon the count of processes of the job. A daemon that does not answer misses one count.
   // H30: its answer tells if the job runs in efficiency mode. A daemon of an older version gives no answer for it.
@@ -645,10 +685,10 @@ async function run(argv: string[]): Promise<number> {
   } finally {
     if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
   }
-  const { code, exit, peakMb, processes } = result;
+  const { code, exit, peakMb, processes, cpuMs } = result;
   const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
   const ended = exit.code === null && exit.signal !== null ? `the job ended with signal ${exit.signal}` : `the job ended with code ${code}`;
-  const usage: JobUsage = { ...(peakMb === null ? {} : { peakMb }), ...(tempMb === null ? {} : { tempMb }) };
+  const usage: JobUsage = { ...(peakMb === null ? {} : { peakMb }), ...(tempMb === null ? {} : { tempMb }), ...(cpuMs === null ? {} : { cpuMs }) };
   try {
     await (connect() ?? latest).call(["resources", "release"], {
       id: lease.id,
@@ -832,6 +872,26 @@ function printConfig(config: Config): void {
   if (typeof config.usageFile === "string") {
     console.log(`usage-file: ${config.usageFile}${config.usageFile === defaultUsageFile() ? " (the default)" : ""}. The condition usage<N reads it.`);
   }
+  // H23: a daemon of an older version has no CPU reserve.
+  if (typeof config.cpuReserve === "number") {
+    const named = config.cpuReserve === CPU_RESERVE_DEFAULT ? " (the default)" : "";
+    console.log(
+      config.cpuReserve === 0
+        ? "cpu-reserve: 0 (no reserve). The leases can take each core."
+        : `cpu-reserve: ${coresText(config.cpuReserve)}${named}. The cpu amounts of the leases do not take them, so Mark keeps them.`,
+    );
+  }
+}
+
+/** `headroom config cpu-reserve <cores>` sets the cores that the leases do not take (H23). `--clear` gives the default. */
+async function cpuReserveConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  const reserve = value === undefined ? null : Number(value);
+  if ((value === undefined) === !clear || extra || (reserve !== null && !(Number.isFinite(reserve) && reserve >= 0))) {
+    console.error(`Usage: headroom config cpu-reserve <cores>, with a number of 0 or more, or headroom config cpu-reserve --clear (the default: ${CPU_RESERVE_DEFAULT})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { cpuReserve: reserve }));
+  return 0;
 }
 
 /** `headroom config battery-floor <pct>` sets the battery floor for heavy jobs (H31), and `--clear` gives the default. */
@@ -894,9 +954,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "spawn-heavy") return spawnHeavyConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "battery-floor") return batteryFloorConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "usage-file") return usageFileConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "cpu-reserve") return cpuReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, or headroom config usage-file <path>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, or headroom config cpu-reserve <cores>",
     );
     return 2;
   }

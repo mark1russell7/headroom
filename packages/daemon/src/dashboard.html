@@ -624,7 +624,11 @@ function renderNow() {
   const cpuParts = (cpu?.owners || []).map((o) => ({ owner: o.owner, group: groupOf(o.kind), value: o.value }));
   $("cpuRow").hidden = !cpu;
   if (cpu) {
-    $("cpuText").replaceChildren(h("b", { text: amount(cpu.used, "cores") }), ` of ${cpu.capacity} in use`);
+    // H23: the reserve for Mark and the capped jobs. A daemon of an older version gives no reserve.
+    const kept = st.cpuReserve > 0 ? ` · ${amount(st.cpuReserve, "cores")} kept for Mark` : "";
+    const capped = st.leases.filter((l) => l.state === "granted" && l.cpuCap);
+    const caps = capped.length ? ` · capped: ${capped.map((l) => `${l.job.slice(0, 24)} ${amount(l.cpuCap, "cores")}`).join(", ")}` : "";
+    $("cpuText").replaceChildren(h("b", { text: amount(cpu.used, "cores") }), ` of ${cpu.capacity} in use${kept}${caps}`);
     usageBar($("cpuBar"), cpuParts, Math.max(0, cpu.used - cpuParts.reduce((a, p) => a + p.value, 0)), Math.max(0, cpu.free ?? 0), (v) => amount(v, "cores"), "The processor time of the owners after the top 10.");
   }
   const sum = (list, id) => list.filter((p) => p.group === id).reduce((a, p) => a + p.value, 0);

@@ -9,12 +9,15 @@
  * - The job records its peak memory, so the holder can see what the job used.
  * - The job counts each process that it held, also the processes that ended (H29). The holder reports the count.
  * - On battery, the holder puts the processes of the job in efficiency mode (EcoQoS), and takes them out on AC power (H30).
+ * - The job has a CPU rate (H23): a hard cap with `--limit`, else a weight, so the leased jobs share the processors fairly.
+ *   The job gives its processor time, also of the processes that ended.
  *
  * Windows nests jobs. Thus a process that is in a job already, for example a shell of a terminal, can
  * also go into the job of headroom. Only `createJob()` and `startOutsideJob()` on Windows load this file.
  */
 
 import koffi from "koffi";
+import { ACCOUNTING_SIZE, accountingCpuMs, applyCpuControl, cpuControlOf, type CpuControl, type CpuRateBinding } from "./cpu.ts";
 import { EcoTracker } from "./power.ts";
 import { MB } from "./sampler.ts";
 
@@ -59,9 +62,10 @@ const queryInformation = kernel32.func("int __stdcall QueryInformationJobObject(
 // JobObjectBasicAccountingInformation (class 1): four times of 8 bytes, then TotalPageFaultCount, TotalProcesses,
 // ActiveProcesses and TotalTerminatedProcesses of 4 bytes each.
 const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
-const ACCOUNTING_SIZE = 48;
 const ACCOUNTING_TOTAL_PROCESSES = 36;
 const queryAccounting = kernel32.func("int __stdcall QueryInformationJobObject(intptr_t job, int cls, _Out_ uint8_t *info, uint32_t length, void *returned)");
+// JobObjectCpuRateControlInformation (class 15) takes JOBOBJECT_CPU_RATE_CONTROL_INFORMATION as 8 bytes (H23).
+const setRawInformation = kernel32.func("int __stdcall SetInformationJobObject(intptr_t job, int cls, _In_ uint8_t *info, uint32_t length)");
 // JobObjectBasicProcessIdList (class 3): NumberOfAssignedProcesses and NumberOfProcessIdsInList of 4 bytes each, then an ID
 // of 8 bytes for each process (H30).
 const JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3;
@@ -127,12 +131,25 @@ interface ExtendedLimit {
 export interface JobLimits {
   /** The memory that all the processes of the job can commit together, in MB. Without it, the job has no memory limit. */
   readonly memoryMb?: number | undefined;
+  /**
+   * The hard cap of the processor time of the job, in cycles for each 10,000 cycles of all the processors (H23):
+   * `JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP`. A lease of 2 cores on 16 processors gives 1250.
+   */
+  readonly cpuRate?: number | undefined;
+  /** The weight of the job against the other jobs, from 1 to 9 (H23): `JOB_OBJECT_CPU_RATE_CONTROL_WEIGHT_BASED`. A hard cap wins. */
+  readonly cpuWeight?: number | undefined;
 }
 
 /** A job object that holds the current process and the processes that it starts. */
 export interface Job {
   /** The memory limit of the job in MB, or `null` without a limit. */
   readonly limitMb: number | null;
+  /** The CPU rate of the job (H23), or `null` without one, also when Windows refused it. */
+  readonly cpu: CpuControl | null;
+  /** Why Windows refused the CPU rate, or `null`. The job runs without the rate. */
+  readonly cpuError: string | null;
+  /** This function gives the processor time of the job in ms (H23): `TotalUserTime` and `TotalKernelTime`, also of the processes that ended. */
+  cpuMs(): number;
   /** This function gives the peak of the memory that the processes of the job committed together, in MB. */
   peakMb(): number;
   /**
@@ -168,6 +185,18 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
     closeHandle(handle);
     throw new Error(`SetInformationJobObject failed with the error ${error}`);
   }
+  // A refused CPU rate does not stop the job: the job runs without it, and the holder says so.
+  const asked = cpuControlOf(limits);
+  let cpu: CpuControl | null = null;
+  let cpuError: string | null = null;
+  if (asked !== null) {
+    try {
+      applyCpuControl(BINDING, handle, asked);
+      cpu = asked;
+    } catch (error) {
+      cpuError = error instanceof Error ? error.message : String(error);
+    }
+  }
   if (assignProcess(handle, getCurrentProcess()) === 0) {
     const error = getLastError();
     closeHandle(handle);
@@ -176,8 +205,18 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
   let open = true;
   const tracker = new EcoTracker();
   const pids = (): number[] => (open ? jobPids(handle) : []);
+  const accounting = (): Buffer | null => {
+    const out = Buffer.alloc(ACCOUNTING_SIZE);
+    return open && queryAccounting(handle, JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION, out, ACCOUNTING_SIZE, null) !== 0 ? out : null;
+  };
   return {
     limitMb,
+    cpu,
+    cpuError,
+    cpuMs: () => {
+      const out = accounting();
+      return out === null ? 0 : accountingCpuMs(out);
+    },
     pids,
     eco: (on) => tracker.update(on, pids().filter((pid) => pid !== process.pid), setEfficiency),
     peakMb: () => {
@@ -185,11 +224,7 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
       if (!open || queryInformation(handle, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, out, extendedSize, null) === 0) return 0;
       return Number(out.PeakJobMemoryUsed) / MB;
     },
-    processes: () => {
-      const out = Buffer.alloc(ACCOUNTING_SIZE);
-      if (!open || queryAccounting(handle, JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION, out, ACCOUNTING_SIZE, null) === 0) return 0;
-      return out.readUInt32LE(ACCOUNTING_TOTAL_PROCESSES);
-    },
+    processes: () => accounting()?.readUInt32LE(ACCOUNTING_TOTAL_PROCESSES) ?? 0,
     close: () => {
       if (!open) return;
       open = false;
@@ -197,6 +232,12 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
     },
   };
 }
+
+/** The Windows functions that set the CPU rate of a job (H23). */
+const BINDING: CpuRateBinding = {
+  setInformation: (job, infoClass, info, length) => Number(setRawInformation(job, infoClass, info, length)),
+  lastError: () => Number(getLastError()),
+};
 
 let pidBuffer = Buffer.alloc(PID_LIST_HEADER + 64 * PID_SIZE);
 

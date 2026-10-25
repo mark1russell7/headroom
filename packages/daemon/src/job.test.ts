@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { KEEP_MARK } from "@headroom/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { diskAmounts, finishTemp, jobEnv, prepareTemp } from "./job.ts";
+import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp } from "./job.ts";
 
 describe("diskAmounts", () => {
   it("names the drive of the current folder, or the named drive, and adds two amounts of one drive", () => {
@@ -11,6 +11,16 @@ describe("diskAmounts", () => {
     expect(diskAmounts(["5g", "C:=1g", "d=500m"], [], { here, platform: "win32" })).toEqual({ "disk:D:": 5620, "disk:C:": 1024 });
     expect(diskAmounts(["2g"], ["/", "/home/mark"], { here: () => "/home/mark/git", platform: "linux" })).toEqual({ "disk:/home/mark": 2048 });
     expect(diskAmounts(["2g"], [], { here: () => "\\\\server\\share", platform: "win32" })).toMatch(/on no fixed drive/);
+  });
+});
+
+describe("jobLimits (H23)", () => {
+  it("gives a hard cap of the cores of the lease with --limit, and the default weight without it", () => {
+    expect(jobLimits({ limit: true, leaseMb: 2048, leaseCores: 4 }, 50, 16)).toEqual({ memoryMb: 2048 + 50 + 64, cpuRate: 2500 });
+    expect(jobLimits({ limit: true, leaseMb: null, leaseCores: 1 }, 50, 16)).toEqual({ cpuRate: 625 });
+    // --limit with only --mem: the memory limit, and the weight for the processors.
+    expect(jobLimits({ limit: true, leaseMb: 1024 }, 40, 16)).toEqual({ memoryMb: 1128, cpuWeight: 5 });
+    expect(jobLimits({ limit: false, leaseMb: 1024, leaseCores: 4 }, 40, 16)).toEqual({ cpuWeight: 5 });
   });
 });
 

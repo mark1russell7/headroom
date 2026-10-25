@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Lease } from "./broker.ts";
 import { treeMb } from "./owners.ts";
-import { kindOf, leasesOf, limitOf, measure, RESOURCES, resourceOf, roomOf, rooms, withKinds, type Owners, type Readings } from "./resources.ts";
+import { kindOf, leasesOf, limitOf, measure, reserveOf, RESOURCES, resourceOf, roomOf, rooms, withKinds, type Owners, type Readings } from "./resources.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb });
@@ -108,7 +108,14 @@ describe("resources", () => {
     expect(admit?.used?.(lease(2), "memory", readings, owners)).toBe(treeMb(2, processes));
     expect(admit?.used?.(lease(2), "memory", readings, owners)).toBe(4000);
     expect(admit?.used?.(lease(null), "memory", readings, owners)).toBe(0);
-    expect(RESOURCES.get("memory")?.enforce?.limit(2048)).toEqual({ memoryMb: 2048 });
+    expect(RESOURCES.get("memory")?.enforce?.limit(2048, 16)).toEqual({ memoryMb: 2048 });
+  });
+
+  it("gives the CPU rate of a hard cap, and keeps 2 cores out of the counted pool by default (H23)", () => {
+    expect(RESOURCES.get("cpu")?.enforce?.limit(2, 16)).toEqual({ cpuRate: 1250 });
+    expect(RESOURCES.get("cpu")?.enforce?.limit(1, 16)).toEqual({ cpuRate: 625 });
+    expect(RESOURCES.get("cpu")?.admit).toMatchObject({ mode: "counted", reserve: { amount: 2 } });
+    expect(reserveOf("cpu", 16)).toBe(2);
   });
 
   it("gives the memory of each owner and of each lease, the largest first", () => {
@@ -141,8 +148,13 @@ describe("resources", () => {
       browser: { mode: "counted", capacity: 1, free: null, reserve: 0 },
       "npm-publish": { mode: "counted", capacity: 1, free: null, reserve: 0 },
     });
-    // Without a pool cpu, the capacity of cpu is the count of processors.
-    expect(roomOf("cpu", measurements.find((each) => each.id === "cpu"), {})).toEqual({ mode: "counted", capacity: 16, free: null, reserve: 0 });
+    // Without a pool cpu, the capacity of cpu is the count of processors, and the reserve keeps 2 cores for Mark (H23).
+    const cpu = measurements.find((each) => each.id === "cpu");
+    expect(roomOf("cpu", cpu, {})).toEqual({ mode: "counted", capacity: 16, free: null, reserve: 2 });
+    expect(roomOf("cpu", cpu, {}, 4)).toEqual({ mode: "counted", capacity: 16, free: null, reserve: 4 });
+    // The reserve keeps the last cores of the computer: a pool of 15 keeps one of them, and a pool of 8 keeps both.
+    expect(roomOf("cpu", cpu, { cpu: 15 })).toEqual({ mode: "counted", capacity: 15, free: null, reserve: 1 });
+    expect(roomOf("cpu", cpu, { cpu: 8 })).toEqual({ mode: "counted", capacity: 8, free: null, reserve: 0 });
     // The reserve of a drive is its critical limit.
     expect(roomOf("disk:D:", measurements.find((each) => each.id === "disk:D:"), {})).toEqual({ mode: "measured", capacity: 200_000, free: 4000, reserve: 5120 });
     // A drive that does not exist gets the capacity 0. A kind with no admit part counts as a slot.

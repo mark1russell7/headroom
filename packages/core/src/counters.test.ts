@@ -93,3 +93,27 @@ describe("CounterTracker after a sleep (H30)", () => {
     expect(tracker.cores(wake + 60_000)?.find((each) => each.owner === "session:graph")?.cores).toBe(0.5);
   });
 });
+
+describe("CounterTracker groups (H23)", () => {
+  it("gives a trail of one-minute averages for all processes and for each group, and the groups of the last reads", () => {
+    const tracker = new CounterTracker();
+    const ownerOf = new Map([[10, "session:graph"], [20, "session:graph"], [30, "mcp:vex"]]);
+    const groupOf = new Map([[10, "tree:10"], [20, "lease:abc"], [30, "tree:30"]]);
+    // Each read is 10 seconds later. The tree uses 4 cores, the lease 1 core and the server 0.01 core, below the floor of a group.
+    for (let step = 0; step <= 72; step++) {
+      const at = step * 10_000;
+      tracker.read(at, [p(10, 0, step * 40_000), p(20, 0, step * 10_000), p(30, 0, step * 100)], ownerOf, kinds, groupOf);
+    }
+    const now = 720_000;
+    const all = tracker.coresTrail(now);
+    // The reads of the last 11 minutes stay, and each point is the average of the last minute.
+    expect(all[0]?.at).toBe(now - 650_000);
+    expect(all.at(-1)).toEqual({ at: now, value: 5.01 });
+    expect(tracker.coresTrail(now, "tree:10").every((point) => point.value === 4)).toBe(true);
+    expect(tracker.coresTrail(now, "tree:30").every((point) => point.value === 0)).toBe(true);
+    expect([...tracker.groupsSeen(now, "tree:")]).toEqual(["tree:10"]);
+    expect(tracker.groupCores(now, "lease:")).toEqual(new Map([["lease:abc", 1]]));
+    // With no read in the last minute, the groups have no cores.
+    expect(tracker.groupCores(now + 120_000, "lease:")).toEqual(new Map());
+  });
+});

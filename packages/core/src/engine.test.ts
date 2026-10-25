@@ -78,7 +78,7 @@ describe("Engine suggest", () => {
 
   it("sizes a job from the peaks of its last runs, the runs of the same holder first", () => {
     const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
-    expect(engine.suggest("pnpm test", "graph")).toEqual({ memoryMb: null, runs: 0, peakMb: null });
+    expect(engine.suggest("pnpm test", "graph")).toEqual({ memoryMb: null, runs: 0, peakMb: null, cores: null, coreRuns: 0, peakCores: null });
     const run = (holder: string, peakMb: number) => {
       const lease = engine.request({ holder, job: "pnpm test", amounts: { memory: 512 }, ttlMs: 60_000 });
       engine.release(lease.id, "the job ended", peakMb);
@@ -86,9 +86,33 @@ describe("Engine suggest", () => {
     for (const peak of [400, 420, 900, 410]) run("graph", peak);
     run("client", 3000);
     // The runs of graph: the 90th percentile is 900 MB, and 25% more is 1125 MB, rounded up to 1152 MB.
-    expect(engine.suggest("pnpm test", "graph")).toEqual({ memoryMb: 1152, runs: 4, peakMb: 900 });
+    expect(engine.suggest("pnpm test", "graph")).toEqual({ memoryMb: 1152, runs: 4, peakMb: 900, cores: null, coreRuns: 0, peakCores: null });
     // A holder with no run of its own uses the runs of all holders.
     expect(engine.suggest("pnpm test", "vex")).toMatchObject({ runs: 5, peakMb: 3000 });
+    engine.close();
+  });
+
+  it("gives the cores of --cpu auto from the peak cores of the last runs, up to the cores that leases can get (H23)", () => {
+    let now = 1_000_000;
+    const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere", processors: 16, now: () => now });
+    // The processor time of the job object over the run time gives the peak of a job with no read of one minute.
+    const run = (holder: string, cpuMs: number, ranMs: number) => {
+      const lease = engine.request({ holder, job: "vitest run", amounts: { cpu: 1 }, ttlMs: 600_000 });
+      now += ranMs;
+      return engine.release(lease.id, "the job ended", null, { cpuMs });
+    };
+    expect(run("graph", 30_000, 10_000)?.peakCores).toBe(3);
+    for (const [cpuMs, ranMs] of [[20_000, 10_000], [25_000, 10_000], [9_000, 10_000]] as const) run("graph", cpuMs, ranMs);
+    // The 90th percentile of 3, 2, 2.5 and 0.9 cores is 3. With 25% more, it is 3.75, up to 4 cores.
+    expect(engine.suggest("vitest run", "graph")).toMatchObject({ cores: 4, coreRuns: 4, peakCores: 3 });
+    expect(engine.jobs({ query: "vitest run" })[0]).toMatchObject({ peakCores: 0.9 });
+    // A run of 15 cores gives 19 cores with 25% more, so the amount is the 14 cores that the leases can get.
+    run("jarvis", 150_000, 10_000);
+    expect(engine.suggest("vitest run", "jarvis")).toMatchObject({ cores: 14, peakCores: 15 });
+    // A smaller reserve gives the leases more cores.
+    engine.setConfig({ cpuReserve: 0 });
+    expect(engine.suggest("vitest run", "jarvis").cores).toBe(16);
+    expect(() => engine.setConfig({ cpuReserve: 17 })).toThrow(/from 0 to 16/);
     engine.close();
   });
 
@@ -101,12 +125,23 @@ describe("Engine suggest", () => {
       priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
       requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT)`);
     old.close();
-    const engine = new Engine({ sampler, store: new Store(path), sessionsDir: "/nowhere" });
+    let now = 1_000_000;
+    const engine = new Engine({ sampler, store: new Store(path), sessionsDir: "/nowhere", now: () => now });
     const lease = engine.request({ holder: "graph", job: "tsc", amounts: {}, ttlMs: 60_000 });
     engine.release(lease.id, "the job ended", 640);
+    // H23: the columns cpu_cap and peak_cores, and the setting of the reserve.
+    const capped = engine.request({ holder: "graph", job: "tsc", amounts: { cpu: 2 }, ttlMs: 60_000, cpuCap: 2 });
+    now += 4000;
+    engine.release(capped.id, "the job ended", 300, { cpuMs: 6000 });
+    engine.setConfig({ cpuReserve: 3 });
     engine.close();
     const reopened = new Store(path);
-    expect(reopened.peaksOf("tsc")).toEqual([640]);
+    expect(reopened.peaksOf("tsc")).toEqual([300, 640]);
+    expect(reopened.corePeaksOf("tsc")).toEqual([1.5]);
+    expect(reopened.lease(capped.id)).toMatchObject({ cpuCap: 2, peakCores: 1.5 });
+    expect(reopened.config().cpuReserve).toBe(3);
+    reopened.setConfig("cpuReserve", null);
+    expect(reopened.config().cpuReserve).toBe(2);
     reopened.close();
   });
 
@@ -330,12 +365,31 @@ describe("Engine cpu", () => {
     const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere", processors: 16 });
     const lease = engine.request({ holder: "graph", job: "cpu smoke", amounts: { cpu: 2, memory: 100 }, ttlMs: 60_000 });
     expect(lease.state).toBe("granted");
-    expect(engine.status().free).toMatchObject({ cpu: 14, memory: 20_000 - 1024 - 100 });
+    // H23: the reserve keeps 2 cores for Mark, so 16 - 2 - 2 cores stay free for a new lease.
+    expect(engine.status()).toMatchObject({ free: { cpu: 12, memory: 20_000 - 1024 - 100 }, cpuReserve: 2 });
     engine.release(lease.id);
     engine.setPool("cpu", 1);
     const capped = engine.request({ holder: "graph", job: "cpu smoke", amounts: { cpu: 2 }, ttlMs: 60_000 });
     expect(capped.state).toBe("cancelled");
     expect(capped.reason).toBe("cpu: 2 is more than the capacity of 1");
+    engine.close();
+  });
+
+  it("keeps the peak cores of a lease, and gives a runaway alert for a tree with no lease, from the reads of the tick (H23)", () => {
+    let now = 1_000_000;
+    let step = 0;
+    // The job of the lease uses 3 cores. The process 600 and its child use 6 cores with no lease. The lease process is
+    // this test process, so the broker sees it alive.
+    const self = process.pid;
+    const busy = (pid: number, ppid: number, cores: number): ProcessInfo => ({ pid, ppid, name: `p${pid}.exe`, privateMb: 10, workingMb: 10, startedAt: 0, cpuMs: step * 10_000 * cores });
+    const cpuSampler: Sampler = { ...sampler, processes: () => [busy(self, 1, 2), busy(self + 1_000_000, self, 1), busy(600, 1, 4), busy(601, 600, 2)] };
+    const engine = new Engine({ sampler: cpuSampler, store: new Store(":memory:"), sessionsDir: "/nowhere", processors: 16, now: () => now });
+    const lease = engine.request({ holder: "graph", job: "busy job", amounts: { cpu: 4 }, ttlMs: 3_600_000, pid: self, cpuCap: 4 });
+    for (; step <= 66; step++, now += 10_000) engine.tick();
+    expect(engine.jobs({ query: lease.id })[0]).toMatchObject({ peakCores: 3, cpuCap: 4 });
+    expect(engine.status().resources.find((each) => each.id === "cpu")).toMatchObject({ used: 9, capacity: 16 });
+    // 9 of 16 cores is below 85%, so only the tree gives an alert, after 10 minutes above 4 cores.
+    expect(engine.status().alerts.map((alert) => alert.id)).toEqual(["runaway:cpu:600"]);
     engine.close();
   });
 });
@@ -367,7 +421,7 @@ describe("Engine resources", () => {
       { id: "browser", kind: "slot", unit: "count", capacity: 1, used: 1, free: 0, owners: [] },
     ]);
     // The fields of before stay. `free` gets the processors and the drives, less their reserve.
-    expect(status.free).toEqual({ browser: 0, cpu: 16, "disk:C:": 265_000 - 5120, "disk:D:": 125_000 - 5120, memory: 9000 - 1024 });
+    expect(status.free).toEqual({ browser: 0, cpu: 16 - 2, "disk:C:": 265_000 - 5120, "disk:D:": 125_000 - 5120, memory: 9000 - 1024 });
     expect(status.memory.availableMb).toBe(9000);
     expect(status.reserveMb).toBe(1024);
     const rows = store.resourcesSince(0);
@@ -438,7 +492,7 @@ describe("Engine disk leases and temp folders", () => {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
       expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile() });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2 });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });

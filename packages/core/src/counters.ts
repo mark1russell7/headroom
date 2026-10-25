@@ -10,6 +10,7 @@
  * - The I/O totals count each read and write, also to a pipe or a device. They do not name the drive.
  */
 
+import type { TrailPoint } from "./cpu.ts";
 import { MB } from "./sampler.ts";
 import type { OwnerKind, ProcessInfo } from "./types.ts";
 
@@ -66,8 +67,26 @@ const HOUR_MS = 3_600_000;
 const WRITES_RATE_MS = 10 * MINUTE_MS;
 /** The window of the processor use. */
 const CORES_MS = MINUTE_MS;
-/** The tracker keeps each read for the longest rate window. */
-const READS_KEEP_MS = WRITES_RATE_MS;
+/**
+ * The window of the trails (H23). The runaway rule of the CPU needs 10 minutes of points. Each point is an average over
+ * the minute before it.
+ */
+export const TRAIL_MS: number = 11 * MINUTE_MS;
+/** The tracker keeps each read for the longest window. */
+const READS_KEEP_MS = Math.max(WRITES_RATE_MS, TRAIL_MS);
+/**
+ * A group with less processor time than this part of a core in a read is absent from the read (H23). Thus the reads stay
+ * small, and a rule on several cores loses nothing.
+ */
+const GROUP_FLOOR_CORES = 0.05;
+
+/** One read of the tracker: its time, the time that it covers and the change of each total for each owner. It also has the processor time of each group. */
+interface Read {
+  readonly at: number;
+  readonly spanMs: number;
+  readonly sums: Sums;
+  readonly groups: ReadonlyMap<string, number>;
+}
 
 /** This function rounds to one decimal. */
 const round = (value: number): number => Math.round(value * 10) / 10;
@@ -87,7 +106,7 @@ function addAll(into: Map<string, number>, from: ReadonlyMap<string, number> | u
 
 /**
  * The tracker of the totals of the processes. The engine gives it each read of the processes, and closes one minute at each
- * sample of the store. It keeps the last totals of the live processes, the reads of the last 10 minutes and the minutes
+ * sample of the store. It keeps the last totals of the live processes, the reads of the last 11 minutes and the minutes
  * of the last hour. Each read and each minute has only the owners whose totals changed.
  */
 export class CounterTracker {
@@ -97,8 +116,8 @@ export class CounterTracker {
   #lastAt: number | null = null;
   /** The totals that the last read had for at least one process. */
   #seen = new Set<Counter>();
-  /** The reads of the last 10 minutes, with the time that each one covers. */
-  #reads: { readonly at: number; readonly spanMs: number; readonly sums: Sums }[] = [];
+  /** The reads of the last 11 minutes, the oldest first, with the time that each one covers. */
+  #reads: Read[] = [];
   /** The closed minutes of the last hour, the oldest first. */
   #minutes: { readonly at: number; readonly sums: Sums }[] = [];
   /** The changes since the last closed minute. */
@@ -109,12 +128,22 @@ export class CounterTracker {
     this.#counters = counters;
   }
 
-  /** This function adds one read of the processes. The first read only keeps the totals. */
-  read(at: number, processes: readonly ProcessInfo[], ownerOf: ReadonlyMap<number, string>, kindOf: ReadonlyMap<string, OwnerKind>): void {
+  /**
+   * This function adds one read of the processes. The first read only keeps the totals. `groupOf` gives the CPU group of
+   * each process (H23): a leased job or a process tree. The read keeps the processor time of each group.
+   */
+  read(
+    at: number,
+    processes: readonly ProcessInfo[],
+    ownerOf: ReadonlyMap<number, string>,
+    kindOf: ReadonlyMap<string, OwnerKind>,
+    groupOf: ReadonlyMap<number, string> = new Map(),
+  ): void {
     const previousAt = this.#lastAt;
     this.#seen = new Set(this.#counters.filter((counter) => processes.some((info) => info[counter] !== undefined)));
     if (previousAt !== null && at > previousAt) {
       const sums: Sums = new Map();
+      const groups = new Map<string, number>();
       for (const info of processes) {
         const before = this.#last.get(info.pid);
         for (const counter of this.#counters) {
@@ -124,9 +153,13 @@ export class CounterTracker {
           add(sums, counter, owner, delta);
           add(this.#open, counter, owner, delta);
           this.#kinds.set(owner, kindOf.get(owner) ?? this.#kinds.get(owner) ?? "other");
+          const group = counter === "cpuMs" ? groupOf.get(info.pid) : undefined;
+          if (group !== undefined) groups.set(group, (groups.get(group) ?? 0) + delta);
         }
       }
-      this.#reads = [...this.#reads.filter((each) => at - each.at < READS_KEEP_MS), { at, spanMs: at - previousAt, sums }];
+      const spanMs = at - previousAt;
+      for (const [group, ms] of groups) if (ms < GROUP_FLOOR_CORES * spanMs) groups.delete(group);
+      this.#reads = [...this.#reads.filter((each) => at - each.at < READS_KEEP_MS), { at, spanMs, sums, groups }];
     }
     // Only the live processes stay, so the map does not grow.
     this.#last = new Map(processes.map((info) => [info.pid, info]));
@@ -221,4 +254,60 @@ export class CounterTracker {
       .map(([owner, ms]) => ({ owner, kind: this.kindOf(owner), cores: ms / spanMs }))
       .sort((a, b) => b.cores - a.cores);
   }
+
+  /**
+   * This function gives the trail of the processor use over the reads of the last 11 minutes (H23). Each point is the
+   * time of a read and the cores over the minute before it. With `group`, the points are for that group. Without it,
+   * they are for all the processes together, as the measure of `cpu` gives them.
+   */
+  coresTrail(now: number, group?: string): TrailPoint[] {
+    const reads = this.#reads.filter((each) => now - each.at < READS_KEEP_MS);
+    const amounts = reads.map((read) => (group === undefined ? total(read.sums.get("cpuMs")) : (read.groups.get(group) ?? 0)));
+    const points: TrailPoint[] = [];
+    let first = 0;
+    let ms = 0;
+    let spanMs = 0;
+    for (const [index, read] of reads.entries()) {
+      ms += amounts[index] ?? 0;
+      spanMs += read.spanMs;
+      for (let old = reads[first]; old !== undefined && first < index && read.at - old.at >= CORES_MS; old = reads[first]) {
+        ms -= amounts[first] ?? 0;
+        spanMs -= old.spanMs;
+        first += 1;
+      }
+      if (spanMs > 0) points.push({ at: read.at, value: Math.max(0, ms / spanMs) });
+    }
+    return points;
+  }
+
+  /** This function gives the groups with a prefix in the reads of the last 11 minutes, for example each process tree. */
+  groupsSeen(now: number, prefix: string): Set<string> {
+    const seen = new Set<string>();
+    for (const read of this.#reads) {
+      if (now - read.at >= READS_KEEP_MS) continue;
+      for (const group of read.groups.keys()) if (group.startsWith(prefix)) seen.add(group);
+    }
+    return seen;
+  }
+
+  /** This function gives the cores of each group with a prefix, for example each leased job. The cores are an average over the reads of the last minute. */
+  groupCores(now: number, prefix: string): Map<string, number> {
+    const cores = new Map<string, number>();
+    let spanMs = 0;
+    for (const read of this.#reads) {
+      if (now - read.at >= CORES_MS) continue;
+      spanMs += read.spanMs;
+      for (const [group, ms] of read.groups) if (group.startsWith(prefix)) cores.set(group, (cores.get(group) ?? 0) + ms);
+    }
+    if (spanMs <= 0) return new Map();
+    for (const [group, ms] of cores) cores.set(group, ms / spanMs);
+    return cores;
+  }
+}
+
+/** This function gives the sum of the changes of all the owners. */
+function total(byOwner: ReadonlyMap<string, number> | undefined): number {
+  let sum = 0;
+  for (const amount of byOwner?.values() ?? []) sum += amount;
+  return sum;
 }

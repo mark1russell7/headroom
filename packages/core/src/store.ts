@@ -14,6 +14,7 @@ import type { CounterRow } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
+import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -89,6 +90,17 @@ export interface Config {
   readonly batteryFloor: number;
   /** The usage file of the fleet for the condition `usage<N` (H31). The default is `~/git/fleet/artifacts/hub/db/usage/current.json`. */
   readonly usageFile: string;
+  /**
+   * The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). The `cpu` amounts of the granted leases
+   * do not take them. The default is 2, and 0 turns the reserve off.
+   */
+  readonly cpuReserve: number;
+}
+
+/** This function reads the setting `cpuReserve`. A negative value or a value that is not a number gives the default. */
+function cpuReserveOf(value: string | undefined): number {
+  const reserve = Number(value);
+  return value !== undefined && Number.isFinite(reserve) && reserve >= 0 ? reserve : CPU_RESERVE_DEFAULT;
 }
 
 /** This function reads the setting `batteryFloor`. A value that is not a whole number from 0 to 100 gives the default. */
@@ -148,9 +160,10 @@ export class Store {
     // A database of an older version has no column for the processes that a job started (H29).
     // A database of an older version has no columns for the peak starts and the spawn class of a job (H47).
     // A database of an older version has no columns for the conditions of a lease (H31).
+    // A database of an older version has no columns for the CPU cap and the peak cores of a lease (H23).
     const added = [
       ["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"], ["peak_starts_per_min", "REAL"], ["spawn", "TEXT"],
-      ["conditions", "TEXT"], ["conditions_met_at", "INTEGER"], ["unmet", "TEXT"],
+      ["conditions", "TEXT"], ["conditions_met_at", "INTEGER"], ["unmet", "TEXT"], ["cpu_cap", "REAL"], ["peak_cores", "REAL"],
     ] as const;
     for (const [column, type] of added) {
       if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
@@ -170,13 +183,13 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
            usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes,
            peak_starts_per_min = excluded.peak_starts_per_min, spawn = excluded.spawn, conditions_met_at = excluded.conditions_met_at,
-           unmet = excluded.unmet`,
+           unmet = excluded.unmet, peak_cores = excluded.peak_cores`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
@@ -185,7 +198,7 @@ export class Store {
         lease.exitCode ?? null, lease.signal ?? null, lease.log ?? null, lease.processes ?? null,
         lease.peakStartsPerMin ?? null, lease.spawn === undefined ? null : JSON.stringify(lease.spawn),
         lease.conditions === undefined ? null : JSON.stringify(lease.conditions), lease.conditionsMetAt ?? null,
-        lease.unmet === undefined ? null : JSON.stringify(lease.unmet),
+        lease.unmet === undefined ? null : JSON.stringify(lease.unmet), lease.cpuCap ?? null, lease.peakCores ?? null,
       );
   }
 
@@ -234,12 +247,13 @@ export class Store {
       spawnHeavy: spawnLimitOf(values.get("spawnHeavy")),
       batteryFloor: batteryFloorOf(values.get("batteryFloor")),
       usageFile: values.get("usageFile") ?? defaultUsageFile(),
+      cpuReserve: cpuReserveOf(values.get("cpuReserve")),
     };
   }
 
   /**
    * This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The values of
-   * `spawnHeavy` and `batteryFloor` are numbers as text.
+   * `spawnHeavy`, `batteryFloor` and `cpuReserve` are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
@@ -257,6 +271,15 @@ export class Store {
       ? this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, limit)
       : this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND holder = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, holder, limit);
     return rows.map((row) => Number(row["peak_mb"]));
+  }
+
+  /** This function reads the peak cores of the last runs of a job that ended, the newest first (H23). With a holder, only the runs of that holder. */
+  corePeaksOf(job: string, holder?: string, limit = 20): number[] {
+    const ran = "SELECT peak_cores FROM leases WHERE job = ? AND peak_cores IS NOT NULL AND ended_at IS NOT NULL";
+    const rows = holder === undefined
+      ? this.#db.prepare(`${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, limit)
+      : this.#db.prepare(`${ran} AND holder = ? ORDER BY ended_at DESC LIMIT ?`).all(job, holder, limit);
+    return rows.map((row) => Number(row["peak_cores"]));
   }
 
   /**
@@ -512,5 +535,7 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["conditions"] === null || row["conditions"] === undefined ? {} : { conditions: JSON.parse(String(row["conditions"])) as LeaseConditions }),
     ...(row["conditions_met_at"] === null || row["conditions_met_at"] === undefined ? {} : { conditionsMetAt: Number(row["conditions_met_at"]) }),
     ...(row["unmet"] === null || row["unmet"] === undefined ? {} : { unmet: JSON.parse(String(row["unmet"])) as UnmetCondition }),
+    ...(row["cpu_cap"] === null || row["cpu_cap"] === undefined ? {} : { cpuCap: Number(row["cpu_cap"]) }),
+    ...(row["peak_cores"] === null || row["peak_cores"] === undefined ? {} : { peakCores: Number(row["peak_cores"]) }),
   };
 }
