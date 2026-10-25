@@ -24,7 +24,7 @@ export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "
 
 /**
  * The unit of the amounts of a kind. The disk writes use MB/h, and the network uses MB/s. A kind in the unit `state` has
- * no amount: its measurement has a `health`, and its used part is the latency of the last check in milliseconds (H27).
+ * no amount (H27). Its measurement has a `health`, and its used part is the latency of the last check in ms.
  */
 export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state";
 
@@ -718,7 +718,7 @@ function span(ms: number): string {
   return `${(seconds / 3600).toFixed(1)} h`;
 }
 
-/** This function gives the text of an alert on a service: a service that does not answer, an MCP server that does not start, or a slow answer. */
+/** This function gives the text of an alert on a service. The service does not answer, the MCP server does not start, or the answer is slow. */
 function serviceText({ measurement }: InstanceFacts): AlertText {
   const health = measurement.health;
   const subject = health?.name ?? measurement.id;
@@ -737,9 +737,9 @@ function serviceText({ measurement }: InstanceFacts): AlertText {
 }
 
 /**
- * The shared services (H27): one instance for each service, `service:docker`, `service:mcp:<server>` and `service:<name>`
- * for each URL of the setting `health`. The unit is `state`: the measurement has the health, and the used part is the
- * latency of the last check. headroom does not restart a service for an alert.
+ * The shared services (H27). Each service has one instance: `service:docker`, `service:mcp:<server>`, and `service:<name>`
+ * for each URL of the setting `health`. The unit is `state`. The measurement has the health, and the used part is the
+ * latency of the last check. An alert does not restart a service.
  */
 const SERVICE: Resource = {
   kind: "service",

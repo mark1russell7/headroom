@@ -29,10 +29,10 @@ The kinds are in one registry. A part that a kind does not have is `null`.
 export type ResourceId = string;
 
 /** The kinds. An id with no known kind is a slot, as today. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "gpu";
 
-/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s";
+/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state";
 
 /** One resource kind with its five parts. */
 export interface Resource {
@@ -355,6 +355,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | Slots: `browser`, `docker`, each name (count) | Capacity: configured with `headroom pool`, else 1. Used: the granted leases. | The holders of the granted leases. | Later: a lease that waits more than 30 minutes for a slot. | Counted. A command pattern takes a slot by itself, as `browser` does. | None on the job. The lease ends with its process. |
 | `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
 | `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
+| `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
 | `gpu:<adapter>` (later, MB) | The dedicated memory of each adapter. | The counter `GPU Process Memory` of each process. | Level on free. | Measured, as `memory`. | None. A job object has no GPU limit. |
 
 ## The migration
@@ -533,6 +534,35 @@ On 2026-10-24, Mark asked if the model covers more than the disk. H24 puts the n
 
 **The dashboard.** Each instance gets its panel from the model. A rate in MB/s shows its used part, not its free part.
 
+### H27: the health of the shared services
+
+On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its time limit, Mongo went down, and the e2e tests of graph lost it. The MCP server vex of the gateway did not start, because a package was missing. Nothing told the sessions. H27 puts the shared services on the model with the kind `service`.
+
+**Measure.** The service monitor in `services.ts` reads the services, and the kind calculates, as the design rule tells.
+
+- The monitor makes one round of checks every 30 seconds. Each check has a time limit of 3 seconds. The monitor does not start a check again before the last start of the check ends. A check that has not ended at the next round counts as a check with no answer.
+- Docker: `GET /_ping` on the pipe of the engine, with the `socketPath` of `node:http`. The pipe is `\\.\pipe\docker_engine` on Windows and `/var/run/docker.sock` on Linux. No pipe (`ENOENT`) gives `absent`. headroom starts no `docker` process.
+- The URLs: a `GET` of each URL of the setting `health`. A status below 500 is an answer. The default list has the fleet site only.
+- The MCP servers: the state of the gateway, with no call. `running` and `starting` give `ok`. `stopped` gives `idle`. A failed start gives `down`, with the last error line of the stderr of the server. An exit gives `idle`, because the next request starts the server again. With 3 exits in 10 minutes, the server is `down`.
+- An answer after more than 1 second gives `slow`.
+- `Readings.services` gives the health of each service. The measure gives one instance for each service, with the health in the new field `Measurement.health`.
+- The health has the state, the latency and the time of the check. It also has the start of the state and the count of checks in a row with the state.
+- The health keeps the time of the last good check, and the last error with its time.
+
+**Alert.** A fourth type of rule, the **health** rule, examines the state of a service and its count of checks in a row.
+
+- Down for 2 checks in a row, approximately one minute: critical for Docker and the MCP servers, and a warning for a URL. The id of the alert is `service:<name>`.
+- Slow for 3 checks in a row: a warning.
+- `serviceDownChecks` and `serviceSlowChecks` of `AlertRules` set the two counts.
+- An idle MCP server and an absent Docker engine give no alert.
+- The message names the service, the start of the state and who needs the service. For an MCP server, it gives the last error line.
+
+**Attribute, admit and enforce.** The kind has none. A lease does not ask for a service. headroom does not restart a service for an alert. A person or the session that owns the service decides.
+
+**The setting.** The setting `health` in the table `settings` gives the URLs by name, as JSON. `config.get` and `config.set` read and change it. `headroom config health <name> <url>` adds a URL, and `--clear` removes one URL or sets the default list again.
+
+**Status and the command.** `headroom status` gives one line, for example `Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.` `headroom services` and the procedure `resources.services` give the health of each service. The dashboard shows each service as a panel with its state.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.
@@ -554,4 +584,7 @@ These were the open questions. The session decided each one as a technical call.
 | Which network adapters count? | The adapters that are up, with a hardware interface and with no filter interface. | The filter rows and the virtual adapters count the same bytes again. The traffic of Tailscale and of WSL goes through the Wi-Fi adapter. |
 | Does headroom read the network bytes of each process? | No. | Windows gives them only through ETW, with admin rights or the group `Performance Log Users`. |
 | What does `ports:tcp` count? | Each TCP row with a local port in the dynamic range, in each state. | A port in `TIME_WAIT` is not free. When the range is full, new connections fail. |
+| How does the model show the health of a service? | A new unit `state`. The measurement has the field `health`. Its used part is the latency of the last check in ms, and the capacity and the free part are `null`. | A state is not an amount. The latency gives the history and the trend of the panel a number. The unit `count` gives a capacity of 1 that tells nothing. |
+| When is an MCP server down? | When its start failed, or after 3 exits in 10 minutes. A server that the gateway stopped for idle, or that exited one time, is `idle`. | The gateway starts a server again at the next request. Thus one exit is not a failure of the service, but a start that fails is. |
+| Does headroom restart a service that is down? | No. The alert only reports. | A restart of Docker stops the containers of all the sessions. The owner of the service decides. |
 | How does the store keep the new data? | New tables `resource_samples` and `owner_use`, and a column `usage` in `leases`. The old tables stay. | The history, the dashboard and the tests of today keep their data and their queries. |

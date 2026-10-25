@@ -100,7 +100,7 @@ export interface Status {
   readonly disks: readonly DiskStatus[];
   /**
    * The level of each resource instance, with its 10 largest owners. The instances are the memory, the commit charge, the
-   * kernel pools, the desktop, the drives, the processors, the network, the TCP ports, the services and the slots.
+   * kernel pools, the desktop and the drives. Then come the processors, the network, the TCP ports, the services and the slots.
    */
   readonly resources: readonly ResourceStatus[];
   /**

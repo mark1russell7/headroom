@@ -1,17 +1,17 @@
 /**
- * The health of the shared services (H27): the Docker engine, the MCP servers of the gateway and the URLs of the setting
- * `health`, for example the fleet site.
+ * The health of the shared services (H27). The services are the Docker engine, the MCP servers of the gateway and the URLs
+ * of the setting `health`.
  *
- * The monitor starts each check every 30 seconds, with a time limit of 3 seconds. A check does not run two times at the
- * same time. A check that has not ended at the next round counts as a check with no answer.
+ * The monitor starts each check every 30 seconds, with a time limit of 3 seconds. It does not start a check again before
+ * the last start of the check ends. A check that has not ended at the next round counts as a check with no answer.
  *
  * The monitor only reports. headroom does not restart a service for its health.
  */
 
-/** The state of a service at its last check. `idle`: an MCP server that the gateway stopped on purpose. `absent`: no Docker engine. */
+/** The state of a service at its last check. An MCP server that the gateway stopped on purpose is `idle`. No Docker engine is `absent`. */
 export type ServiceState = "ok" | "slow" | "down" | "idle" | "absent";
 
-/** The type of a check: a ping of the Docker engine, a GET of a URL, or the state of an MCP server of the gateway. */
+/** The type of a check: a ping of the Docker engine, a GET of a URL, or the state of an MCP server. */
 export type ServiceType = "docker" | "url" | "mcp";
 
 /** The result of one check. A check gives no `slow` state, because the monitor compares the latency with its limit. */
@@ -136,7 +136,7 @@ export function nextHealth(previous: ServiceHealth | undefined, check: ServiceCh
 
 /** The options of a service monitor. */
 export interface ServiceMonitorOptions {
-  /** This function gives the checks of one round. The monitor calls it at each round, so a change of the settings applies. */
+  /** This function gives the checks of one round. The monitor uses it at each round, so a change of the settings applies. */
   readonly checks: () => readonly ServiceCheck[];
   readonly now?: (() => number) | undefined;
   /** The time limit of one check. The default is 3 seconds. */

@@ -6,13 +6,14 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { createSampler, Engine, Store } from "@headroom/core";
+import { createSampler, Engine, ServiceMonitor, Store } from "@headroom/core";
 import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
+import { serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
 import { databasePath, headroomHome, readDiscovery, removeDiscovery, takePlannedStop, writeDiscovery } from "./paths.ts";
 import { gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
@@ -55,7 +56,15 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
 
   const store = new Store(databasePath());
   const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
-  const engine = new Engine({ sampler: await createSampler(), store, reserveMb: options.reserveMb, servers: () => gateway.pids() });
+  // H27: Docker, the URLs of the setting health and the MCP servers of the gateway, every 30 seconds.
+  const monitor = new ServiceMonitor({ checks: () => serviceChecks(store.config().health, gateway.list()) });
+  const engine = new Engine({
+    sampler: await createSampler(),
+    store,
+    reserveMb: options.reserveMb,
+    servers: () => gateway.pids(),
+    services: () => monitor.list(),
+  });
   if (unclean !== null) {
     const last = engine.history(Date.now() - 86_400_000).memory.at(-1)?.at;
     const after = last === undefined ? "" : `, after ${new Date(last).toISOString().slice(11, 16)} UTC`;
@@ -139,10 +148,12 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   };
   sweep();
   const sweeper = setInterval(sweep, SWEEP_EVERY_MS);
+  monitor.start();
 
   await started.life.done;
   clearInterval(timer);
   clearInterval(sweeper);
+  monitor.stop();
   engine.close();
   removeDiscovery();
   return started.life.errors.length > 0 ? 1 : 0;

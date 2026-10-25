@@ -37,6 +37,8 @@ const MAX_BACKOFF_MS = 60_000;
 const DEFAULT_IDLE_MINUTES = 30;
 const SESSION_IDLE_MS = 24 * 3_600_000;
 const STDERR_LINES = 20;
+/** The window of the unexpected exits that `McpServerState.exits` counts. */
+const EXIT_WINDOW_MS = 10 * 60_000;
 
 /** The modules of the MCP SDK that the gateway uses. */
 interface Sdk {
@@ -76,6 +78,10 @@ export interface McpServerState {
   /** The failures after the last good start. */
   readonly failures: number;
   readonly error: string | null;
+  /** How the last failure after the last good start happened: at the start, or by an exit of the process. */
+  readonly failure: "start" | "exit" | null;
+  /** The unexpected exits of the process in the last 10 minutes. */
+  readonly exits: number;
   /** The last lines that the server wrote to stderr. */
   readonly stderr: readonly string[];
 }
@@ -144,6 +150,9 @@ class Upstream {
   #failures = 0;
   #failedAt = 0;
   #error: string | null = null;
+  #failure: "start" | "exit" | null = null;
+  /** The times of the unexpected exits of the last 10 minutes. */
+  #exits: number[] = [];
   readonly #stderr: string[] = [];
 
   constructor(name: string, spec: McpServerSpec, log: (line: string) => void) {
@@ -241,6 +250,8 @@ class Upstream {
       usedAt: this.#usedAt,
       failures: this.#failures,
       error: this.#error,
+      failure: this.#failures > 0 ? this.#failure : null,
+      exits: this.#exits.filter((at) => Date.now() - at <= EXIT_WINDOW_MS).length,
       stderr: [...this.#stderr],
     };
   }
@@ -266,9 +277,11 @@ class Upstream {
     return send(request, resultSchema, { relatedRequestId: [...session.inFlight][0], timeout: CALL_TIMEOUT_MS });
   }
 
-  #fail(error: unknown): void {
+  #fail(error: unknown, failure: "start" | "exit"): void {
     this.#failures += 1;
     this.#failedAt = Date.now();
+    this.#failure = failure;
+    if (failure === "exit") this.#exits = [...this.#exits.filter((at) => this.#failedAt - at <= EXIT_WINDOW_MS), this.#failedAt];
     this.#error = message(error);
     this.#log(`The MCP server ${this.name} failed: ${this.#error}`);
   }
@@ -300,7 +313,7 @@ class Upstream {
       this.#client = null;
       this.#pid = null;
       this.#startedAt = null;
-      this.#fail(new Error("the server process stopped"));
+      this.#fail(new Error("the server process stopped"), "exit");
     };
     client.setNotificationHandler(types.ToolListChangedNotificationSchema, async () => this.#each((server) => server.sendToolListChanged()));
     client.setNotificationHandler(types.PromptListChangedNotificationSchema, async () => this.#each((server) => server.sendPromptListChanged()));
@@ -315,7 +328,7 @@ class Upstream {
     } catch (error) {
       if (transport.pid !== null) killTree(transport.pid);
       await client.close().catch(() => undefined);
-      this.#fail(error);
+      this.#fail(error, "start");
       throw new Error(`The MCP server ${this.name} did not start: ${message(error)}`);
     }
     this.#info = {
@@ -328,6 +341,7 @@ class Upstream {
     this.#startedAt = Date.now();
     this.#failures = 0;
     this.#error = null;
+    this.#failure = null;
     this.#log(`The MCP server ${this.name} runs as process ${this.#pid ?? "?"}.`);
     return client;
   }
