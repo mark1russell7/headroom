@@ -854,6 +854,39 @@ The processors, the network, the process starts, the services, the power, the de
 
 **The numbers on 2026-10-25.** A read-only fit of the live store at 05:13 UTC gave one forecast: `Drive D: 20 GB free in 4 days (at 1.1 GB an hour, confidence 0.65).` Drive C: lost 210 MB an hour with a confidence of 0.98. Its 20 GB target was 51 days away, so it got no forecast. The commit charge, the memory, the pools and the ports had no clear trend.
 
+### H34: the reboot budget and a planned drain
+
+Mark approved this item on 2026-10-24. The AMD display driver leaks kernel memory with each new process, and only a reboot gives it back. On 2026-10-24 the pools reached 4.6 GB. H34 tells when a reboot is due, and prepares a planned window for it. headroom does not reboot the computer and does not log off. Only Mark does these actions.
+
+**The module.** `reboot.ts` has pure functions. The engine gives them the time and the reads.
+
+- `rebootAdvice()` gives the level and the text of the recommendation. The rules go in this order:
+  1. A pool at its alert level gives `overdue`.
+  2. A forecast to the alert level within 24 hours gives `soon`.
+  3. A growth of 500 MB in one hour gives `plan`.
+  4. A waiting update alone gives `update`. Else the level is `none`.
+- `windowsReboot()` reads the two keys of `REBOOT_KEYS` through a probe. The probe of the sampler is `registryKey()`: `RegOpenKeyExW` with the right to read values only. A key that refuses the read exists. A failed read is `unknown`.
+- `drainWait()` gives the reason of a held lease, and `drainStatus()` the state of the drain. `drainLine()` and `drainAlerts()` give its status line and its alerts.
+- `nextClock()` gives the next time of a local clock for `--at` and `--until`.
+
+**The budget.** `Status.reboot` has the type `RebootBudget`: `{ at, advice, pools, windows, bootedAt, uptimeMinutes, drain, resumePlan }`.
+
+- Each pool has its level, its alert level, its growth over the last hour, its growth limit and its forecast to the alert level (H32).
+- The growth comes from the same hour as the pool alert. The hour starts after the start of the computer or the last wake, and needs 50 minutes of history.
+- The engine reads the registry at most one time in 5 minutes.
+
+**The drain.** The settings table keeps the drain as JSON under the name `drain`: `{ at, until, setAt, startedAt, readyAt }`.
+
+- Admit: the condition hook of the broker gives the drain reason first, so a drain wait keeps no place in the queue. A lease with `conditions.duringDrain` does not wait.
+- Before the admission of each tick, the engine ends the drain at its time `until`. At the start of the drain, it records `startedAt` and calls `onDrainStart`. The daemon then writes the resume plan.
+- After the admission, the engine records `readyAt` when no lease is granted, and sets the alerts `drain` and `drain:ready`. The check of the alerts does not end them.
+- A start of the daemon reads the drain. A start of the computer after `setAt` ends the drain, because the reboot came. The event alert `drain:ended` tells it.
+- `isConditionWait()` matches the drain reason, so a restart for an idle queue does not wait for such a lease.
+
+**Faces.** The commands are `headroom reboot-plan [--json]` and `headroom drain`, and the procedure is `resources.drain`. `headroom status` shows the drain line and the recommendation. The dashboard shows one line under the strip.
+
+**The numbers on 2026-10-25.** A one-time run on a copy of the live store at 04:18 local time gave this budget. The non-paged pool was at 2.5 GB and the paged pool at 2.6 GB. Both were lower than one hour before. No update waited, and the uptime was 8 h 41 min. The recommendation was "No reboot needed."
+
 ### H46: the peer of a local connection
 
 The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP tools over Streamable HTTP to `claude.exe`. Each call needs the fleet role of the caller, from the TCP peer and not from a header. The step fp-identity of the organizer (`principalOf`) uses the same answer. The daemon reads the TCP table and the process tree already, so the procedure `resources.peer` gives the answer.

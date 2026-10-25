@@ -18,6 +18,7 @@ import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
 import { announceDaemon, databasePath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
 import { gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
+import { resumePlanFile, writeResumePlan } from "./resume.ts";
 
 /** The default port of the daemon. */
 export const DEFAULT_PORT = 4730;
@@ -69,6 +70,12 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     servers: () => gateway.pids(),
     services: () => monitor.list(),
     sleepGapMs: SLEEP_GAP_MS,
+    // H34: at the start of a planned drain, the daemon writes the resume plan (H13) again, for the reboot.
+    onDrainStart: () => {
+      const plan = writeResumePlan();
+      log(`The drain for the planned reboot started. The resume plan is in ${plan.path}.`);
+    },
+    resumePlan: () => resumePlanFile(),
   });
   if (unclean !== null) {
     const last = engine.history(Date.now() - 86_400_000).memory.at(-1)?.at;

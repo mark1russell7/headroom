@@ -15,6 +15,7 @@
  * - `GetIfTable2` of `iphlpapi.dll` gives the byte counters of the adapters, and `GetExtendedTcpTable` gives the TCP connections (H24).
  * - `windows-power.ts` gives the battery, the Energy Meter, the power events and the power request (H30).
  * - For `resources.peer` (H46), `GetExtendedTcpTable` gives the rows of one connection, and `GetProcessTimes` gives the start of one process.
+ * - `RegOpenKeyExW` of `advapi32.dll` tells if a key of the registry exists (H34). The reboot budget reads two keys, and writes none.
  *
  * koffi registers each struct name once for each process, so the declarations are at the top level.
  * Only `createSampler()` on Windows imports this file.
@@ -25,6 +26,7 @@ import { statfsSync } from "node:fs";
 import koffi from "koffi";
 import { DEFAULT_DYNAMIC_PORTS, parseDynamicPorts, parseIfTable, parseTcpEndpoints, parseTcpTable } from "./network.ts";
 import { fileTimeMs, programName, titleOf } from "./owners.ts";
+import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
 import { closePower, keepAwake, readBattery, readMeters, watchPower } from "./windows-power.ts";
@@ -553,6 +555,31 @@ function processStart(pid: number): number | undefined {
   }
 }
 
+const advapi32 = koffi.load("advapi32.dll");
+const regOpenKey = advapi32.func("int32 __stdcall RegOpenKeyExW(intptr_t key, const char16_t *subKey, uint32_t options, uint32_t access, _Out_ intptr_t *result)");
+const regCloseKey = advapi32.func("int32 __stdcall RegCloseKey(intptr_t key)");
+/** The predefined key `HKEY_LOCAL_MACHINE`: the value 0x80000002 as a signed 32-bit number, extended to the size of a pointer. */
+const HKEY_LOCAL_MACHINE = -0x7ffffffe;
+const KEY_QUERY_VALUE = 0x1;
+const KEY_WOW64_64KEY = 0x100;
+const ERROR_FILE_NOT_FOUND = 2;
+const ERROR_ACCESS_DENIED = 5;
+
+/**
+ * This function tells if a key of `HKEY_LOCAL_MACHINE` exists, with `RegOpenKeyExW` (H34). It asks only for the right to
+ * read values, and closes the key at once. A key that refuses the read exists.
+ */
+function registryKey(path: string): KeyState {
+  const opened = [0];
+  const status = regOpenKey(HKEY_LOCAL_MACHINE, path, 0, KEY_QUERY_VALUE | KEY_WOW64_64KEY, opened);
+  if (status === 0) {
+    regCloseKey(opened[0] ?? 0);
+    return "present";
+  }
+  if (status === ERROR_ACCESS_DENIED) return "present";
+  return status === ERROR_FILE_NOT_FOUND ? "absent" : "unknown";
+}
+
 /** This function gives the sampler of Windows. The libraries stay loaded for the life of the process. */
 export function windowsSampler(): Sampler {
   return {
@@ -572,6 +599,7 @@ export function windowsSampler(): Sampler {
     power: readMeters,
     watchPower,
     keepAwake,
+    registryKey,
     close: closePower,
   };
 }
