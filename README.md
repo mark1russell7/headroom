@@ -56,6 +56,7 @@ The list "Memory by owner" gives the private memory and the memory in RAM of eac
 ```text
 Writes (last hour): session:graph 31.2 GB, mcp:vex 2.1 GB.
 CPU: 3.4 of 16 cores in use. Most: session:graph 2.1, mcp:vex 0.4.
+Process starts: 1,450 a minute. Most (at least): session:client 410 (jobs 12, own commands 398, job e2e: 9,800 so far), session:organizer 120.
 Network: 1.2 MB/s in, 0.3 MB/s out.
 TCP: 812 connections (120 waiting to close), 2% of the dynamic ports.
 Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.
@@ -80,6 +81,24 @@ PORT       PID  PROCESS                    OWNER                  ADDRESSES
 
 3 listening ports. Outgoing connections use the dynamic ports 49152-65535, so give a dev server a port below 49152.
 ```
+
+### Process starts (H29)
+
+On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`. Each new process leaks approximately 0.9 KB of the non-paged pool. With 14 or more new processes each second, the pool grew approximately 800 MB each hour. Until Mark updates the driver (hub ask `amd-driver`), the fleet must start fewer processes. headroom shows who starts them:
+
+- **The computer**: an exact count on Windows. Windows gives each new process the next sequence number. The daemon reads the number of the newest process with `NtQueryInformationProcess(ProcessSequenceNumber)` at each read, every 10 seconds.
+- **A leased job**: an exact count. The job object of `headroom run` counts each process of the job (`TotalProcesses`). The client reports the count every 30 seconds and at the release.
+- **An owner**: a lower bound. The daemon counts the new processes of each owner at each read. A read every 10 seconds misses most short processes, for example each stage of a Git Bash pipeline.
+- **Own commands**: the new processes of an owner outside its leases. The jobs of an owner are the counts of its leases. The holder and the process tree decide the owner of a job, not the name of the job.
+
+The line `Process starts` of `headroom status` gives the starts of the last 10 minutes, in one minute. The owners show their jobs and their own commands. `Status.starts` gives the same data, and the dashboard has a panel `Process starts`.
+
+- The alert `churn` starts a warning when the computer starts more than 600 processes in one minute, as an average over 10 minutes. It names the 3 owners and the 3 leased jobs with the most starts.
+- `headroom job <name|id>` and its JSON give `processes`: the processes that the job started so far. The lease keeps the count.
+- At its end, `headroom run` writes the count, for example `It started 9800 processes.`
+- A parent counts only when it started at or before its child. Windows gives the ID of an ended process to a new process. Thus a child with an old parent ID goes to the owner of its own part of the tree.
+
+On 2026-10-24, this computer started 1,450 processes in one minute. A read every second found only 260 of them, and a read every 10 seconds found 60.
 
 ### The shared services (H27)
 
@@ -108,6 +127,7 @@ On Windows, `headroom run` puts the job into a job object:
 - When the run ends, Windows stops each process that the job started and that still runs. Thus a test server or a search does not stay as an orphan. `--keep` turns this off, for a command that starts a service on purpose.
 - `--limit` makes the memory of the lease a hard limit: the job cannot commit more. An allocation above the limit fails, and the job stops with its own error.
 - The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak.
+- The run also writes the count of processes that the job started (H29). The lease keeps the count.
 - A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` lets two run.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
@@ -190,9 +210,10 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
 - A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site.
-- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, network, TCP ports, services, slots, kernel pools and desktop. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
+- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, network, TCP ports, services, slots, kernel pools, desktop and process starts. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
+- The write counters do not name the drive. Thus the drive panels show no users, and one panel "Writes to all drives" follows them with the top writers.
 - Select a panel to open it to the full width. It then shows a chart of its history in the window, a table of the data and all its users.
 - The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
 - The page is one HTML file of approximately 69 KB, with no framework and no build step. The daemon keeps it as one string.

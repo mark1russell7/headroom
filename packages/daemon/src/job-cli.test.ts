@@ -54,8 +54,10 @@ describe("headroom job", () => {
     expect(calls).toEqual([{ path: ["resources", "job"], input: { query: "graph-e2e", all: false } }]);
     const state = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(state)).toEqual([
-      "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "log",
+      "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes", "log",
     ]);
+    // H29: a lease of a job with no count of processes gives null.
+    expect(state["processes"]).toBeNull();
     expect(state).toMatchObject({
       id: BASE.id,
       state: "exited",
@@ -94,7 +96,7 @@ describe("headroom job", () => {
 
 describe("jobLine", () => {
   const state = {
-    id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null,
+    id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
     queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null,
   } as const;
 
@@ -105,6 +107,10 @@ describe("jobLine", () => {
     const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
     expect(jobLine({ ...state, state: "running", reason: null, startedAt, waitedMs: 15 * MINUTE, ranMs: 5 * MINUTE }, NOW)).toBe(
       "e2e (3f2a9c1e) of graph: running since 17:55, waited 15 min, ran 5 min so far.",
+    );
+    // H29: the count of the job object.
+    expect(jobLine({ ...state, state: "running", reason: null, startedAt, waitedMs: 15 * MINUTE, ranMs: 5 * MINUTE, processes: 9800 }, NOW)).toBe(
+      "e2e (3f2a9c1e) of graph: running since 17:55, waited 15 min, ran 5 min so far, 9,800 processes started.",
     );
     const endedAt = new Date(NOW - 26 * 3_600_000).toISOString();
     expect(jobLine({ ...state, state: "exited", reason: "the process exited", startedAt, endedAt, waitedMs: 40_000, ranMs: 125 * MINUTE }, NOW)).toBe(

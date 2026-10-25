@@ -221,4 +221,43 @@ describe("detect: services (H27)", () => {
     expect(alert?.message).toBe("The Docker engine answers slowly: 1400 ms at the last check, 3 slow checks in a row.");
     expect(detect(services(health("docker", "down", 2)), { ...DEFAULT_ALERT_RULES, serviceDownChecks: 3 })).toEqual([]);
   });
+
+  it("flags an orphan whose parent ID is in use again by a newer process (H29)", () => {
+    const at = (info: ProcessInfo, startedAt: number): ProcessInfo => ({ ...info, startedAt });
+    const processes = [at(p(7, 99, "grep.exe", 2000), 5000), at(p(99, 1, "conhost.exe", 10), 9000)];
+    expect(detect(input(processes, { 7: ["other", "other"], 99: ["other", "other"] })).map((alert) => alert.id)).toEqual(["orphan:7"]);
+    expect(detect(input([at(p(7, 99, "grep.exe", 2000), 5000), at(p(99, 1, "bash.exe", 10), 4000)], { 7: ["other", "other"], 99: ["other", "other"] }))).toEqual([]);
+  });
+
+  describe("churn (H29)", () => {
+    const starts = (perMinute: number, spanMs: number): AlertInput["starts"] => ({
+      perMinute,
+      exact: true,
+      spanMs,
+      owners: [
+        { owner: "session:client", kind: "session", perMinute: 410, jobsPerMinute: 12, ownPerMinute: 398 },
+        { owner: "session:organizer", kind: "session", perMinute: 120, jobsPerMinute: 0, ownPerMinute: 120 },
+        { owner: "other", kind: "other", perMinute: 30, jobsPerMinute: 0, ownPerMinute: 30 },
+        { owner: "system", kind: "system", perMinute: 5, jobsPerMinute: 0, ownPerMinute: 5 },
+      ],
+      jobs: [{ id: "L1", job: "coeval-063-test-compiler", holder: "client", owner: "session:client", processes: 9800, perMinute: 12 }],
+    });
+
+    it("warns when the computer starts more than 600 processes a minute for 10 minutes, and names the owners and the jobs", () => {
+      const alerts = detect(input([], {}, { starts: starts(1450, 600_000) }));
+      expect(alerts).toHaveLength(1);
+      expect(alerts[0]).toMatchObject({ id: "churn", kind: "churn", subject: "process starts", severity: "warning", pid: null });
+      expect(alerts[0]?.message).toBe(
+        "Processes start at 1,450 a minute over the last 10 minutes. Most: session:client 410 (jobs 12, own commands 398, job coeval-063-test-compiler: 9,800 so far), " +
+          "session:organizer 120, other 30. Leased jobs with the most starts: coeval-063-test-compiler of client 9,800 so far. " +
+          "Each new process leaks kernel memory in the AMD display driver until it is updated (hub ask amd-driver).",
+      );
+    });
+
+    it("gives no alert below the limit, or before the reads cover 10 minutes", () => {
+      expect(detect(input([], {}, { starts: starts(590, 600_000) }))).toEqual([]);
+      expect(detect(input([], {}, { starts: starts(1450, 300_000) }))).toEqual([]);
+      expect(detect(input([], {}, { starts: starts(450, 600_000) }), { ...DEFAULT_ALERT_RULES, churnPerMinute: 400 }).map((alert) => alert.id)).toEqual(["churn"]);
+    });
+  });
 });

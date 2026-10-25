@@ -66,7 +66,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H26 | The state of a job: `headroom job <name\|id>`, for the fleet's typed wait `job:<name>` | done |
 | H27 | Service health: Docker, the MCP servers of the gateway, the fleet site | done |
 | H28 | UX round 1: the dashboard and the tracker. The dashboard shows what uses the computer, opens each panel to its history and shows the jobs on a timeline. | done |
-| H29 | Process starts by owner | later |
+| H29 | Process starts by owner. Each new process leaks kernel memory in the AMD display driver until Mark updates it (hub ask `amd-driver`). | done: the resource `procs` in starts each minute, an exact total of the computer from the sequence numbers of Windows, exact counts of the leased jobs from their job objects, a lower bound for each owner with its jobs and its own commands, the alert `churn`, the line of `headroom status`, `processes` in `headroom job`. A parent counts only when it started at or before its child. |
 
 ## The MCP gateway (H11)
 

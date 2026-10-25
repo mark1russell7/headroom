@@ -34,7 +34,7 @@ function storeOf(leases: readonly Lease[]): Store {
 
 describe("jobState", () => {
   it("gives the state of an exited job with its exit code, its times and its log", () => {
-    const state = jobState(lease("3f2a9c1e-0000-4000-8000-000000000001", { exitCode: 1, log: "D:\\logs\\e2e.log" }), NOW);
+    const state = jobState(lease("3f2a9c1e-0000-4000-8000-000000000001", { exitCode: 1, log: "D:\\logs\\e2e.log", processes: 9800 }), NOW);
     expect(state).toEqual({
       id: "3f2a9c1e-0000-4000-8000-000000000001",
       job: "graph-e2e",
@@ -49,13 +49,15 @@ describe("jobState", () => {
       waitedMs: 12 * 60_000,
       ranMs: 6 * 60_000,
       peakMb: 1843,
+      // H29: the processes that the job started, from its job object.
+      processes: 9800,
       log: "D:\\logs\\e2e.log",
     });
   });
 
   it("gives queued and running jobs with the time so far, and no exit code for a lease that ended without a job exit", () => {
     const queued = jobState(lease("q", { state: "waiting", grantedAt: null, endedAt: null, peakMb: null, reason: "waits for browser: needs 1, 0 free" }), NOW);
-    expect(queued).toMatchObject({ state: "queued", exitCode: null, startedAt: null, endedAt: null, waitedMs: 2 * HOUR, ranMs: null, peakMb: null, log: null });
+    expect(queued).toMatchObject({ state: "queued", exitCode: null, startedAt: null, endedAt: null, waitedMs: 2 * HOUR, ranMs: null, peakMb: null, processes: null, log: null });
     const running = jobState(lease("r", { state: "granted", endedAt: null, peakMb: null, reason: null }), NOW);
     expect(running).toMatchObject({ state: "running", exitCode: null, waitedMs: 12 * 60_000, ranMs: 2 * HOUR - 12 * 60_000 });
     const expired = jobState(lease("e", { state: "expired", peakMb: null, reason: "the process exited" }), NOW);

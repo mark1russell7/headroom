@@ -6,6 +6,7 @@
 import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
+import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
@@ -100,7 +101,8 @@ export interface Status {
   readonly disks: readonly DiskStatus[];
   /**
    * The level of each resource instance, with its 10 largest owners. The instances are the memory, the commit charge, the
-   * kernel pools, the desktop and the drives. Then come the processors, the network, the TCP ports, the services and the slots.
+   * kernel pools, the desktop and the drives. Then come the processors, the network, the TCP ports, the services, the process
+   * starts and the slots.
    */
   readonly resources: readonly ResourceStatus[];
   /**
@@ -110,6 +112,11 @@ export interface Status {
   readonly writes: readonly OwnerWrites[];
   /** The TCP connections of the last read of the processes (H24), or `null` on a platform with no TCP read. */
   readonly tcp: TcpSummary | null;
+  /**
+   * The process starts of the last 10 minutes (H29): the computer, each owner with its jobs and its own commands, and each
+   * leased job. The computer total is exact on Windows. The own commands of an owner are a lower bound.
+   */
+  readonly starts: ProcessStarts;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -227,6 +234,10 @@ export class Engine {
   #writes: readonly OwnerWrites[] = [];
   /** The cores of each owner over the last minute, from the last read of the processes. */
   #cores: readonly OwnerCores[] | undefined;
+  /** The process starts of each owner and each leased job (H29). */
+  readonly #startTracker = new StartTracker();
+  /** The process starts of the last 10 minutes, from the last read of the processes or the last count of a job. */
+  #starts: ProcessStarts = NO_STARTS;
   #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
   #disks: readonly DiskSpace[] = [];
   /** The byte counters of the network adapters at the last read and at the read before it (H24). */
@@ -332,6 +343,7 @@ export class Engine {
       previousNetwork: this.#previousNetwork,
       tcp: this.#tcp,
       services: this.#services(),
+      starts: this.#starts,
     };
     return this.#readings;
   }
@@ -358,6 +370,8 @@ export class Engine {
       this.#counters.read(now, this.#processes, ownerOf, this.#ownership.kindOf);
       this.#writes = this.#counters.writes(now);
       this.#cores = this.#counters.cores(now);
+      this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.());
+      this.#starts = this.#startTracker.summary(now);
       const gui = this.#sampler.gui?.();
       this.#load = { processes: this.#processes.length, userObjects: gui?.userObjects ?? null, gdiObjects: gui?.gdiObjects ?? null };
       if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
@@ -394,10 +408,16 @@ export class Engine {
     return this.#broker.get(lease.id) ?? lease;
   }
 
-  /** This function ends a lease. Then it grants the waiting leases that fit in the amounts that the lease frees. */
-  release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage, exit?: JobExit): Lease | undefined {
-    const lease = this.#broker.release(id, reason, peakMb ?? null, usage, exit);
-    if (lease) this.#persist([lease]);
+  /**
+   * This function ends a lease. Then it grants the waiting leases that fit in the amounts that the lease frees. `processes`
+   * is the count of processes that the job started, from its job object (H29).
+   */
+  release(id: string, reason?: string, peakMb?: number | null, usage?: JobUsage, exit?: JobExit, processes?: number): Lease | undefined {
+    const lease = this.#broker.release(id, reason, peakMb ?? null, usage, exit, processes);
+    if (lease) {
+      this.#count(lease, processes);
+      this.#persist([lease]);
+    }
     this.#persist(this.#broker.tick(this.capacity()));
     return lease ? (this.#broker.get(id) ?? lease) : undefined;
   }
@@ -420,11 +440,22 @@ export class Engine {
     return findJobs(this.#store, query, this.#now());
   }
 
-  /** This function records a heartbeat of a lease. */
-  renew(id: string): Lease | undefined {
-    const lease = this.#broker.renew(id);
-    if (lease) this.#store.saveLease(lease);
+  /** This function records a heartbeat of a lease. `processes` is the count of processes that its job started so far (H29). */
+  renew(id: string, processes?: number): Lease | undefined {
+    const lease = this.#broker.renew(id, processes);
+    if (lease) {
+      this.#count(lease, processes);
+      this.#store.saveLease(lease);
+    }
     return lease;
+  }
+
+  /** This function gives a count of the job object of a lease to the start tracker (H29). */
+  #count(lease: Lease, processes: number | undefined): void {
+    if (processes === undefined || lease.processes === undefined) return;
+    const now = this.#now();
+    this.#startTracker.report(lease, now, lease.processes, this.#ownership);
+    this.#starts = this.#startTracker.summary(now);
   }
 
   /** This function gives one lease. */
@@ -506,6 +537,7 @@ export class Engine {
       resources: withKinds(this.#measurements, this.#readings === null ? undefined : { readings: this.#readings, owners: this.#ownership }),
       writes: this.#writes,
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
+      starts: this.#starts,
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -608,7 +640,7 @@ export class Engine {
     const found = detect(
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
-        load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(),
+        load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
       },
       this.#alertRules,
     );

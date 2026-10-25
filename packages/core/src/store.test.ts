@@ -102,6 +102,37 @@ describe("Store", () => {
     store.close();
   });
 
+  it("adds the column of the processes of a job to a table of H26, and keeps the count of each heartbeat and of the release (H29)", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-processes-")), "h26.db");
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE leases (
+      id TEXT PRIMARY KEY, holder TEXT NOT NULL, job TEXT NOT NULL, amounts TEXT NOT NULL,
+      priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
+      requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT,
+      peak_mb REAL, usage TEXT, exit_code INTEGER, signal TEXT, log TEXT)`);
+    old.exec(`INSERT INTO leases VALUES ('old1', 'client', 'coeval-063', '{}', 0, 42, 300000, 'released', 1000, 1500, 9000, 9000, 'released',
+      NULL, NULL, 0, NULL, NULL)`);
+    old.close();
+    const store = new Store(path);
+    expect(store.lease("old1")?.processes).toBeUndefined();
+    let now = 20_000;
+    const broker = new Broker({ now: () => now, newId: () => "l1", isAlive: () => true });
+    store.saveLease(broker.request({ holder: "client", job: "coeval-063", amounts: {}, pid: 42 }));
+    broker.tick({ totalMb: 1000, availableMb: 1000, pools: {} });
+    now = 50_000;
+    const renewed = broker.renew("l1", 4100);
+    if (renewed) store.saveLease(renewed);
+    expect(store.lease("l1")).toMatchObject({ state: "granted", processes: 4100, heartbeatAt: 50_000 });
+    // A smaller count does not lower the count of the lease.
+    expect(broker.renew("l1", 12)?.processes).toBe(4100);
+    now = 80_000;
+    const ended = broker.release("l1", "the job ended with code 0", null, undefined, { code: 0, signal: null }, 9800);
+    if (ended) store.saveLease(ended);
+    expect(store.lease("l1")).toMatchObject({ state: "released", processes: 9800, exitCode: 0 });
+    expect(store.lease("old1")).toMatchObject({ id: "old1", exitCode: 0 });
+    store.close();
+  });
+
   it("finds the leases by an id prefix and by the job, and keeps the ended leases for their own time", () => {
     const store = new Store(":memory:");
     const base = { holder: "graph", job: "e2e", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, grantedAt: null, heartbeatAt: 0, reason: null, peakMb: null };

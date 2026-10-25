@@ -44,8 +44,14 @@ const ReleaseInput = IdInput.extend({
   usage: Usage.optional().describe("The use of the job at its release, from its holder"),
   exitCode: z.number().int().optional().describe("The exit code of the job"),
   signal: z.string().min(1).max(32).optional().describe("The signal that stopped the job, for example SIGTERM"),
+  processes: z.number().int().min(0).optional().describe("The processes that the job started, from its job object"),
 });
 type ReleaseInput = z.infer<typeof ReleaseInput>;
+
+const RenewInput = IdInput.extend({
+  processes: z.number().int().min(0).optional().describe("The processes that the job started so far, from its job object"),
+});
+type RenewInput = z.infer<typeof RenewInput>;
 
 const JobInput = z.object({
   query: z.string().min(1).max(500).describe("The id of a lease, a prefix of 8 or more characters of it, or the name of a job"),
@@ -177,7 +183,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     })
     .handler(async (input: ReleaseInput): Promise<Lease> => {
       const exit = input.exitCode === undefined && input.signal === undefined ? undefined : { code: input.exitCode ?? null, signal: input.signal ?? null };
-      return found(engine.release(input.id, input.reason, input.peakMb, usageOf(input.usage), exit), input.id);
+      return found(engine.release(input.id, input.reason, input.peakMb, usageOf(input.usage), exit, input.processes), input.id);
     })
     .build() as AnyProcedure;
 
@@ -197,15 +203,15 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
 
   const renew = createProcedure()
     .path(["resources", "renew"])
-    .input(zodAdapter<IdInput>(IdInput))
+    .input(zodAdapter<RenewInput>(RenewInput))
     .output(anything<Lease>())
     .meta({
-      description: "Record a heartbeat of a lease that has no process",
+      description: "Record a heartbeat of a lease, with the count of processes that its job started so far",
       args: ["id"],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: IdInput): Promise<Lease> => found(engine.renew(input.id), input.id))
+    .handler(async (input: RenewInput): Promise<Lease> => found(engine.renew(input.id, input.processes), input.id))
     .build() as AnyProcedure;
 
   const history = createProcedure()

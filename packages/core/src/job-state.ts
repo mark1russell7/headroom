@@ -35,6 +35,8 @@ export interface JobState {
   readonly ranMs: number | null;
   /** The peak memory of the job in MB, or `null`. */
   readonly peakMb: number | null;
+  /** The processes that the job started so far, from its job object (H29), or `null` for a job with no job object. */
+  readonly processes: number | null;
   /** The absolute path of the log file of the job (`headroom run --log`), or `null`. */
   readonly log: string | null;
 }
@@ -76,6 +78,7 @@ export function jobState(lease: Lease, now: number): JobState {
     waitedMs: Math.max(0, (lease.grantedAt ?? end) - lease.requestedAt),
     ranMs: lease.grantedAt === null ? null : Math.max(0, end - lease.grantedAt),
     peakMb: peak === null ? null : Math.round(peak),
+    processes: lease.processes ?? null,
     log: lease.log ?? null,
   };
 }

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { attribute, kernelOwners, readSessions, titleOf, treeMb } from "./owners.ts";
+import { attribute, childrenOf, isParent, kernelOwners, readSessions, titleOf, treeMb } from "./owners.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb / 2 });
@@ -39,6 +39,33 @@ describe("attribute", () => {
     expect(ownerOf.get(40)).toBe("mcp:vex");
     expect(ownerOf.get(10)).toBe("editor");
     expect(owners.find((owner) => owner.owner === "mcp:vex")).toMatchObject({ kind: "mcp", privateMb: 60, processes: 1 });
+  });
+
+  it("follows a parent only when it started at or before its child, so a parent ID in use again does not decide the owner (H29)", () => {
+    const at = (info: ProcessInfo, startedAt: number): ProcessInfo => ({ ...info, startedAt });
+    const sessions = [{ pid: 11, name: "client", sessionId: "s1", status: "busy", cwd: null }];
+    // The session started at 5000. The real parent of 61 and 62 ended, and the session got its ID later.
+    const tree = [
+      at(p(11, 1, "claude.exe", 900), 5000),
+      at(p(12, 11, "bash.exe", 5), 6000),
+      at(p(61, 11, "gh.exe", 5), 4000),
+      at(p(62, 11, "chrome.exe", 5), 4000),
+      at(p(63, 61, "tr.exe", 1), 4500),
+      p(64, 11, "base64.exe", 1),
+    ];
+    const { ownerOf } = attribute(tree, sessions);
+    expect(ownerOf.get(12)).toBe("session:client");
+    // The process goes to the owner of its own part of the tree: no owner, or its own rule.
+    expect(ownerOf.get(61)).toBe("other");
+    expect(ownerOf.get(62)).toBe("browser");
+    expect(ownerOf.get(63)).toBe("other");
+    // Without a start, the link counts, as before.
+    expect(ownerOf.get(64)).toBe("session:client");
+    expect(isParent(tree[0] as ProcessInfo, tree[1] as ProcessInfo)).toBe(true);
+    expect(isParent(tree[0] as ProcessInfo, tree[2] as ProcessInfo)).toBe(false);
+    // The tree of a process and the leases follow the same rule.
+    expect(treeMb(11, tree)).toBe(906);
+    expect([...(childrenOf(tree).get(11) ?? [])].map((info) => info.pid)).toEqual([12, 64]);
   });
 
   it("survives a cycle in the parents", () => {

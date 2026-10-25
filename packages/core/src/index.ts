@@ -15,7 +15,7 @@ export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
 export { Engine } from "./engine.ts";
 export type { Alerts, ConfigChange, DiskStatus, EndedAlert, EngineOptions, History, PoolTagRow, PoolTags, ResourcePoint, Status, Suggestion } from "./engine.ts";
-export { attribute, DEFAULT_RULES, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
+export { attribute, childrenOf, DEFAULT_RULES, isParent, parentOf, programName, readSessions, sessionsDir, treeMb } from "./owners.ts";
 export type { Attribution, OwnerRule } from "./owners.ts";
 export {
   DEFAULT_DYNAMIC_PORTS,
@@ -84,6 +84,8 @@ export {
 } from "./services.ts";
 export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, ServiceState, ServiceType } from "./services.ts";
 export type { Sampler } from "./sampler.ts";
+export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
+export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
 export { Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow } from "./store.ts";
 export {

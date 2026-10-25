@@ -64,6 +64,34 @@ export function programName(name: string): string {
   return name.toLowerCase().replace(/\.exe$/, "");
 }
 
+/**
+ * This function tells if a process can be the parent of another process. The parent must start at or before the child.
+ * A parent that started later is a new process with the ID of the real parent, which ended (H29).
+ * Without a start, the link counts.
+ */
+export function isParent(parent: ProcessInfo, child: ProcessInfo): boolean {
+  return parent.pid !== child.pid && (parent.startedAt === undefined || child.startedAt === undefined || parent.startedAt <= child.startedAt);
+}
+
+/** This function gives the parent of a process, or `undefined` when the parent ended or its ID is in use again. */
+export function parentOf(info: ProcessInfo, byPid: ReadonlyMap<number, ProcessInfo>): ProcessInfo | undefined {
+  const parent = byPid.get(info.ppid);
+  return parent !== undefined && isParent(parent, info) ? parent : undefined;
+}
+
+/** This function gives the children of each process ID. A child of a process ID that is in use again is absent (H29). */
+export function childrenOf(processes: readonly ProcessInfo[]): Map<number, ProcessInfo[]> {
+  const byPid = new Map(processes.map((info) => [info.pid, info]));
+  const children = new Map<number, ProcessInfo[]>();
+  for (const info of processes) {
+    if (parentOf(info, byPid) === undefined) continue;
+    const list = children.get(info.ppid) ?? [];
+    list.push(info);
+    children.set(info.ppid, list);
+  }
+  return children;
+}
+
 /** The result of an attribution. */
 export interface Attribution {
   /** The owners, the largest private memory first. */
@@ -116,6 +144,9 @@ export function kernelOwners(memory: SystemMemory): OwnerUsage[] {
  * A title replaces the rule `system` farther up. Thus a Node process with the title `<name>` that Task Scheduler, a
  * service or Explorer starts belongs to `service:<name>`, with its descendants. A title with no rule farther up gives no
  * owner, so an orphan stays `other`. The memory that no process holds goes to the owners of `kernelOwners()`.
+ *
+ * The search goes up only to a parent that started at or before its child (H29). A later start shows a parent ID that
+ * is in use again. The search then stops, and the process and the ancestors below that point decide the owner.
  */
 export function attribute(
   processes: readonly ProcessInfo[],
@@ -137,7 +168,7 @@ export function attribute(
     // The nearest title below the nearest rule.
     let title: string | null = null;
     const seen = new Set<number>();
-    for (let at: ProcessInfo | undefined = info; at && !seen.has(at.pid) && seen.size < 64; at = byPid.get(at.ppid)) {
+    for (let at: ProcessInfo | undefined = info; at && !seen.has(at.pid) && seen.size < 64; at = parentOf(at, byPid)) {
       seen.add(at.pid);
       const session = sessionOf.get(at.pid);
       if (session !== undefined) {
@@ -179,13 +210,7 @@ function round(sum: { privateMb: number; workingMb: number; processes: number })
 
 /** This function gives the private memory, in MB, of a process and all of its descendants. */
 export function treeMb(pid: number, processes: readonly ProcessInfo[]): number {
-  const children = new Map<number, ProcessInfo[]>();
-  for (const info of processes) {
-    if (info.pid === info.ppid) continue;
-    const list = children.get(info.ppid) ?? [];
-    list.push(info);
-    children.set(info.ppid, list);
-  }
+  const children = childrenOf(processes);
   const root = processes.find((info) => info.pid === pid);
   if (!root) return 0;
   let total = 0;

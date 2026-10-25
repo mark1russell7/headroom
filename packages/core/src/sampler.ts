@@ -10,6 +10,11 @@ export interface Sampler {
   memory(): SystemMemory;
   /** This function reads the processes with their parents and their memory. */
   processes(): ProcessInfo[];
+  /**
+   * This function gives the sequence number of the newest process at the last read of the processes (H29). Windows gives
+   * each new process the next number, so the change between two reads is the exact count of starts. Only Windows has it.
+   */
+  processSequence?(): number | undefined;
   /** This function reads the use of the kernel pools by each pool tag. Only Windows has pool tags. */
   poolTags?(): PoolTag[];
   /** This function reads the USER and GDI objects of all the processes of the session. Only Windows has them. */
