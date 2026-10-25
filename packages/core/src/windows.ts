@@ -9,6 +9,8 @@
  * - `NtQueryInformationProcess` with `ProcessSequenceNumber` gives the sequence number of the newest process (H29).
  * - `GetTickCount64` gives the start of the computer.
  * - `NtQuerySystemInformation` with `SystemProcessInformation` gives the start, the processor time and the I/O bytes of each process (H20).
+ *   It also gives the count of the handles of each process (H48).
+ * - `NtQueryInformationProcess` gives the command line of a process for its owner record (H48), one read for each new process.
  * - `NtQuerySystemInformation` of `ntdll.dll` also gives the use of the kernel pools by each pool tag.
  * - `GetGuiResources` of `user32.dll` gives the USER and GDI objects of the session.
  * - `GetLogicalDrives` and `GetDriveTypeW` give the fixed drives, and `statfs` gives their free space.
@@ -217,6 +219,7 @@ function processes(): ProcessInfo[] {
         cpuMs: total?.cpuMs,
         readBytes: total?.readBytes,
         writeBytes: total?.writeBytes,
+        handles: total?.handles,
         ...(title === null ? {} : { title }),
       });
       entry.dwSize = entrySize;
@@ -313,6 +316,7 @@ const SPI_CREATE_TIME = 0x20;
 const SPI_USER_TIME = 0x28;
 const SPI_KERNEL_TIME = 0x30;
 const SPI_PROCESS_ID = 0x50;
+const SPI_HANDLE_COUNT = 0x60;
 const SPI_READ_TRANSFER = 0xe8;
 const SPI_WRITE_TRANSFER = 0xf0;
 const SPI_SIZE = 0x100;
@@ -324,10 +328,12 @@ interface ProcessTotals {
   readonly cpuMs: number;
   readonly readBytes: number;
   readonly writeBytes: number;
+  /** The count of the open handles of the process at the read (H48). */
+  readonly handles: number;
 }
 
 /**
- * This function reads the start, the processor time and the I/O bytes of each process with one call of
+ * This function reads the start, the processor time, the I/O bytes and the handles of each process with one call of
  * `NtQuerySystemInformation(SystemProcessInformation)`. It opens no process, so it also reads the protected processes.
  * The I/O bytes are `ReadTransferCount` and `WriteTransferCount`: each read and write, also to a pipe or a device.
  * The idle process (ID 0) is absent, because its processor time is the idle time. A failed read gives no totals.
@@ -352,6 +358,7 @@ function processTotals(): Map<number, ProcessTotals> {
           cpuMs: Number(buffer.readBigInt64LE(at + SPI_USER_TIME) + buffer.readBigInt64LE(at + SPI_KERNEL_TIME)) / 10_000,
           readBytes: Number(buffer.readBigInt64LE(at + SPI_READ_TRANSFER)),
           writeBytes: Number(buffer.readBigInt64LE(at + SPI_WRITE_TRANSFER)),
+          handles: buffer.readUInt32LE(at + SPI_HANDLE_COUNT),
         });
       }
       const next = buffer.readUInt32LE(at);
@@ -589,6 +596,7 @@ export function windowsSampler(): Sampler {
   return {
     memory,
     processes,
+    commandLine,
     processSequence: () => sequence,
     poolTags,
     gui,

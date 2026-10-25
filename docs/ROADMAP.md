@@ -23,6 +23,7 @@ Mark approved the plan on 2026-10-19. The plan follows the design rule of Mark: 
 
 - The sampler reads the available memory, the commit charge, the kernel pools and the memory of each process.
 - It gives each process tree to an owner: a Claude Code session (from `claude agents --json`), Docker, the browser or other.
+- An orphan keeps the owner that it had while its parent was alive (H48). The store keeps these owner records over a restart of the daemon.
 - The database keeps the samples in a ring buffer, with a coarser history for the older samples.
 
 ### The faces
@@ -86,6 +87,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when it is not in use. If the poll continues, Mark turns off the extension in the workspaces that do not use Docker. | waits for Mark |
 | H46 | The peer of a local connection: `resources.peer` gives the process, the nearest `claude.exe`, the session and the fleet role at the other end of a loopback TCP connection. The fleet site uses it for its MCP face (server-stack fp-mcp). Also `headroom peer`. | done |
 | H47 | Jobs that start many processes do not run beside browser tests. The lease keeps its peak starts in one minute. A job name whose past runs are above 600 a minute is spawn-heavy, and a first run becomes spawn-heavy when it goes above the limit. A spawn-heavy lease and a browser test wait for each other, in the queue order. Also `--spawn-heavy`, `--no-spawn-heavy` and `headroom config spawn-heavy`. | done |
+| H48 | Runaway handles and the owners of orphans. On 2026-10-25, an orphan `find.exe` of a session held 1.3 million handles, the paged pool grew 593 MB an hour, and headroom named no owner. The alert `handles` (`runaway:handles:<pid>`) warns above 100,000 handles or a gain of 20,000 in 5 minutes, and is critical above 500,000. The daemon records the owner and the command line of each process at its first read, and the table `process_owners` keeps them over a restart. An orphan shows as `<owner> (orphan)` in the owners lists and the CPU runaway alert. `headroom status` gives the sum of the handles. | done |
 
 ## The MCP gateway (H11)
 

@@ -61,6 +61,11 @@ export interface ProcessInfo {
    * is the owner `service:<name>`.
    */
   readonly title?: string | undefined;
+  /**
+   * The count of the open handles of the process (H48): files, registry keys, events and other kernel objects. Each handle
+   * holds kernel memory. Only the Windows sampler reads it, from `HandleCount` of `SystemProcessInformation`.
+   */
+  readonly handles?: number | undefined;
 }
 
 /** One sample of the computer. The process list is empty when the sample did not read the processes. */

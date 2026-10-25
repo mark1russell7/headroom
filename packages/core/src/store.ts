@@ -4,6 +4,7 @@
  * It keeps the leases, the capacity of the configured pools and one memory sample each minute. It also keeps
  * the memory and the written MB of each owner each minute. It also keeps the level of each resource instance each minute,
  * the snapshots of the pool tags, the settings and the sleeps of the computer. It removes the samples that are older than the retention.
+ * It also keeps the owner record of each live process that is older than one minute (H48).
  */
 
 import { mkdirSync } from "node:fs";
@@ -16,6 +17,7 @@ import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
 import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } from "./presence.ts";
+import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
@@ -63,6 +65,9 @@ CREATE TABLE IF NOT EXISTS resource_samples (
 );
 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sleeps (from_at INTEGER PRIMARY KEY, to_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS process_owners (
+  pid INTEGER NOT NULL, created INTEGER NOT NULL, owner TEXT NOT NULL, command TEXT, first_seen INTEGER NOT NULL, PRIMARY KEY (pid, created)
+);
 `;
 
 /** One sleep of the computer (H30): its start and its end, in milliseconds since the epoch. The history has no samples in it. */
@@ -565,6 +570,41 @@ export class Store {
       .prepare("SELECT from_at, to_at FROM sleeps WHERE to_at >= ? ORDER BY from_at")
       .all(since)
       .map((row) => [Number(row["from_at"]), Number(row["to_at"])] as const);
+  }
+
+  /** This function reads the owner records of the processes (H48), at most 4096. */
+  processOwners(): ProcessRecord[] {
+    return this.#db
+      .prepare("SELECT pid, created, owner, command, first_seen FROM process_owners LIMIT ?")
+      .all(RECORDS_MAX)
+      .map((row) => ({
+        pid: Number(row["pid"]),
+        created: Number(row["created"]),
+        owner: String(row["owner"]),
+        command: row["command"] === null || row["command"] === undefined ? null : String(row["command"]),
+        firstSeen: Number(row["first_seen"]),
+      }));
+  }
+
+  /**
+   * This function writes the changes of the owner records of one read (H48). One statement removes the records of all the
+   * ended processes. A read with no change writes nothing.
+   */
+  saveProcessOwners(changes: RecordChanges): void {
+    if (changes.save.length === 0 && changes.ended.length === 0) return;
+    this.#db.exec("BEGIN");
+    try {
+      if (changes.ended.length > 0) {
+        const keys = JSON.stringify(changes.ended.map((record) => `${record.pid}:${record.created}`));
+        this.#db.prepare("DELETE FROM process_owners WHERE pid || ':' || created IN (SELECT value FROM json_each(?))").run(keys);
+      }
+      const insert = this.#db.prepare("INSERT OR REPLACE INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)");
+      for (const record of changes.save) insert.run(record.pid, record.created, record.owner, record.command, record.firstSeen);
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   /**

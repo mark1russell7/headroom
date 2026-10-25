@@ -124,7 +124,7 @@ describe("detect", () => {
 
   it("gives one alert for each process: a large orphan with no lease is a runaway", () => {
     const alerts = detect(input([p(7, 99, "grep.exe", 6000)], { 7: ["other", "other"] }));
-    expect(alerts).toStrictEqual([{ id: "runaway:7", kind: "runaway", subject: "grep.exe (7)", pid: 7, mb: 6000, message: "grep.exe (7) of other holds 5.9 GB with no lease" }]);
+    expect(alerts).toStrictEqual([{ id: "runaway:7", kind: "runaway", subject: "grep.exe (7)", pid: 7, mb: 6000, message: "grep.exe (7) of other (orphan) holds 5.9 GB with no lease" }]);
     const orphan = detect(input([p(7, 99, "grep.exe", 2000)], { 7: ["other", "other"] }));
     expect(orphan[0]).toStrictEqual({ id: "orphan:7", kind: "orphan", subject: "grep.exe (7)", pid: 7, mb: 2000, message: "grep.exe (7) holds 2.0 GB, and its parent (99) stopped" });
   });
@@ -360,7 +360,7 @@ describe("runaway process trees (H23)", () => {
   const trailOf = (cores: number, minutes: number, from = 0): { at: number; value: number }[] =>
     Array.from({ length: (minutes * MIN) / 10_000 }, (_, step) => ({ at: from + step * 10_000, value: cores }));
   const owners: Record<number, [string, OwnerKind]> = { 10: ["session:graph", "session"], 11: ["session:graph", "session"], 30: ["docker", "docker"] };
-  const processes = [p(10, 1, "node.exe", 100), p(11, 10, "node.exe", 100), p(30, 1, "vmmem.exe", 100)];
+  const processes = [p(10, 0, "node.exe", 100), p(11, 10, "node.exe", 100), p(30, 1, "vmmem.exe", 100)];
   const treeAlerts = (trail: { at: number; value: number }[], pid = 10, active: AlertInput["active"] = [], extra: Partial<AlertInput> = {}) =>
     detect(input(processes, owners, { at: (trail.at(-1)?.at ?? 0) + 10_000, processors: 16, trees: [{ pid, processes: 2, trail }], active, ...extra })).filter(
       (alert) => alert.id.startsWith("runaway:cpu:"),

@@ -16,6 +16,8 @@ import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, readSessions, sessionsDir, treeMb } from "./owners.ts";
+import { OwnerRecords } from "./orphans.ts";
+import { HandleTracker, handleStatus, type HandleStatus } from "./handles.ts";
 import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
 import { fitTrend, forecastFrom, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
 import {
@@ -208,6 +210,11 @@ export interface Status {
    * each granted lease. It is `null` on a computer with no GPU counters.
    */
   readonly gpu: GpuStatus | null;
+  /**
+   * The handles (H48): their sum for all the processes, the warning line of one process, and the 3 processes with the most
+   * handles. Each of the 3 has its owner. It is `null` on a computer with no count of handles.
+   */
+  readonly handles: HandleStatus | null;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -466,6 +473,10 @@ export class Engine {
   #autoHold: number | null;
   /** The fit of the two kernel pools together at the last sample, for the forecast to the automatic level. */
   #poolsTrend: Trend | null = null;
+  /** The owner record of each live process (H48). An orphan keeps the owner of its record after its parent ends. */
+  readonly #records = new OwnerRecords();
+  /** The handles of each process with many handles over the last 7 minutes (H48). */
+  readonly #handles = new HandleTracker();
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -526,6 +537,8 @@ export class Engine {
     // The writes of the last hour continue after a restart, so a disk alert names the owners that filled the drive.
     this.#counters.restore("writeBytes", this.#store.writesSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
     this.#writes = this.#counters.writes(this.#startedAt);
+    // H48: the owner records continue after a restart, so an orphan keeps the owner that it had before the restart.
+    this.#records.restore(this.#store.processOwners());
     const config = this.#store.config();
     this.#cpuReserve = config.cpuReserve;
     this.#autoDrainMb = config.autoDrainMb;
@@ -659,7 +672,10 @@ export class Engine {
       this.#previous = this.#processes;
       this.#processes = this.#sampler.processes();
       this.#sessions = readSessions(this.#sessionsDir);
-      const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers());
+      // H48: an orphan gets the owner of its record, with the label `(orphan)`.
+      const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
+      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#sampler.commandLine?.(pid) ?? null));
+      this.#handles.read(now, this.#processes);
       this.#owners = owners;
       this.#ownership = {
         ownerOf,
@@ -948,6 +964,7 @@ export class Engine {
       reboot: this.#rebootBudget(now, forecasts),
       thermal: this.thermalStatus(),
       gpu: gpuStatus(this.#gpu, this.#ownership, new Map(this.#processes.map((info) => [info.pid, info.name]))),
+      handles: handleStatus(this.#processes, this.#ownership.ownerOf, (info) => this.#records.get(info), this.#alertRules.handlesWarn),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -1091,6 +1108,9 @@ export class Engine {
         trees: this.#trees(now),
         // H32: the forecast rules read the forecasts from the fits of the last sample.
         forecasts: this.#forecasts(now),
+        // H48: only a process above the lower line of the handles rule in the window needs its trail.
+        handles: this.#handles.trails(this.#processes, Math.min(this.#alertRules.handlesWarn, this.#alertRules.handlesGain)),
+        recordOf: (info) => this.#records.get(info),
       },
       this.#alertRules,
     );
