@@ -274,15 +274,18 @@ export class PresenceTracker {
     const next = classify({ now, read, call, present: this.#present, display: this.#display, awayAfterMs });
     const last = this.#current;
     const changed = last === null || last.state !== next.state || last.busy !== next.busy;
+    // At the first read, an away state started at the last input plus the time for away, not at the start of the daemon.
+    const idleMs = read.idleMs;
+    const start = last === null && next.state === "away" && idleMs !== null && idleMs >= awayAfterMs ? now - idleMs + awayAfterMs : now;
     this.#current = {
       state: next.state,
-      since: changed ? now : last.since,
+      since: changed ? start : last.since,
       reason: next.reason,
       busy: next.busy,
       call: callDevice(call),
       idleMs: read.idleMs,
     };
-    if (changed) this.#history = [...this.#history, { state: next.state, busy: next.busy, at: now, reason: next.reason }].slice(-PRESENCE_HISTORY);
+    if (changed) this.#history = [...this.#history, { state: next.state, busy: next.busy, at: start, reason: next.reason }].slice(-PRESENCE_HISTORY);
     return changed;
   }
 }
