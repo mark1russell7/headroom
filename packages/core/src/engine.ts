@@ -8,7 +8,8 @@ import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRe
 import { conditionWait, localClock, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
-import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TreeUse } from "./cpu.ts";
+import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TrailPoint, type TreeUse } from "./cpu.ts";
+import { gpuRead, gpuStatus, leaseGpuMb, type GpuRead, type GpuStatus } from "./gpu.ts";
 import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, type JobQuery, type JobState } from "./job-state.ts";
@@ -196,6 +197,11 @@ export interface Status {
    * is throttled, it names the 3 owners with the most cores. It is `null` on a computer with no such counters.
    */
   readonly thermal: ThermalStatus | null;
+  /**
+   * The GPU (H36): each adapter with its memory, its limits, its engine use and its owners, and the GPU memory of
+   * each granted lease. It is `null` on a computer with no GPU counters.
+   */
+  readonly gpu: GpuStatus | null;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -294,6 +300,10 @@ const DRAIN_IDS: ReadonlySet<string> = new Set([DRAIN_ALERT, DRAIN_READY_ALERT])
 /** After a resume event, a time between two calls of the engine shorter than this is not a sleep. A tick that came first marked it. */
 const MIN_SLEEP_MS = 5000;
 const round = (mb: number): number => Math.round(mb * 10) / 10;
+/** The window of the GPU trails (H36): the rule needs 2 minutes above its limit, and one minute below it to end. */
+const GPU_TRAIL_MS = 5 * 60_000;
+/** A lease keeps a new peak of GPU memory only when it grows by this amount, so the store gets few writes. */
+const GPU_PEAK_STEP_MB = 16;
 
 /** The active alerts and the alerts that ended last. */
 export interface Alerts {
@@ -403,6 +413,9 @@ export class Engine {
   #meters: PowerMeters | undefined;
   /** The trail of the speed and the heat of the CPU (H35), from the reads of the last 11 minutes. */
   readonly #thermal = new ThermalTracker();
+  /** The last GPU read (H36), and the used part of each adapter at each read of the last minutes, for the GPU alert. */
+  #gpu: GpuRead | undefined;
+  #gpuTrails = new Map<ResourceId, TrailPoint[]>();
   /** The state from the power events: the power source, the lid and the power mode. */
   readonly #powerState: { ac: boolean | null; lidOpen: boolean | null; powerMode: PowerMode | null } = { ac: null, lidOpen: null, powerMode: null };
   /** A power event asks for a read of the battery at the next tick. A change of the power source also asks for a check of the alerts. */
@@ -603,6 +616,7 @@ export class Engine {
       battery: this.#battery,
       meters: this.#meters,
       thermal: this.#thermal.state(this.#now()) ?? undefined,
+      gpu: this.#gpu,
       leases,
     };
     return this.#readings;
@@ -653,6 +667,8 @@ export class Engine {
       this.#readBattery();
       this.#readMeters();
       this.#readThermal(now);
+      // H36: the GPU read uses the PDH collection of the Energy Meter.
+      this.#readGpu(now);
       this.#check(now, ownerOf);
     } else if (this.#batteryDue) {
       // A power event: the battery is cheap to read, so the tick reads it before the next read of the processes.
@@ -894,6 +910,7 @@ export class Engine {
       presence: presenceStatus(this.#presence, this.#policy),
       reboot: this.#rebootBudget(now, forecasts),
       thermal: this.thermalStatus(),
+      gpu: gpuStatus(this.#gpu, this.#ownership, new Map(this.#processes.map((info) => [info.pid, info.name]))),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
@@ -1029,10 +1046,12 @@ export class Engine {
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
         load: this.#load, disks, writes: this.#writes, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
-        battery: this.#battery, meters: this.#meters, cores: this.#cores, thermal: this.#thermal.state(now) ?? undefined,
+        battery: this.#battery, meters: this.#meters, cores: this.#cores, thermal: this.#thermal.state(now) ?? undefined, gpu: this.#gpu,
         // H23: the CPU rules read the trails of the counter tracker, and an active alert ends only after its clear time.
+        // H36: the GPU rule reads the trail of the used part of each adapter.
         at: now, processors: this.#processors, active: [...this.#alerts.values()], leaseCores: this.#leaseCores,
-        trails: this.#cores === undefined ? new Map() : new Map([["cpu", this.#counters.coresTrail(now)]]), trees: this.#trees(now),
+        trails: new Map([...(this.#cores === undefined ? [] : [["cpu", this.#counters.coresTrail(now)] as const]), ...this.#gpuTrails]),
+        trees: this.#trees(now),
         // H32: the forecast rules read the forecasts from the fits of the last sample.
         forecasts: this.#forecasts(now),
       },
@@ -1328,6 +1347,8 @@ export class Engine {
     this.#startTracker.gap(to);
     // H35: a limit of the CPU does not span the sleep.
     this.#thermal.gap();
+    // H36: the time above the GPU limit does not span the sleep.
+    this.#gpuTrails = new Map();
     this.#network = undefined;
     this.#previousNetwork = undefined;
     this.#diskReadings.clear();
@@ -1440,6 +1461,36 @@ export class Engine {
     if (state === null) return null;
     const owners = state.throttled ? heatOwners(this.#cores, cpuWatts(this.#meters), this.#broker.leases(), this.#ownership.ownerOf) : [];
     return { ...state, owners };
+  }
+
+  /**
+   * This function reads the GPU (H36), and keeps the used part of each adapter in its trail for the GPU alert. A failed
+   * read gives no GPU, and the tick continues. A computer with no GPU counters has no GPU.
+   */
+  #readGpu(now: number): void {
+    if (!this.#sampler.gpu) return;
+    try {
+      this.#gpu = gpuRead(this.#sampler.gpu(), this.#memory.totalMb) ?? undefined;
+    } catch {
+      this.#gpu = undefined;
+    }
+    const trails = new Map<ResourceId, TrailPoint[]>();
+    for (const adapter of this.#gpu?.adapters ?? []) {
+      const kept = (this.#gpuTrails.get(adapter.id) ?? []).filter((point) => now - point.at < GPU_TRAIL_MS);
+      trails.set(adapter.id, [...kept, { at: now, value: adapter.usedMb }]);
+    }
+    this.#gpuTrails = trails;
+    this.#recordPeakGpu();
+  }
+
+  /** This function keeps the highest GPU memory of each granted lease (H36). It writes a lease only when its peak grows by 16 MB or more. */
+  #recordPeakGpu(): void {
+    for (const [id, mb] of leaseGpuMb(this.#gpu, this.#ownership.leaseOf)) {
+      const lease = this.#broker.get(id);
+      if (lease === undefined || lease.state !== "granted" || mb < (lease.peakGpuMb ?? 0) + GPU_PEAK_STEP_MB) continue;
+      const next = this.#broker.update(id, { peakGpuMb: Math.round(mb) });
+      if (next !== undefined) this.#store.saveLease(next);
+    }
   }
 
   /** This function holds the power request while a lease is granted on AC power, and ends it otherwise (H30). */

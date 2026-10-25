@@ -739,13 +739,20 @@ function renderReboot(st) {
 
 // ---- the resources: one card for each instance of Status.resources, from the model ----
 // The group of each kind, in the order of the page. A kind that the page does not know goes last, with its own name.
-const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["thermal", "CPU"], ["battery", "Power"], ["power", "Power"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"], ["procs", "Kernel"]];
+const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["thermal", "CPU"], ["gpu", "GPU"], ["battery", "Power"], ["power", "Power"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"], ["procs", "Kernel"]];
 const NAMES = {
   memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool",
   "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports", procs: "Process starts", battery: "Battery", power: "Power draw", thermal: "CPU speed and heat",
 };
+/** The GPU part of the text of a GPU card (H36): the shared memory in the RAM and the use of the busiest engine. */
+function gpuSub(g) {
+  const busy = g.busyPercent == null ? "" : `${Math.round(g.busyPercent)}% busy`;
+  return [`${amount(g.sharedMb, "MB")} shared, in RAM`, busy].filter(Boolean).join(" · ");
+}
 function resName(r) {
   if (r.health?.title) { const t = r.health.title.replace(/^The /, ""); return t[0].toUpperCase() + t.slice(1); }
+  // H36: a GPU adapter shows the name that DXGI gives it.
+  if (r.gpu?.name) return `GPU: ${r.gpu.name}`;
   const part = r.id.includes(":") ? r.id.slice(r.id.indexOf(":") + 1) : "";
   return NAMES[r.id] || (r.kind === "disk" ? `Drive ${part}` : r.kind === "slot" ? `Slot ${r.id}` : `${r.kind[0].toUpperCase()}${r.kind.slice(1)} ${part}`.trim());
 }
@@ -823,7 +830,7 @@ function resCard(r, st, points) {
     : onFree ? h("div", { class: "big" }, h("b", { text: u(r.free) }), `free of ${u(r.capacity)}`)
     : r.used != null ? h("div", { class: "big" }, h("b", { text: u(r.used) }), r.unit === "per minute" ? "on average over 10 minutes" : r.unit === "W" ? "for the whole computer" : "in use")
     : h("div", { class: "big" }, h("b", { text: u(r.capacity) }), "in total");
-  const sub = bt ? batteryLine(bt) : th ? heatLine(th) : hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`].filter(Boolean).join(" · ");
+  const sub = bt ? batteryLine(bt) : th ? heatLine(th) : hl ? [`${hl.state} since ${clock(hl.since)}`, hl.state === "ok" || !hl.error ? "" : hl.error].filter(Boolean).join(" · ") : [used == null ? (r.used == null ? "no measurement of the use yet" : "") : `${Math.round(used * 100)}% in use`, st.free?.[r.id] == null ? "" : `${u(Math.max(0, st.free[r.id]))} free for a lease`, r.gpu ? gpuSub(r.gpu) : ""].filter(Boolean).join(" · ");
   // H32: the forecast to the nearest limit. The battery line already gives the time left of Windows.
   const fc = bt ? null : forecastLine(r);
   const change = r.unit === "MB" ? hourly(points, k, st.at, value) : null;

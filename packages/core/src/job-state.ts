@@ -56,6 +56,8 @@ export interface JobState {
   readonly unmet: UnmetCondition | null;
   /** The highest cores of the job over one minute, or over its run at the release (H23), or `null` before a measure. */
   readonly peakCores: number | null;
+  /** The highest GPU memory of the job in MB (H36), or `null` when the job used no GPU memory. */
+  readonly peakGpuMb: number | null;
   /** The hard cap of the job in cores (H23), or `null` for a job with no cap. */
   readonly cpuCap: number | null;
 }
@@ -106,6 +108,7 @@ export function jobState(lease: Lease, now: number): JobState {
     conditions: lease.conditions ?? null,
     unmet: lease.unmet ?? null,
     peakCores: lease.peakCores ?? null,
+    peakGpuMb: lease.peakGpuMb ?? null,
     cpuCap: lease.cpuCap ?? null,
   };
 }

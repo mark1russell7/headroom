@@ -63,6 +63,8 @@ export function jobLine(state: JobState, now: number): string {
   // H23: the peak cores and the hard cap of the job. A daemon of an older version gives neither.
   if (typeof state.peakCores === "number") parts.push(`peak ${coresText(state.peakCores)}`);
   if (typeof state.cpuCap === "number") parts.push(`capped at ${coresText(state.cpuCap)}`);
+  // H36: the peak GPU memory of the job. A daemon of an older version gives none.
+  if (typeof state.peakGpuMb === "number") parts.push(`peak GPU ${diskSize(state.peakGpuMb)}`);
   // H29: the processes that the job started, from its job object. A daemon of an older version gives none.
   if (typeof state.processes === "number") parts.push(`${countText(state.processes)} ${state.processes === 1 ? "process" : "processes"} started`);
   // H47: the peak starts in one minute and the spawn class. A daemon of an older version gives neither.

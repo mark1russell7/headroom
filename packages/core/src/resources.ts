@@ -16,6 +16,7 @@ import type { OwnerCores, OwnerWrites } from "./counters.ts";
 import { coresText, cpuRateOf, CPU_RESERVE_DEFAULT, heldMs, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { forecastFrom, rateText, spanText, type Forecast, type ForecastTarget, type Part, type TargetName, type Trend } from "./forecast.ts";
 import { dynamicUse, netFlows, tcpByOwner } from "./network.ts";
+import { gpuOwners, gpuOwnersText, type GpuAdapter, type GpuRead } from "./gpu.ts";
 import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, powerOwners, systemWatts, type BatteryState } from "./power.ts";
 import type { ServiceHealth, ServiceState } from "./services.ts";
 import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "./starts.ts";
@@ -96,6 +97,8 @@ export interface Readings {
   readonly meters?: PowerMeters | undefined;
   /** The speed and the heat of the CPU, with the throttle rule (H35). A computer with no such counters has none. */
   readonly thermal?: ThermalState | undefined;
+  /** The GPU adapters and the GPU memory and use of each process (H36). A computer with no GPU counters has none. */
+  readonly gpu?: GpuRead | undefined;
   /** The granted leases. The battery alert names the jobs that run on battery (H30). */
   readonly leases?: readonly Lease[] | undefined;
   /**
@@ -126,6 +129,8 @@ export interface Measurement {
   readonly battery?: BatteryState | undefined;
   /** The speed limits, the temperature and the throttle of the CPU (H35). Only the kind `thermal` has it. */
   readonly thermal?: ThermalState | undefined;
+  /** The adapter: its name, its dedicated and shared memory and limits, and the use of its engines (H36). Only the kind `gpu` has it. */
+  readonly gpu?: GpuAdapter | undefined;
 }
 
 /** The use of one owner of an instance, in the unit of the attribute part of its kind. */
@@ -185,6 +190,11 @@ export interface Attribute {
   counter(info: ProcessInfo): number | undefined;
   /** This function gives the use of each owner and each lease, the largest first. */
   read(readings: Readings, owners: Owners): readonly OwnerUse[];
+  /**
+   * This function gives the use of each owner of one instance, when the counters name the instance (H36). Without it, each
+   * instance of the kind shows the use of `read()`. The GPU counters name the adapter, and the disk counters do not name the drive.
+   */
+  readInstance?(readings: Readings, owners: Owners, id: ResourceId): readonly OwnerUse[];
 }
 
 /** The level of an alert rule. */
@@ -1293,6 +1303,84 @@ const THERMAL: Resource = {
   enforce: null,
 };
 
+/** This function gives the name of each process of a read, by process ID. */
+function namesOf(processes: readonly ProcessInfo[]): Map<number, string> {
+  return new Map(processes.map((info) => [info.pid, info.name]));
+}
+
+/** This function gives the GPU memory of each owner and of each leased job, on one adapter or on all of them. */
+function gpuUses({ gpu, processes }: Readings, owners: Owners, adapter?: ResourceId): OwnerUse[] {
+  if (gpu === undefined) return [];
+  return gpuOwners(gpu, owners, namesOf(processes), adapter).map((each) => ({ resource: "gpu", owner: each.owner, kind: each.kind, amount: each.mb, processes: each.processes }));
+}
+
+/**
+ * The attribute part of the GPU (H36): the dedicated and the shared GPU memory of each owner and of each leased job, in MB.
+ * Each adapter has its own owners. `Status.gpu` also gives the use of the engines of each owner.
+ */
+const GPU_USE: Attribute = {
+  unit: "MB",
+  // The read of a process has no GPU memory, so the outlier rules do not examine the GPU.
+  counter: () => undefined,
+  read: (readings, owners) => gpuUses(readings, owners),
+  readInstance: (readings, owners, id) => gpuUses(readings, owners, id),
+};
+
+/** This function gives the text of the GPU alert (H36): the memory, the limit, the top owners and the shared part in RAM. */
+function gpuText({ measurement, readings, owners }: InstanceFacts, limits: AlertRules): AlertText {
+  const adapter = measurement.gpu;
+  const name = adapter?.name ?? measurement.id;
+  const used = measurement.used ?? 0;
+  const capacity = measurement.capacity ?? 0;
+  const minutes = Math.round(limits.gpuForMs / 60_000);
+  const most = readings.gpu === undefined ? "" : gpuOwnersText(gpuOwners(readings.gpu, owners, namesOf(readings.processes), measurement.id));
+  const ram = adapter === undefined || adapter.sharedMb < 1 ? "" : ` The shared part (${gb(adapter.sharedMb)}) is in the RAM, so less memory is available for the jobs.`;
+  return {
+    subject: name,
+    mb: Math.round(used),
+    message: `The GPU memory of ${name} is ${gb(used)} of ${gb(capacity)} (${percentOf(used, capacity)}%), above ${Math.round(limits.gpuWarnRatio * 100)}% for ${minutes} minutes.${most === "" ? "" : ` Most GPU memory: ${most}.`}${ram}`,
+  };
+}
+
+/**
+ * The GPU (H36): one instance for each adapter, `gpu:<n>`, in MB. The used part is the dedicated and the shared GPU memory.
+ * The capacity is the dedicated limit and the shared limit from DXGI, as Task Manager shows them. A computer with no GPU
+ * counters has no instance. The available memory and the commit charge already hold the shared part, so `memory` stays as it is.
+ */
+const GPU: Resource = {
+  kind: "gpu",
+  unit: "MB",
+  measure: {
+    read: ({ gpu }) =>
+      (gpu?.adapters ?? []).map((adapter) => ({
+        id: adapter.id,
+        capacity: adapter.capacityMb,
+        used: adapter.usedMb,
+        free: Math.round(Math.max(0, adapter.capacityMb - adapter.usedMb) * 10) / 10,
+        gpu: adapter,
+      })),
+  },
+  attribute: GPU_USE,
+  alert: {
+    rules: (limits) => [
+      {
+        // A short peak of a browser test is normal, so the level must stay for some minutes.
+        type: "level",
+        alert: "gpu",
+        on: "used",
+        severity: true,
+        warning: { ratio: limits.gpuWarnRatio },
+        forMs: limits.gpuForMs,
+        clearMs: limits.gpuClearMs,
+        text: (facts) => gpuText(facts, limits),
+      },
+    ],
+  },
+  // A job object has no GPU limit, so a lease has no GPU amount.
+  admit: null,
+  enforce: null,
+};
+
 /** A slot: `browser`, `docker` or any other name. Its capacity is configured with `headroom pool`, else 1. */
 const SLOT: Resource = {
   kind: "slot",
@@ -1315,7 +1403,7 @@ const SLOT: Resource = {
 
 /** The resource kinds by name, in the order of their measurements and their alerts. */
 export const RESOURCES: ReadonlyMap<ResourceKind, Resource> = new Map(
-  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, THERMAL, SLOT].map((resource) => [resource.kind, resource]),
+  [MEMORY_RESOURCE, COMMIT, POOL, DESKTOP, DISK, CPU, NET, PORTS, SERVICE, PROCS, BATTERY, POWER, THERMAL, GPU, SLOT].map((resource) => [resource.kind, resource]),
 );
 
 /** This function gives the kind of an id: `disk:D:` gives `disk`, and `browser` gives `slot`. */
@@ -1472,18 +1560,23 @@ export function withKinds(
   attribution?: { readonly readings: Readings; readonly owners: Owners },
   forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]>,
 ): ResourceStatus[] {
-  const byKind = new Map<ResourceKind, readonly ResourceOwner[]>();
-  const ownersOf = (resource: Resource): readonly ResourceOwner[] => {
+  // The owners of a kind, or of one instance when the attribute part reads each instance (H36).
+  const byKey = new Map<string, readonly ResourceOwner[]>();
+  const ownersOf = (resource: Resource, id: ResourceId): readonly ResourceOwner[] => {
     const attribute = resource.attribute;
     if (attribute === null || attribution === undefined) return [];
-    let list = byKind.get(resource.kind);
+    const key = attribute.readInstance === undefined ? resource.kind : id;
+    let list = byKey.get(key);
     if (list === undefined) {
-      list = attribute
-        .read(attribution.readings, attribution.owners)
+      const uses =
+        attribute.readInstance === undefined
+          ? attribute.read(attribution.readings, attribution.owners)
+          : attribute.readInstance(attribution.readings, attribution.owners, id);
+      list = uses
         .flatMap((use) => (use.kind === "lease" ? [] : [{ owner: use.owner, kind: use.kind, value: roundFor(attribute.unit, use.amount), unit: attribute.unit }]))
         .filter((each) => each.value > 0)
         .slice(0, OWNERS_SHOWN);
-      byKind.set(resource.kind, list);
+      byKey.set(key, list);
     }
     return list;
   };
@@ -1492,6 +1585,7 @@ export function withKinds(
     const health = each.health === undefined ? {} : { health: each.health };
     const battery = each.battery === undefined ? {} : { battery: each.battery };
     const thermal = each.thermal === undefined ? {} : { thermal: each.thermal };
+    const gpu = each.gpu === undefined ? {} : { gpu: each.gpu };
     const nearest = forecasts?.get(each.id)?.[0];
     return {
       id: each.id,
@@ -1503,7 +1597,8 @@ export function withKinds(
       ...health,
       ...battery,
       ...thermal,
-      owners: ownersOf(resource),
+      ...gpu,
+      owners: ownersOf(resource, each.id),
       ...(nearest === undefined ? {} : { forecast: nearest }),
     };
   });

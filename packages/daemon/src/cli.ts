@@ -16,6 +16,7 @@
  * - `headroom config [presence on|off] [away-after <time>] [busy-wait <time>] [present-reserve <cores>]`: the presence rules (H33).
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
+ * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
@@ -35,6 +36,8 @@ import {
   diskSize,
   forecastLine,
   forecastText,
+  gpuLines,
+  leaseGpuText,
   kindOf,
   MB,
   powerLine,
@@ -87,6 +90,7 @@ import { answers, connect, connectTo, isNetworkError, isRestartError, type Conne
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
+import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
@@ -172,6 +176,7 @@ const HELP = `headroom: the memory and job broker of this computer
                headroom does not reboot the computer. Only Mark does.
   headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
+  ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
   headroom peer <localPort> <remotePort> [--json]
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
@@ -262,6 +267,8 @@ function printStatus(status: DaemonStatus): void {
   // H35: a line only while the CPU is throttled or hot. A daemon of an older version gives no state.
   const heat = thermalLine(status.thermal);
   if (heat !== null) console.log(heat);
+  // H36: the GPU memory and use of each adapter. A daemon of an older version and a computer with no GPU counters give none.
+  for (const line of gpuLines(status.gpu)) console.log(line);
   // H32: the forecasts under 24 hours, the nearest first. A daemon of an older version gives none.
   const forecasts = forecastLine(status.resources ?? []);
   if (forecasts !== null) console.log(forecasts);
@@ -292,8 +299,10 @@ function printStatus(status: DaemonStatus): void {
     // H31: the conditions of the lease. A granted lease that runs without one of its conditions says so.
     const conditions = conditionsText(lease.conditions);
     const note = (lease.unmet?.until === null ? unmetText(lease.unmet) : null) ?? lease.reason;
+    // H36: the GPU memory of the job and its peak.
+    const gpu = leaseGpuText(lease, status.gpu);
     console.log(
-      `  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${conditions === null ? "" : `  [${conditions}]`}${note ? `  (${note})` : ""}`,
+      `  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${conditions === null ? "" : `  [${conditions}]`}${gpu === null ? "" : `  ${gpu}`}${note ? `  (${note})` : ""}`,
     );
   }
   console.log("\nMemory by owner (private, then in RAM now):");
@@ -1381,6 +1390,8 @@ async function main(argv: string[]): Promise<number> {
       const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
       return showPorts(values.json === true);
     }
+    case "gpu":
+      return gpuCommand(rest, connect());
     case "peer":
       return showPeer(rest);
     case "config":

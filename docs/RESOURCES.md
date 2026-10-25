@@ -375,7 +375,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `battery` (Wh) | H30. Capacity: the full charge. Free: the remaining charge, from `CallNtPowerInformation(SystemBatteryState)`. The measurement also has the power source, the charge state, the percent, the rate in W and the minutes left. No battery: no instance. Linux and macOS: no instance. | None. | Check: a warning below 30 minutes left, critical below 10 minutes or 10%. A warning when leased jobs run on battery. On AC power, no alert. | No amount. The conditions of H31 read the power source and the charge: `ac`, `battery>=N` and the battery floor. | EcoQoS for the processes of `headroom run` on battery, from the answer of the heartbeat. `--no-eco` turns it off. |
 | `power` (W) | H30. Used: the power of the whole computer, from the counter `\Energy Meter(*)\Power` (PDH). Capacity: `null`. No counter set: no instance. Linux and macOS: no instance. | An estimate: the CPU power, shared by the processor time of each owner. | None. The battery alert names the 3 owners with the most power. | None. | A power request keeps the computer awake on AC power while a lease is granted. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
-| `gpu:<adapter>` (later, MB) | The dedicated memory of each adapter. | The counter `GPU Process Memory` of each process. | Level on free. | Measured, as `memory`. | None. A job object has no GPU limit. |
+| `gpu:<n>` (MB) | H36. One instance for each adapter. Used: the dedicated and the shared GPU memory, from `\GPU Adapter Memory(*)`. Capacity: the dedicated limit and the shared limit from DXGI. The measurement also has the use of the busiest engine. No GPU counters: no instance. | The dedicated and the shared GPU memory of each owner and of each leased job, from `\GPU Process Memory(*)`. Each adapter has its own owners. `Status.gpu` also gives the engine use of each owner. | Level on used: a warning above 90% for 2 minutes, clear after one minute below. | None. A job object has no GPU limit. The shared part is already in the available memory. | None. Report: the peak GPU memory of a lease. |
 
 ## The migration
 
@@ -1111,6 +1111,37 @@ waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc (cl
 
 **Cost.** The tracker keeps the counts of each job for 10 minutes, as before. The class costs one or two indexed queries of the store at each request. The sum reads the counts of each granted lease in memory, at each tick with a waiting lease.
 
+### H36: the GPU of each process
+
+H36 shipped in one change. These parts are as built:
+
+- **Measure**: the PDH query of the Energy Meter also has five wildcard counters. One collection at each read of the processes serves the Energy Meter and the GPU. The daemon has no new process and no new timer.
+- The counters are `\GPU Adapter Memory(*)\Dedicated Usage` and `\Shared Usage`, `\GPU Process Memory(*)\Dedicated Usage` and `\Shared Usage`, and `\GPU Engine(*)\Utilization Percentage`.
+- **The instance names**: `luid_0x…_0x…_phys_0` for an adapter, `pid_<pid>_luid_…_phys_0` for a process, and `…_eng_<n>_engtype_<type>` for an engine. Plain string code parses them, with no regular expression.
+- **The limits**: DXGI gives them one time, at the first read. `IDXGIAdapter1::GetDesc1` gives the dedicated memory, the shared limit and the LUID of the counter names. `IDXGIAdapter3::QueryVideoMemoryInfo` gives the budget of one process.
+- **The capacity** is the dedicated limit and the shared limit, as Task Manager shows them. On this laptop, they are 4.0 GB and 13.8 GB. The DXGI budget of one process was 17.0 GB, and `headroom gpu` shows it.
+- **Without DXGI**, the shared limit is half of the RAM, the default of Windows. The dedicated limit is then the dedicated use. DXGI does not list a compute adapter, for example an NPU, so the NPU of this laptop uses this rule.
+- **The use**: the use of an engine is the sum of its processes. The use of an adapter is its busiest engine, as Task Manager shows it. The use is a rate, so the first collection gives none.
+- **Attribute**: the GPU memory of each process goes to its owner and to its lease. The attribute part has a new function, `readInstance()`, because the counters name the adapter. Thus each adapter shows its own owners.
+- **Alert `gpu`**: a level rule on the used part, a warning above 90% of the capacity for 2 minutes. The engine keeps the used part of each adapter for 5 minutes as its trail. The alert names the 3 owners with the most GPU memory and the shared part in RAM.
+- **Admit and enforce**: none. A job object has no GPU limit. The lease keeps its peak GPU memory: `peakGpuMb`, in the column `peak_gpu_mb`.
+
+**The cost on this laptop on 2026-10-25.** The counter `GPU Engine` had 366 instances, `GPU Process Memory` had 42, and `GPU Adapter Memory` had 3.
+
+- The collection of the query and the read of the Energy Meter took 1.1 to 1.5 ms. The read of the GPU arrays took 0.2 to 0.8 ms, and the parse took 0.15 to 0.26 ms.
+- Most engines are idle. The read skips the zeros, so it decodes fewer names.
+- The open of the query and the read of DXGI took 324 ms one time. The memory of the process grew by approximately 1 MB.
+
+**Does the shared GPU memory already count as memory?** A test process made 4 D3D11 buffers of 128 MB on the Radeon, with initial data. The counters then gave 515 MB of dedicated memory and 257 MB of shared memory for the process.
+
+| Value | Change | What it shows |
+|---|---|---|
+| The private bytes of the process | +770 MB | Windows charges the commit of each GPU allocation to its process: the dedicated part and the shared part. Thus the commit charge and the memory of each owner already hold it. |
+| The available memory of the computer | −263 MB, the average of 5 runs (−138 to −371 MB) | This is the shared part, not the dedicated part. The dedicated memory is a carve-out of 4 GB that Windows does not show as RAM. The other sessions add noise. |
+| The working set of the process | +258 MB | Only the shared part that the process maps. `dwm.exe` had 297 MB of shared GPU memory and a working set of 53 MB. Each Windows AI host on the NPU had approximately 160 MB and 22 MB. |
+
+Thus "GPU memory counts against memory" was already true. The free part of `memory` is the available memory, which already holds the shared GPU memory. The daemon only gives the GPU memory to its owners. A subtraction in `memory` counts the shared memory two times, so the memory resource stays as it is.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.
@@ -1159,3 +1190,7 @@ These were the open questions. The session decided each one as a technical call.
 | From when does the busy wait count? | From the request of the lease. | A heavy job waits at most 20 minutes for Mark in all. The reason gives the time of the end. |
 | Does a lease above the reserve while Mark is present fail? | No. The broker cancels a lease only above the processors less the reserve while Mark is away, which is 0. | The lease waits for Mark to leave, and then it runs. |
 | Does `--when away` work with the presence rules off? | Yes. It reads the measured state. | The job asks for the condition. The setting turns off only the automatic rules. |
+| Does `memory` subtract the shared GPU memory (H36)? | No. headroom only gives it to its owners. | The measurement of H36 shows that the available memory and the commit charge already hold it. |
+| What is the capacity of a GPU adapter? | The dedicated limit and the shared limit from DXGI, as Task Manager shows them. | The limits do not change while Windows runs. The DXGI budget changes with the pressure on the memory, and it is for one process. |
+| What is the use of a GPU adapter? | The use of its busiest engine, as Task Manager shows it. | A sum of all the engines goes above 100% when the 3D engine and the video engine both work. |
+| What is the id of a GPU adapter? | `gpu:<n>`, with the order of DXGI. An adapter that DXGI does not list comes after them. | The LUID changes at each start of Windows, so an id from it breaks the history. |
