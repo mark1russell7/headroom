@@ -150,12 +150,14 @@ A spawn-heavy job and a browser test do not run at the same time:
 - **The queue.** A spawn-heavy lease waits while a browser test runs, and a browser test waits while a spawn-heavy lease runs. A later lease does not go before an earlier waiting lease that it conflicts with.
 - Two spawn-heavy jobs can run together. Two browser tests follow the capacity of the slot `browser`.
 - **The options.** `--spawn-heavy` marks a new job that starts many processes. `--no-spawn-heavy` marks a job as normal, also when its past runs are above the limit.
+- **The sum.** Several moderate jobs together also make a burst. Beside a browser test, the other leases together start at most the limit. Each lease counts its own rate of the last 30 seconds, else its learned peak. A browser test waits while the sum is above the limit. Another lease waits while its rate pushes the sum above the limit.
 
 `headroom status` gives the line `Spawn-heavy now: test-churn (server-stack), 1,870 a minute.` `headroom job` and its JSON give the peak, the average and the class of a job. The dashboard gives them in the timeline of the jobs. A wait gives a reason that names the other job:
 
 ```text
 waits for the browser tests of graph (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
 waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it
+waits for the other jobs to start fewer processes: tsc (client) 400 and vitest (vex) 300 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
 ```
 
 These reasons do not start with `waits for memory`, so the hook of the plugin does not count them. `docs/RESOURCES.md` gives the rules.
@@ -203,6 +205,7 @@ Some jobs need a fact of the computer, not an amount. A benchmark needs AC power
 headroom run --when ac -- pnpm bench
 headroom run --when battery>=50,usage<80 -- pnpm agents
 headroom run --timing -- pnpm test:timeouts
+headroom run --when "starts<700" -- pnpm e2e
 ```
 
 | Condition | It holds when |
@@ -210,6 +213,7 @@ headroom run --timing -- pnpm test:timeouts
 | `ac` | The laptop is plugged in. A computer with no battery counts as plugged in. |
 | `battery>=N` | The battery is at N% or more, or the laptop is plugged in. |
 | `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file of the fleet. |
+| `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. The daemon tests it at each read of the processes. |
 
 - **The wait.** The lease waits until each condition holds and its amounts fit. A lease that waits for a condition does not hold the queue: later leases go before it.
 - **A power event.** When the charger goes in or out, Windows tells the daemon. The daemon reads the battery and runs the admission at once. Thus a lease that waits for `ac` starts in less than a second.
@@ -233,6 +237,7 @@ waits until the laptop is plugged in (--timing): timing numbers on battery are w
 waits until the battery is at 25% or more, or plugged in (now 18%): this job is heavy (it asks for 4.0 GB of memory). --battery-ok starts it on a low battery
 waits until the five-hour usage window is under 80% (now 91%, resets at 02:10)
 waits for fresh usage data: the file is 95 minutes old
+waits until the computer starts fewer than 700 processes a minute (now 1,108)
 ```
 
 `headroom job` gives the conditions of a job and a time when it ran without one of them. The timeline of the dashboard draws the wait for a condition as a dashed line, and the time without a condition as a red line. A restart of the daemon for an idle queue does not wait for a lease that waits for a condition. The new daemon keeps the lease.

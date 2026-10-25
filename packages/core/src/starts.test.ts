@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Broker, type Lease } from "./broker.ts";
 import { attribute } from "./owners.ts";
 import { leasesOf, type Owners } from "./resources.ts";
-import { isNewProcess, StartTracker, startsLine, STARTS_WINDOW_MS } from "./starts.ts";
+import { isNewProcess, RECENT_STARTS_MS, StartTracker, startsLine, STARTS_WINDOW_MS } from "./starts.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const S = 1000;
@@ -147,6 +147,33 @@ describe("StartTracker", () => {
     const later = 30 * S + STARTS_WINDOW_MS;
     tracker.read(later, second, ownersOf(second, [lease]), 1130);
     expect(tracker.summary(later)).toMatchObject({ perMinute: 0, owners: [], jobs: [] });
+  });
+});
+
+describe("StartTracker recent rate (H31)", () => {
+  it("gives the exact starts of the computer over the last 2 minutes, for starts<N", () => {
+    const tracker = new StartTracker();
+    expect(tracker.recent(0)).toBeNull();
+    tracker.read(0, first, ownersOf(first, []), 1000);
+    expect(tracker.recent(0)).toBeNull();
+    // A burst: 600 starts in 60 seconds, then a quiet minute and a half with 30 starts.
+    let sequence = 1000;
+    for (let at = 10 * S; at <= 60 * S; at += 10 * S) tracker.read(at, second, ownersOf(second, []), (sequence += 100));
+    expect(tracker.recent(60 * S)).toBe(600);
+    for (let at = 70 * S; at <= 150 * S; at += 10 * S) tracker.read(at, second, ownersOf(second, []), (sequence += at % (30 * S) === 0 ? 10 : 0));
+    // The window of 2 minutes holds the reads from 40 to 150 seconds: 330 starts in 120 seconds.
+    expect(tracker.recent(150 * S)).toBe(165);
+    expect(tracker.summary(150 * S).perMinute).toBe(252);
+    expect(tracker.recent(150 * S, 30 * S)).toBe(20);
+    expect(RECENT_STARTS_MS).toBe(120 * S);
+  });
+
+  it("gives a lower bound without the sequence numbers", () => {
+    const tracker = new StartTracker();
+    tracker.read(0, first, ownersOf(first, []));
+    tracker.read(10 * S, second, ownersOf(second, []));
+    // The second read finds 5 new processes in 10 seconds.
+    expect(tracker.recent(10 * S)).toBe(30);
   });
 });
 

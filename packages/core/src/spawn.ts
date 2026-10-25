@@ -9,6 +9,8 @@
  *   `--mem auto`: the 90th percentile of the last 20 runs, the runs of the same holder first.
  * - Promote: a job that is not spawn-heavy becomes spawn-heavy when its own peak goes above the limit.
  * - Admit: a spawn-heavy lease and a lease with the slot `browser` do not run at the same time, in each order.
+ * - The sum: several moderate jobs together can also make a burst. Beside a browser test, the sum of the rates of the
+ *   other leases stays at or below the limit, in each order.
  */
 
 import type { Lease } from "./broker.ts";
@@ -136,6 +138,67 @@ export function spawnConflict(lease: Lease, other: Lease): string | null {
     return `waits for ${job} of ${other.holder} to ${first}: it starts many processes (${rateText(other.spawn, false)}), ${SPAWN_WAIT_END}`;
   }
   return null;
+}
+
+/**
+ * This function gives the rate of a lease for the sum of the start rates. The rate is its own rate of the last 30 seconds,
+ * else its learned rate. `measured` is its own rate, or `null` without two counts. A first run with no count gives 0.
+ * A lease with `--no-spawn-heavy` gives only its own rate, because its owner says that its past runs are wrong.
+ */
+export function leaseRate(lease: Lease, measured: number | null): number {
+  if (measured !== null) return Math.max(0, Math.round(measured));
+  if (lease.spawn === undefined || lease.spawn.source === "opted-out") return 0;
+  return Math.max(0, lease.spawn.perMinute ?? 0);
+}
+
+/** The start of the reason of a browser test that waits for the sum of the start rates. */
+export const SUM_WAIT_START = "waits for the other jobs to start fewer processes";
+
+/** One part of the sum of the start rates: the name of a lease and its rate. */
+interface RatePart {
+  readonly name: string;
+  readonly perMinute: number;
+}
+
+/** This function writes the parts of a sum, for example "tsc (client) 700 and vitest (vex) 300 start 1,000 a minute together". */
+function sumText(parts: readonly RatePart[], sum: number): string {
+  const [only] = parts;
+  if (parts.length === 1 && only !== undefined) return `${only.name} starts ${countText(sum)} a minute`;
+  const names = parts.map((part) => `${part.name} ${countText(part.perMinute)}`);
+  const last = names.pop() ?? "";
+  return `${names.join(", ")} and ${last} start ${countText(sum)} a minute together`;
+}
+
+/**
+ * This function tells why a lease waits for the sum of the start rates (H47), or gives `null`. The sum counts the granted
+ * leases and the leases that wait before the lease, but no browser test. `rate` gives the rate of a lease.
+ *
+ * - A browser test waits while the sum is above the limit.
+ * - Another lease waits while a browser test runs or waits before it, and the sum with its own rate is above the limit.
+ *
+ * The leases that wait before the lease count, so a later lease does not take the part of an earlier lease.
+ */
+export function startsSumConflict(lease: Lease, granted: readonly Lease[], before: readonly Lease[], rate: (lease: Lease) => number, limit: number): string | null {
+  const browserLease = isBrowserLease(lease);
+  // Without a browser test, a lease that is not a browser test needs no sum.
+  const browser = browserLease ? undefined : (granted.find(isBrowserLease) ?? before.find(isBrowserLease));
+  if (!browserLease && browser === undefined) return null;
+  const parts: RatePart[] = [];
+  let sum = 0;
+  for (const other of [...granted, ...before]) {
+    if (other.id === lease.id || isBrowserLease(other)) continue;
+    const perMinute = rate(other);
+    sum += perMinute;
+    if (perMinute > 0) parts.push({ name: `${other.job.slice(0, 40)} (${other.holder}${other.state === "waiting" ? ", queued" : ""})`, perMinute });
+  }
+  parts.sort((a, b) => b.perMinute - a.perMinute);
+  const end = `above the limit of ${countText(limit)}, ${SPAWN_WAIT_END}`;
+  if (browser === undefined) return sum > limit ? `${SUM_WAIT_START}: ${sumText(parts, sum)}, ${end}` : null;
+  const own = rate(lease);
+  if (sum + own <= limit) return null;
+  const first = browser.state === "waiting" ? "run first and end" : "end";
+  const all = own > 0 ? [{ name: "this job", perMinute: own }, ...parts] : parts;
+  return `waits for the browser tests of ${browser.holder} (${browser.job}) to ${first}: ${sumText(all, sum + own)}, ${end}`;
 }
 
 /**

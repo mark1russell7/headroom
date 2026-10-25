@@ -10,11 +10,14 @@ import {
   averageRate,
   isSpawnWait,
   learnSpawn,
+  leaseRate,
   percentile90,
   promote,
   spawnClassText,
   spawnConflict,
   spawnLine,
+  startsSumConflict,
+  SUM_WAIT_START,
   windowRate,
   type SpawnClass,
 } from "./spawn.ts";
@@ -227,6 +230,141 @@ describe("Broker spawn rule (H47)", () => {
   });
 });
 
+const learned = (perMinute: number | null): SpawnClass => ({ heavy: false, source: "history", perMinute, runs: perMinute === null ? 0 : 3 });
+
+describe("the sum of the start rates (H47)", () => {
+  const rate = (each: Lease): number => leaseRate(each, null);
+  const e2e = lease("e", { amounts: { browser: 1 } });
+  const tsc = lease("t", { holder: "client", job: "tsc --noEmit", spawn: learned(400) });
+  const vitest = lease("v", { holder: "vex", job: "vitest run", spawn: learned(300) });
+
+  it("gives the rate of a lease: its own rate of the last 30 seconds, else its learned rate", () => {
+    expect(leaseRate(lease("a"), null)).toBe(0);
+    expect(leaseRate(lease("a", { spawn: learned(null) }), null)).toBe(0);
+    expect(leaseRate(lease("a", { spawn: learned(400) }), null)).toBe(400);
+    // A first run counts its live rate when it has two counts.
+    expect(leaseRate(lease("a", { spawn: learned(null) }), 235.4)).toBe(235);
+    expect(leaseRate(lease("a", { spawn: learned(400) }), 120)).toBe(120);
+    // --no-spawn-heavy: the past runs do not count, but the live rate does.
+    const optedOut: SpawnClass = { heavy: false, source: "opted-out", perMinute: 1870, runs: 3 };
+    expect(leaseRate(lease("a", { spawn: optedOut }), null)).toBe(0);
+    expect(leaseRate(lease("a", { spawn: optedOut }), 300)).toBe(300);
+  });
+
+  it("holds a browser test while the other leases together start more than the limit, and names them", () => {
+    const reason = startsSumConflict(lease("e", { state: "waiting", amounts: { browser: 1 } }), [tsc, vitest], [], rate, 600);
+    expect(reason).toBe(`${SUM_WAIT_START}: tsc --noEmit (client) 400 and vitest run (vex) 300 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it`);
+    expect(isSpawnWait(reason)).toBe(true);
+    expect(reason).not.toMatch(MEMORY_WAIT);
+    expect(startsSumConflict(lease("e", { state: "waiting", amounts: { browser: 1 } }), [tsc, vitest], [], rate, 700)).toBeNull();
+    // Another browser test does not count in the sum.
+    expect(startsSumConflict(lease("f", { state: "waiting", amounts: { browser: 1 } }), [e2e, tsc], [], rate, 300)).toBe(
+      `${SUM_WAIT_START}: tsc --noEmit (client) starts 400 a minute, above the limit of 300, and browsers can fail to start beside it`,
+    );
+  });
+
+  it("holds another lease that pushes the sum above the limit beside a browser test", () => {
+    const next = lease("v", { state: "waiting", holder: "vex", job: "vitest run", spawn: learned(300) });
+    const reason = startsSumConflict(next, [e2e, tsc], [], rate, 600);
+    expect(reason).toBe(
+      "waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc --noEmit (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
+    );
+    expect(isSpawnWait(reason)).toBe(true);
+    expect(startsSumConflict(next, [tsc], [], rate, 600)).toBeNull();
+    expect(startsSumConflict(next, [e2e, tsc], [], rate, 700)).toBeNull();
+    // A browser test that waits first counts as a browser test that runs.
+    expect(startsSumConflict(next, [tsc], [lease("e", { state: "waiting", amounts: { browser: 1 } })], rate, 600)).toMatch(
+      /^waits for the browser tests of graph \(pnpm e2e\) to run first and end: this job 300 and tsc --noEmit \(client\) 400/,
+    );
+    // A lease with no rate also waits while the sum is above the limit.
+    expect(startsSumConflict(lease("n", { state: "waiting" }), [e2e, tsc, vitest], [], rate, 600)).toMatch(
+      /: tsc --noEmit \(client\) 400 and vitest run \(vex\) 300 start 700 a minute together,/,
+    );
+  });
+});
+
+describe("Broker sum of the start rates (H47)", () => {
+  function setup() {
+    let now = 1_000_000;
+    let next = 0;
+    const broker = new Broker({
+      now: () => now,
+      newId: () => `l${++next}`,
+      isAlive: () => true,
+      reserveMb: 1000,
+      conflict: spawnConflict,
+      groupConflict: (each, granted, before) => startsSumConflict(each, granted, before, (one) => leaseRate(one, null), 600),
+    });
+    const ask = (request: Omit<LeaseRequest, "amounts"> & { amounts?: LeaseRequest["amounts"] }, spawn?: SpawnClass): Lease => {
+      const asked = broker.request({ amounts: {}, ...request }, spawn);
+      now += 1000;
+      return asked;
+    };
+    return { broker, ask };
+  }
+  const cap = (availableMb = 12_000): Capacity => ({ totalMb: 16_000, availableMb, pools: {} });
+
+  it("holds a browser test while moderate jobs together pass the limit, and grants it when the sum drops", () => {
+    const { broker, ask } = setup();
+    ask({ holder: "client", job: "tsc" }, learned(400));
+    const vitest = ask({ holder: "vex", job: "vitest" }, learned(300));
+    broker.tick(cap());
+    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    broker.tick(cap());
+    expect(broker.get(e2e.id)).toMatchObject({
+      state: "waiting",
+      reason: `${SUM_WAIT_START}: tsc (client) 400 and vitest (vex) 300 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it`,
+    });
+    broker.release(vitest.id);
+    broker.tick(cap());
+    expect(broker.get(e2e.id)).toMatchObject({ state: "granted", reason: null });
+  });
+
+  it("holds a new job that pushes the sum above the limit while a browser test runs, and a later job does not go before it", () => {
+    const { broker, ask } = setup();
+    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const tsc = ask({ holder: "client", job: "tsc" }, learned(400));
+    broker.tick(cap());
+    expect(broker.get(tsc.id)?.state).toBe("granted");
+    const vitest = ask({ holder: "vex", job: "vitest" }, learned(300));
+    broker.tick(cap());
+    expect(broker.get(vitest.id)).toMatchObject({
+      state: "waiting",
+      reason: "waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
+    });
+    // 400 and 100 fit in the limit, but the earlier job that waits gets its part first.
+    const small = ask({ holder: "site", job: "lint" }, learned(100));
+    broker.tick(cap());
+    expect(broker.get(small.id)).toMatchObject({
+      state: "waiting",
+      reason: "waits for the browser tests of graph (pnpm e2e) to end: this job 100, tsc (client) 400 and vitest (vex, queued) 300 start 800 a minute together, above the limit of 600, and browsers can fail to start beside it",
+    });
+    broker.release(e2e.id);
+    broker.tick(cap());
+    expect(broker.get(vitest.id)?.state).toBe("granted");
+    expect(broker.get(small.id)?.state).toBe("granted");
+  });
+
+  it("does not let a later browser test go before an earlier job that waits for memory and needs the part", () => {
+    const { broker, ask } = setup();
+    const tsc = ask({ holder: "client", job: "tsc" }, learned(300));
+    broker.tick(cap());
+    const build = ask({ holder: "server-stack", job: "build", amounts: { memory: 12_000 } }, learned(400));
+    broker.tick(cap());
+    expect(broker.get(build.id)?.reason).toBe("waits for memory: needs 12000, 11000 free");
+    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    broker.tick(cap());
+    expect(broker.get(e2e.id)).toMatchObject({ state: "waiting", reason: expect.stringContaining(": build (server-stack, queued) 400 and tsc (client) 300 start 700 a minute together,") });
+    // The earlier job gets its memory and runs. The sum is 700, so the browser test still waits.
+    broker.tick(cap(14_000));
+    expect(broker.get(build.id)?.state).toBe("granted");
+    expect(broker.get(e2e.id)?.reason).toMatch(/: build \(server-stack\) 400 and tsc \(client\) 300 start 700/);
+    broker.release(tsc.id);
+    broker.tick(cap(14_000));
+    expect(broker.get(e2e.id)?.state).toBe("granted");
+  });
+});
+
 describe("Store spawn columns (H47)", () => {
   it("adds the columns of the peak starts and the class to a table of H29, and keeps its rows", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-spawn-")), "h29.db");
@@ -350,5 +488,31 @@ describe("Engine spawn rule (H47)", () => {
     expect(later.reason).toBe("waits for site-audit-gates of organizer to end: it starts many processes (about 924 a minute), and browsers can fail to start beside it");
     expect(engine.status().leases.find((each) => each.id === first.id)?.spawn?.source).toBe("live");
     expect(spawnLine(engine.status().leases)).toBe("Spawn-heavy now: site-audit-gates (organizer), 924 a minute. Browser tests wait until it ends.");
+  });
+
+  it("counts the live rate of a first run in the sum of the start rates, in each order", () => {
+    const { engine, advance } = setup();
+    const e2e = engine.request({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
+    const audit = engine.request({ holder: "organizer", job: "site-audit", amounts: {}, ...ttl });
+    const tsc = engine.request({ holder: "client", job: "tsc", amounts: {}, ...ttl });
+    // First runs with no past runs count 0, so they run beside the browser test.
+    expect([e2e.state, audit.state, tsc.state]).toEqual(["granted", "granted", "granted"]);
+    advance(30_000);
+    expect(engine.renew(audit.id, 250)?.peakStartsPerMin).toBe(500);
+    expect(engine.renew(tsc.id, 100)?.peakStartsPerMin).toBe(200);
+    // Each job is below the limit, but together they start 700 a minute: a new job waits.
+    const vitest = engine.request({ holder: "vex", job: "vitest", amounts: {}, ...ttl });
+    expect(vitest).toMatchObject({
+      state: "waiting",
+      reason: "waits for the browser tests of graph (pnpm e2e) to end: site-audit (organizer) 500 and tsc (client) 200 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
+    });
+    engine.release(e2e.id);
+    expect(engine.get(vitest.id)?.state).toBe("granted");
+    // In the other order, a new browser test waits for the sum.
+    const later = engine.request({ holder: "site", job: "playwright test", amounts: { browser: 1 }, ...ttl });
+    expect(later.reason).toBe(`${SUM_WAIT_START}: site-audit (organizer) 500 and tsc (client) 200 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it`);
+    // A higher limit runs the admission at once.
+    engine.setConfig({ spawnHeavy: 800 });
+    expect(engine.get(later.id)?.state).toBe("granted");
   });
 });

@@ -35,7 +35,7 @@ import {
 import { batteryState, keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
-import { learnSpawn, percentile90, promote, spawnConflict, windowRate, type SpawnClass } from "./spawn.ts";
+import { learnSpawn, leaseRate, percentile90, promote, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import type { Config, MemoryRow, OwnerRow, Sleep, Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { diskSize } from "./units.ts";
@@ -334,8 +334,8 @@ export class Engine {
   #awake: string | null = null;
   /** The reader of the usage file for `usage<N` (H31), with its cache of 30 seconds. */
   readonly #usage: UsageReader;
-  /** The facts of the conditions at one time, so one tick reads the settings one time (H31). */
-  #facts: { readonly at: number; readonly facts: ConditionFacts; readonly floor: number } | null = null;
+  /** The facts of the conditions at one time, so one tick reads the settings one time (H31). It also keeps the limit of H47. */
+  #facts: { readonly at: number; readonly facts: ConditionFacts; readonly floor: number; readonly spawnHeavy: number } | null = null;
   /**
    * The points of the last hour of each instance with a fit forecast (H32), one for each sample of the store, the oldest
    * first. A start of the daemon reads them from the store. A wake empties them, because a fit does not span a sleep.
@@ -372,6 +372,8 @@ export class Engine {
       },
       // H47: a spawn-heavy lease and a lease with the slot browser do not run at the same time.
       conflict: spawnConflict,
+      // H47: beside a browser test, the sum of the start rates of the other leases stays at or below the limit.
+      groupConflict: (lease, granted, before) => startsSumConflict(lease, granted, before, (each) => this.#startRate(each), this.#conditionFacts().spawnHeavy),
       // H31: a lease waits until each of its conditions holds, and a heavy lease waits on a low battery.
       condition: (lease) => {
         const { facts, floor } = this.#conditionFacts();
@@ -528,6 +530,8 @@ export class Engine {
       this.#recordPeakCores();
       this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
       this.#starts = this.#startTracker.summary(now);
+      // H31: the admission of this tick tests `starts<N` on the new sample, so a waiting lease starts at once when it holds.
+      this.#facts = null;
       const gui = this.#sampler.gui?.();
       this.#load = { processes: this.#processes.length, userObjects: gui?.userObjects ?? null, gdiObjects: gui?.gdiObjects ?? null };
       if (this.#sampler.poolTags && now - this.#tagsAt >= POOL_TAGS_EVERY_MS) {
@@ -696,8 +700,8 @@ export class Engine {
       this.#store.setConfig("cpuReserve", reserve === null ? null : String(reserve));
       this.#cpuReserve = this.#store.config().cpuReserve;
     }
-    // H31: a new floor or a new usage file can let a waiting lease start. H23: a smaller CPU reserve can too.
-    if (floor !== undefined || usageFile !== undefined || reserve !== undefined) {
+    // H31: a new floor or a new usage file can let a waiting lease start. H23: a smaller CPU reserve can too. H47: a higher limit can too.
+    if (floor !== undefined || usageFile !== undefined || reserve !== undefined || limit !== undefined) {
       this.#facts = null;
       this.#persist(this.#broker.tick(this.capacity()));
     }
@@ -1138,12 +1142,14 @@ export class Engine {
    * This function gives the facts of the conditions at this time, and the battery floor (H31). It reads the settings one
    * time for each time. Only a condition that reads the usage reads the usage file, and the reader keeps it for 30 seconds.
    */
-  #conditionFacts(): { readonly facts: ConditionFacts; readonly floor: number } {
+  #conditionFacts(): { readonly facts: ConditionFacts; readonly floor: number; readonly spawnHeavy: number } {
     const now = this.#now();
     if (this.#facts !== null && this.#facts.at === now) return this.#facts;
     const config = this.#store.config();
     const reader = this.#usage;
+    const tracker = this.#startTracker;
     let usage: UsageFacts | undefined;
+    let starts: number | null | undefined;
     const facts: ConditionFacts = {
       now,
       ac: this.powerStatus().ac,
@@ -1152,9 +1158,21 @@ export class Engine {
         usage ??= reader.read(config.usageFile, now);
         return usage;
       },
+      get starts(): number | null {
+        if (starts === undefined) starts = tracker.recent(now);
+        return starts;
+      },
     };
-    this.#facts = { at: now, facts, floor: config.batteryFloor };
+    this.#facts = { at: now, facts, floor: config.batteryFloor, spawnHeavy: config.spawnHeavy };
     return this.#facts;
+  }
+
+  /**
+   * This function gives the rate of a lease for the sum of the start rates (H47). A granted lease with two counts gives its
+   * own rate over the last 30 seconds. Each other lease gives its learned rate.
+   */
+  #startRate(lease: Lease): number {
+    return leaseRate(lease, lease.state === "granted" ? windowRate(this.#startTracker.points(lease.id)) : null);
   }
 
   /**
