@@ -180,16 +180,22 @@ The plugin `headroom` has a hook for the Bash and PowerShell tools. When a sessi
 - The hook does not approve a command. The session sends the new form, and the permission rules of the user apply to it.
 - Without a daemon, or for a light command, the hook does nothing. It adds approximately 65 ms to each command.
 
-To turn it on in Claude Code: `/plugin marketplace add C:Usersmarktgitheadroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
+To turn it on in Claude Code: `/plugin marketplace add C:\Users\markt\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
 
 ## The dashboard
 
-The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the memory, the alerts, one panel for each resource, the memory of each owner, the leases, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
+The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the alerts and what uses the computer. Then it shows one panel for each resource, the jobs, the owners, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
 
-- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, the memory, the commit charge, the processors, the slots, the kernel pools and the desktop. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
+- The top section shows what uses the computer. One bar shows the memory in RAM by owner, and the free memory. A second bar shows the processors by owner.
+- Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
+- Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
+- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site.
+- The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, network, TCP ports, services, slots, kernel pools and desktop. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
-- The page is one HTML file of approximately 47 KB, with no framework and no build step. The daemon keeps it as one string.
+- Select a panel to open it to the full width. It then shows a chart of its history in the window, a table of the data and all its users.
+- The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
+- The page is one HTML file of approximately 69 KB, with no framework and no build step. The daemon keeps it as one string.
 - The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
 - Only a request to `127.0.0.1` or `localhost` gets the page, because the page holds the token of the daemon.
 

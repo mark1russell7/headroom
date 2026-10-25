@@ -419,6 +419,8 @@ Steps 5 and 6 differ from the design above in these points:
 
 - `History.resources` gives the points of each id: `[at, used, free]`, the oldest first. A step longer than one minute averages each step, as for the memory.
 - The dashboard makes one panel for each entry of `Status.resources`, from its kind and its unit. Thus a new kind gets a panel with no change to the page.
+- A panel opens to a chart of its points in the window, with all the owners of its instance (H28).
+- The top bar of the dashboard adds up three parts. They are the memory in RAM of each entry of `Status.owners`, the part that no owner explains and the available memory.
 
 ### What step 7 changed
 
