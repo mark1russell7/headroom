@@ -460,6 +460,7 @@ On 2026-10-24, after a start of the computer, the owners held approximately 16 G
 - A title replaces the rule `system` farther up. Thus `node --title=headroom-daemon` from Task Scheduler is the owner `service:headroom-daemon`, with its descendants. The kind is `service`.
 - A session and a server of the MCP gateway win over a title. A title under another rule, for example the editor, gives that rule. A title with no rule farther up is an orphan, so it stays `other`.
 - The runaway rule examines the services, because a service is not the system.
+- The owner `service:fleet-site` is the process of the health instance `service:fleet-site` (H27), when the title and the name are the same.
 
 **The pool tags after a start.** The store keeps the pool tag snapshots (PR #26). A start of the computer empties the pools, so the change of a tag across a start is not a change.
 
