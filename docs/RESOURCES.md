@@ -287,6 +287,13 @@ The broker then has one rule for each id, with no name of a kind in it:
 - `BrokerOptions.usedMb` becomes `used(lease, id)`. `usedMb` stays as the memory case of `used`.
 - A lease for a drive that does not exist, for example `disk:Q:`, gets the capacity 0. The broker cancels it at once with a clear reason.
 
+**Conflicts (H47).** Some leases cannot run at the same time, also when each amount fits. `BrokerOptions.conflict(lease, other)` gives the reason, or `null`. The broker has no name of a kind in it.
+
+- The broker examines the amounts first. When the amounts fit, it examines each granted lease, and each lease that waits before the lease in the queue.
+- A lease that conflicts with an earlier waiting lease waits too. Thus a stream of later leases cannot keep an earlier lease in the queue forever.
+- The queue order is the order of the broker: the priority with the aging, then the time of the request.
+- The engine gives the spawn rule of H47: a spawn-heavy lease and a lease with the slot `browser` do not run at the same time.
+
 ### 5. Enforce
 
 `headroom run` holds each job in a job object (H6). The enforce part of a kind tells what the job object can limit. Without a limit, headroom only reports the use of the job at its release.
@@ -736,6 +743,59 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 **Linux.** `/proc/net/tcp` gives no process for a row, so Linux gives the error `NOT_SUPPORTED`. A read of the socket inodes of each process is a later step.
 
 **The command.** `headroom peer <localPort> <remotePort> [--json]` gives the answer for a check by hand. An error gives the exit code 3.
+
+### H47: spawn-heavy jobs and browser tests
+
+On 2026-10-24, the Playwright browsers of graph did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases:
+
+- The organizer's `site-audit-gates` started 923 processes in 84 seconds.
+- The `test-churn` of server-stack started approximately 1,870 processes in one minute. The computer had a peak of 3,637 starts in one minute.
+- The desktop heap, the memory, the commit charge and the kernel pools had room at those times. Thus the burst itself stops the start of a browser.
+
+**Measure.** The client of `headroom run` reports `TotalProcesses` of its job object every 30 seconds and at the release (H29). The engine gives each count to the start tracker. `windowRate()` in `spawn.ts` then gives the rate:
+
+- The window starts at the newest count that is 30 seconds or more older than the last count. Without one, it starts at the grant, with 0 processes.
+- A window shorter than 30 seconds counts as 30 seconds. The first count comes after 3 seconds, so a burst at the start gives no false peak.
+- The lease keeps the highest rate in the column `peak_starts_per_min`. A lower rate does not lower it.
+- `headroom job` also gives the average: the processes over the run time, with at least 30 seconds.
+
+**Learn.** `Engine.spawnClass(job, holder)` uses the rule of `--mem auto`. The learned peak is the 90th percentile of the peaks of the last 20 runs. The runs of the same holder come first.
+
+- Up to 10 runs, the 90th percentile is the highest peak.
+- A run from before H47 has no peak. Its average is a lower bound, so it counts instead.
+- The job is spawn-heavy when the learned peak is above the limit. The setting `spawnHeavy` gives the limit: 600 starts in one minute by default.
+- `headroom config spawn-heavy <n>` sets the limit, and `--clear` sets the default again. A change applies to the next requests.
+
+**The class.** The lease keeps its class in the column `spawn`, as JSON: `{ heavy, source, perMinute, runs }`. The source tells where the class comes from:
+
+| Source | Meaning |
+|---|---|
+| `history` | The peaks of the past runs. A job with no past runs is normal, with `perMinute: null`. |
+| `declared` | `headroom run --spawn-heavy`: the holder knows that a new job starts many processes. |
+| `opted-out` | `headroom run --no-spawn-heavy`: the job is normal, also above the limit. Its owner knows that the class is wrong. |
+| `live` | The peak of the job itself went above the limit while it ran. `perMinute` is the peak at that time. |
+
+**Promote.** At each count, a lease that is not spawn-heavy gets the class `live` when its peak is above the limit. A lease with `--no-spawn-heavy` stays normal. A browser test that runs at that time continues. Each later browser test waits.
+
+**Admit.** The engine gives `spawnConflict()` to the broker as its conflict rule:
+
+- A spawn-heavy lease waits while a lease with the slot `browser` runs. A lease with the slot `browser` waits while a spawn-heavy lease runs.
+- A later lease does not go before an earlier waiting lease that it conflicts with. Thus a stream of browser tests cannot keep a spawn-heavy job in the queue forever, and the reverse.
+- Two spawn-heavy leases can run together. Two browser tests follow the capacity of the slot `browser`.
+- A lease that is spawn-heavy and also has the slot `browser` conflicts with each other browser test.
+
+The reasons of a wait name the other lease. They do not start with `waits for memory`, so the hook of the plugin does not count them:
+
+```text
+waits for the browser tests of graph (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
+waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it
+```
+
+When the other lease waits before it in the queue, the reason has "to run first and end". A job name that starts with `memory` gets the words "the job" before it.
+
+**Status.** `headroom status` gives the line `Spawn-heavy now: test-churn (server-stack), 1,870 a minute.` for each granted spawn-heavy lease. `headroom job` gives the peak and the class, for example `at most 1,870 starts a minute, spawn-heavy (about 1,870 a minute in past runs)`. The JSON gives `peakStartsPerMin`, `averageStartsPerMin` and `spawn`. The dashboard gives the peak and the class in the tooltip of each job of the timeline.
+
+**Cost.** The tracker keeps the counts of each job for 10 minutes, as before. The class costs one or two indexed queries of the store at each request.
 
 ## Decisions
 

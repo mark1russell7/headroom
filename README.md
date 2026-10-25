@@ -122,6 +122,29 @@ The line `Process starts` of `headroom status` gives the starts of the last 10 m
 
 On 2026-10-24, this computer started 1,450 processes in one minute. A read every second found only 260 of them, and a read every 10 seconds found 60.
 
+### Spawn-heavy jobs and browser tests (H47)
+
+On 2026-10-24, the Playwright browsers of graph did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases. The desktop heap, the memory, the commit charge and the kernel pools had room. Thus the burst itself stops the start of a browser.
+
+A spawn-heavy job and a browser test do not run at the same time:
+
+- **The peak.** The lease keeps the highest starts in one minute of its job, over a window of 30 seconds. The counts come from the job object, every 30 seconds and at the release.
+- **The past runs.** A job name is spawn-heavy when the peak of its past runs is above the limit. The rule is the rule of `--mem auto`: the 90th percentile of the last 20 runs, the runs of the same holder first.
+- **The limit.** The default is 600 starts in one minute. `headroom config spawn-heavy 900` changes it. `headroom config spawn-heavy --clear` sets the default again.
+- **A new job.** A job with no past runs is normal. When its own peak goes above the limit, it becomes spawn-heavy at once, and each later browser test waits for it.
+- **The queue.** A spawn-heavy lease waits while a browser test runs, and a browser test waits while a spawn-heavy lease runs. A later lease does not go before an earlier waiting lease that it conflicts with.
+- Two spawn-heavy jobs can run together. Two browser tests follow the capacity of the slot `browser`.
+- **The options.** `--spawn-heavy` marks a new job that starts many processes. `--no-spawn-heavy` marks a job as normal, also when its past runs are above the limit.
+
+`headroom status` gives the line `Spawn-heavy now: test-churn (server-stack), 1,870 a minute.` `headroom job` and its JSON give the peak, the average and the class of a job. The dashboard gives them in the timeline of the jobs. A wait gives a reason that names the other job:
+
+```text
+waits for the browser tests of graph (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
+waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it
+```
+
+These reasons do not start with `waits for memory`, so the hook of the plugin does not count them. `docs/RESOURCES.md` gives the rules.
+
 ### Battery and power (H30)
 
 On a laptop, the battery is a resource too. headroom reads it with the processes, every 10 seconds. The read starts no process and no timer:
@@ -170,6 +193,7 @@ On Windows, `headroom run` puts the job into a job object:
 - The run also writes the count of processes that the job started (H29). The lease keeps the count.
 - On battery, the run puts the processes of the job in efficiency mode (EcoQoS), and writes one line when the mode changes (H30). `--no-eco` turns this off.
 - A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` lets two run.
+- A spawn-heavy job does not run beside a browser test (H47). `--spawn-heavy` and `--no-spawn-heavy` set the class of the job.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.
@@ -184,14 +208,14 @@ headroom job 3f2a9c1e --json
 
 ```text
 headroom: lease 3f2a9c1e for graph-e2e, queued for browser.
-graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6 min, peak 1.8 GB. Log: D:\logs\e2e.log
+graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6 min, peak 1.8 GB, 412 processes started, at most 380 starts a minute, normal (about 350 a minute in past runs). Log: D:\logs\e2e.log
 ```
 
 - `headroom run` writes the lease id and the job first. The release of the lease records the exit code of the job, or the signal that stopped it.
 - `--log <file>` sends the output and the errors of the job to the console and to the end of the file. The run makes the file and its folder when they do not exist. The lease records the absolute path.
 - `headroom job <name|id>` finds the lease by its id, or by a unique prefix of 8 or more characters of the id. Then it finds the latest lease of the job name. `--holder <h>` uses only the leases of one holder. `--all` gives each match of the last 24 hours.
 - The state is `queued` (the lease waits), `running` (the lease is granted) or `exited` (the lease is released, cancelled or expired). A lease that ends with no job exit, for example a lease whose client stopped, has the exit code `null` and a reason.
-- `--json` gives `{ id, job, holder, state, exitCode, signal, reason, queuedAt, startedAt, endedAt, waitedMs, ranMs, peakMb, log }`. The times are ISO strings or `null`. The procedure is `resources.job`.
+- `--json` gives `{ id, job, holder, state, exitCode, signal, reason, queuedAt, startedAt, endedAt, waitedMs, ranMs, peakMb, processes, peakStartsPerMin, averageStartsPerMin, spawn, log }`. The times are ISO strings or `null`. The procedure is `resources.job`.
 - The command gives the exit code 0 when it finds a job. With no match, it gives the exit code 3, and `--json` writes `{ "error": "no job", "query": "..." }`.
 - The store keeps each ended lease for at least 7 days.
 
