@@ -176,6 +176,28 @@ export interface TcpTable {
   readonly connections: readonly TcpConnection[];
 }
 
+/** One read of the battery (H30), from `CallNtPowerInformation(SystemBatteryState)`. A computer with no battery has no read. */
+export interface BatteryRead {
+  /** True: the computer runs on AC power. */
+  readonly ac: boolean;
+  readonly charging: boolean;
+  readonly discharging: boolean;
+  /** The full charge capacity, in mWh. */
+  readonly maxMwh: number;
+  /** The charge, in mWh. */
+  readonly remainingMwh: number;
+  /** The rate of the battery in mW: negative while it discharges, positive while it charges. It is `null` when Windows does not know it. */
+  readonly rateMw: number | null;
+  /** The time left on battery that Windows estimates, in seconds, or `null` when Windows does not know it. */
+  readonly estimatedSeconds: number | null;
+}
+
+/**
+ * One read of the counter set "Energy Meter" (H30): the power of each meter in W, by instance name in lower case. Examples
+ * are `system power`, `cpu power` and `gpu power`. The meters of each core are absent.
+ */
+export type PowerMeters = Readonly<Record<string, number>>;
+
 /** The free space of one fixed drive, in MB. A full drive stops the builds, the tests and git for all the sessions. */
 export interface DiskSpace {
   /** The name of the drive, for example "C:" on Windows, or its mount point on Linux. */

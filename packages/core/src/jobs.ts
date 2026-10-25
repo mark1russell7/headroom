@@ -8,12 +8,14 @@
  *   An allocation above the limit fails, and the job stops with an error of its own.
  * - The job records its peak memory, so the holder can see what the job used.
  * - The job counts each process that it held, also the processes that ended (H29). The holder reports the count.
+ * - On battery, the holder puts the processes of the job in efficiency mode (EcoQoS), and takes them out on AC power (H30).
  *
  * Windows nests jobs. Thus a process that is in a job already, for example a shell of a terminal, can
  * also go into the job of headroom. Only `createJob()` and `startOutsideJob()` on Windows load this file.
  */
 
 import koffi from "koffi";
+import { EcoTracker } from "./power.ts";
 import { MB } from "./sampler.ts";
 
 const JOB_OBJECT_LIMIT_JOB_MEMORY = 0x200;
@@ -60,7 +62,21 @@ const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
 const ACCOUNTING_SIZE = 48;
 const ACCOUNTING_TOTAL_PROCESSES = 36;
 const queryAccounting = kernel32.func("int __stdcall QueryInformationJobObject(intptr_t job, int cls, _Out_ uint8_t *info, uint32_t length, void *returned)");
+// JobObjectBasicProcessIdList (class 3): NumberOfAssignedProcesses and NumberOfProcessIdsInList of 4 bytes each, then an ID
+// of 8 bytes for each process (H30).
+const JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3;
+const PID_LIST_HEADER = 8;
+const PID_SIZE = 8;
 const assignProcess = kernel32.func("int __stdcall AssignProcessToJobObject(intptr_t job, intptr_t process)");
+const openProcess = kernel32.func("intptr_t __stdcall OpenProcess(uint32_t access, int inherit, uint32_t pid)");
+const setProcessInformation = kernel32.func("int __stdcall SetProcessInformation(intptr_t process, int cls, _In_ uint8_t *info, uint32_t size)");
+const PROCESS_SET_INFORMATION = 0x0200;
+// ProcessPowerThrottling with PROCESS_POWER_THROTTLING_STATE: the version 1, the control mask and the state mask. The bit
+// PROCESS_POWER_THROTTLING_EXECUTION_SPEED in the state mask asks for EcoQoS (efficiency mode).
+const PROCESS_POWER_THROTTLING = 4;
+const THROTTLING_VERSION = 1;
+const THROTTLING_EXECUTION_SPEED = 1;
+const THROTTLING_STATE_SIZE = 12;
 const getCurrentProcess = kernel32.func("intptr_t __stdcall GetCurrentProcess()");
 const getLastError = kernel32.func("uint32_t __stdcall GetLastError()");
 const closeHandle = kernel32.func("int __stdcall CloseHandle(intptr_t handle)");
@@ -124,6 +140,13 @@ export interface Job {
    * count includes the current process. It is `TotalProcesses` of `JobObjectBasicAccountingInformation`.
    */
   processes(): number;
+  /** This function gives the IDs of the processes in the job at this time, the current process too (H30). */
+  pids(): number[];
+  /**
+   * This function puts the processes of the job in efficiency mode (EcoQoS), or takes them out of it (H30). The current
+   * process stays as it is. It changes only the processes that need a change, and gives their count.
+   */
+  eco(on: boolean): number;
   /**
    * This function closes the job: Windows stops each process that is still in it, the current process too.
    * The holder does not need it. The job closes when the current process exits.
@@ -151,8 +174,12 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
     throw new Error(`AssignProcessToJobObject failed with the error ${error}`);
   }
   let open = true;
+  const tracker = new EcoTracker();
+  const pids = (): number[] => (open ? jobPids(handle) : []);
   return {
     limitMb,
+    pids,
+    eco: (on) => tracker.update(on, pids().filter((pid) => pid !== process.pid), setEfficiency),
     peakMb: () => {
       const out = {} as ExtendedLimit;
       if (!open || queryInformation(handle, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, out, extendedSize, null) === 0) return 0;
@@ -169,6 +196,44 @@ export function createWindowsJob(limits: JobLimits = {}): Job {
       closeHandle(handle);
     },
   };
+}
+
+let pidBuffer = Buffer.alloc(PID_LIST_HEADER + 64 * PID_SIZE);
+
+/** This function gives the IDs of the processes in a job. A list that grows between two calls makes the buffer larger. */
+function jobPids(job: number): number[] {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ok = queryAccounting(job, JOB_OBJECT_BASIC_PROCESS_ID_LIST, pidBuffer, pidBuffer.length, null) !== 0;
+    const assigned = pidBuffer.readUInt32LE(0);
+    const listed = pidBuffer.readUInt32LE(4);
+    if (!ok && assigned > listed) {
+      pidBuffer = Buffer.alloc(PID_LIST_HEADER + (assigned + 16) * PID_SIZE);
+      continue;
+    }
+    if (!ok) return [];
+    const list: number[] = [];
+    for (let index = 0; index < listed; index++) list.push(Number(pidBuffer.readBigUInt64LE(PID_LIST_HEADER + index * PID_SIZE)));
+    return list;
+  }
+  return [];
+}
+
+/**
+ * This function puts one process in efficiency mode (EcoQoS), or takes it out of it, with `SetProcessInformation` (H30).
+ * It gives `false` when the process ended or refuses the change.
+ */
+export function setEfficiency(pid: number, on: boolean): boolean {
+  const handle = Number(openProcess(PROCESS_SET_INFORMATION, 0, pid));
+  if (handle === 0) return false;
+  try {
+    const state = Buffer.alloc(THROTTLING_STATE_SIZE);
+    state.writeUInt32LE(THROTTLING_VERSION, 0);
+    state.writeUInt32LE(THROTTLING_EXECUTION_SPEED, 4);
+    state.writeUInt32LE(on ? THROTTLING_EXECUTION_SPEED : 0, 8);
+    return setProcessInformation(handle, PROCESS_POWER_THROTTLING, state, THROTTLING_STATE_SIZE) !== 0;
+  } finally {
+    closeHandle(handle);
+  }
 }
 
 /**

@@ -104,6 +104,14 @@ type Empty = z.infer<typeof Empty>;
 
 const anything = <T>(): ReturnType<typeof zodAdapter<T>> => zodAdapter<T>(z.custom<T>(() => true));
 
+/**
+ * The answer of a heartbeat: the lease, and the efficiency mode for its job (H30). On battery, `eco` is true, and the client
+ * of `headroom run` puts the processes of its job in EcoQoS. A daemon of an older version does not give it.
+ */
+export interface RenewAnswer extends Lease {
+  readonly eco: boolean;
+}
+
 /** The status of the daemon: the status of the engine, and the restart that waits for an idle queue. */
 export interface DaemonStatus extends Status {
   /** The restart that waits for an idle queue. A daemon of an older version does not give it. */
@@ -204,14 +212,14 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
   const renew = createProcedure()
     .path(["resources", "renew"])
     .input(zodAdapter<RenewInput>(RenewInput))
-    .output(anything<Lease>())
+    .output(anything<RenewAnswer>())
     .meta({
-      description: "Record a heartbeat of a lease, with the count of processes that its job started so far",
+      description: "Record a heartbeat of a lease, with the count of processes that its job started so far. The answer tells if the job runs in efficiency mode.",
       args: ["id"],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
-    .handler(async (input: RenewInput): Promise<Lease> => found(engine.renew(input.id, input.processes), input.id))
+    .handler(async (input: RenewInput): Promise<RenewAnswer> => ({ ...found(engine.renew(input.id, input.processes), input.id), eco: engine.powerStatus().eco }))
     .build() as AnyProcedure;
 
   const history = createProcedure()

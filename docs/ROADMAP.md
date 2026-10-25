@@ -68,7 +68,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H27 | Service health: Docker, the MCP servers of the gateway, the fleet site | done |
 | H28 | UX round 1: the dashboard and the tracker. The dashboard shows what uses the computer, opens each panel to its history and shows the jobs on a timeline. | done |
 | H29 | Process starts by owner. Each new process leaks kernel memory in the AMD display driver until Mark updates it (hub ask `amd-driver`). | done: the resource `procs` in starts each minute, an exact total of the computer from the sequence numbers of Windows, exact counts of the leased jobs from their job objects, a lower bound for each owner with its jobs and its own commands, the alert `churn`, the line of `headroom status`, `processes` in `headroom job`. A parent counts only when it started at or before its child. |
-| H30 | Battery and power: the battery becomes a resource of the model. On battery, heavy jobs wait or run in the efficiency mode of Windows. | later |
+| H30 | Battery and power: the battery becomes a resource of the model. On battery, heavy jobs wait or run in the efficiency mode of Windows. | done: the resources `battery` (Wh) and `power` (W, the owners as an estimate), the power events of Windows, the sleep gaps in the leases, the rates and the charts, the alerts `battery`, EcoQoS for the jobs of `headroom run` on battery (`--no-eco`), a power request on AC power while a lease is granted, and the line `Power` of `headroom status`. The wait rules come with H31. |
 | H31 | Conditions for a job: plugged in, Mark away, no metered network, a cool CPU. A job waits for a condition, not only for an amount: `headroom run --when ac,away`. | later |
 | H32 | A forecast for each resource: the time to a limit, from its history. The fleet acts before the limit, not at it. | later |
 | H33 | Keep room for Mark: while Mark works or is on a call, heavy jobs wait or run slower. When Mark steps away, they run. | later |
@@ -82,7 +82,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H41 | Things that expire: certificates, the npm trust, tokens and keys. headroom shows the time left and alerts before each one ends. | later |
 | H42 | Quiet hours and the overnight window: a CPU cap at night for quiet fans, or big test suites that wait for the night. Mark picks the hours. | later |
 | H43 | Clean-grid timing: jobs that can wait run when the New England grid is cleanest. The effect is small, so this item is last. | later |
-| H44 | Fix: the Angular completion in `~/.bashrc` starts node in each new shell, and each node process leaks kernel memory. Mark runs the two commands of the hub ask. | waits for Mark |
+| H44 | Fix: the Angular completion in `~/.bashrc` starts node in each login shell, 13 times a minute, only from two sessions that run with no shell snapshot. A restart of those sessions stops it. | waits for Mark |
 | H45 | Fix: VS Code polls Docker every 2 seconds. Mark closes the Containers view of VS Code when it is not in use. If the poll continues, Mark turns off the extension in the workspaces that do not use Docker. | waits for Mark |
 
 ## The MCP gateway (H11)

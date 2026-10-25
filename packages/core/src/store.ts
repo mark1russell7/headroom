@@ -3,7 +3,7 @@
  *
  * It keeps the leases, the capacity of the configured pools and one memory sample each minute. It also keeps
  * the memory and the written MB of each owner each minute. It also keeps the level of each resource instance each minute,
- * the snapshots of the pool tags and the settings. It removes the samples that are older than the retention.
+ * the snapshots of the pool tags, the settings and the sleeps of the computer. It removes the samples that are older than the retention.
  */
 
 import { mkdirSync } from "node:fs";
@@ -57,7 +57,11 @@ CREATE TABLE IF NOT EXISTS resource_samples (
   at INTEGER NOT NULL, id TEXT NOT NULL, capacity REAL, used REAL, free REAL, PRIMARY KEY (at, id)
 );
 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sleeps (from_at INTEGER PRIMARY KEY, to_at INTEGER NOT NULL);
 `;
+
+/** One sleep of the computer (H30): its start and its end, in milliseconds since the epoch. The history has no samples in it. */
+export type Sleep = readonly [from: number, to: number];
 
 /** The settings of headroom. The store keeps them, and `headroom config` shows and changes them. */
 export interface Config {
@@ -386,11 +390,25 @@ export class Store {
     return snapshots;
   }
 
+  /** This function writes one sleep of the computer (H30). */
+  saveSleep(from: number, to: number): void {
+    this.#db.prepare("INSERT OR REPLACE INTO sleeps (from_at, to_at) VALUES (?, ?)").run(from, to);
+  }
+
+  /** This function reads the sleeps that end after a time, the oldest first. */
+  sleepsSince(since: number): Sleep[] {
+    return this.#db
+      .prepare("SELECT from_at, to_at FROM sleeps WHERE to_at >= ? ORDER BY from_at")
+      .all(since)
+      .map((row) => [Number(row["from_at"]), Number(row["to_at"])] as const);
+  }
+
   /**
    * This function removes the samples older than a time, and the leases that ended before the second time. The second
    * time is the first time by default.
    */
   prune(before: number, leasesBefore: number = before): void {
+    this.#db.prepare("DELETE FROM sleeps WHERE to_at < ?").run(before);
     this.#db.prepare("DELETE FROM memory WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM owners WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);

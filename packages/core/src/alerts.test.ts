@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { ServiceHealth } from "./services.ts";
-import type { OwnerKind, ProcessInfo, TcpConnection, TcpTable } from "./types.ts";
+import type { BatteryRead, OwnerKind, ProcessInfo, TcpConnection, TcpTable } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb });
 const memory = { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
@@ -259,5 +259,43 @@ describe("detect: services (H27)", () => {
       expect(detect(input([], {}, { starts: starts(1450, 300_000) }))).toEqual([]);
       expect(detect(input([], {}, { starts: starts(450, 600_000) }), { ...DEFAULT_ALERT_RULES, churnPerMinute: 400 }).map((alert) => alert.id)).toEqual(["churn"]);
     });
+  });
+});
+
+describe("battery alerts (H30)", () => {
+  const onBattery: BatteryRead = { ac: false, charging: false, discharging: true, maxMwh: 50_000, remainingMwh: 34_000, rateMw: -18_000, estimatedSeconds: 7080 };
+  const cores = [
+    { owner: "session:server-stack", kind: "session" as const, cores: 3 },
+    { owner: "session:graph", kind: "session" as const, cores: 2 },
+    { owner: "session:vex", kind: "session" as const, cores: 1 },
+    { owner: "docker", kind: "docker" as const, cores: 0.5 },
+  ];
+  const meters = { "system power": 18, "cpu power": 6.5 };
+
+  it("warns when leased jobs run on battery, and names the 3 owners that use the most power", () => {
+    const alerts = detect(input([], {}, { battery: onBattery, meters, cores, leases: [lease(0)] }));
+    expect(alerts.map((alert) => [alert.id, alert.kind, alert.severity])).toEqual([["battery:jobs", "battery", "warning"]]);
+    expect(alerts[0]?.message).toBe(
+      "The laptop runs on battery (68%, 18.0 W, 1 h 58 min left), and 1 leased job runs: vitest of graph. Most power (estimate): session:server-stack 3.0 W, session:graph 2.0 W, session:vex 1.0 W." +
+        " The jobs run in efficiency mode. Connect the charger for full speed.",
+    );
+    // A lease that waits does not run.
+    expect(detect(input([], {}, { battery: onBattery, leases: [{ ...lease(0), state: "waiting" }] }))).toEqual([]);
+  });
+
+  it("warns below 30 minutes left, and is critical below 10 minutes or 10%", () => {
+    const level = (battery: BatteryRead): unknown[] => detect(input([], {}, { battery })).map((alert) => [alert.id, alert.severity]);
+    expect(level(onBattery)).toEqual([]);
+    expect(level({ ...onBattery, estimatedSeconds: 25 * 60 })).toEqual([["battery", "warning"]]);
+    expect(level({ ...onBattery, estimatedSeconds: 8 * 60 })).toEqual([["battery", "critical"]]);
+    expect(level({ ...onBattery, remainingMwh: 4000, estimatedSeconds: null, rateMw: null })).toEqual([["battery", "critical"]]);
+    const [low] = detect(input([], {}, { battery: { ...onBattery, estimatedSeconds: 25 * 60 } }));
+    expect(low?.message).toContain("The laptop runs on battery: 68%, 25 min left. Connect the charger.");
+  });
+
+  it("clears each battery alert when AC power returns, and gives none with no battery", () => {
+    const plugged = { ...onBattery, ac: true, charging: true, remainingMwh: 2000, estimatedSeconds: null };
+    expect(detect(input([], {}, { battery: plugged, leases: [lease(0)] }))).toEqual([]);
+    expect(detect(input([], {}, { leases: [lease(0)] }))).toEqual([]);
   });
 });

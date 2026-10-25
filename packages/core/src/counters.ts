@@ -133,6 +133,14 @@ export class CounterTracker {
     this.#lastAt = at;
   }
 
+  /**
+   * This function marks a gap after a sleep of the computer (H30). The next read only keeps the totals, so no rate spans
+   * the sleep. The reads before the sleep keep their own times.
+   */
+  gap(): void {
+    this.#lastAt = null;
+  }
+
   /** This function closes the minute that ends at a time. It gives the change of each total for each owner in that minute, for the store. */
   close(at: number): ReadonlyMap<Counter, ReadonlyMap<string, number>> {
     const sums = this.#open;

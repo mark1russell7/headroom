@@ -22,6 +22,9 @@ import { IdleRestart } from "./restart.ts";
 /** The default port of the daemon. */
 export const DEFAULT_PORT = 4730;
 
+/** A time between two ticks that counts as a sleep of the computer, also with no resume event (H30). The daemon ticks every 2 seconds. */
+const SLEEP_GAP_MS = 60_000;
+
 /** The time between two sweeps of the temp folders of the ended leases (H19). */
 const SWEEP_EVERY_MS = 10 * 60_000;
 
@@ -58,12 +61,14 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
   // H27: Docker, the URLs of the setting health and the MCP servers of the gateway, every 30 seconds.
   const monitor = new ServiceMonitor({ checks: () => serviceChecks(store.config().health, gateway.list()) });
+  const sampler = await createSampler();
   const engine = new Engine({
-    sampler: await createSampler(),
+    sampler,
     store,
     reserveMb: options.reserveMb,
     servers: () => gateway.pids(),
     services: () => monitor.list(),
+    sleepGapMs: SLEEP_GAP_MS,
   });
   if (unclean !== null) {
     const last = engine.history(Date.now() - 86_400_000).memory.at(-1)?.at;
@@ -129,14 +134,21 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   announceDaemon({ pid: process.pid, endpoint: `http://${host}:${port}/api`, token, startedAt: new Date().toISOString() }, planned);
   log(`headroom runs at http://${host}:${port}/api (process ${process.pid})`);
   stopSelf = () => void started.life.shutdown("the restart for an idle queue", { code: 0 });
-  const timer = setInterval(() => {
+  const tick = (): void => {
     try {
       engine.tick();
       idle.tick();
     } catch (error) {
       log(`The tick failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }, options.tickMs ?? 2000);
+  };
+  const timer = setInterval(tick, options.tickMs ?? 2000);
+  // H30: a power event sets the state of the engine and asks for a tick at once. The handler does not wait, because the
+  // thread of Windows that gives the event waits for it.
+  const unwatch = sampler.watchPower?.((event) => {
+    engine.powerEvent(event);
+    setImmediate(tick);
+  }, log);
   // H19: a client that stopped before its release left the temp folder of its lease.
   const sweep = (): void => {
     try {
@@ -151,6 +163,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   monitor.start();
 
   await started.life.done;
+  unwatch?.();
   clearInterval(timer);
   clearInterval(sweeper);
   monitor.stop();

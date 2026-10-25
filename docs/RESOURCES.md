@@ -29,10 +29,10 @@ The kinds are in one registry. A part that a kind does not have is `null`.
 export type ResourceId = string;
 
 /** The kinds. An id with no known kind is a slot, as today. */
-export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "gpu";
+export type ResourceKind = "memory" | "commit" | "pool" | "desktop" | "disk" | "cpu" | "slot" | "net" | "ports" | "service" | "procs" | "battery" | "power" | "gpu";
 
-/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). The process starts use "per minute" (H29). */
-export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute";
+/** The unit of the amounts of a kind. Disk writes use MB/h, and the network uses MB/s. A service has a state (H27). The process starts use "per minute" (H29). The battery uses Wh, and the power uses W (H30). */
+export type Unit = "MB" | "cores" | "count" | "MB/h" | "MB/s" | "state" | "per minute" | "Wh" | "W";
 
 /** One resource kind with its five parts. */
 export interface Resource {
@@ -356,6 +356,8 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
 | `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
 | `procs` (per minute) | H29. The process starts in one minute, as an average over the last 10 minutes. Windows: exact, from the sequence number of the newest process. Elsewhere: a lower bound. Capacity: `null`. | The starts of each owner: its leased jobs (exact, from the job objects) and its own commands (a lower bound, the new processes of each read). | Level on used: a warning above 600 for 10 minutes (`churn`). | None. | None. Report only: the lease keeps `processes`. |
+| `battery` (Wh) | H30. Capacity: the full charge. Free: the remaining charge, from `CallNtPowerInformation(SystemBatteryState)`. The measurement also has the power source, the charge state, the percent, the rate in W and the minutes left. No battery: no instance. Linux and macOS: no instance. | None. | Check: a warning below 30 minutes left, critical below 10 minutes or 10%. A warning when leased jobs run on battery. On AC power, no alert. | None. H31 adds the `--when` rules. | EcoQoS for the processes of `headroom run` on battery, from the answer of the heartbeat. `--no-eco` turns it off. |
+| `power` (W) | H30. Used: the power of the whole computer, from the counter `\Energy Meter(*)\Power` (PDH). Capacity: `null`. No counter set: no instance. Linux and macOS: no instance. | An estimate: the CPU power, shared by the processor time of each owner. | None. The battery alert names the 3 owners with the most power. | None. | A power request keeps the computer awake on AC power while a lease is granted. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
 | `gpu:<adapter>` (later, MB) | The dedicated memory of each adapter. | The counter `GPU Process Memory` of each process. | Level on free. | Measured, as `memory`. | None. A job object has no GPU limit. |
 
@@ -637,6 +639,58 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 
 **The numbers on 2026-10-24.** The computer started 1,450 processes in one minute. A read every second found 260 of them, and a read every 10 seconds found 60. Thus the owners show a small part of the starts, and the leased jobs give the exact part.
 
+### H30: battery and power
+
+Mark asked for the battery as a resource on battery power. An event or a cheap read tells the daemon when the state changes.
+
+**Measure.** The daemon reads both resources at each read of the processes, every 10 seconds. It starts no process and no timer.
+
+- `battery`: `CallNtPowerInformation(SystemBatteryState)` fills 32 bytes. `parseBatteryState()` in `power.ts` reads them, and `batteryState()` gives the percent, the rate in W and the minutes left.
+- Windows gives an unknown rate as `0x80000000` and an unknown time as `0xFFFFFFFF`. Then the rate or the time is `null`. With no estimate of Windows, the minutes left come from the charge and the rate.
+- `power`: PDH with the counter `\Energy Meter(*)\Power` in mW. The query opens at the first read. A rate needs two collections, so the first read gives no meters.
+- The instance `System Power` gives the power of the computer. `CPU Power`, else `RAPL_Package0_PKG`, gives the CPU power. The instances of each core and `_Total` are skipped.
+- A computer with no battery, with no counter set or with a failed read has no instance. The values are absent, not 0.
+- Linux and macOS have neither resource. The sampler of Linux has no reader for them.
+
+**Attribute.** The power of an owner is an estimate: the CPU power, shared by the cores of each owner over the last minute. The panel and the status call it an estimate. The GPU and the screen also use power, and no owner gets that part.
+
+**Events.** `watchPower()` in `windows-power.ts` registers callbacks with `DEVICE_NOTIFY_CALLBACK`:
+
+- `PowerSettingRegisterNotification` for the power source (`GUID_ACDC_POWER_SOURCE`), the percent (`GUID_BATTERY_PERCENTAGE_REMAINING`) and the lid (`GUID_LIDSWITCH_STATE_CHANGE`). A UPS counts as AC power.
+- `PowerRegisterForEffectivePowerModeNotifications` (version 2) gives the power mode, for example `balanced`. Windows calls it once at the registration.
+- `PowerRegisterSuspendResumeNotification` gives the suspend (`PBT_APMSUSPEND`) and the resume (`PBT_APMRESUMESUSPEND`, `PBT_APMRESUMEAUTOMATIC`).
+- Each handler sets the state of the engine and asks for a tick with `setImmediate`. It does not wait, because the thread of Windows waits for the handler.
+- The registrations run on a worker thread of koffi, so a callback during a registration does not block the main thread.
+- If one registration fails, the daemon writes one line to its log, and the read every 10 seconds continues. At the stop, the daemon removes each registration.
+
+**Sleep.** A resume event marks a sleep. With no event, a time of 60 seconds or more between two calls of the engine also marks a sleep. The daemon ticks every 2 seconds. The default of the engine is no limit, so a test can move its clock.
+
+- `Broker.resume()` adds the time of the sleep to the heartbeat of each active lease, but not past the time of the call. Thus no lease ends because the laptop slept. A lease with a process ends when its process ends, as before.
+- The rates start again at the wake: the processor time and the writes (`CounterTracker.gap()`), the process starts (`StartTracker.gap()`), the network and the drives.
+- The growth of the kernel pools starts at the wake, so a growth does not span the sleep.
+- The table `sleeps` keeps each sleep. `History.sleeps` gives them, and the charts draw a band and no line across a sleep.
+
+**Alert.** The kind `battery` has two check rules. A check rule is a new rule type: a function of the facts of an instance gives the level.
+
+- `battery`: on battery, a warning below 30 minutes left (`batteryWarnMinutes`). Critical below 10 minutes (`batteryCriticalMinutes`) or below 10% (`batteryCriticalPercent`).
+- `battery:jobs`: a warning when granted leases run on battery. The message names the jobs and the 3 owners with the most power, as an estimate.
+- On AC power, both rules give no level. Thus each alert ends when AC power returns. A power source event asks for a check at once.
+
+**Enforce.** Two parts, both in this item:
+
+- **EcoQoS.** The answer of `resources.renew` has the field `eco`: true on battery. The client of `headroom run` reads the processes of its job object (`JobObjectBasicProcessIdList`) and calls `SetProcessInformation(ProcessPowerThrottling)` for each new process, with the state mask 1. On AC power, it sets the state mask 0 for each process that it changed.
+- The client does the change, not the daemon. The client holds the job object, and it has the rights on its own processes. The daemon does not open the processes of other users.
+- The first heartbeat comes 3 seconds after the start, then every 30 seconds. `--no-eco` turns the mode off. A daemon of an older version gives no `eco`, and the job keeps its speed.
+- **Keep awake.** On AC power, while a lease is granted, the daemon holds a power request: `PowerCreateRequest` with the reason `headroom: N jobs run`, then `PowerSetRequest(PowerRequestSystemRequired)`. With no lease or on battery, it clears the request. A lid close still puts the laptop to sleep, because the lid action of Windows is stronger than a power request.
+
+**Admit.** None in this item. H31 adds the rules with `--when`: they read `Readings.battery`, and the `admit` part of `battery` is the place for them.
+
+**Status.** `Status.power` gives the power source, the power mode, the lid, `eco`, the reason of the power request and the last sleep. `headroom status` gives one line, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:graph 2.4 W.`
+
+**Cost.** The battery read is one call of approximately 32 bytes. The PDH query costs approximately 4 MB of private memory and approximately 900 ms once, at the first read. Each collection takes 4 to 28 ms. The PerfLib V2 consumer API can replace PDH later, if the 4 MB matter.
+
+**The numbers on 2026-10-24.** On battery: 47%, 21.9 W, 67 minutes left. The Energy Meter gave 23.3 W for the computer, 7.1 W for the CPU and 0.05 W for the GPU.
+
 ## Decisions
 
 These were the open questions. The session decided each one as a technical call. Mark can change any of them.
@@ -658,6 +712,9 @@ These were the open questions. The session decided each one as a technical call.
 | Which network adapters count? | The adapters that are up, with a hardware interface and with no filter interface. | The filter rows and the virtual adapters count the same bytes again. The traffic of Tailscale and of WSL goes through the Wi-Fi adapter. |
 | Does headroom read the network bytes of each process? | No. | Windows gives them only through ETW, with admin rights or the group `Performance Log Users`. |
 | What does `ports:tcp` count? | Each TCP row with a local port in the dynamic range, in each state. | A port in `TIME_WAIT` is not free. When the range is full, new connections fail. |
+| Who puts a job in efficiency mode on battery? | The client of `headroom run`, from the field `eco` of the answer of its heartbeat. | The client holds the job object and the rights on its processes. The daemon stays small and opens no process of a job. |
+| Does a lease end because the laptop slept? | No. The heartbeat of each active lease gets the time of the sleep. | A heartbeat cannot come while the laptop sleeps. The job continues after the wake. |
+| Is the power of an owner measured? | No. It is an estimate from the CPU power and the processor time of the owner. | Windows gives no power for each process with no ETW. The estimate is cheap and names the large users. |
 | How does the model show the health of a service? | A new unit `state`. The measurement has the field `health`. Its used part is the latency of the last check in ms, and the capacity and the free part are `null`. | A state is not an amount. The latency gives the history and the trend of the panel a number. The unit `count` gives a capacity of 1 that tells nothing. |
 | When is an MCP server down? | When its start failed, or after 3 exits in 10 minutes. A server that the gateway stopped for idle, or that exited one time, is `idle`. | The gateway starts a server again at the next request. Thus one exit is not a failure of the service, but a start that fails is. |
 | Does headroom restart a service that is down? | No. The alert only reports. | A restart of Docker stops the containers of all the sessions. The owner of the service decides. |

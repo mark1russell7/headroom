@@ -149,3 +149,16 @@ describe("StartTracker", () => {
     expect(tracker.summary(later)).toMatchObject({ perMinute: 0, owners: [], jobs: [] });
   });
 });
+
+describe("StartTracker after a sleep (H30)", () => {
+  it("gives no rate across a gap", () => {
+    const tracker = new StartTracker();
+    tracker.read(0, first, ownersOf(first, []), 1000);
+    tracker.gap(3_600_000);
+    // The sequence number grew by 9000 in the sleep, and processes started: the next read only keeps them.
+    tracker.read(3_600_000, second, ownersOf(second, []), 10_000);
+    expect(tracker.summary(3_600_000).perMinute).toBe(0);
+    tracker.read(3_610_000, second, ownersOf(second, []), 10_050);
+    expect(tracker.summary(3_610_000)).toMatchObject({ perMinute: 300, exact: true });
+  });
+});

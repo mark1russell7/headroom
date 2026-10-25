@@ -8,7 +8,7 @@ import { Engine } from "./engine.ts";
 import { DEFAULT_HEALTH, type ServiceHealth } from "./services.ts";
 import type { Sampler } from "./sampler.ts";
 import { Store } from "./store.ts";
-import type { PoolTag, ProcessInfo } from "./types.ts";
+import type { BatteryRead, PoolTag, ProcessInfo } from "./types.ts";
 
 describe("Engine stop alerts", () => {
   it("flags clients of headroom run that stop without a release, for 15 minutes", () => {
@@ -616,6 +616,97 @@ describe("Engine services (H27)", () => {
     expect(engine.config().health).toHaveProperty("grafana");
     expect(engine.setConfig({ health: {} }).health).toEqual({});
     expect(engine.setConfig({ health: null }).health).toEqual(DEFAULT_HEALTH);
+    engine.close();
+  });
+});
+
+describe("Engine battery, power and sleep (H30)", () => {
+  function setup(sleepGapMs?: number) {
+    let now = 1_000_000;
+    const battery: BatteryRead = { ac: true, charging: true, discharging: false, maxMwh: 50_000, remainingMwh: 46_000, rateMw: 15_000, estimatedSeconds: null };
+    let read: BatteryRead = battery;
+    const awake: (string | null)[] = [];
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      battery: () => read,
+      power: () => ({ "system power": 31.5, "cpu power": 12 }),
+      keepAwake: (reason) => awake.push(reason),
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere", sleepGapMs });
+    return {
+      engine,
+      awake,
+      advance: (ms: number) => (now += ms),
+      now: () => now,
+      unplug: () => (read = { ...battery, ac: false, charging: false, discharging: true, remainingMwh: 34_000, rateMw: -18_000, estimatedSeconds: 7080 }),
+      plug: () => (read = battery),
+    };
+  }
+
+  it("measures the battery and the power, and keeps the computer awake on AC power while a job runs", () => {
+    const { engine, awake, unplug, plug } = setup();
+    engine.tick();
+    const status = engine.status();
+    expect(status.resources.find((each) => each.id === "battery")).toMatchObject({ kind: "battery", unit: "Wh", capacity: 50, free: 46, battery: { ac: true, percent: 92 } });
+    expect(status.resources.find((each) => each.id === "power")).toMatchObject({ kind: "power", unit: "W", used: 31.5, capacity: null });
+    expect(awake).toEqual([]);
+    const lease = engine.request({ holder: "client", job: "pnpm test", amounts: {}, ttlMs: 600_000 });
+    engine.tick();
+    expect(awake).toEqual(["headroom: 1 job runs"]);
+    expect(engine.powerStatus()).toMatchObject({ ac: true, eco: false, keepAwake: "headroom: 1 job runs" });
+    // On battery, the request ends, the jobs get efficiency mode and an alert names the jobs.
+    unplug();
+    engine.powerEvent({ type: "source", ac: false });
+    engine.tick();
+    expect(awake).toEqual(["headroom: 1 job runs", null]);
+    expect(engine.powerStatus()).toMatchObject({ ac: false, eco: true, keepAwake: null });
+    expect(engine.alerts().active.map((alert) => alert.id)).toEqual(["battery:jobs"]);
+    expect(engine.renew(lease.id)?.state).toBe("granted");
+    // AC power returns: the alert ends and the request starts again.
+    plug();
+    engine.powerEvent({ type: "source", ac: true });
+    engine.tick();
+    expect(engine.alerts().active).toEqual([]);
+    expect(awake.at(-1)).toBe("headroom: 1 job runs");
+    engine.release(lease.id);
+    engine.tick();
+    expect(awake.at(-1)).toBeNull();
+    engine.close();
+  });
+
+  it("gives a lease the time of a sleep, and keeps the sleep for the charts", () => {
+    const { engine, advance, now } = setup(60_000);
+    const lease = engine.request({ holder: "client", job: "pnpm test", amounts: {}, ttlMs: 120_000 });
+    engine.tick();
+    advance(30_000);
+    engine.renew(lease.id);
+    const from = now();
+    engine.powerEvent({ type: "suspend" });
+    // The laptop sleeps for 3 hours. The first call after the wake is the resume event of Windows.
+    advance(3 * 3_600_000);
+    engine.powerEvent({ type: "resume" });
+    engine.tick();
+    expect(engine.get(lease.id)).toMatchObject({ state: "granted", heartbeatAt: now() });
+    expect(engine.powerStatus().lastSleep).toEqual({ from, to: now() });
+    expect(engine.history(0).sleeps).toEqual([[from, now()]]);
+    // A gap longer than 60 seconds with no resume event also counts as a sleep.
+    advance(10 * 60_000);
+    engine.tick();
+    expect(engine.history(0).sleeps).toHaveLength(2);
+    expect(engine.get(lease.id)?.state).toBe("granted");
+    engine.close();
+  });
+
+  it("counts no sleep by default, so a test can move the clock", () => {
+    const { engine, advance } = setup();
+    const lease = engine.request({ holder: "client", job: "pnpm test", amounts: {}, ttlMs: 120_000 });
+    engine.tick();
+    advance(10 * 60_000);
+    engine.tick();
+    expect(engine.get(lease.id)?.state).toBe("expired");
+    expect(engine.history(0).sleeps).toEqual([]);
     engine.close();
   });
 });
