@@ -56,6 +56,9 @@ describe("jobState", () => {
       averageStartsPerMin: 1633,
       spawn: null,
       log: "D:\\logs\\e2e.log",
+      // H31: a job with no conditions.
+      conditions: null,
+      unmet: null,
     });
   });
 

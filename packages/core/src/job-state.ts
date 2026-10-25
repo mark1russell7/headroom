@@ -6,6 +6,7 @@
  */
 
 import type { Lease } from "./broker.ts";
+import type { LeaseConditions, UnmetCondition } from "./conditions.ts";
 import { averageRate, type SpawnClass } from "./spawn.ts";
 import type { Store } from "./store.ts";
 
@@ -49,6 +50,10 @@ export interface JobState {
   readonly spawn: SpawnClass | null;
   /** The absolute path of the log file of the job (`headroom run --log`), or `null`. */
   readonly log: string | null;
+  /** The conditions of the job (H31): `--when`, `--timing` and `--battery-ok`, or `null` for a job with none. */
+  readonly conditions: LeaseConditions | null;
+  /** The record of a time when the job ran without one of its conditions (H31), or `null`. */
+  readonly unmet: UnmetCondition | null;
 }
 
 /** A query for jobs. */
@@ -94,6 +99,8 @@ export function jobState(lease: Lease, now: number): JobState {
       lease.processes === undefined || lease.grantedAt === null ? null : Math.round(averageRate(lease.processes, end - lease.grantedAt)),
     spawn: lease.spawn ?? null,
     log: lease.log ?? null,
+    conditions: lease.conditions ?? null,
+    unmet: lease.unmet ?? null,
   };
 }
 

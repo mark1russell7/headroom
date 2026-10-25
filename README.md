@@ -161,7 +161,49 @@ The line `Power` of `headroom status` gives the state, for example `Power: on ba
 - **Keep awake**: on AC power, while a lease is granted, the daemon holds a power request (`headroom: 2 jobs run`). Thus Windows does not put the laptop to sleep for no input. A lid close still puts the laptop to sleep. On battery, the daemon does not hold the request.
 - **Sleep**: after a wake, each lease gets the time of the sleep on its heartbeat. Thus no lease ends because the laptop slept. The rates start again at the wake, and the charts draw no line across the sleep.
 
-The rules that make a job wait on battery come with H31 (`--when`).
+On battery below a floor, a heavy job waits. The next section gives this rule and the other conditions of a job (H31).
+
+### Conditions for a job (H31)
+
+Some jobs need a fact of the computer, not an amount. A benchmark needs AC power, because its numbers on battery are wrong. A fan-out of `claude -p` needs room in the usage window. `--when` makes the lease wait until each condition holds:
+
+```sh
+headroom run --when ac -- pnpm bench
+headroom run --when battery>=50,usage<80 -- pnpm agents
+headroom run --timing -- pnpm test:timeouts
+```
+
+| Condition | It holds when |
+|---|---|
+| `ac` | The laptop is plugged in. A computer with no battery counts as plugged in. |
+| `battery>=N` | The battery is at N% or more, or the laptop is plugged in. |
+| `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file of the fleet. |
+
+- **The wait.** The lease waits until each condition holds and its amounts fit. A lease that waits for a condition does not hold the queue: later leases go before it.
+- **A power event.** When the charger goes in or out, Windows tells the daemon. The daemon reads the battery and runs the admission at once. Thus a lease that waits for `ac` starts in less than a second.
+- **A wrong name.** `headroom run` refuses an unknown condition, with the list of the known conditions. A planned condition names its item: `away` (H33), `cool` (H35), `unmetered` (H39) and `night` (H42).
+- **A running job.** A job continues when a condition stops, for example when the charger goes out. The lease records it, and `headroom status` shows `runs without its condition: on battery since 01:20`.
+- **`--timing`.** A job that measures time waits for AC power. Its reason tells you to run timing tests in CI. H35 adds `cool` to `--timing`.
+
+**The battery policy.** On battery below the floor, a new heavy lease waits. A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. `--battery-ok` starts it. `headroom config battery-floor 15` changes the floor, and `0` turns the rule off. The default is 25%.
+
+**The usage data.** `usage<N` reads `~/git/fleet/artifacts/hub/db/usage/current.json`, at most one time in 30 seconds. `headroom config usage-file <path>` changes the file. The condition fails closed:
+
+- A missing or unreadable file stops the job, and the reason names the path.
+- Data older than 70 minutes stops the job, and the reason gives its age.
+- After the reset time of the window, the old ratio does not apply, so the condition holds.
+
+The reasons do not start with `waits for memory`, so the hook of the plugin does not count them:
+
+```text
+headroom: lease 3f2a9c1e for pnpm bench, queued until the laptop is plugged in.
+waits until the laptop is plugged in (--timing): timing numbers on battery are wrong, so run timing tests in CI
+waits until the battery is at 25% or more, or plugged in (now 18%): this job is heavy (it asks for 4.0 GB of memory). --battery-ok starts it on a low battery
+waits until the five-hour usage window is under 80% (now 91%, resets at 02:10)
+waits for fresh usage data: the file is 95 minutes old
+```
+
+`headroom job` gives the conditions of a job and a time when it ran without one of them. The timeline of the dashboard draws the wait for a condition as a dashed line, and the time without a condition as a red line. A restart of the daemon for an idle queue does not wait for a lease that waits for a condition. The new daemon keeps the lease.
 
 ### The shared services (H27)
 
@@ -194,6 +236,7 @@ On Windows, `headroom run` puts the job into a job object:
 - On battery, the run puts the processes of the job in efficiency mode (EcoQoS), and writes one line when the mode changes (H30). `--no-eco` turns this off.
 - A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` lets two run.
 - A spawn-heavy job does not run beside a browser test (H47). `--spawn-heavy` and `--no-spawn-heavy` set the class of the job.
+- `--when ac,usage<80` makes the job wait for its conditions, and `--timing` makes it wait for AC power (H31). On a low battery, a heavy job waits. `--battery-ok` starts it.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool cpu 8`.

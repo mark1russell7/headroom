@@ -10,7 +10,7 @@
  * - `headroom mcp list | add | remove | restart | warm | config`: the servers of the MCP gateway.
  * - `headroom dashboard`: open the dashboard of the daemon in the browser.
  * - `headroom alerts [--watch]`: a runaway process, an orphan, low memory, the commit charge, the kernel pool and low free space on a drive.
- * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>]`: show or change the settings.
+ * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>]`: show or change the settings.
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
@@ -32,7 +32,12 @@ import {
   powerLine,
   isBrowserLease,
   isSpawnWait,
+  BATTERY_FLOOR_DEFAULT,
+  conditionsText,
+  defaultUsageFile,
+  parseWhen,
   readSessions,
+  unmetText,
   SPAWN_HEAVY_DEFAULT,
   spawnClassText,
   spawnLine,
@@ -77,7 +82,8 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom status [--json]
   headroom run [--mem 2g|auto] [--cpu 2] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
-               [--spawn-heavy | --no-spawn-heavy] -- <command> [args...]
+               [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
+               [--battery-ok] -- <command> [args...]
                --limit: the job cannot use more memory than --mem. --keep: no job object.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
                --log file: the output of the job also goes to the end of the file.
@@ -89,6 +95,11 @@ const HELP = `headroom: the memory and job broker of this computer
                A job whose past runs start more than 600 processes a minute is spawn-heavy:
                it does not run beside a browser test. --spawn-heavy: say so for a new job.
                --no-spawn-heavy: a normal job, also with high past runs.
+               --when: the job waits until each condition holds. ac: plugged in. battery>=50: 50% or
+               more, or plugged in. usage<80: the five-hour usage window of Claude is under 80%.
+               --timing: a timing-sensitive job waits for AC power. Timing tests belong in CI.
+               On battery below the floor (${BATTERY_FLOOR_DEFAULT}%), a heavy job waits: 2 GB or more, the slot
+               browser, or spawn-heavy. --battery-ok: start it anyway.
                A drive with less than 5 GB free stops the start (exit 75). --force-disk: start anyway.
   ${JOB_USAGE}
                The state of a job: queued, running or exited, with its exit code. No job: exit 3.
@@ -97,6 +108,10 @@ const HELP = `headroom: the memory and job broker of this computer
                The URLs that the service monitor checks. The default: ${DEFAULT_HEALTH_TEXT}.
   headroom config spawn-heavy [<n> | --clear]
                The limit of a spawn-heavy job, in process starts a minute. The default: ${SPAWN_HEAVY_DEFAULT}.
+  headroom config battery-floor [<pct> | --clear]
+               On battery below this charge, a heavy job waits. 0: no floor. The default: ${BATTERY_FLOOR_DEFAULT}.
+  headroom config usage-file [<path> | --clear]
+               The usage file of the fleet for --when usage<N.
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
   headroom alerts [--watch] [--json]
@@ -208,7 +223,12 @@ function printStatus(status: DaemonStatus): void {
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
   for (const lease of status.leases) {
     const amounts = Object.entries(lease.amounts).map(([name, amount]) => `${name} ${amountText(name, amount)}`).join(", ");
-    console.log(`  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${lease.reason ? `  (${lease.reason})` : ""}`);
+    // H31: the conditions of the lease. A granted lease that runs without one of its conditions says so.
+    const conditions = conditionsText(lease.conditions);
+    const note = (lease.unmet?.until === null ? unmetText(lease.unmet) : null) ?? lease.reason;
+    console.log(
+      `  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${conditions === null ? "" : `  [${conditions}]`}${note ? `  (${note})` : ""}`,
+    );
   }
   console.log("\nMemory by owner (private, then in RAM now):");
   for (const owner of status.owners.slice(0, 14)) {
@@ -387,9 +407,11 @@ function openLog(path: string): { readonly path: string } | { readonly error: st
  */
 function leaseLine(lease: Lease): string {
   const spawnWait = !isSpawnWait(lease.reason) ? undefined : isBrowserLease(lease) ? "a job that starts many processes" : "the browser tests";
+  // H31: a lease that waits for a condition is queued until the condition holds, for example "until the laptop is plugged in".
+  const until = /^waits until ([^(:]+)/.exec(lease.reason ?? "")?.[1]?.trim();
   const waitsFor = spawnWait ?? /^waits for ([^:]+):/.exec(lease.reason ?? "")?.[1];
-  const state =
-    lease.state === "granted" ? "granted" : lease.state === "waiting" ? `queued${waitsFor === undefined ? "" : ` for ${waitsFor}`}` : lease.state;
+  const queued = until !== undefined ? ` until ${until}` : waitsFor === undefined ? "" : ` for ${waitsFor}`;
+  const state = lease.state === "granted" ? "granted" : lease.state === "waiting" ? `queued${queued}` : lease.state;
   return `headroom: lease ${lease.id.slice(0, 8)} for ${lease.job}, ${state}.`;
 }
 
@@ -473,12 +495,25 @@ async function run(argv: string[]): Promise<number> {
       log: { type: "string" },
       "spawn-heavy": { type: "boolean" },
       "no-spawn-heavy": { type: "boolean" },
+      when: { type: "string", multiple: true },
+      timing: { type: "boolean" },
+      "battery-ok": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
     console.error("headroom run needs a command after --. Example: headroom run --mem 2g -- pnpm test");
     return 2;
   }
+  // H31: the conditions of the job. A wrong condition stops the run here, with the list of the known conditions.
+  let when: string[];
+  try {
+    when = parseWhen(values.when ?? []).map((spec) => spec.text);
+  } catch (error) {
+    console.error(`headroom: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  const timing = values.timing === true;
+  const batteryOk = values["battery-ok"] === true;
   if (values["spawn-heavy"] === true && values["no-spawn-heavy"] === true) {
     console.error("headroom run takes --spawn-heavy or --no-spawn-heavy, not both.");
     return 2;
@@ -519,7 +554,8 @@ async function run(argv: string[]): Promise<number> {
 
   let connection = connect() ?? (await afterPlannedRestart());
   if (!connection) {
-    console.error("headroom: the daemon does not run, so the job runs without a lease.");
+    const conditions = when.length > 0 || timing ? " and without its conditions" : "";
+    console.error(`headroom: the daemon does not run, so the job runs without a lease${conditions}.`);
     return (await runEnforced(positionals, { keep, limit: false, leaseMb: null }, {}, log)).code;
   }
   // When the daemon does not answer, the lease request that comes next reports it.
@@ -552,6 +588,9 @@ async function run(argv: string[]): Promise<number> {
     ...(values.priority ? { priority: Number(values.priority) } : {}),
     ...(log === null ? {} : { log }),
     ...(spawnHeavy === undefined ? {} : { spawnHeavy }),
+    ...(when.length === 0 ? {} : { when }),
+    ...(timing ? { timing } : {}),
+    ...(batteryOk ? { batteryOk } : {}),
   };
   let first: Lease;
   try {
@@ -570,6 +609,10 @@ async function run(argv: string[]): Promise<number> {
   }
   // H26: a session can wait on this id with `headroom job <id>`, also after its shell stops.
   console.error(leaseLine(first));
+  // H31: a daemon of an older version does not know the conditions, and it grants the lease without them.
+  if ((when.length > 0 || timing) && first.conditions === undefined) {
+    console.error("headroom: the daemon is older than --when and --timing, so the job runs without its conditions. Run headroom service restart.");
+  }
   // H47: a spawn-heavy job does not run beside a browser test. A daemon of an older version gives no class.
   if (first.spawn?.heavy === true) {
     const opt = first.spawn.source === "declared" ? "" : " --no-spawn-heavy: not.";
@@ -777,6 +820,40 @@ function printConfig(config: Config): void {
     const named = config.spawnHeavy === SPAWN_HEAVY_DEFAULT ? " (the default)" : "";
     console.log(`spawn-heavy: ${config.spawnHeavy} process starts a minute${named}. A job above it does not run beside a browser test.`);
   }
+  // H31: a daemon of an older version has no battery floor and no usage file.
+  if (typeof config.batteryFloor === "number") {
+    const named = config.batteryFloor === BATTERY_FLOOR_DEFAULT ? " (the default)" : "";
+    console.log(
+      config.batteryFloor === 0
+        ? "battery-floor: 0 (no floor). A heavy job starts on each charge."
+        : `battery-floor: ${config.batteryFloor}%${named}. On battery below it, a heavy job waits. --battery-ok starts it.`,
+    );
+  }
+  if (typeof config.usageFile === "string") {
+    console.log(`usage-file: ${config.usageFile}${config.usageFile === defaultUsageFile() ? " (the default)" : ""}. The condition usage<N reads it.`);
+  }
+}
+
+/** `headroom config battery-floor <pct>` sets the battery floor for heavy jobs (H31), and `--clear` gives the default. */
+async function batteryFloorConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  const floor = value === undefined ? null : Number(value.replace(/%$/, ""));
+  if ((value === undefined) === !clear || extra || (floor !== null && !(Number.isInteger(floor) && floor >= 0 && floor <= 100))) {
+    console.error(`Usage: headroom config battery-floor <pct>, with a whole number from 0 to 100, or headroom config battery-floor --clear (the default: ${BATTERY_FLOOR_DEFAULT})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { batteryFloor: floor }));
+  return 0;
+}
+
+/** `headroom config usage-file <path>` sets the usage file for `usage<N` (H31), and `--clear` gives the default file. */
+async function usageFileConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra) {
+    console.error("Usage: headroom config usage-file <path>, or headroom config usage-file --clear (the default file of the fleet)");
+    return 2;
+  }
+  // The daemon has its own current folder, so a relative path resolves here.
+  printConfig(await connection.call<Config>(["config", "set"], { usageFile: value === undefined ? null : resolve(value) }));
+  return 0;
 }
 
 /** `headroom config spawn-heavy <n>` sets the limit of a spawn-heavy job (H47), and `--clear` gives the default. */
@@ -815,8 +892,12 @@ async function configCommand(argv: string[]): Promise<number> {
     return 0;
   }
   if (name === "spawn-heavy") return spawnHeavyConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "battery-floor") return batteryFloorConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "usage-file") return usageFileConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
-    console.error("Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, or headroom config spawn-heavy <n>");
+    console.error(
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, or headroom config usage-file <path>",
+    );
     return 2;
   }
   // The daemon has its own current folder, so a relative folder resolves here.

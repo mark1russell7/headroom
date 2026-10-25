@@ -5,6 +5,8 @@
 
 import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
+import { conditionWait, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
+import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerWrites } from "./counters.ts";
 import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
@@ -26,7 +28,7 @@ import {
   type ResourceId,
   type ResourceStatus,
 } from "./resources.ts";
-import { keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
+import { batteryState, keepAwakeReason, type PowerEvent, type PowerMode, type PowerStatus } from "./power.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, percentile90, promote, spawnConflict, windowRate, type SpawnClass } from "./spawn.ts";
@@ -84,6 +86,8 @@ export interface EngineOptions {
   readonly sleepGapMs?: number | undefined;
   /** The fleet registry of the roles for `resources.peer` (H46). The default is `~/git/fleet/registry/roles.json`. */
   readonly rolesFile?: string | undefined;
+  /** This function reads the usage file for `usage<N` (H31). The default reads the file. The engine keeps each read for 30 seconds. */
+  readonly readUsage?: ((path: string) => UsageFacts) | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -142,6 +146,10 @@ export interface ConfigChange {
   readonly health?: Readonly<Record<string, string>> | null | undefined;
   /** The limit of a spawn-heavy job in starts a minute (H47). `null` gives the default of 600. */
   readonly spawnHeavy?: number | null | undefined;
+  /** The battery floor in percent (H31): a whole number from 0 to 100. `null` gives the default of 25. */
+  readonly batteryFloor?: number | null | undefined;
+  /** The usage file for `usage<N` (H31): an absolute path. `null` gives the default file of the fleet. */
+  readonly usageFile?: string | null | undefined;
 }
 
 /** An alert that ended. */
@@ -305,6 +313,10 @@ export class Engine {
   #resumedAt = 0;
   /** The reason of the power request that keeps the computer awake, or `null` without a request. */
   #awake: string | null = null;
+  /** The reader of the usage file for `usage<N` (H31), with its cache of 30 seconds. */
+  readonly #usage: UsageReader;
+  /** The facts of the conditions at one time, so one tick reads the settings one time (H31). */
+  #facts: { readonly at: number; readonly facts: ConditionFacts; readonly floor: number } | null = null;
 
   constructor(options: EngineOptions) {
     this.#sampler = options.sampler;
@@ -323,6 +335,7 @@ export class Engine {
     this.#sleepGapMs = options.sleepGapMs ?? Number.POSITIVE_INFINITY;
     this.#startedAt = this.#now();
     this.#peers = this.#peerResolver(new RoleBook(options.rolesFile));
+    this.#usage = new UsageReader(options.readUsage);
     this.#broker = new Broker({
       now: this.#now,
       reserveMb: this.#reserveMb,
@@ -333,6 +346,11 @@ export class Engine {
       },
       // H47: a spawn-heavy lease and a lease with the slot browser do not run at the same time.
       conflict: spawnConflict,
+      // H31: a lease waits until each of its conditions holds, and a heavy lease waits on a low battery.
+      condition: (lease) => {
+        const { facts, floor } = this.#conditionFacts();
+        return conditionWait(lease, facts, floor);
+      },
     });
     this.#broker.restore(this.#store.activeLeases());
     this.#bootedAt = this.#sampler.bootedAt?.() ?? 0;
@@ -445,6 +463,7 @@ export class Engine {
     }
     const changed = this.#broker.tick(this.capacity());
     this.#persist(changed);
+    this.#recordUnmet();
     this.#keepAwake();
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
@@ -561,9 +580,20 @@ export class Engine {
     const health = change.health === undefined || change.health === null ? change.health : JSON.stringify(checkHealth(change.health));
     const limit = change.spawnHeavy;
     if (typeof limit === "number" && !(Number.isInteger(limit) && limit > 0)) throw new RangeError("The limit of spawn-heavy must be a whole number above 0");
+    const floor = change.batteryFloor;
+    if (typeof floor === "number" && !(Number.isInteger(floor) && floor >= 0 && floor <= 100)) throw new RangeError("The battery floor must be a whole number from 0 to 100");
+    const usageFile = change.usageFile;
+    if (typeof usageFile === "string" && !isAbsolute(usageFile)) throw new RangeError(`The usage file must be an absolute path: ${usageFile}`);
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
+    if (floor !== undefined) this.#store.setConfig("batteryFloor", floor === null ? null : String(floor));
+    if (usageFile !== undefined) this.#store.setConfig("usageFile", usageFile);
+    // H31: a new floor or a new usage file can let a waiting lease start.
+    if (floor !== undefined || usageFile !== undefined) {
+      this.#facts = null;
+      this.#persist(this.#broker.tick(this.capacity()));
+    }
     return this.#store.config();
   }
 
@@ -873,9 +903,11 @@ export class Engine {
 
   /**
    * This function takes one power event (H30). It only sets the state. The caller then asks for a tick, which reads the
-   * battery, or makes a full read of the computer after a wake.
+   * battery, or makes a full read of the computer after a wake. That tick also admits the leases whose conditions hold (H31).
    */
   powerEvent(event: PowerEvent): void {
+    // H31: the conditions of the next tick use the new state.
+    this.#facts = null;
     switch (event.type) {
       case "source":
         // The alerts on the battery start or end with the power source, so the tick also checks the alerts.
@@ -941,9 +973,49 @@ export class Engine {
     this.#store.saveSleep(from, to);
   }
 
+  /**
+   * This function gives the facts of the conditions at this time, and the battery floor (H31). It reads the settings one
+   * time for each time. Only a condition that reads the usage reads the usage file, and the reader keeps it for 30 seconds.
+   */
+  #conditionFacts(): { readonly facts: ConditionFacts; readonly floor: number } {
+    const now = this.#now();
+    if (this.#facts !== null && this.#facts.at === now) return this.#facts;
+    const config = this.#store.config();
+    const reader = this.#usage;
+    let usage: UsageFacts | undefined;
+    const facts: ConditionFacts = {
+      now,
+      ac: this.powerStatus().ac,
+      percent: this.#battery === undefined ? null : batteryState(this.#battery).percent,
+      get usage(): UsageFacts {
+        usage ??= reader.read(config.usageFile, now);
+        return usage;
+      },
+    };
+    this.#facts = { at: now, facts, floor: config.batteryFloor };
+    return this.#facts;
+  }
+
+  /**
+   * This function checks the conditions of each granted lease (H31). A lease continues when a condition stops. The lease
+   * records the condition and the time, and the record closes when the condition holds again.
+   */
+  #recordUnmet(): void {
+    const changed: Lease[] = [];
+    for (const lease of this.#broker.leases()) {
+      if (lease.state !== "granted" || lease.conditions === undefined) continue;
+      const unmet = nextUnmet(lease, this.#conditionFacts().facts);
+      if (unmet === lease.unmet || unmet === undefined) continue;
+      const next = this.#broker.update(lease.id, { unmet });
+      if (next !== undefined) changed.push(next);
+    }
+    this.#persist(changed);
+  }
+
   /** This function reads the battery. A failed read gives no battery, and the tick continues. */
   #readBattery(): void {
     this.#batteryDue = false;
+    this.#facts = null;
     if (!this.#sampler.battery) return;
     try {
       this.#battery = this.#sampler.battery() ?? undefined;

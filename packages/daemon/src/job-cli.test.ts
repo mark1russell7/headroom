@@ -55,11 +55,13 @@ describe("headroom job", () => {
     const state = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(state)).toEqual([
       "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes",
-      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log",
+      "peakStartsPerMin", "averageStartsPerMin", "spawn", "log", "conditions", "unmet",
     ]);
     // H29: a lease of a job with no count of processes gives null. H47: so do its rates and a class of an older version.
     expect(state["processes"]).toBeNull();
     expect(state).toMatchObject({ peakStartsPerMin: null, averageStartsPerMin: null, spawn: null });
+    // H31: a job with no conditions gives null.
+    expect(state).toMatchObject({ conditions: null, unmet: null });
     expect(state).toMatchObject({
       id: BASE.id,
       state: "exited",
@@ -100,7 +102,22 @@ describe("jobLine", () => {
   const state = {
     id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
     queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null, peakStartsPerMin: null, averageStartsPerMin: null, spawn: null,
+    conditions: null, unmet: null,
   } as const;
+
+  it("names the conditions of a job, and a time when it ran without one of them (H31)", () => {
+    const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
+    const queued = { ...state, state: "queued", reason: "waits until the laptop is plugged in", waitedMs: 20 * MINUTE, ranMs: null } as const;
+    expect(jobLine({ ...queued, conditions: { when: ["ac", "usage<80"], batteryOk: true } }, NOW)).toBe(
+      "e2e (3f2a9c1e) of graph: queued since 17:40, waited 20 min (waits until the laptop is plugged in), when ac, usage<80, --battery-ok.",
+    );
+    const running = { ...state, state: "running", reason: null, startedAt, waitedMs: 0, ranMs: 5 * MINUTE, conditions: { when: [], timing: true } } as const;
+    const open = { condition: "ac", state: "on battery", since: NOW - 3 * MINUTE, until: null };
+    expect(jobLine({ ...running, unmet: open }, NOW)).toBe(
+      "e2e (3f2a9c1e) of graph: running since 17:55, waited 0 s, ran 5 min so far, when --timing, runs without its condition: on battery since 17:57.",
+    );
+    expect(jobLine({ ...running, unmet: { ...open, until: NOW - MINUTE } }, NOW)).toContain("ran without its condition ac: on battery from 17:57 to 17:59.");
+  });
 
   it("names the peak starts and the spawn class of a job (H47)", () => {
     const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
