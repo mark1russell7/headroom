@@ -213,14 +213,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.34.0
-        version: 0.34.0(express@5.3.0)
+        specifier: ^0.35.0
+        version: 0.35.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.34.0
-        version: 0.34.0(express@5.3.0)
+        specifier: ^0.35.0
+        version: 0.35.0(express@5.3.0)
       '@procedures/server':
-        specifier: ^0.34.0
-        version: 0.34.0(express@5.3.0)
+        specifier: ^0.35.0
+        version: 0.35.0(express@5.3.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -580,8 +580,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.34.0':
-    resolution: {integrity: sha512-cDrzDrX4RyrXHACcXIA43zPdIFX9PL9O/27QfyCYEaHD2gj267sG3SoLqzYOJbRdzF+VvXIIlp8P0ZcMKZQ04Q==}
+  '@procedures/client@0.35.0':
+    resolution: {integrity: sha512-Tg/5ZHpzr5qY17QuNRgvTdxqlOXj3u4WMhS6NOxzqmTfjKvqtD1rircGTP/WN8JlPnfjXQvxrqWlKiMUnBFHrw==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -589,12 +589,12 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.34.0':
-    resolution: {integrity: sha512-5BCH3QnutgGu+ymHuq+XP2dU1bXhuvbDgtIXnxz2cUpvwhGIugGEPst9EOgFMffg63LgZ6rzi4G9nC0iaqFhxg==}
+  '@procedures/peer@0.35.0':
+    resolution: {integrity: sha512-zfWbv/mIE3oHUjUxp/vog0iieXZFIYZS541CmR8YpVkcpmeeU+/CK4AwZy1bAf/NLOVjoSEUO2akJ+ccnorQ/A==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.34.0':
-    resolution: {integrity: sha512-IIl8Q461E3b7EDmp9hN28xv0DIgTeTglXzBEMYIpX5oX2S7p94DKMip1c4prp62SEeZRbbOklkeXeE5eEun2uw==}
+  '@procedures/server@0.35.0':
+    resolution: {integrity: sha512-sTyK2O72XgY1EU2A4XXW78rpKOjlgfgIvxJy2qMxJGoTxQ411iM6RlEfszYiGGQBZxc2O3GC2kAOGDzkf8ItyA==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -1728,7 +1728,7 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.34.0(express@5.3.0)':
+  '@procedures/client@0.35.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/algebra': 0.7.3(zod@4.6.7)
       '@mark1russell7/coeval': 0.7.0
@@ -1744,10 +1744,10 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/peer@0.34.0(express@5.3.0)':
+  '@procedures/peer@0.35.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.34.0(express@5.3.0)
+      '@procedures/client': 0.35.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
@@ -1755,11 +1755,11 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/server@0.34.0(express@5.3.0)':
+  '@procedures/server@0.35.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.34.0(express@5.3.0)
-      '@procedures/peer': 0.34.0(express@5.3.0)
+      '@procedures/client': 0.35.0(express@5.3.0)
+      '@procedures/peer': 0.35.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
