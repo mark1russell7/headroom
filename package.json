@@ -13,14 +13,30 @@
     "test": "pnpm -r run test",
     "typecheck": "pnpm -r run typecheck",
     "lint:ste": "ste-lint",
-    "headroom": "node packages/daemon/src/cli.ts"
+    "headroom": "node packages/daemon/src/cli.ts",
+    "check:conventions": "conventions check",
+    "check:api": "api-report check"
   },
   "devDependencies": {
+    "@mark1russell7/api-report": "^0.2.0",
+    "@mark1russell7/conventions": "^0.2.0",
+    "@mark1russell7/cue": "github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7",
+    "@mark1russell7/ste-lint": "github:mark1russell7/ste-lint#f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7",
     "@mark1russell7/template-cli": "^0.1.0",
-    "@mark1russell7/cue": "github:mark1russell7/cue",
-    "@mark1russell7/ste-lint": "github:mark1russell7/ste-lint",
     "publint": "^0.3.25",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "conventions": {
+    "rules": {
+      "no-local-paths": {
+        "ignore": [
+          "packages/daemon/src/job.test.ts",
+          "packages/daemon/src/parse.test.ts",
+          "packages/daemon/src/disk-report.test.ts"
+        ],
+        "reason": "These tests give a Linux home folder (/home/<name>) as a mount point, to test how a path finds its mount and its drive. The fixture is a usual Linux layout, not a path of a real computer."
+      }
+    }
   }
 }

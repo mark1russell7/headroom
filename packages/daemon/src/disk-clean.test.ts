@@ -264,13 +264,13 @@ describe("the safe cleanup (H21)", () => {
   it("gives Mark each large place that the cleanup does not delete, and each kept copy", () => {
     const report = reportWith([
       item("docker", 55_000, "image"),
-      item("before-devdrive:C:\\Users\\markt\\git.before-devdrive", 10, "kept"),
+      item("before-devdrive:C:\\Users\\<you>\\git.before-devdrive", 10, "kept"),
       item("pnpm-store", 9000, "clean"),
       item("job-temp:live", 5000, "live"),
       item("small", 100, "ask"),
       item("playwright", 3700, "ask"),
     ]);
-    expect(askList(report).map((each) => each.label)).toEqual(["docker", "playwright", "before-devdrive:C:\\Users\\markt\\git.before-devdrive"]);
+    expect(askList(report).map((each) => each.label)).toEqual(["docker", "playwright", "before-devdrive:C:\\Users\\<you>\\git.before-devdrive"]);
     expect(askList(null)).toEqual([]);
   });
 

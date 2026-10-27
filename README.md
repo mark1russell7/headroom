@@ -416,7 +416,7 @@ Automatic drain: at 6.0 GB of the kernel pools together, now 5.2 GB. The forecas
 Windows: an update waits for a reboot (Windows Update).
 Uptime: 3 days, since 22 Oct 21:10.
 Drain: none. `headroom drain --at 02:30` plans one.
-Resume plan: C:\Users\markt\.headroom\resume-plan.md, written 2 h 10 min ago (25 Oct 00:30). A drain writes it again at its start.
+Resume plan: C:\Users\<you>\.headroom\resume-plan.md, written 2 h 10 min ago (25 Oct 00:30). A drain writes it again at its start.
 ```
 
 The rules of the recommendation go in this order:
@@ -593,7 +593,7 @@ The plugin `headroom` has a hook for the Bash and PowerShell tools. When a sessi
 - The hook does not approve a command. The session sends the new form, and the permission rules of the user apply to it.
 - Without a daemon, or for a light command, the hook does nothing. It adds approximately 65 ms to each command.
 
-To turn it on in Claude Code: `/plugin marketplace add C:\Users\markt\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
+To turn it on in Claude Code: `/plugin marketplace add C:\Users\<you>\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
 
 ## The dashboard
 

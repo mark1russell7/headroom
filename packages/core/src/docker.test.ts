@@ -40,7 +40,7 @@ import { Store } from "./store.ts";
 import type { OwnerUsage, ProcessInfo, SystemMemory } from "./types.ts";
 
 const MB = 1024 * 1024;
-const HOME = "C:\\Users\\markt";
+const HOME = "C:\\Users\\<you>";
 const ID_GRAPH = "0bad49c6cfc8a08f34e3f7f2c5a50c749d4bccf33bca2d497250c62dcb74401f";
 const ID_MONGO = "376ccc870187aaaa";
 
@@ -59,7 +59,7 @@ const LIST = [
     Names: ["/mongo-db"],
     Image: "mongo:6",
     State: "running",
-    Labels: { "com.docker.compose.project": "mongo", "com.docker.compose.project.working_dir": "C:\\Users\\markt\\git\\docker\\mongo" },
+    Labels: { "com.docker.compose.project": "mongo", "com.docker.compose.project.working_dir": "C:\\Users\\<you>\\git\\docker\\mongo" },
   },
   { Names: ["/no-id"] },
 ];
@@ -128,7 +128,7 @@ const role = (id: string, repos: string[], status = "active"): FleetRole => ({ i
 /** The normal forms of a path with no file system: `~/git` is a link to `D:\git`, as on this computer. */
 const forms = (path: string): string[] => {
   const normal = normalPath(path, HOME);
-  return normal.startsWith("c:/users/markt/git/") ? [normal, `d:/git/${normal.slice("c:/users/markt/git/".length)}`] : [normal];
+  return normal.startsWith("c:/users/<you>/git/") ? [normal, `d:/git/${normal.slice("c:/users/<you>/git/".length)}`] : [normal];
 };
 
 describe("the parse of the answers of the engine", () => {
@@ -319,9 +319,9 @@ describe("the owner of a container", () => {
 
   it("gives the role of the folder of the compose project, through the link of ~/git", () => {
     expect(owner("D:\\git\\Graph")).toBe("session:graph");
-    expect(owner("C:\\Users\\markt\\git\\Graph\\docker")).toBe("session:graph");
+    expect(owner("C:\\Users\\<you>\\git\\Graph\\docker")).toBe("session:graph");
     expect(owner("/mnt/d/git/headroom/test")).toBe("session:headroom");
-    expect(owner("C:\\Users\\markt\\git\\MiniMongo\\node_modules\\@mark1russell7\\docker-mongo")).toBe("session:server-stack");
+    expect(owner("C:\\Users\\<you>\\git\\MiniMongo\\node_modules\\@mark1russell7\\docker-mongo")).toBe("session:server-stack");
   });
 
   it("decides between roles with the same folder: the role with the name of the folder, then the main repository, then an active role", () => {
@@ -331,7 +331,7 @@ describe("the owner of a container", () => {
     expect(owner("D:\\git\\client")).toBe("session:client");
     // render is parked, but it has the name of the folder. The retired role does not count.
     expect(owner("D:\\git\\render")).toBe("session:render");
-    expect(owner("C:\\Users\\markt\\jarvis")).toBe("session:jarvis");
+    expect(owner("C:\\Users\\<you>\\jarvis")).toBe("session:jarvis");
   });
 
   it("gives a worktree next to a repository to its role, and a deeper folder wins", () => {
@@ -341,7 +341,7 @@ describe("the owner of a container", () => {
 
   it("uses the project name when it is a role, else docker:<project> or docker:<name>", () => {
     expect(containerOwner({ name: "x", project: "vex", workingDir: "E:\\elsewhere" }, folders, ids, forms)).toEqual({ owner: "session:vex", ownerKind: "session", ownerFrom: "project" });
-    expect(owner("C:\\Users\\markt\\git\\docker\\mongo", "mongo")).toBe("docker:mongo");
+    expect(owner("C:\\Users\\<you>\\git\\docker\\mongo", "mongo")).toBe("docker:mongo");
     expect(owner(null, null, "dynamodb-local")).toBe("docker:dynamodb-local");
     // A retired role is not a project role.
     expect(owner(null, "jarvis-client")).toBe("docker:jarvis-client");
@@ -364,7 +364,7 @@ describe("the owner of a container", () => {
   });
 
   it("gives a path in its normal form", () => {
-    expect(normalPath("~\\git\\Graph\\", HOME)).toBe("c:/users/markt/git/graph");
+    expect(normalPath("~\\git\\Graph\\", HOME)).toBe("c:/users/<you>/git/graph");
     expect(normalPath("/mnt/d/", HOME)).toBe("d:/");
     expect(normalPath("/mnt/data/x", HOME)).toBe("/mnt/data/x");
     expect(normalPath("D:\\", HOME)).toBe("d:/");

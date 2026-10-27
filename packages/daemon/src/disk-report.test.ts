@@ -26,7 +26,7 @@ const LXSS = [
   "",
   "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{7e230e2c}",
   "    DistributionName    REG_SZ    docker-desktop",
-  "    BasePath    REG_SZ    \\\\?\\C:\\Users\\markt\\AppData\\Local\\Docker\\wsl\\main",
+  "    BasePath    REG_SZ    \\\\?\\C:\\Users\\<you>\\AppData\\Local\\Docker\\wsl\\main",
   "    VhdFileName    REG_SZ    ext4.vhdx",
   "",
   "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\{11111111}",
@@ -47,7 +47,7 @@ describe("the disk report (H21)", () => {
   });
 
   it("reads the disk images of the WSL distributions from the registry output", () => {
-    expect(parseWslImages(LXSS)).toEqual(["C:\\Users\\markt\\AppData\\Local\\Docker\\wsl\\main\\ext4.vhdx", "D:\\wsl\\Ubuntu Main\\ext4.vhdx"]);
+    expect(parseWslImages(LXSS)).toEqual(["C:\\Users\\<you>\\AppData\\Local\\Docker\\wsl\\main\\ext4.vhdx", "D:\\wsl\\Ubuntu Main\\ext4.vhdx"]);
     expect(parseWslImages("")).toEqual([]);
   });
 

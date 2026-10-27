@@ -289,7 +289,7 @@ describe("Engine disks", () => {
       searches++;
       expect(mounts).toEqual(["C:"]);
       return [
-        { path: "C:\\Users\\markt\\pool.etl", mb: 98_304, modifiedAt: now },
+        { path: "C:\\Users\\<you>\\pool.etl", mb: 98_304, modifiedAt: now },
         { path: "D:\\big.iso", mb: 4096, modifiedAt: now },
       ];
     };
@@ -314,7 +314,7 @@ describe("Engine disks", () => {
     expect(engine.status().disks[0]?.dropMbPerHour).toBe(295_700);
     const [alert] = engine.alerts().active;
     expect(alert).toMatchObject({ id: "disk:C:", kind: "disk", severity: "critical", mb: 4300 });
-    expect(alert?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 289 GB less than one hour ago. New large files: C:\\Users\\markt\\pool.etl (96 GB). Run `headroom disk report` to see what uses the space.");
+    expect(alert?.message).toBe("Drive C: has 4.2 GB free of 952 GB, 289 GB less than one hour ago. New large files: C:\\Users\\<you>\\pool.etl (96 GB). Run `headroom disk report` to see what uses the space.");
 
     // The search for large files runs at most one time in 5 minutes.
     now += 2 * 60_000;

@@ -166,11 +166,17 @@ importers:
 
   .:
     devDependencies:
+      '@mark1russell7/api-report':
+        specifier: ^0.2.0
+        version: 0.2.0
+      '@mark1russell7/conventions':
+        specifier: ^0.2.0
+        version: 0.2.0
       '@mark1russell7/cue':
-        specifier: github:mark1russell7/cue
+        specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@mark1russell7/ste-lint':
-        specifier: github:mark1russell7/ste-lint
+        specifier: github:mark1russell7/ste-lint#f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7
         version: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7
       '@mark1russell7/template-cli':
         specifier: ^0.1.0
@@ -192,7 +198,7 @@ importers:
         version: 3.3.3
     devDependencies:
       '@mark1russell7/cue':
-        specifier: github:mark1russell7/cue
+        specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@types/node':
         specifier: ^26.6.4
@@ -226,7 +232,7 @@ importers:
         version: 4.6.7
     devDependencies:
       '@mark1russell7/cue':
-        specifier: github:mark1russell7/cue
+        specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@types/node':
         specifier: ^26.6.4
@@ -526,8 +532,18 @@ packages:
     peerDependencies:
       zod: ^4.1.0
 
+  '@mark1russell7/api-report@0.2.0':
+    resolution: {integrity: sha512-09QIGN/YGpbIgovGQ3uzPCWFwDazOBq8s7qhfi/FU2mo1c0M/iaF9EE+1psdZxN4o9Y1U4oU7zkGYLsfCvvMMg==}
+    engines: {node: '>=22'}
+    hasBin: true
+
   '@mark1russell7/coeval@0.8.0':
     resolution: {integrity: sha512-luTZVua8cwNkVpC6ERtL90ukaXLtmye/RvSf3WXmFSNvDaiLRDYE6YQwuJDkUjYWhRBJ+u7lVkr0JhDpiFErhw==}
+
+  '@mark1russell7/conventions@0.2.0':
+    resolution: {integrity: sha512-ETy6m+ilJtX62AzlL5bjkLpkUVvfaE1FMuB+6LzlNXP4Juz6xaNdVtdJlr6TMQLcSLlrN61X+U2MUVbPJOxpjw==}
+    engines: {node: '>=22'}
+    hasBin: true
 
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7':
     resolution: {gitHosted: true, integrity: sha512-328oeIz1/QtCaK5wXO18E7eZPohVGh3lO+cpjkHFNl1vEL48FEUqTiXLHWDEiHjqnsogmCKyrCs9ssWTEaPV7A==, tarball: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7}
@@ -1686,7 +1702,11 @@ snapshots:
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
       zod: 4.6.7
 
+  '@mark1russell7/api-report@0.2.0': {}
+
   '@mark1russell7/coeval@0.8.0': {}
+
+  '@mark1russell7/conventions@0.2.0': {}
 
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7': {}
 
