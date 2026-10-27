@@ -75,16 +75,16 @@ The sessions can continue to work during part A.
    headroom service stop
    ```
 
-3. Close VS Code, and quit Docker Desktop completely: right-click its icon in the notification area, and click `Quit Docker Desktop`. When you only close its window, Docker Desktop continues to hold the folders of the compose projects open. No program can use `~/git` or `~/jarvis` during the move. A shell whose folder is in `~/git` also blocks the move: the session that moves sets its shell folder to `C:\Users\markt` first.
+3. Close VS Code, and quit Docker Desktop completely: right-click its icon in the notification area, and click `Quit Docker Desktop`. When you only close its window, Docker Desktop continues to hold the folders of the compose projects open. No program can use `~/git` or `~/jarvis` during the move. A shell whose folder is in `~/git` also blocks the move: the session that moves sets its shell folder to `C:\Users\<you>` first.
 4. Move each folder. The script makes a copy without `node_modules`, compares it, keeps the old folder as `<name>.before-devdrive`, and makes the junction. Without `-Apply`, it only prints its plan.
 
    ```powershell
-   .\scripts\dev-drive\move.ps1 -Source C:\Users\markt\git -Target D:\git
-   .\scripts\dev-drive\move.ps1 -Source C:\Users\markt\git -Target D:\git -Apply
-   .\scripts\dev-drive\move.ps1 -Source C:\Users\markt\jarvis -Target D:\jarvis -Apply
+   .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\git -Target D:\git
+   .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\git -Target D:\git -Apply
+   .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\jarvis -Target D:\jarvis -Apply
    ```
 
-   Run the first command from a copy of the script outside `~/git`, for example from `C:\Users\markt\dev-drive-move.ps1`. The move renames `~/git`.
+   Run the first command from a copy of the script outside `~/git`, for example from `C:\Users\<you>\dev-drive-move.ps1`. The move renames `~/git`.
 
 5. Move the package caches, and install again:
 
@@ -130,8 +130,8 @@ Docker Desktop holds the folders of the compose projects open. Thus the move can
 
 Each step keeps the old data, so an undo takes some minutes:
 
-1. Remove the junction: `Remove-Item C:\Users\markt\git` (this removes the link, not `D:\git`).
-2. Give the old folder its name again: `Rename-Item C:\Users\markt\git.before-devdrive git`.
+1. Remove the junction: `Remove-Item C:\Users\<you>\git` (this removes the link, not `D:\git`).
+2. Give the old folder its name again: `Rename-Item C:\Users\<you>\git.before-devdrive git`.
 3. Set the caches back: `pnpm config delete store-dir --location=global` and `setx npm_config_cache ""`.
 4. Mark can delete the Dev Drive in `Settings` > `Disks & volumes`, and extend `C:` again in `Disk Management`.
 
@@ -140,4 +140,4 @@ Each step keeps the old data, so an undo takes some minutes:
 - Faster installs, builds and tests, because Defender scans after the open and fewer filters attach.
 - A smaller kernel pool under heavy file work. headroom shows it on its dashboard and in `headroom pool-tags`.
 - ReFS uses a little more memory than NTFS. Microsoft recommends 16 GB. This computer has 28 GB.
-- Node gives real paths, so an error message shows `D:\git\...` in place of `C:\Users\markt\git\...`. Both paths name the same file.
+- Node gives real paths, so an error message shows `D:\git\...` in place of `C:\Users\<you>\git\...`. Both paths name the same file.

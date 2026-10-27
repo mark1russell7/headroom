@@ -232,7 +232,7 @@ describe("rebootBudget and rebootLines (H34)", () => {
       windows: UPDATE,
       bootedAt,
       drain: null,
-      resumePlan: { path: "C:\\Users\\markt\\.headroom\\resume-plan.md", at: NOW - 25 * 60_000 },
+      resumePlan: { path: "C:\\Users\\<you>\\.headroom\\resume-plan.md", at: NOW - 25 * 60_000 },
       clock,
     });
     expect(budget.uptimeMinutes).toBe(3 * 24 * 60 + 70);
@@ -243,7 +243,7 @@ describe("rebootBudget and rebootLines (H34)", () => {
     expect(lines[2]).toBe("Windows: an update waits for a reboot (Windows Update).");
     expect(lines[3]).toMatch(/^Uptime: 3 days, since \d+ Oct \d\d:\d\d\.$/);
     expect(lines[4]).toBe("Drain: none. `headroom drain --at 02:30` plans one.");
-    expect(lines[5]).toMatch(/^Resume plan: C:\\Users\\markt\\\.headroom\\resume-plan\.md, written 25 min ago \(\d+ Oct \d\d:\d\d\)\. A drain writes it again at its start\.$/);
+    expect(lines[5]).toMatch(/^Resume plan: C:\\Users\\<you>\\\.headroom\\resume-plan\.md, written 25 min ago \(\d+ Oct \d\d:\d\d\)\. A drain writes it again at its start\.$/);
     const bare = rebootLines(rebootBudget({ at: NOW, pools: pools(), windows: null, bootedAt: null, drain: null, resumePlan: null, clock }), clock);
     expect(bare).toEqual([
       "Reboot: No reboot needed.",

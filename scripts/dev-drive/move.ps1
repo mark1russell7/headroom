@@ -15,8 +15,8 @@
   Without -Apply, it only prints what it would do, and the size of the copy.
 
 .EXAMPLE
-  .\move.ps1 -Source C:\Users\markt\git -Target D:\git
-  .\move.ps1 -Source C:\Users\markt\git -Target D:\git -Apply
+  .\move.ps1 -Source C:\Users\<you>\git -Target D:\git
+  .\move.ps1 -Source C:\Users\<you>\git -Target D:\git -Apply
 #>
 param(
   [Parameter(Mandatory)] [string]$Source,

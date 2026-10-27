@@ -28,7 +28,7 @@ describe("largeFiles", () => {
   });
 
   it("searches the home folder, the downloads, the temporary folders and the root of each drive", () => {
-    const dirs = largeFileDirs(["C:", "D:"], "win32", "C:\\Users\\markt");
+    const dirs = largeFileDirs(["C:", "D:"], "win32", "C:\\Users\\<you>");
     expect(dirs).toContain("C:\\Windows\\Temp");
     expect(dirs.slice(-2)).toEqual(["C:\\", "D:\\"]);
     expect(dirs.filter((dir) => dir.toLowerCase().endsWith("temp")).length).toBeLessThanOrEqual(3);
