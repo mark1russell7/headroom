@@ -219,14 +219,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.41.0
-        version: 0.41.1(express@5.3.0)
+        specifier: ^0.42.0
+        version: 0.42.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.41.0
-        version: 0.41.1(express@5.3.0)
+        specifier: ^0.42.0
+        version: 0.42.0(express@5.3.0)(ws@8.22.0)
       '@procedures/server':
-        specifier: ^0.41.0
-        version: 0.41.1(express@5.3.0)
+        specifier: ^0.42.0
+        version: 0.42.0(express@5.3.0)(ws@8.22.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -526,11 +526,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@mark1russell7/algebra@0.7.3':
-    resolution: {integrity: sha512-XTxoC51fc4x/EXKGfJd0AlVULOyJvn+EMlbkvOdyQ2didbIjKURNoHmDx0BpmujHErIMocQ7Z0Ojc2xZ5GP9dg==}
+  '@mark1russell7/algebra@0.8.0':
+    resolution: {integrity: sha512-kCNLkjbjF+zzVLPO8wBwsoxCal9v60sPpp0H6DqKxfbJM4C4o7FqU2x68gOhzp7zsiNN9PSkQqolrAJDy/4uWw==}
     engines: {node: '>=22.19'}
     peerDependencies:
       zod: ^4.1.0
+    peerDependenciesMeta:
+      zod:
+        optional: true
 
   '@mark1russell7/api-report@0.2.0':
     resolution: {integrity: sha512-09QIGN/YGpbIgovGQ3uzPCWFwDazOBq8s7qhfi/FU2mo1c0M/iaF9EE+1psdZxN4o9Y1U4oU7zkGYLsfCvvMMg==}
@@ -560,14 +563,29 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/service@0.5.10':
-    resolution: {integrity: sha512-me8BB7ahcb1QmlSwOxjegOVOi/mA6E/d6qn6UQHtOOw+eB21U4BpcMBa145M+GlsgQMKPH+timuy8YhnFlQqjQ==}
+  '@mark1russell7/service@0.6.1':
+    resolution: {integrity: sha512-vmh3SHgsWbXe6jFsV6pBFLTF05rhqIVtPBrYjYW7Eu+u/BZIwsXwuUXWewNJwimJx5a42ZpWkpZpX140WQYMMg==}
     engines: {node: '>=22.19'}
     peerDependencies:
+      '@grpc/grpc-js': ^1.14.6
+      amqplib: ^2.2.0
       ioredis: ^6.0.0
+      mongodb: ^7.7.0
+      pg: ^8.23.1
+      ws: ^8.22.0
       zod: ^4.1.0
     peerDependenciesMeta:
+      '@grpc/grpc-js':
+        optional: true
+      amqplib:
+        optional: true
       ioredis:
+        optional: true
+      mongodb:
+        optional: true
+      pg:
+        optional: true
+      ws:
         optional: true
       zod:
         optional: true
@@ -596,8 +614,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.41.1':
-    resolution: {integrity: sha512-a6I1z8RQJU4WAHAuN+n9CuvfjXfZv+xCiUoCty0JiH0lSX36rKC0yyAr2udCoEf0k5gkzmabdr4HCNvHV2959w==}
+  '@procedures/client@0.42.0':
+    resolution: {integrity: sha512-UUWGRg7JWRqg0X38iDsnkWpTfl/ytSK9085QWQmDokl+qjlD3KqXlQsY4oQxmRuIYpqXaflDxfjcWpGEMq13Qw==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -605,16 +623,16 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.41.1':
-    resolution: {integrity: sha512-uVr1DIWQyqx3NlcGOAO8FIZRIM8BfvIfkLhUUarKw31JOoEPjek20zv3ZsVaT0VARIQhAXQ6lVBHifNpALB77g==}
+  '@procedures/peer@0.42.0':
+    resolution: {integrity: sha512-Q50iDYUuwFoofW6LgBHYzXlfI6INxl4qKApuj+64TCcOZOQA+vVbMInmTX6uJYUVybuJUxYunpVf+IZSTKbKOA==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.41.1':
-    resolution: {integrity: sha512-HT80JDRVmc+XsDo6jkt/r2IwCsg3omVwPl/5oZQSHilTzvp8RfLT/G262yp4WFeW5Y2EsmL41b+bS6i6R5mMxQ==}
+  '@procedures/server@0.42.0':
+    resolution: {integrity: sha512-ZOzDnyilV8fcBK/lDz1LmPTdwMSxxb8EBm9lSVgGWNB8FM1ecYnoAc6J2uh1jC8k3oy8QzBOlO28sRB06g32aw==}
     engines: {node: '>=22'}
     hasBin: true
     peerDependencies:
-      '@procedures/fs': ^0.41.1
+      '@procedures/fs': ^0.42.0
     peerDependenciesMeta:
       '@procedures/fs':
         optional: true
@@ -1697,9 +1715,10 @@ snapshots:
   '@koromix/koffi-win32-x64@3.3.3':
     optional: true
 
-  '@mark1russell7/algebra@0.7.3(zod@4.6.7)':
+  '@mark1russell7/algebra@0.8.0(zod@4.6.7)':
     dependencies:
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
+    optionalDependencies:
       zod: 4.6.7
 
   '@mark1russell7/api-report@0.2.0': {}
@@ -1714,11 +1733,12 @@ snapshots:
     optionalDependencies:
       zod: 4.6.7
 
-  '@mark1russell7/service@0.5.10(zod@4.6.7)':
+  '@mark1russell7/service@0.6.1(ws@8.22.0)(zod@4.6.7)':
     dependencies:
-      '@mark1russell7/algebra': 0.7.3(zod@4.6.7)
+      '@mark1russell7/algebra': 0.8.0(zod@4.6.7)
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
     optionalDependencies:
+      ws: 8.22.0
       zod: 4.6.7
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
@@ -1753,44 +1773,58 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.41.1(express@5.3.0)':
+  '@procedures/client@0.42.0(express@5.3.0)':
     dependencies:
-      '@mark1russell7/algebra': 0.7.3(zod@4.6.7)
+      '@mark1russell7/algebra': 0.8.0(zod@4.6.7)
       '@mark1russell7/coeval': 0.8.0
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
-      '@mark1russell7/service': 0.5.10(zod@4.6.7)
+      '@mark1russell7/service': 0.6.1(ws@8.22.0)(zod@4.6.7)
       '@types/ws': 8.18.2
       ws: 8.22.0
       zod: 4.6.7
     optionalDependencies:
       express: 5.3.0
     transitivePeerDependencies:
+      - '@grpc/grpc-js'
+      - amqplib
       - bufferutil
       - ioredis
+      - mongodb
+      - pg
       - utf-8-validate
 
-  '@procedures/peer@0.41.1(express@5.3.0)':
+  '@procedures/peer@0.42.0(express@5.3.0)(ws@8.22.0)':
     dependencies:
-      '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.41.1(express@5.3.0)
+      '@mark1russell7/service': 0.6.1(ws@8.22.0)(zod@4.6.7)
+      '@procedures/client': 0.42.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
+      - '@grpc/grpc-js'
+      - amqplib
       - bufferutil
       - express
       - ioredis
+      - mongodb
+      - pg
       - utf-8-validate
+      - ws
 
-  '@procedures/server@0.41.1(express@5.3.0)':
+  '@procedures/server@0.42.0(express@5.3.0)(ws@8.22.0)':
     dependencies:
-      '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.41.1(express@5.3.0)
-      '@procedures/peer': 0.41.1(express@5.3.0)
+      '@mark1russell7/service': 0.6.1(ws@8.22.0)(zod@4.6.7)
+      '@procedures/client': 0.42.0(express@5.3.0)
+      '@procedures/peer': 0.42.0(express@5.3.0)(ws@8.22.0)
       zod: 4.6.7
     transitivePeerDependencies:
+      - '@grpc/grpc-js'
+      - amqplib
       - bufferutil
       - express
       - ioredis
+      - mongodb
+      - pg
       - utf-8-validate
+      - ws
 
   '@publint/pack@0.1.7':
     dependencies:
