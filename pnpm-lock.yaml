@@ -213,14 +213,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.40.0
-        version: 0.40.0(express@5.3.0)
+        specifier: ^0.41.0
+        version: 0.41.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.40.0
-        version: 0.40.0(express@5.3.0)
+        specifier: ^0.41.0
+        version: 0.41.0(express@5.3.0)
       '@procedures/server':
-        specifier: ^0.40.0
-        version: 0.40.0(express@5.3.0)
+        specifier: ^0.41.0
+        version: 0.41.0(express@5.3.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -526,8 +526,8 @@ packages:
     peerDependencies:
       zod: ^4.1.0
 
-  '@mark1russell7/coeval@0.7.0':
-    resolution: {integrity: sha512-PLJXG5raA1Kb0QqBL7uEoEP7IPLZay1Gk/FuLXJNNorgC0WKOGNCcTA9E0dQ13mGQQjiE8hCkdGh1sJX8BdO4A==}
+  '@mark1russell7/coeval@0.8.0':
+    resolution: {integrity: sha512-luTZVua8cwNkVpC6ERtL90ukaXLtmye/RvSf3WXmFSNvDaiLRDYE6YQwuJDkUjYWhRBJ+u7lVkr0JhDpiFErhw==}
 
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7':
     resolution: {gitHosted: true, integrity: sha512-328oeIz1/QtCaK5wXO18E7eZPohVGh3lO+cpjkHFNl1vEL48FEUqTiXLHWDEiHjqnsogmCKyrCs9ssWTEaPV7A==, tarball: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7}
@@ -580,8 +580,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.40.0':
-    resolution: {integrity: sha512-qNvOQ5lUQ9d5pS3QuYHI19d54QXfXk0y7JEs5vZ+oRnclmo+5yIPLDge89eGk2ykUu8zFQK3KhfmsPz644rYng==}
+  '@procedures/client@0.41.0':
+    resolution: {integrity: sha512-nQjcnfUN2Pl3Dw4BTTTXICQ9CfKqZPaiv07fl+nHFi2K1Y8nJjySi/CKi/POOkqAONxwpOz9X+vpKSVYJAyaBQ==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -589,14 +589,19 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.40.0':
-    resolution: {integrity: sha512-+wK4X2QX3wiq0KOY8qUo9lMoGBsNC5Elc2GhmNCpEjLWnYxcSMUrxy/SqrDnxco1c3MYB8aIlHc/983xrNYn8Q==}
+  '@procedures/peer@0.41.0':
+    resolution: {integrity: sha512-sXPj8alQr26CkMVCRlKG0vAcA4Ko3+q9aFbc30KHqRpxvGCPn0HSSicdxHS5MYiNp0DI4fOvVIONeRzqBvTRDA==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.40.0':
-    resolution: {integrity: sha512-tHR3QPgg9D4DH/Z/Vq6B8srCX0sTArAntDBPogsJrkHaSAjUlPJJ4E6YUgRbbR+ixE8PxjNnMJankQ39oPFvPw==}
+  '@procedures/server@0.41.0':
+    resolution: {integrity: sha512-8fCEGNvS3YvMK2PPEIObMbXwoWcyJQYc3xMaNqcdSVidjXl0Gh6BKE6ED+YC0KBzrvvfD8yHiUnrWAS4yAH1jw==}
     engines: {node: '>=22'}
     hasBin: true
+    peerDependencies:
+      '@procedures/fs': ^0.41.0
+    peerDependenciesMeta:
+      '@procedures/fs':
+        optional: true
 
   '@publint/pack@0.1.7':
     resolution: {integrity: sha512-4EDEmvxWtgsCnnVeBvtFIFZtUhPPt1+bA9JrSwU4Sa//6oKtzCSlGGXYJr44OD9aGISymbieJ4mCKHUygUDU+g==}
@@ -1681,7 +1686,7 @@ snapshots:
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
       zod: 4.6.7
 
-  '@mark1russell7/coeval@0.7.0': {}
+  '@mark1russell7/coeval@0.8.0': {}
 
   '@mark1russell7/cue@https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7': {}
 
@@ -1728,10 +1733,10 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.40.0(express@5.3.0)':
+  '@procedures/client@0.41.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/algebra': 0.7.3(zod@4.6.7)
-      '@mark1russell7/coeval': 0.7.0
+      '@mark1russell7/coeval': 0.8.0
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
       '@types/ws': 8.18.2
@@ -1744,10 +1749,10 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/peer@0.40.0(express@5.3.0)':
+  '@procedures/peer@0.41.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.40.0(express@5.3.0)
+      '@procedures/client': 0.41.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
@@ -1755,11 +1760,11 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/server@0.40.0(express@5.3.0)':
+  '@procedures/server@0.41.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.40.0(express@5.3.0)
-      '@procedures/peer': 0.40.0(express@5.3.0)
+      '@procedures/client': 0.41.0(express@5.3.0)
+      '@procedures/peer': 0.41.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
