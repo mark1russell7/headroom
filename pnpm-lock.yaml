@@ -174,7 +174,7 @@ importers:
         version: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7
       '@mark1russell7/template-cli':
         specifier: ^0.1.0
-        version: 0.1.2
+        version: 0.1.3
       publint:
         specifier: ^0.3.25
         version: 0.3.25
@@ -213,14 +213,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.38.0
-        version: 0.38.0(express@5.3.0)
+        specifier: ^0.39.0
+        version: 0.39.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.38.0
-        version: 0.38.0(express@5.3.0)
+        specifier: ^0.39.0
+        version: 0.39.0(express@5.3.0)
       '@procedures/server':
-        specifier: ^0.38.0
-        version: 0.38.0(express@5.3.0)
+        specifier: ^0.39.0
+        version: 0.39.0(express@5.3.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -562,8 +562,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/template-cli@0.1.2':
-    resolution: {integrity: sha512-PymBwlcDGyJiGZCQ6y9+dxWCpKPMSoqky5WkuNP+paoQp8z6vFkQJZTeIozxRHPtCipL2GmHg6RmpthaWAiM5g==}
+  '@mark1russell7/template-cli@0.1.3':
+    resolution: {integrity: sha512-HgPXrXTm3tR9l3eDq1iiJc0Gx5A2kRgjrDLnUSOjgotfhI9hxfn0a5M0/j8kKMAj1sQv755mYW0RStQ34bsgVA==}
     engines: {node: '>=22.12'}
     hasBin: true
 
@@ -580,8 +580,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.38.0':
-    resolution: {integrity: sha512-8ZGLOm6cT3bt6jFRRyQlQ0XWcnFV+QHr98ewMVxDo9hgB7xv/z1ONaN5lO0qtkYwJZ/EUV4iY2RUm7ngr3ynuA==}
+  '@procedures/client@0.39.0':
+    resolution: {integrity: sha512-Ot+4KUrYqGvBR9Xmy4oYMdOmmZVb7yngaS8o8twSF7tu+YDn9Hr4K0Nf7ODUz08Cr1zXNIvrN0OWpcPyeCuj0A==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -589,12 +589,12 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.38.0':
-    resolution: {integrity: sha512-D2DhxDnPCGf8gYUhENjgauIFZsSGHQU9R8cekxLDy9GEvxDnLwyitjGCXbE88U/rc0OSQYAd3fqn/DgJqPcWoQ==}
+  '@procedures/peer@0.39.0':
+    resolution: {integrity: sha512-FVeBXUjIulnKz91cTDKQmgvZskBNcBdEe4m+VaTEoQILdp1MXRmMSb2Jv+qc8xS1b+ykBmIhBMxWhj0l7+6Yhw==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.38.0':
-    resolution: {integrity: sha512-avyFTgcK9Y7YoPN75pvcw2nvyBv/nC2ZYAlVXD049EIuh7zYpBLHOnH7xx5gOULmrJm0pZfYDlSJ8dRJKEb30A==}
+  '@procedures/server@0.39.0':
+    resolution: {integrity: sha512-J8pUHwwkzPouG6n7uyaoOcqXIGzsVCg9JvErI5rJcXu+pEIFEbg6KFkR5urUQHIzD31rdD+ipG4fpw6CmmYJqQ==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -1700,7 +1700,7 @@ snapshots:
     dependencies:
       typescript: 6.0.3
 
-  '@mark1russell7/template-cli@0.1.2':
+  '@mark1russell7/template-cli@0.1.3':
     dependencies:
       '@clack/prompts': 1.8.1
 
@@ -1728,7 +1728,7 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.38.0(express@5.3.0)':
+  '@procedures/client@0.39.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/algebra': 0.7.3(zod@4.6.7)
       '@mark1russell7/coeval': 0.7.0
@@ -1744,10 +1744,10 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/peer@0.38.0(express@5.3.0)':
+  '@procedures/peer@0.39.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.38.0(express@5.3.0)
+      '@procedures/client': 0.39.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
@@ -1755,11 +1755,11 @@ snapshots:
       - ioredis
       - utf-8-validate
 
-  '@procedures/server@0.38.0(express@5.3.0)':
+  '@procedures/server@0.39.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/service': 0.5.10(zod@4.6.7)
-      '@procedures/client': 0.38.0(express@5.3.0)
-      '@procedures/peer': 0.38.0(express@5.3.0)
+      '@procedures/client': 0.39.0(express@5.3.0)
+      '@procedures/peer': 0.39.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - bufferutil
