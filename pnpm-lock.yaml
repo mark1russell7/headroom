@@ -219,14 +219,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.43.0
-        version: 0.43.0(express@5.3.0)
+        specifier: ^0.44.0
+        version: 0.44.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.43.0
-        version: 0.43.0(express@5.3.0)(ws@8.22.0)
+        specifier: ^0.44.0
+        version: 0.44.0(express@5.3.0)(ws@8.22.0)
       '@procedures/server':
-        specifier: ^0.43.0
-        version: 0.43.0(express@5.3.0)(ws@8.22.0)
+        specifier: ^0.44.0
+        version: 0.44.0(express@5.3.0)(ws@8.22.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -540,8 +540,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/coeval@0.8.0':
-    resolution: {integrity: sha512-luTZVua8cwNkVpC6ERtL90ukaXLtmye/RvSf3WXmFSNvDaiLRDYE6YQwuJDkUjYWhRBJ+u7lVkr0JhDpiFErhw==}
+  '@mark1russell7/coeval@0.9.0':
+    resolution: {integrity: sha512-V4eUVtC9i0xngEXEkBICa52QVPm4BDUhPJEP7QevsErpnlxhv8VkBmY/wnLUa1l4HBgKDyp8QDqxPxjkn5/E5g==}
 
   '@mark1russell7/conventions@0.3.1':
     resolution: {integrity: sha512-cCIEsF+G1JVvpA4Mrj3DO//dMMRTYlK89hVPR5hm9IPmMYKZRo1tdVdaia0uT6b7eGrXr3OU8YmMnsQ2UR8O2g==}
@@ -614,8 +614,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.43.0':
-    resolution: {integrity: sha512-pg/dndWXqwYEFLLRtklvV5lcBx72MhvOa600CcmmpaBp3/dpj1UyMT95b3zn7sPIDwZrBRRZGocmnG92K6yREg==}
+  '@procedures/client@0.44.0':
+    resolution: {integrity: sha512-PZecpTxTUFfWjOcILCjVHCsdpsOXGmFo5gn0WpmHEBwFgVSi1mMG8/frPllsg+gOMaAd6Nn4RE+efdZB6nqajg==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -623,16 +623,16 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.43.0':
-    resolution: {integrity: sha512-53Q2oLG4cDzLe5qsL4m2uQSgyOTijo7Jp7HKJNmKsvrohp4mJjDhJB4nFZUIF7sh3WXqp1nn9eSf6BgaTnrRcQ==}
+  '@procedures/peer@0.44.0':
+    resolution: {integrity: sha512-gikani+r7HKntLU3Zkvesb9wJDLNBM1gRu16cxNGCbG1Wr/69bH5YwsLKbENRPaR8K4cnaqyPiIa2m0kByU9Xg==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.43.0':
-    resolution: {integrity: sha512-S1norR5GNuqXJz/3+6R+kAjEr7tmNn115wLarpVqPIG5kgK1emgLKBRLxRqiFdaSbnjh/lB4ORAdPUaRbN++Og==}
+  '@procedures/server@0.44.0':
+    resolution: {integrity: sha512-C12VK8//qjemV/NJOZtzWFfyHV/ChOP26mMgi2q1LJs/9Kv/7UihOqkHEDNS2gcGnuVWD/IczwCVj/3w2tJX8Q==}
     engines: {node: '>=22'}
     hasBin: true
     peerDependencies:
-      '@procedures/fs': ^0.43.0
+      '@procedures/fs': ^0.44.0
     peerDependenciesMeta:
       '@procedures/fs':
         optional: true
@@ -1723,7 +1723,7 @@ snapshots:
 
   '@mark1russell7/api-report@0.2.0': {}
 
-  '@mark1russell7/coeval@0.8.0': {}
+  '@mark1russell7/coeval@0.9.0': {}
 
   '@mark1russell7/conventions@0.3.1': {}
 
@@ -1773,10 +1773,10 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.43.0(express@5.3.0)':
+  '@procedures/client@0.44.0(express@5.3.0)':
     dependencies:
       '@mark1russell7/algebra': 0.8.0(zod@4.6.7)
-      '@mark1russell7/coeval': 0.8.0
+      '@mark1russell7/coeval': 0.9.0
       '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
       '@mark1russell7/service': 0.6.1(ws@8.22.0)(zod@4.6.7)
       '@types/ws': 8.18.2
@@ -1793,10 +1793,10 @@ snapshots:
       - pg
       - utf-8-validate
 
-  '@procedures/peer@0.43.0(express@5.3.0)(ws@8.22.0)':
+  '@procedures/peer@0.44.0(express@5.3.0)(ws@8.22.0)':
     dependencies:
       '@mark1russell7/service': 0.6.1(ws@8.22.0)(zod@4.6.7)
-      '@procedures/client': 0.43.0(express@5.3.0)
+      '@procedures/client': 0.44.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@grpc/grpc-js'
@@ -1809,11 +1809,11 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@procedures/server@0.43.0(express@5.3.0)(ws@8.22.0)':
+  '@procedures/server@0.44.0(express@5.3.0)(ws@8.22.0)':
     dependencies:
       '@mark1russell7/service': 0.6.1(ws@8.22.0)(zod@4.6.7)
-      '@procedures/client': 0.43.0(express@5.3.0)
-      '@procedures/peer': 0.43.0(express@5.3.0)(ws@8.22.0)
+      '@procedures/client': 0.44.0(express@5.3.0)
+      '@procedures/peer': 0.44.0(express@5.3.0)(ws@8.22.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@grpc/grpc-js'
