@@ -141,3 +141,19 @@ Each step keeps the old data, so an undo takes some minutes:
 - A smaller kernel pool under heavy file work. headroom shows it on its dashboard and in `headroom pool-tags`.
 - ReFS uses a little more memory than NTFS. Microsoft recommends 16 GB. This computer has 28 GB.
 - Node gives real paths, so an error message shows `D:\git\...` in place of `C:\Users\<you>\git\...`. Both paths name the same file.
+
+## The pool tags and their drivers
+
+A pool tag names the driver that uses the memory. `headroom pool-tags --drivers` finds the driver of a tag in the driver files. It does not find the tags of ReFS, because ReFS does not keep them as text. This table gives the tags that grew on this computer:
+
+| Tags | Driver | What it is | When it grew |
+|---|---|---|---|
+| `MSb+`, `MSpa`, `MSde`, `MSeb`, `MSPi`, `Refx` | `refs.sys` (`MSb+` also in `refsv1.sys`) | ReFS: the B+ trees, the pages and the other metadata of Minstore, for the files of the Dev Drive `D:` | 2026-10-29: approximately 900 MB in one hour after the restart, during many full test runs on `D:` (also 2026-10-27: 5 searches of 35 repositories at the same time took approximately 5 GB) |
+| `FMsl`, `File`, `NtxI` | the filter manager (`fltmgr.sys`) and the file objects | The stream lists and the file objects of each open file | 2026-10-20, on `C:` (before the Dev Drive), and again 2026-10-29 |
+| `DAL3`, `File` | `amdkmdag.sys` | The AMD display driver: two file objects for each new process (README, "Process starts") | 2026-10-24 and 2026-10-28 |
+
+How to read an alert:
+
+- The `MS*` and `Refx` tags grow: heavy file work on `D:`. Find the session with the most file work. Move its full test suites and wide searches to CI, or do them one at a time.
+- `DAL3` or `File` grow with many process starts: the AMD leak. The alert names the owners with the most starts.
+- After the file work stops, watch the pool for one hour. If it gets smaller, it was a cache. If it stays, plan a restart.
