@@ -144,7 +144,7 @@ Each step keeps the old data, so an undo takes some minutes:
 
 ## The pool tags and their drivers
 
-A pool tag names the driver that uses the memory. `headroom pool-tags --drivers` finds the driver of a tag in the driver files. It does not find the tags of ReFS, because ReFS does not keep them as text. This table gives the tags that grew on this computer:
+A pool tag names the driver that uses the memory. `headroom pool-tags --drivers` finds the driver of a tag: it searches the bytes of the driver files. Until 2026-10-29 it did not search the files of `System32\drivers`, because Windows refuses its subfolder `DriverData`. This table gives the tags that grew on this computer:
 
 | Tags | Driver | What it is | When it grew |
 |---|---|---|---|
