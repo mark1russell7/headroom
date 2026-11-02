@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/tsconfig",
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": ".",
+    "rootDir": "../..",
     "noEmit": true,
     "emitDeclarationOnly": false,
     "declaration": false,
@@ -14,7 +14,8 @@
   },
   "include": [
     "src/**/*",
-    "*.config.ts"
+    "*.config.ts",
+    "../../plugins/headroom/hooks/*.ts"
   ],
   "exclude": []
 }

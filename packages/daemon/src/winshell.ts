@@ -1,13 +1,12 @@
-// @ts-check
 /**
  * The command line of a command on Windows, for `spawn`.
  *
  * - A program (`.exe` or `.com`) starts directly. Node quotes its arguments with the rules of the C runtime.
- * - Each other command goes to `cmd.exe /d /s /c`. This is a batch file such as `pnpm.cmd`, a command of cmd, or a command that is not found.
+ * - Each other command goes to `cmd.exe /d /s /c`. This is a batch file (for example `pnpm.cmd`), a command of cmd, or a command that is not found.
  * - For cmd, each argument gets quotes, and each special character gets a caret (`^`). Thus `&`, `|`, `>`, `%` and `^` stay in the argument.
  * - A batch file reads its arguments a second time, so each special character gets a second caret.
  *
- * The rules are those of the package `cross-spawn`. This file uses no package, so the bridge can import it without a type stripper.
+ * The rules are those of the package `cross-spawn`. This file uses no package, and only the types that Node can remove, so the bridge can import it when Node starts the bridge directly.
  */
 import { statSync } from "node:fs";
 import { win32 } from "node:path";
@@ -24,62 +23,44 @@ const BATCH = new Set([".cmd", ".bat"]);
 /** The extensions of a command when the environment has no `PATHEXT`. */
 const DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD";
 
-/**
- * The command that `spawn` starts: the file, the arguments, and the option `windowsVerbatimArguments`.
- * @typedef {{ readonly file: string, readonly args: string[], readonly verbatim: boolean }} WindowsCommand
- */
+/** The command that `spawn` starts: the file, the arguments, and the option `windowsVerbatimArguments`. */
+export interface WindowsCommand {
+  readonly file: string;
+  readonly args: string[];
+  readonly verbatim: boolean;
+}
 
-/**
- * The data that finds a command: the environment, the current folder and a test for a file.
- * @typedef {{ readonly env?: Readonly<Record<string, string | undefined>>, readonly cwd?: string, readonly isFile?: (path: string) => boolean }} FindOptions
- */
+/** The data that finds a command: the environment, the current folder and a test for a file. */
+export interface FindOptions {
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  readonly cwd?: string;
+  readonly isFile?: (path: string) => boolean;
+}
 
-/**
- * This function quotes one argument with the rules of the C runtime. It doubles each backslash before a quote and at the end.
- * @param {string} arg
- * @returns {string}
- */
-export function quoteArgument(arg) {
+/** This function quotes one argument with the rules of the C runtime. It doubles each backslash before a quote and at the end. */
+export function quoteArgument(arg: string): string {
   const inner = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
   return `"${inner}"`;
 }
 
-/**
- * This function puts a caret before each special character of cmd.
- * @param {string} text
- * @returns {string}
- */
-export function caretEscape(text) {
+/** This function puts a caret before each special character of cmd. */
+export function caretEscape(text: string): string {
   return text.replace(META, "^$&");
 }
 
-/**
- * This function gives one argument for the command line of cmd. A batch file gets two carets, because it reads the argument two times.
- * @param {string} arg
- * @param {boolean} batch
- * @returns {string}
- */
-export function cmdArgument(arg, batch) {
+/** This function gives one argument for the command line of cmd. A batch file gets two carets, because it reads the argument two times. */
+export function cmdArgument(arg: string, batch: boolean): string {
   const once = caretEscape(quoteArgument(arg));
   return batch ? caretEscape(once) : once;
 }
 
-/**
- * This function gives the value of a variable of the environment. Windows ignores the case of the name.
- * @param {Readonly<Record<string, string | undefined>>} env
- * @param {string} name
- * @returns {string | undefined}
- */
-function variable(env, name) {
+/** This function gives the value of a variable of the environment. Windows ignores the case of the name. */
+function variable(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
   const key = Object.keys(env).find((k) => k.toUpperCase() === name);
   return key === undefined ? undefined : env[key];
 }
 
-/**
- * @param {string} path
- * @returns {boolean}
- */
-function isFileOnDisk(path) {
+function isFileOnDisk(path: string): boolean {
   try {
     return statSync(path).isFile();
   } catch {
@@ -90,11 +71,8 @@ function isFileOnDisk(path) {
 /**
  * This function finds the file of a command as cmd does. It looks in the current folder and then in `PATH`, with each extension of `PATHEXT`.
  * It gives `undefined` when no file matches.
- * @param {string} name
- * @param {FindOptions} [options]
- * @returns {string | undefined}
  */
-export function findCommand(name, options = {}) {
+export function findCommand(name: string, options: FindOptions = {}): string | undefined {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
   const isFile = options.isFile ?? isFileOnDisk;
@@ -116,11 +94,8 @@ export function findCommand(name, options = {}) {
 /**
  * This function gives the file and the arguments that `spawn` starts for a command on Windows.
  * Pass `verbatim` as the option `windowsVerbatimArguments` of `spawn`.
- * @param {readonly string[]} command
- * @param {FindOptions} [options]
- * @returns {WindowsCommand}
  */
-export function windowsCommand(command, options = {}) {
+export function windowsCommand(command: readonly string[], options: FindOptions = {}): WindowsCommand {
   const [name = "", ...args] = command;
   const found = findCommand(name, options);
   const extension = found === undefined ? "" : win32.extname(found).toLowerCase();

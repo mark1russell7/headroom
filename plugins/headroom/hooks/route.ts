@@ -1,4 +1,3 @@
-// @ts-check
 /**
  * The hook of headroom (H8): a PreToolUse hook for the Bash and PowerShell tools of Claude Code.
  *
@@ -6,18 +5,25 @@
  *   `headroom run` goes on only when the memory has room for it.
  * - When the memory is tight, the hook refuses the command and tells the session the form under a
  *   lease: `headroom run --mem auto -- <command>`. The session sends that form, and the permission
- *   rules of the user apply to it as to each command. The hook never approves a command itself.
+ *   rules of the user apply to it as to each command. The hook does not approve a command itself.
  * - When the daemon does not answer, or the command is light, the hook writes nothing: the command goes on.
  *
- * It uses no package, and it gives up after 1 second, so a session does not wait for it.
+ * It uses no package, and it gives up after 1 second, so a session does not wait for it. Node starts this file
+ * directly, so it uses only the types that Node can remove.
  */
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+/** The status of the daemon that the hook reads: the free memory and the leases. */
+export interface Status {
+  free?: { memory?: number };
+  leases?: { state: string; reason?: string | null }[];
+}
+
 /** The commands that need a lease: the test runners, the builds, the browsers and the container builds. */
-export const HEAVY = [
+export const HEAVY: RegExp[] = [
   /\b(?:pnpm|npm|yarn|bun)\s+(?:-[\w-]+\s+)*(?:run\s+)?(?:test|tests|build|e2e|typecheck|check|coverage)\b/,
   /\b(?:pnpm|npm|yarn)\s+(?:-r|--recursive|-ws|--workspaces)\b/,
   /\bvitest\b(?!\s+--version)/,
@@ -37,11 +43,10 @@ export const TIGHT_MB = 4096;
 
 /**
  * This function puts `headroom run --mem auto --` in front of the heavy part of a command line. The shell divides
- * a line at `&&`, `||`, `;` and `|`, so the prefix goes at the start of the part with the heavy command, after
+ * a line at `&&`, `||`, `;` and `|`. Thus the prefix goes at the start of the part with the heavy command, after
  * its variables (`CI=1 pnpm test`). Thus `cd app && pnpm test` gives `cd app && headroom run --mem auto -- pnpm test`.
- * @param {string} command
  */
-export function leased(command) {
+export function leased(command: string): string {
   const separator = /&&|\|\||;|\|/g;
   let start = 0;
   for (const match of [...command.matchAll(separator), null]) {
@@ -57,12 +62,8 @@ export function leased(command) {
   return `headroom run --mem auto -- ${command}`;
 }
 
-/**
- * This function decides about one command. It gives the reason to refuse the command, or `null` to let it go on.
- * @param {string} command
- * @param {{ free: { memory?: number }, leases: { state: string, reason?: string | null }[] } | null} status
- */
-export function decide(command, status) {
+/** This function makes the decision for one command. It gives the reason to refuse the command, or `null` to let it go on. */
+export function decide(command: string, status: Status | null): string | null {
   if (!command || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return null;
   if (!HEAVY.some((pattern) => pattern.test(command))) return null;
   if (!status) return null;
@@ -78,27 +79,26 @@ export function decide(command, status) {
 }
 
 /** This function reads the status of the daemon, or gives `null` when no daemon answers in time. */
-async function status() {
+async function status(): Promise<Status | null> {
   try {
     const home = process.env["HEADROOM_HOME"] ?? join(homedir(), ".headroom");
-    const { endpoint, token } = JSON.parse(readFileSync(join(home, "daemon.json"), "utf8"));
+    const { endpoint, token } = JSON.parse(readFileSync(join(home, "daemon.json"), "utf8")) as { endpoint: string; token: string };
     const res = await fetch(`${new URL(endpoint).origin}/api/resources/status`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: "{}",
       signal: AbortSignal.timeout(1000),
     });
-    return res.ok ? await res.json() : null;
+    return res.ok ? ((await res.json()) as Status) : null;
   } catch {
     return null;
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   let input = "";
   for await (const chunk of process.stdin) input += chunk;
-  /** @type {{ tool_name?: string, tool_input?: { command?: string } }} */
-  const event = JSON.parse(input || "{}");
+  const event = JSON.parse(input || "{}") as { tool_name?: string; tool_input?: { command?: string } };
   const command = String(event.tool_input?.command ?? "");
   // A light command goes on at once, with no request to the daemon.
   if (!HEAVY.some((pattern) => pattern.test(command)) || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return;

@@ -1,13 +1,12 @@
-// @ts-check
 /**
- * The stdio bridge of the MCP gateway: `node bridge.mjs <name>`.
+ * The stdio bridge of the MCP gateway: `node bridge.ts <name>`.
  *
  * A program that can only start a stdio MCP server starts the bridge, for example the launcher of a
  * plugin. The bridge sends each message of its input to the server `<name>` of the gateway. It writes
  * each message of the gateway to its output.
  *
- * - This file is JavaScript, not TypeScript, and it uses no package. Thus Node loads no type stripper,
- *   and the bridge uses approximately 29 MB, not 40 MB.
+ * - This file uses no package, and only the types that Node can remove. Thus Node starts it directly, with no
+ *   other type stripper.
  * - It reads the token of the daemon from the discovery file. After a 401 answer, it reads the token again.
  * - A restart of the daemon ends the session. The bridge then sends the first `initialize` again, opens a
  *   new session, and sends the message again. The client does not see the restart.
@@ -20,54 +19,55 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { windowsCommand } from "./winshell.mjs";
+import { windowsCommand } from "./winshell.ts";
 
-/** @typedef {{ jsonrpc: "2.0", id?: string | number | null, method?: string, params?: Record<string, unknown>, result?: Record<string, unknown> }} Message */
+/** One JSON-RPC message of MCP. */
+export interface Message {
+  jsonrpc: "2.0";
+  id?: string | number | null;
+  method?: string;
+  params?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+}
+
+/** The function that writes one message to the client. */
+type Write = (message: unknown) => void;
 
 const RETRIES = 5;
 
 /** This function reads the discovery file of the daemon, as `paths.ts` does. */
-function discovery() {
+function discovery(): { endpoint: string; token: string } | undefined {
   try {
     const file = join(process.env["HEADROOM_HOME"] ?? join(homedir(), ".headroom"), "daemon.json");
-    return /** @type {{ endpoint: string, token: string }} */ (JSON.parse(readFileSync(file, "utf8")));
+    return JSON.parse(readFileSync(file, "utf8")) as { endpoint: string; token: string };
   } catch {
     return undefined;
   }
 }
 
-/** @param {number} ms */
-const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The bridge of one server of the gateway. */
 export class Bridge {
-  /** @type {string} */ #name;
-  /** @type {(message: unknown) => void} */ #write;
-  /** @type {string | undefined} */ #token;
-  /** @type {string | undefined} */ #session;
-  /** @type {string | undefined} */ #version;
-  /** @type {Message | undefined} */ #initialize;
-  /** @type {Promise<void>} */ #ready = Promise.resolve();
-  /** @type {Promise<void> | undefined} */ #reopening;
+  #name: string;
+  #write: Write;
+  #token: string | undefined;
+  #session: string | undefined;
+  #version: string | undefined;
+  #initialize: Message | undefined;
+  #ready: Promise<void> = Promise.resolve();
+  #reopening: Promise<void> | undefined;
   #listening = false;
   #closed = false;
 
-  /**
-   * @param {string} name
-   * @param {(message: unknown) => void} write
-   */
-  constructor(name, write) {
+  constructor(name: string, write: Write) {
     this.#name = name;
     this.#write = write;
     this.#token = discovery()?.token;
   }
 
-  /**
-   * This function sends one message of the client. The `initialize` request goes first, and the others wait for it.
-   * @param {Message} message
-   * @returns {Promise<void>}
-   */
-  send(message) {
+  /** This function sends one message of the client. The `initialize` request goes first, and the others wait for it. */
+  send(message: Message): Promise<void> {
     if (message.method === "initialize") {
       this.#initialize = message;
       this.#ready = this.#post(message, this.#write);
@@ -79,19 +79,18 @@ export class Bridge {
   }
 
   /** This function ends the session and stops the stream of notifications. */
-  async close() {
+  async close(): Promise<void> {
     this.#closed = true;
     if (!this.#session) return;
     await fetch(this.#url(), { method: "DELETE", headers: this.#headers() }).catch(() => undefined);
   }
 
-  #url() {
+  #url(): string {
     const endpoint = discovery()?.endpoint ?? "http://127.0.0.1:4730/api";
     return `${new URL(endpoint).origin}/mcp/${encodeURIComponent(this.#name)}`;
   }
 
-  /** @returns {Record<string, string>} */
-  #headers(accept = "application/json, text/event-stream") {
+  #headers(accept = "application/json, text/event-stream"): Record<string, string> {
     return {
       accept,
       "content-type": "application/json",
@@ -101,17 +100,11 @@ export class Bridge {
     };
   }
 
-  /**
-   * This function sends one message. While a new session opens, a message waits for it, except the messages that open it (`reopen`).
-   * @param {Message} message
-   * @param {(message: unknown) => void} write
-   * @returns {Promise<void>}
-   */
-  async #post(message, write, attempt = 0, reopen = false) {
+  /** This function sends one message. While a new session opens, a message waits for it, except the messages that open it (`reopen`). */
+  async #post(message: Message, write: Write, attempt = 0, reopen = false): Promise<void> {
     if (!reopen && this.#reopening) await this.#reopening;
     const used = this.#session;
-    /** @type {Response} */
-    let res;
+    let res: Response;
     try {
       res = await fetch(this.#url(), { method: "POST", headers: this.#headers(), body: JSON.stringify(message) });
     } catch (error) {
@@ -131,28 +124,24 @@ export class Bridge {
     if (session) this.#session = session;
     if (res.status === 202) return;
     if (!res.ok) return this.#fail(message, `The MCP gateway answered ${res.status}: ${(await res.text()).slice(0, 500)}`);
-    /** @param {unknown} item */
-    const handle = (item) => {
-      const result = /** @type {Message} */ (item).result;
-      if (message.method === "initialize" && typeof result?.["protocolVersion"] === "string") this.#version = result["protocolVersion"];
+    const handle = (item: unknown): void => {
+      const result = (item as Message).result;
+      const version = result?.["protocolVersion"];
+      if (message.method === "initialize" && typeof version === "string") this.#version = version;
       write(item);
     };
     if ((res.headers.get("content-type") ?? "").includes("text/event-stream")) await readEvents(res, handle);
     else {
       const text = await res.text();
-      if (text.trim()) for (const item of [JSON.parse(text)].flat()) handle(item);
+      if (text.trim()) for (const item of [JSON.parse(text) as unknown].flat()) handle(item);
     }
   }
 
   /**
    * This function opens a new session with the first `initialize` of the client, then sends the message again.
-   * @param {Message} message
-   * @param {(message: unknown) => void} write
-   * @param {number} attempt
-   * @param {string | undefined} lost the session that the message used
-   * @returns {Promise<void>}
+   * The session `lost` is the session that the message used.
    */
-  async #again(message, write, attempt, lost) {
+  async #again(message: Message, write: Write, attempt: number, lost: string | undefined): Promise<void> {
     if (this.#initialize && message.method !== "initialize") await this.#reopen(this.#initialize, lost);
     return this.#post(message, write, attempt + 1);
   }
@@ -160,17 +149,14 @@ export class Bridge {
   /**
    * This function opens one new session for all the messages that lost the session `lost`. The other messages wait for it.
    * When another message opened a new session before, the function does nothing.
-   * @param {Message} initialize
-   * @param {string | undefined} lost
-   * @returns {Promise<void>}
    */
-  #reopen(initialize, lost) {
+  #reopen(initialize: Message, lost: string | undefined): Promise<void> {
     if (this.#reopening) return this.#reopening;
     if (this.#session !== lost) return Promise.resolve();
     this.#reopening = (async () => {
       this.#session = undefined;
       this.#token = discovery()?.token;
-      const silent = () => undefined;
+      const silent = (): undefined => undefined;
       await this.#post(initialize, silent, RETRIES, true);
       await this.#post({ jsonrpc: "2.0", method: "notifications/initialized" }, silent, RETRIES, true);
       void this.#listen();
@@ -180,17 +166,13 @@ export class Bridge {
     return this.#reopening;
   }
 
-  /**
-   * @param {Message} message
-   * @param {string} text
-   */
-  #fail(message, text) {
+  #fail(message: Message, text: string): void {
     process.stderr.write(`headroom bridge ${this.#name}: ${text}\n`);
     if (message.id !== undefined && message.method !== undefined) this.#write({ jsonrpc: "2.0", id: message.id, error: { code: -32000, message: text } });
   }
 
   /** This function keeps the stream of the notifications of the server open while the session lives. */
-  async #listen() {
+  async #listen(): Promise<void> {
     if (this.#listening) return;
     this.#listening = true;
     void (async () => {
@@ -213,17 +195,12 @@ export class Bridge {
   }
 }
 
-/**
- * This function reads a stream of server-sent events, and gives the data of each event as JSON.
- * @param {Response} res
- * @param {(item: unknown) => void} handle
- */
-async function readEvents(res, handle) {
+/** This function reads a stream of server-sent events, and gives the data of each event as JSON. */
+async function readEvents(res: Response, handle: (item: unknown) => void): Promise<void> {
   if (!res.body) return;
   const decoder = new TextDecoder();
   let buffer = "";
-  /** @param {string} block */
-  const flush = (block) => {
+  const flush = (block: string): void => {
     const data = block
       .split(/\r?\n/)
       .filter((line) => line.startsWith("data:"))
@@ -233,8 +210,7 @@ async function readEvents(res, handle) {
   };
   for await (const chunk of res.body) {
     buffer += decoder.decode(chunk, { stream: true });
-    /** @type {RegExpExecArray | null} */
-    let end;
+    let end: RegExpExecArray | null;
     while ((end = /\r?\n\r?\n/.exec(buffer))) {
       flush(buffer.slice(0, end.index));
       buffer = buffer.slice(end.index + end[0].length);
@@ -243,26 +219,22 @@ async function readEvents(res, handle) {
   if (buffer.trim()) flush(buffer);
 }
 
-/**
- * This function connects the input and the output of this process to a server of the gateway.
- * @param {string} name
- */
-export function runBridge(name) {
+/** This function connects the input and the output of this process to a server of the gateway. */
+export function runBridge(name: string): void {
   const bridge = new Bridge(name, (message) => process.stdout.write(`${JSON.stringify(message)}\n`));
   const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
   input.on("line", (raw) => {
     // Some programs write a byte order mark before the first line.
     const line = raw.replace(/^﻿/, "");
     if (!line.trim()) return;
-    /** @type {Message} */
-    let message;
+    let message: Message;
     try {
-      message = JSON.parse(line);
+      message = JSON.parse(line) as Message;
     } catch {
       process.stderr.write(`headroom bridge ${name}: a line is not JSON\n`);
       return;
     }
-    bridge.send(message).catch((error) => process.stderr.write(`headroom bridge ${name}: ${String(error)}\n`));
+    bridge.send(message).catch((error: unknown) => process.stderr.write(`headroom bridge ${name}: ${String(error)}\n`));
   });
   input.on("close", () => {
     void bridge.close().finally(() => process.exit(0));
@@ -270,11 +242,10 @@ export function runBridge(name) {
 }
 
 /**
- * This function tells if the gateway serves a server: a GET without a session gets 400 from a configured
- * server, 404 from an unknown server, and no answer when the daemon does not run.
- * @param {string} name
+ * This function tells if the gateway serves a server. A GET without a session gets 400 from a configured
+ * server and 404 from an unknown server. When the daemon is stopped, the GET gets no answer.
  */
-export async function gatewayServes(name) {
+export async function gatewayServes(name: string): Promise<boolean> {
   const found = discovery();
   if (!found) return false;
   try {
@@ -290,9 +261,8 @@ export async function gatewayServes(name) {
 /**
  * This function starts the local copy of a server in place of the gateway. It gives the input and the
  * output of this process to the copy, and exits with the exit code of the copy.
- * @param {readonly string[]} command
  */
-function runLocal(command) {
+function runLocal(command: readonly string[]): void {
   const [file, ...args] = command;
   if (!file) process.exit(2);
   // On Windows, a program starts directly. A .cmd file, such as npx, starts in cmd with each argument escaped.
@@ -309,10 +279,10 @@ function runLocal(command) {
 }
 
 if (import.meta.main) {
-  // node bridge.mjs <name> [-- <command> [args...]]: the command is the local copy, for when the gateway does not serve <name>.
+  // node bridge.ts <name> [-- <command> [args...]]: the command is the local copy, for when the gateway does not serve <name>.
   const [name, separator, ...command] = process.argv.slice(2);
   if (!name || (separator !== undefined && separator !== "--")) {
-    process.stderr.write("Usage: node bridge.mjs <name> [-- <command> [args...]]\n");
+    process.stderr.write("Usage: node bridge.ts <name> [-- <command> [args...]]\n");
     process.exit(2);
   }
   if (command.length > 0 && !(await gatewayServes(name))) runLocal(command);

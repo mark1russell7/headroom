@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { cmdArgument, findCommand, quoteArgument, windowsCommand } from "./winshell.mjs";
+import { cmdArgument, findCommand, quoteArgument, windowsCommand } from "./winshell.ts";
 
 /** The arguments that cmd changed before: a split at `&` and `|`, a redirect, a variable, a caret, a quote and an empty argument. */
 const TRICKY = ["a&b", "x|y", "out>file", "%PATH%", "c^d", 'q"uote', "", "sp ace", "back\\", "http://host/?a=1&b=2", "!bang!", "(paren)"];

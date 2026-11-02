@@ -12,7 +12,7 @@ import type { HostFaceContext } from "@procedures/peer";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { descendantsOf, killTree, McpGateway } from "./gateway.ts";
 
-const fixture = join(import.meta.dirname, "fixtures", "counter-server.mjs");
+const fixture = join(import.meta.dirname, "fixtures", "counter-server.ts");
 const specs = { counter: { command: process.execPath, args: [fixture] } };
 
 interface Counted {
@@ -145,7 +145,7 @@ describe("the stdio bridge", () => {
     const client = new Client({ name: "bridged", version: "1.0.0" });
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [join(import.meta.dirname, "bridge.mjs"), name, ...(local.length > 0 ? ["--", ...local] : [])],
+      args: [join(import.meta.dirname, "bridge.ts"), name, ...(local.length > 0 ? ["--", ...local] : [])],
       env: { ...(process.env as Record<string, string>), HEADROOM_HOME: home },
     });
     await client.connect(transport as unknown as Parameters<Client["connect"]>[0]);

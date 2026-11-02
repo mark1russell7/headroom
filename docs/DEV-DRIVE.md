@@ -86,6 +86,8 @@ The sessions can continue to work during part A.
 
    Run the first command from a copy of the script outside `~/git`, for example from `C:\Users\<you>\dev-drive-move.ps1`. The move renames `~/git`.
 
+   The move of this computer is done (H16). Thus the repository does not keep the script. To get it for a different computer, use `git show c2499f5:scripts/dev-drive/move.ps1`.
+
 5. Move the package caches, and install again:
 
    ```powershell
@@ -111,7 +113,7 @@ The sessions can continue to work during part A.
 
 ### The `cue.mod/pkg` junctions
 
-`scripts/dev-drive/move.ps1` copies with `robocopy /XJ`, and `/XJ` skips junctions. In the repositories that use `@mark1russell7/cue`, the folder `cue.mod/pkg/mark1russell7.cue` is a junction to `node_modules/@mark1russell7/cue`. Thus the copy does not have it, and CUE cannot find the package.
+The move script copies with `robocopy /XJ`, and `/XJ` skips junctions. In the repositories that use `@mark1russell7/cue`, the folder `cue.mod/pkg/mark1russell7.cue` is a junction to `node_modules/@mark1russell7/cue`. Thus the copy does not have it, and CUE cannot find the package.
 
 After the install, make the junction again in each repository that has a `cue.mod` folder:
 

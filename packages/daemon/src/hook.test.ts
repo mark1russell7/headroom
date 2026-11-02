@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // The hook of the plugin, started as Claude Code starts it: a process with the event as JSON on stdin.
-const hook = join(import.meta.dirname, "..", "..", "..", "plugins", "headroom", "hooks", "route.mjs");
+const hook = join(import.meta.dirname, "..", "..", "..", "plugins", "headroom", "hooks", "route.ts");
 
 describe("the hook of the plugin", () => {
   let server: Server;
