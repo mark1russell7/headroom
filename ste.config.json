@@ -7,7 +7,8 @@
     "RELEASING.md",
     "packages/*/README.md",
     "packages/*/src/**/*.{ts,tsx}",
-    "packages/*/*.config.{ts,mts}"
+    "packages/*/*.config.{ts,mts}",
+    "plugins/*/hooks/*.ts"
   ],
   "ignore": [
     "**/node_modules/**",

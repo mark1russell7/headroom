@@ -92,6 +92,7 @@ A client that cannot reach the daemon runs the job and prints a warning. It does
 | H50 | The system file cache. On 2026-10-25, the cache grew to 10.1 GB two times, the available memory stayed near 1 GB for 22 minutes, and the reaper of Claude Code stopped jobs. Windows Search read 350 MB each second from the files of the sessions. The owners `system:search` and `system:defender` show the indexer and the scanner. The engine counts the reads of each owner. The alert `cache` warns when the cache holds 4 GB or more and less than 6 GB is available, and names the top readers and writers. headroom does not trim the cache: the daemon has no privilege for it. Mark removes `D:` from the scope of Windows Search. | in progress |
 | H51 | The alert names the driver of each pool tag that grows. On 2026-10-29 the alert named no driver for the ReFS tags (`MSb+`, `MSpa`, `MSde`): `driversOf` did not search `System32\drivers`, because Windows refuses its subfolder `DriverData` (fixed: `sysFiles` skips that subfolder). Next: give one line for each growing tag in the alert, with its driver and the advice of docs/DEV-DRIVE.md, "The pool tags and their drivers". | next |
 | H53 | The growth of each pool tag since the start of Windows. On 2026-11-02, after 107 hours, the paged pool was 4.17 GB and the non-paged pool 3.76 GB, and headroom could not tell which tags grew since the start: the store keeps the tag snapshots for 2 hours only, and `pool-tags` gives the largest tags of the non-paged pool only. The store keeps the first snapshot after each start of Windows and one snapshot each hour for 7 days. `headroom pool-tags --since boot` (or `--hours <n>`) gives the largest tags and their growth in both pools, with their drivers. The dashboard shows a chart of the top tags since the start. The data of 2026-11-02 before the restart is in `docs/data/pool-before-reboot-2026-11-02.txt`. | next |
+| H54 | Move `packages/daemon/src/service.ts` onto `./host` of `@mark1russell7/service` 0.6.3 (install, status, instance lock, discovery, stop by pid). Optional. | later |
 
 ## The MCP gateway (H11)
 
@@ -107,7 +108,7 @@ The state on 2026-10-19:
 
 - The gateway works: `headroom mcp add`, `list`, `remove`, `restart` and `config`. The gateway is a face of the host on the listener of the daemon. Each session gets an MCP session of its own. The gateway sends each request, its cancel and its progress to the one copy.
 - A test sent two sessions to the MCP server of Vex. One process of 51 MB answered both. Before, each session started its own chain of 4 processes, approximately 260 MB.
-- The bridge `bridge.mjs` connects a program that starts only stdio servers to the gateway. When the gateway does not serve the server, it starts the usual command. It uses approximately 30 MB for each session.
+- The bridge `bridge.ts` connects a program that starts only stdio servers to the gateway. When the gateway does not serve the server, it starts the usual command. It uses approximately 30 MB for each session.
 - The rollout waits for the owner of each server. The plugin of Vex has the largest gain: 60 processes and 2.1 GB on 2026-10-19. The `loom` server of jarvis has 15 processes and 710 MB.
 
 ## Version 0
