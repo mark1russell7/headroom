@@ -1,0 +1,46 @@
+headroom pool-tags --drivers, 2026-11-02 21:3xZ, uptime 107.5 h, before the restart.
+Totals (Win32_PerfFormattedData_PerfOS_Memory): paged pool 4.17 GB, non-paged pool 3.76 GB, file cache 4.34 GB, commit 46.6 of 75.6 GB, free 0.8 of 27.6 GB.
+
+The largest non-paged pool tags (the change over 55 minutes):
+  "File"     995.5 MB    +17.2 MB  acpi.sys, acpiex.sys, acx01000.sys, afd.sys and 260 more
+  "HalD"     234.3 MB       +0 MB  acpi.sys, amdk8.sys, amdppm.sys, basicdisplay.sys and 32 more
+  "SQSF"     184.4 MB     +3.3 MB  storqosflt.sys
+  "DAL3"     168.6 MB       +0 MB  amdkmdag.sys
+  "MSb+"     141.6 MB    -25.7 MB  refs.sys, refsv1.sys
+  "FMsl"      80.6 MB     -4.9 MB  fltmgr.sys
+  "NxRx"      76.9 MB       +0 MB  netadaptercx.sys, netcxrd.sys
+  "MSde"      70.7 MB    -15.6 MB  refs.sys
+  "MSpa"      68.9 MB    -26.7 MB  refs.sys
+  "EtwB"      67.6 MB       +0 MB  usb4hostrouter.sys
+  "MKCx"      47.5 MB       +0 MB  mtkwecx.sys
+  "MSeb"        45 MB    -17.2 MB  refs.sys, refsv1.sys
+  "smNp"      43.9 MB       +0 MB  rdyboost.sys
+  "CcSc"      37.1 MB     +0.2 MB
+  "KLOG"      36.2 MB       +0 MB  amdfendr.sys, amdfendrmgr.sys, amdkmdag.sys, amdmicropep.sys and 2 more
+
+The tags that grew most:
+  "File"     995.5 MB    +17.2 MB  acpi.sys, acpiex.sys, acx01000.sys, afd.sys and 260 more
+  "RLin"       4.8 MB     +3.5 MB  ntfs.sys, refs.sys, refsv1.sys
+  "SQSF"     184.4 MB     +3.3 MB  storqosflt.sys
+  "FVEp"       2.1 MB     +1.6 MB  fvevol.sys
+  "NtxF"       7.9 MB     +1.2 MB  ntfs.sys
+  "Thre"      33.6 MB     +0.9 MB  1394ohci.sys, acpi.sys, acpiex.sys, acx01000.sys and 324 more
+  "MmCa"      24.2 MB     +0.9 MB  exfat.sys, fastfat.sys, ntfs.sys, portcls.sys and 5 more
+  "AfdB"       1.3 MB     +0.8 MB  afd.sys, amdacpafd.sys, amdacpbtacx.sys
+  "MSba"       0.6 MB     +0.6 MB  refs.sys
+  "MScr"       3.4 MB     +0.6 MB  refs.sys
+  "IoFE"       2.8 MB     +0.4 MB
+  "smSt"         2 MB     +0.2 MB  amdacpbus2.sys, amdpmf.sys, mtkwecx.sys, nvdimm.sys and 2 more
+  "CcSc"      37.1 MB     +0.2 MB
+  "MSab"       1.3 MB     +0.2 MB  mstape.sys, refs.sys
+  "smRg"       3.4 MB     +0.2 MB  rdyboost.sys
+
+The tags that grew most in the paged pool:
+  "FMfn"    1283.8 MB      +31 MB  fltmgr.sys
+  "Ntff"      26.7 MB     +3.9 MB  ntfs.sys
+  "Ntfc"     188.5 MB     +3.2 MB  ntfs.sys
+  "IoNm"     174.5 MB     +2.7 MB
+  "NtFU"       3.7 MB     +2.4 MB  ntfs.sys
+  "Toke"     322.3 MB     +1.9 MB  afd.sys, ahcache.sys, amdkmdag.sys, appid.sys and 136 more
+  "D2d "      75.2 MB     +1.3 MB  amdsdwc.sys
+  "IoSi"       1.3 MB     +1.3 MB  afd.sys, amdk8.sys, amdkmdag.sys, amdppm.sys and 40 more
