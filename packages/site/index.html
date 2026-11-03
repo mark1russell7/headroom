@@ -179,14 +179,14 @@
         <article id="use" class="card prose">
           <h2>Use</h2>
           <p>Install the daemon as a service of your user. It starts at login, and it listens on <code>127.0.0.1:4730</code>.</p>
-          <pre><code>headroom service install
+          <pre class="scroll-cue"><code>headroom service install
 headroom service status</code></pre>
           <p>Run a heavy job under a lease. The job waits until the memory is free.</p>
-          <pre><code>headroom run --mem 2g -- pnpm test
+          <pre class="scroll-cue"><code>headroom run --mem 2g -- pnpm test
 headroom run --mem 1g --cpu 4 --limit -- pnpm build
 headroom run --slot docker --mem 1g -- docker compose up -d</code></pre>
           <p>See the memory, the free amounts, the leases and the memory of each owner:</p>
-          <pre><code>headroom status</code></pre>
+          <pre class="scroll-cue"><code>headroom status</code></pre>
         </article>
         <article id="status" class="card prose">
           <h2>Status</h2>

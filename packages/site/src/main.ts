@@ -3,6 +3,7 @@
  * draws a `View` of the simulator after each change.
  */
 
+import "@mark1russell7/site-pages/scroll-cue.css";
 import "./style.css";
 import { BURST, KINDS, MACHINES, machineOf, START } from "./catalog.ts";
 import { Simulation, type Row, type View } from "./sim.ts";
