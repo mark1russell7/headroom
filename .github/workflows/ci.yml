@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   ci:
-    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@4df6a2d5a4de464ab3f8b50c20df52c234794af6 # main
+    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@21c4cb628bc2e0e1be5b21fa92fd3c688400ecab # main
 
   # The one check of the ruleset of main (CI.md of mark1russell7/template, "The check of the ruleset").
   # It passes only when each job of needs passed, or was skipped by its own if and ALLOW_SKIP names it.
