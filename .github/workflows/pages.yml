@@ -47,9 +47,10 @@ jobs:
       roadmap: docs/ROADMAP.md
       # The check opens each page in a browser at 360, 400 and 1280 pixels, in light and dark.
       # The probe drives the simulator: it adds jobs and examines the queue, the reasons and the ended jobs.
+      # The build writes it from packages/site/src/check-probe.ts.
       site-check: true
       site-check-pages: /,/releases/,/status/
-      site-check-probe: packages/site/check-probe.js
+      site-check-probe: packages/site/dist/check-probe.js
 
   # This job examines the deployed site: the home page and the pages of site-pages.
   # It starts no code of the repository and reads only the public site.
