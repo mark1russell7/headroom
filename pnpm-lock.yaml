@@ -253,6 +253,9 @@ importers:
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
+      '@mark1russell7/site-pages':
+        specifier: ^0.1.8
+        version: 0.1.8
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.6
@@ -611,6 +614,11 @@ packages:
         optional: true
       zod:
         optional: true
+
+  '@mark1russell7/site-pages@0.1.8':
+    resolution: {integrity: sha512-L8X6LqQCIEPCscVqIqdNGm9U0d5BMuH357whGIMzf2iW/JiXfIMGXNsExO7MxR6/Z5dIkT0/bPvsii1vfkCEvQ==}
+    engines: {node: '>=22'}
+    hasBin: true
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     resolution: {gitHosted: true, integrity: sha512-HDxumpWNUeciZKaXbAGFPyoOTrt0trj7L3/koNvWnTN/vEuF0gYzqVJdsgfTQ9bE/DhSxfNMRxtrh4KYnbbimA==, tarball: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7}
@@ -1762,6 +1770,8 @@ snapshots:
     optionalDependencies:
       ws: 8.22.0
       zod: 4.6.7
+
+  '@mark1russell7/site-pages@0.1.8': {}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:
