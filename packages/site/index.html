@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>headroom: a lease simulator for the memory and the processors of one computer</title>
+    <meta name="description" content="Jobs ask headroom for a lease of memory, processors or a browser slot. Add jobs in this simulator and see which job starts, which job waits and why." />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23123b5e'/%3E%3Crect x='7' y='19' width='5' height='7' rx='1.5' fill='%2379d0c0'/%3E%3Crect x='14' y='13' width='5' height='13' rx='1.5' fill='%2379d0c0'/%3E%3Crect x='21' y='16' width='5' height='10' rx='1.5' fill='%2379d0c0'/%3E%3Cpath d='M5 8h22' stroke='%23f6c453' stroke-width='2.5' stroke-linecap='round' stroke-dasharray='3 3'/%3E%3C/svg%3E" />
+    <script>
+      // The saved theme applies before the first paint, so a dark page does not flash white.
+      try {
+        const t = localStorage.getItem("headroom-theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#simulator">Skip to the simulator</a>
+    <header class="top">
+      <div class="bar">
+        <a class="brand" href="./"><span class="logo" aria-hidden="true"></span>headroom</a>
+        <nav class="links" aria-label="Site">
+          <a href="#simulator">Simulator</a>
+          <a href="#rules">Rules</a>
+          <a href="#why">Why</a>
+          <a href="#use">Use</a>
+          <a href="releases/">Releases</a>
+          <a href="status/">Status</a>
+          <a href="https://github.com/mark1russell7/headroom">GitHub</a>
+          <button type="button" class="theme" id="theme" aria-label="Color theme">Theme: auto</button>
+        </nav>
+      </div>
+      <div class="intro">
+        <h1>Each heavy job asks for a lease. The computer keeps its headroom.</h1>
+        <p class="lead">
+          This simulator runs the lease broker of headroom in your browser. Add a job or press <b>Burst</b>. See which job starts, which job waits
+          in the queue and why, and which job stops when it grows past its lease.
+        </p>
+      </div>
+    </header>
+
+    <main>
+      <section id="simulator" class="sim" aria-label="Lease simulator">
+        <div class="card controls">
+          <div class="control-head">
+            <h2>Add a job</h2>
+            <p class="clock" id="clock" aria-live="off">0 s</p>
+          </div>
+          <div class="adds" id="adds"></div>
+          <div class="actions">
+            <button type="button" class="primary" id="burst" title="Add six jobs at once">Burst: 6 jobs</button>
+            <button type="button" id="step" title="Move the clock 10 seconds forward">+10 s</button>
+            <div class="seg" role="group" aria-label="Speed" id="speeds">
+              <button type="button" data-speed="0" aria-pressed="false">Pause</button>
+              <button type="button" data-speed="1" aria-pressed="true">Play</button>
+              <button type="button" data-speed="4" aria-pressed="false">Fast</button>
+            </div>
+            <button type="button" id="reset">Reset</button>
+          </div>
+          <div class="settings">
+            <label class="field">
+              <span class="label">Computer</span>
+              <select id="machine"></select>
+            </label>
+            <label class="switch">
+              <input type="checkbox" id="enforce" checked />
+              <span class="track" aria-hidden="true"></span>
+              <span><b>Memory limit</b> <span class="hint">(<code>--limit</code>): a job stops at its lease</span></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="card machine" aria-labelledby="machine-title">
+          <div class="machine-head">
+            <h2 id="machine-title">The computer</h2>
+            <p class="free" id="free"></p>
+          </div>
+          <div class="gauge">
+            <div class="gauge-label"><span>Memory</span><span id="mem-text"></span></div>
+            <div class="membar" id="membar" role="img"></div>
+            <ul class="legend" id="mem-legend"></ul>
+          </div>
+          <div class="gauge">
+            <div class="gauge-label"><span>Processors</span><span id="cpu-text"></span></div>
+            <div class="cells" id="cpu" role="img"></div>
+          </div>
+          <div class="gauge">
+            <div class="gauge-label"><span>Browser slot</span><span id="browser-text"></span></div>
+            <div class="cells slots" id="browser" role="img"></div>
+          </div>
+        </div>
+
+        <div class="lists">
+          <section class="card list queue-card" aria-labelledby="queue-title">
+            <h2 id="queue-title">Queue <span class="count" id="queue-count">0</span></h2>
+            <ol class="leases" id="queue"></ol>
+            <p class="empty" id="queue-empty">No job waits. Press <b>Burst</b> to fill the queue.</p>
+          </section>
+          <section class="card list" aria-labelledby="running-title">
+            <h2 id="running-title">Running <span class="count" id="running-count">0</span></h2>
+            <ol class="leases" id="running"></ol>
+            <p class="empty" id="running-empty">No job runs.</p>
+          </section>
+          <section class="card list ended-card" aria-labelledby="ended-title">
+            <h2 id="ended-title">Ended <span class="count" id="ended-count">0</span></h2>
+            <ol class="leases compact" id="ended"></ol>
+            <p class="empty" id="ended-empty">No job ended yet.</p>
+          </section>
+        </div>
+
+        <section class="card timeline-card" aria-labelledby="timeline-title">
+          <div class="timeline-head">
+            <h2 id="timeline-title">Timeline</h2>
+            <ul class="key">
+              <li><span class="k wait"></span>Waits in the queue</li>
+              <li><span class="k run"></span>Runs under its lease</li>
+              <li><span class="k stop"></span>Stopped</li>
+            </ul>
+          </div>
+          <div class="timeline" id="timeline"></div>
+        </section>
+
+        <section class="card log-card" aria-labelledby="log-title">
+          <h2 id="log-title">What the broker decided</h2>
+          <ol class="log" id="log"></ol>
+        </section>
+      </section>
+
+      <section id="rules" class="section" aria-labelledby="rules-title">
+        <h2 id="rules-title">The rules of the broker</h2>
+        <p class="section-lead">The simulator uses the code of <code>@headroom/core</code>, the same code as the daemon. Each reason in the queue comes from the broker itself.</p>
+        <div class="rules">
+          <article class="rule">
+            <h3>The room of each resource</h3>
+            <p>The memory is measured. A new lease gets the free memory, less 1 GB for the system, less the part of each lease that its job does not use yet.</p>
+            <p>The processors are counted. The leases do not take the last 2 cores, so the person at the computer keeps them.</p>
+          </article>
+          <article class="rule">
+            <h3>The order of the queue</h3>
+            <p>A higher priority goes first. A waiting lease gains 1 of priority for each minute in the queue.</p>
+            <p>After 10 minutes, no smaller request goes before the first lease in the queue.</p>
+          </article>
+          <article class="rule">
+            <h3>A lease that cannot fit at any time</h3>
+            <p>A lease that asks for more than the capacity less the reserve cannot start at any time. The broker cancels it at once, with the reason.</p>
+          </article>
+          <article class="rule">
+            <h3>Spawn-heavy jobs and browser tests</h3>
+            <p>A burst of process starts can stop the start of a browser. A job is spawn-heavy when its past runs started more than 600 processes in one minute.</p>
+            <p>A spawn-heavy job and a browser test do not run at the same time.</p>
+          </article>
+          <article class="rule">
+            <h3>The sum of the start rates</h3>
+            <p>Several moderate jobs together also make a burst. Beside a browser test, the other leases together start at most 600 processes in one minute.</p>
+          </article>
+          <article class="rule">
+            <h3>The memory limit</h3>
+            <p>With <code>--limit</code>, the job cannot commit more memory than its lease. A job that grows past its lease stops, and the other jobs keep their memory.</p>
+            <p>Without the limit, the lease is advisory. Turn the switch off and add the job with a leak to see the difference.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section about" aria-label="About headroom">
+        <article id="why" class="card prose">
+          <h2>Why</h2>
+          <p>
+            Many coding sessions, Docker and the browser share one computer. When the memory gets low, each session gets slow, and jobs stop. Before
+            headroom, a person looked at the free memory and told each session when to start a heavy run. That is slow, and it does not scale.
+          </p>
+          <p>headroom does three jobs:</p>
+          <ol>
+            <li><b>Observe.</b> It samples the memory of the computer every few seconds, and gives the memory of each process tree to its owner.</li>
+            <li><b>Admit.</b> A job asks for a lease of memory, processors or a slot. The job starts when the lease fits. Otherwise it waits in the queue.</li>
+            <li><b>Enforce.</b> headroom starts the job with a memory limit at the size of its lease. A job that grows past its lease stops with a clear reason.</li>
+          </ol>
+        </article>
+        <article id="use" class="card prose">
+          <h2>Use</h2>
+          <p>Install the daemon as a service of your user. It starts at login, and it listens on <code>127.0.0.1:4730</code>.</p>
+          <pre><code>headroom service install
+headroom service status</code></pre>
+          <p>Run a heavy job under a lease. The job waits until the memory is free.</p>
+          <pre><code>headroom run --mem 2g -- pnpm test
+headroom run --mem 1g --cpu 4 --limit -- pnpm build
+headroom run --slot docker --mem 1g -- docker compose up -d</code></pre>
+          <p>See the memory, the free amounts, the leases and the memory of each owner:</p>
+          <pre><code>headroom status</code></pre>
+        </article>
+        <article id="status" class="card prose">
+          <h2>Status</h2>
+          <p>
+            Version 0 works: the sampler, the leases, the daemon, the command line and the service. The memory limit is on Windows, with a job object.
+            Linux has no limit yet.
+          </p>
+          <p>
+            The <a href="status/">Status page</a> gives the plan and the state of each item. The <a href="https://github.com/mark1russell7/headroom#readme">README</a>
+            gives the full manual.
+          </p>
+        </article>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <p>MIT license. <a href="https://github.com/mark1russell7/headroom">github.com/mark1russell7/headroom</a> · <span id="build"></span></p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
