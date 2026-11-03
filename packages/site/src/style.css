@@ -177,7 +177,7 @@ a:focus-visible {
   border-bottom: 1px solid var(--rule);
 }
 
-.bar,
+.topbar,
 .intro,
 main,
 .foot {
@@ -187,7 +187,7 @@ main,
   padding-right: 16px;
 }
 
-.bar {
+.topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -878,6 +878,25 @@ select {
   text-align: right;
 }
 
+/* On a narrow screen, the label and the value share a row, and the track takes the full width below them. */
+@media (max-width: 560px) {
+  .meter {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "label value" "track track";
+    gap: 1px 0.5rem;
+  }
+  .meter-label {
+    grid-area: label;
+  }
+  .meter-value {
+    grid-area: value;
+    min-width: 0;
+  }
+  .meter .track {
+    grid-area: track;
+  }
+}
+
 .meter .track {
   height: 8px;
   border-radius: 4px;
@@ -1082,7 +1101,7 @@ select {
 .rules {
   display: grid;
   gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
 }
 
 .rule {
