@@ -1,6 +1,5 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
-import { readProbe } from "./src/probe-script.ts";
 
 // The Pages workflow sets SITE_BASE to "/headroom". A local build uses the root.
 const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env ?? {};
@@ -27,22 +26,11 @@ function noSampler(): Plugin {
   };
 }
 
-/** This plugin writes the probe of the site check to `dist/check-probe.js`, as JavaScript. */
-function probe(): Plugin {
-  return {
-    name: "headroom-probe",
-    apply: "build",
-    generateBundle() {
-      this.emitFile({ type: "asset", fileName: "check-probe.js", source: readProbe() });
-    },
-  };
-}
-
 // The site bundles the lease broker of `@headroom/core` from the workspace. Some modules of the core import Node built-ins
 // for the daemon. The simulator does not call those functions, so each built-in goes to one small module for the browser.
 export default defineConfig({
   base,
-  plugins: [noSampler(), probe()],
+  plugins: [noSampler()],
   resolve: {
     alias: [{ find: /^node:(crypto|fs|os|path)$/, replacement: shim }],
   },

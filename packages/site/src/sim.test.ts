@@ -130,7 +130,7 @@ describe("the memory of a job", () => {
 });
 
 describe("the steps of the site probe", () => {
-  it("gives the states that check-probe.js checks", () => {
+  it("gives the states that check-probe.ts checks", () => {
     const sim = new Simulation(laptop);
     sim.add("leak");
     sim.step(10);
