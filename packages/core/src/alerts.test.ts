@@ -251,7 +251,7 @@ describe("detect: services (H27)", () => {
       expect(alerts[0]?.message).toBe(
         "Processes start at 1,450 a minute over the last 10 minutes. Most: session:client 410 (jobs 12, own commands 398, job coeval-063-test-compiler: 9,800 so far), " +
           "session:organizer 120, other 30. Leased jobs with the most starts: coeval-063-test-compiler of client 9,800 so far. " +
-          "Each new process leaks kernel memory in the AMD display driver until it is updated (hub ask amd-driver).",
+          "Each new process leaks kernel memory in the AMD display driver until it is updated.",
       );
     });
 

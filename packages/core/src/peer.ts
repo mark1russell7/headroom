@@ -74,7 +74,7 @@ export interface Role {
  */
 export type RolesState = "roles known" | "roles unknown";
 
-const text =(value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
+const text = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
@@ -231,7 +231,7 @@ export class RoleBook {
       }
     }
     this.#roles = mergeRoles(registry, files);
-    // The organizer can write a file at this time. After a failed read, the next call reads the two sources again.
+    // Another program can write a file at this time. After a failed read, the next call reads the two sources again.
     this.#stamp = complete ? stamp : "";
     return this.#roles;
   }
