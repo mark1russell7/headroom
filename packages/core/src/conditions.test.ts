@@ -516,6 +516,14 @@ describe("Engine conditions (H31)", () => {
     expect(reads).toBe(2);
   });
 
+  it("keeps the roles file in the settings, and refuses a relative path (H57)", () => {
+    const { engine } = setup();
+    const path = join(tmpdir(), "headroom-roles", "roles.json");
+    expect(engine.setConfig({ rolesFile: path }).rolesFile).toBe(path);
+    expect(() => engine.setConfig({ rolesFile: "roles.json" })).toThrow(RangeError);
+    expect(engine.setConfig({ rolesFile: null }).rolesFile).not.toBe(path);
+  });
+
   it("fails closed when the usage file is missing, with the path of the setting", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-usage-engine-"));
     const { engine, now } = setup();

@@ -128,6 +128,13 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The usage file of the fleet for the condition usage<N (H31). null gives the default file."),
+  rolesFile: z
+    .string()
+    .min(1)
+    .max(1000)
+    .nullable()
+    .optional()
+    .describe("The registry of the roles for the owners of Docker projects and for peers (H57). The folder roles next to it holds the role files. null gives the default file."),
   cpuReserve: z
     .number()
     .min(0)
@@ -499,7 +506,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34).",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -512,6 +519,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           spawnHeavy: input.spawnHeavy,
           batteryFloor: input.batteryFloor,
           usageFile: input.usageFile,
+          rolesFile: input.rolesFile,
           cpuReserve: input.cpuReserve,
           presence: input.presence,
           awayAfterMs: input.awayAfterMs,

@@ -347,7 +347,7 @@ headroom run --when "starts<700" -- pnpm e2e
 
 **The battery policy.** On battery below the floor, a new heavy lease waits. A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. `--battery-ok` starts it. `headroom config battery-floor 15` changes the floor, and `0` turns the rule off. The default is 25%.
 
-**The usage data.** `usage<N` reads the usage file, at most one time in 30 seconds. `headroom config usage-file <path>` changes the file. The condition fails closed:
+**The usage data.** `usage<N` reads the usage file, at most one time in 30 seconds. `headroom config usage-file <path>` changes the file. `headroom config roles-file <path>` changes the registry of the roles in the same way. The condition fails closed:
 
 - A missing or unreadable file stops the job, and the reason names the path.
 - Data older than 70 minutes stops the job, and the reason gives its age.
