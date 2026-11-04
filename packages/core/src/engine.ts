@@ -85,7 +85,7 @@ import {
 } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
-import { learnSpawn, leaseRate, percentile90, promote, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
+import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
@@ -937,17 +937,20 @@ export class Engine {
 
   /**
    * This function gives a count of the job object of a lease to the start tracker (H29). Then it measures the starts of
-   * the job over the last 30 seconds, and keeps the peak on the lease (H47). A job above the limit becomes spawn-heavy.
+   * the job over the last 30 seconds, and keeps the peak on the lease (H47). A job above the limit becomes spawn-heavy, and
+   * a job that stays under the limit for 5 minutes stops being spawn-heavy (H58).
    */
   #measureStarts(lease: Lease, processes: number | undefined): Lease {
     if (processes === undefined || lease.processes === undefined) return lease;
     const now = this.#now();
     this.#startTracker.report(lease, now, lease.processes, this.#ownership);
     this.#starts = this.#startTracker.summary(now);
-    const rate = windowRate(this.#startTracker.points(lease.id));
+    const points = this.#startTracker.points(lease.id);
+    const rate = windowRate(points);
     if (rate === null) return lease;
     const peak = Math.max(lease.peakStartsPerMin ?? 0, Math.round(rate));
-    const spawn = promote(lease.spawn, peak, this.#store.config().spawnHeavy);
+    const limit = this.#store.config().spawnHeavy;
+    const spawn = settle(promote(lease.spawn, rate, limit), points, limit);
     if (peak === lease.peakStartsPerMin && spawn === lease.spawn) return lease;
     return this.#broker.update(lease.id, { peakStartsPerMin: peak, ...(spawn === undefined ? {} : { spawn }) }) ?? lease;
   }

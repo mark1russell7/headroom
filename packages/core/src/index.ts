@@ -45,6 +45,7 @@ export {
   leaseRate,
   percentile90,
   promote,
+  settle,
   SPAWN_HEAVY_DEFAULT,
   SPAWN_RUNS,
   SPAWN_WAIT_END,
