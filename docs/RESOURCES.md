@@ -675,7 +675,7 @@ On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its t
 
 ### H29: process starts by owner
 
-On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`: two file objects of approximately 0.9 KB for each new process. The non-paged pool grew approximately 800 MB each hour. Git Bash starts one process for each stage of a pipeline, so a test that starts `gh | tr | base64` starts many processes. Until Mark updates the driver (hub ask `amd-driver`), the sessions must see who starts the most processes.
+On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`: two file objects of approximately 0.9 KB for each new process. The non-paged pool grew approximately 800 MB each hour. Git Bash starts one process for each stage of a pipeline, so a test that starts `gh | tr | base64` starts many processes. Until the driver is updated, the sessions must see who starts the most processes.
 
 **Measure.** The kind `procs` has one instance, `procs`, in the unit `per minute`. Its capacity is `null`.
 
@@ -705,7 +705,7 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 
 - The rate is an average over 10 minutes. A level rule has the new field `minHistoryMs`: with a shorter window of the change, the rule gives no alert. The window is the time that the reads cover.
 - `churnPerMinute` of `AlertRules` sets the limit.
-- The message names the 3 owners with the most starts, with their jobs and their own commands. It also names the 3 leased jobs with the most starts. It ends with the reason: "Each new process leaks kernel memory in the AMD display driver until it is updated (hub ask amd-driver)."
+- The message names the 3 owners with the most starts, with their jobs and their own commands. It also names the 3 leased jobs with the most starts. It ends with the reason: "Each new process leaks kernel memory in the AMD display driver until it is updated."
 
 **Status and the dashboard.** `Status.starts` gives the rate of the computer, the flag `exact`, the window, the owners and the jobs. `headroom status` gives one line, for example `Process starts: 1,450 a minute. Most (at least): session:client 410 (jobs 12, own commands 398, job e2e: 9,800 so far), session:organizer 120.` The dashboard gets the panel `Process starts` from the model.
 

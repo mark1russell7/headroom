@@ -1190,7 +1190,7 @@ const SERVICE: Resource = {
 const CHURN_SHOWN = 3;
 
 /** The reason of the churn alert, for the reader. */
-const CHURN_CAUSE = "Each new process leaks kernel memory in the AMD display driver until it is updated (hub ask amd-driver).";
+const CHURN_CAUSE = "Each new process leaks kernel memory in the AMD display driver until it is updated.";
 
 /**
  * The attribute part of the process starts (H29): the starts of each owner in one minute, its jobs and its own commands

@@ -127,7 +127,7 @@ The alerts use the reads of the processor times that the daemon already makes ea
 
 ### Process starts (H29)
 
-On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`. Each new process leaks approximately 0.9 KB of the non-paged pool. With 14 or more new processes each second, the pool grew approximately 800 MB each hour. Until Mark updates the driver (hub ask `amd-driver`), the sessions must start fewer processes. headroom shows who starts them:
+On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`. Each new process leaks approximately 0.9 KB of the non-paged pool. With 14 or more new processes each second, the pool grew approximately 800 MB each hour. Until the driver is updated, the sessions must start fewer processes. headroom shows who starts them:
 
 - **The computer**: an exact count on Windows. Windows gives each new process the next sequence number. The daemon reads the number of the newest process with `NtQueryInformationProcess(ProcessSequenceNumber)` at each read, every 10 seconds.
 - **A leased job**: an exact count. The job object of `headroom run` counts each process of the job (`TotalProcesses`). The client reports the count every 30 seconds and at the release.

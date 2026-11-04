@@ -383,7 +383,7 @@ export function drainLine(drain: DrainStatus | null, clock: (at: number) => stri
 
 /**
  * This function gives the alerts of an active drain (kind `drain`). The alert `drain` names the running jobs and their
- * holders. The alert `drain:ready` starts when no job runs. The organizer reads the alerts at each sweep. The alert `drain`
+ * holders. The alert `drain:ready` starts when no job runs. The operator reads the alerts. The alert `drain`
  * of an automatic drain also tells why it started and what ends it.
  */
 export function drainAlerts(drain: DrainStatus | null, clock: (at: number) => string = localClock): Omit<Alert, "since">[] {
