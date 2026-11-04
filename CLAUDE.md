@@ -4,8 +4,6 @@
 
 - headroom manages the memory and the processors of one computer for the jobs that run on it. `README.md` tells why.
 - The plan and the status of each item are in `docs/ROADMAP.md`. Change it when an item starts, ships or gets blocked.
-- The live tracker is the folder `~/git/fleet/artifacts/headroom-roadmap`. Its `artifact.json` gives the URL for each account.
-- Change the roadmap file and the tracker together.
 - The server contract of the client is `~/git/client/packages/documentation/SERVER-LAYERS.md`. headroom is an app of it.
 - Do not write a listener, a signal handler, a health route or an RPC endpoint. Use `runProcedureHost`.
 - Keep the daemon small. Its target is less than 60 MB of memory. Add no dependency without a reason.
