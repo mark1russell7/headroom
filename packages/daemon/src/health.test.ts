@@ -59,14 +59,26 @@ describe("the checks of the daemon", () => {
     expect(failedProbe(Object.assign(new Error("connect ENOENT \\\\.\\pipe\\docker_engine"), { code: "ENOENT" }), true)).toEqual({ state: "absent", latencyMs: null, error: null });
     expect(failedProbe(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }), true).state).toBe("down");
     expect(failedProbe(Object.assign(new Error("connect ENOENT"), { code: "ENOENT" }), false).state).toBe("down");
-    const checks = serviceChecks(DEFAULT_HEALTH, [server("stopped"), server("running", { name: "loom" })], "/nowhere/docker.sock");
+    const checks = serviceChecks({ shop: "http://127.0.0.1:8080/" }, [server("stopped"), server("running", { name: "loom" })], "/nowhere/docker.sock");
     expect(checks.map((check) => [check.name, check.type, check.critical])).toEqual([
       ["docker", "docker", true],
-      ["fleet-site", "url", false],
+      ["shop", "url", false],
       ["mcp:vex", "mcp", true],
       ["mcp:loom", "mcp", true],
     ]);
     expect(dockerCheck("/nowhere/docker.sock")).toMatchObject({ title: "The Docker engine", target: "/nowhere/docker.sock" });
+  });
+});
+
+describe("the services with no setting (H57)", () => {
+  it("has no URL by default, so the monitor checks only Docker", () => {
+    expect(DEFAULT_HEALTH).toEqual({});
+    expect(serviceChecks(DEFAULT_HEALTH, [], "/nowhere/docker.sock").map((check) => check.name)).toEqual(["docker"]);
+  });
+
+  it("gives one form of title for each URL", () => {
+    expect(urlCheck("shop", "http://127.0.0.1:8080/").title).toBe("The service shop");
+    expect(urlCheck("site", "http://127.0.0.1:8081/").title).toBe("The service site");
   });
 });
 

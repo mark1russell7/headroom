@@ -652,7 +652,7 @@ On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its t
 
 - The monitor makes one round of checks every 30 seconds. Each check has a time limit of 3 seconds. The monitor does not start a check again before the last start of the check ends. A check that has not ended at the next round counts as a check with no answer.
 - Docker: `GET /_ping` on the pipe of the engine, with the `socketPath` of `node:http`. The pipe is `\\.\pipe\docker_engine` on Windows and `/var/run/docker.sock` on Linux. No pipe (`ENOENT`) gives `absent`. headroom starts no `docker` process.
-- The URLs: a `GET` of each URL of the setting `health`. A status below 500 is an answer. The default list has the fleet site only.
+- The URLs: a `GET` of each URL of the setting `health`. A status below 500 is an answer. The list has no default.
 - The MCP servers: the state of the gateway, with no call. `running` and `starting` give `ok`. `stopped` gives `idle`. A failed start gives `down`, with the last error line of the stderr of the server. An exit gives `idle`, because the next request starts the server again. With 3 exits in 10 minutes, the server is `down`.
 - An answer after more than 1 second gives `slow`.
 - `Readings.services` gives the health of each service. The measure gives one instance for each service, with the health in the new field `Measurement.health`.
@@ -669,7 +669,7 @@ On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its t
 
 **Attribute, admit and enforce.** The kind has none. A lease does not ask for a service. headroom does not restart a service for an alert. A person or the session that owns the service decides.
 
-**The setting.** The setting `health` in the table `settings` gives the URLs by name, as JSON. `config.get` and `config.set` read and change it. `headroom config health <name> <url>` adds a URL, and `--clear` removes one URL or sets the default list again.
+**The setting.** The setting `health` in the table `settings` gives the URLs by name, as JSON. `config.get` and `config.set` read and change it. `headroom config health <name> <url>` adds a URL, and `--clear` removes one URL or makes the list empty. With no setting, the list is empty.
 
 **Status and the command.** `headroom status` gives one line, for example `Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.` `headroom services` and the procedure `resources.services` give the health of each service. The dashboard shows each service as a panel with its state.
 
@@ -828,8 +828,9 @@ The first check that does not hold gives the reason. Each reason starts with "wa
 - `--battery-ok` starts a heavy lease on a low battery.
 - The floor is a rule for the start of a job. A heavy job that runs continues, and the battery alerts of H30 tell about it.
 
-**The usage data.** `usage<N` reads the field `limits.five_hour` of the usage file of the fleet: `ratio` (0 to 1) and `resetsAt`. The setting `usageFile` gives the file, and `headroom config usage-file <path>` changes it.
+**The usage data.** `usage<N` reads the field `limits.five_hour` of the usage file: `ratio` (0 to 1) and `resetsAt`. The setting `usageFile` gives the file, and it has no default. `headroom config usage-file <path>` sets it.
 
+- With no setting, the condition fails closed: `waits for the usage data: no usage file is set. Set it with: headroom config usage-file <path>`. `headroom status` also gives this reason in a line `Problem:`, because no change of the computer starts such a job.
 - The engine reads the file only when a lease has a usage condition. `UsageReader` keeps each read for 30 seconds, and it has no file watcher.
 - A missing or unreadable file fails closed: `waits for the usage data: <path> is missing`.
 - Data older than 70 minutes fails closed: `waits for fresh usage data: the file is 95 minutes old`. The time of the data is the field `updatedAt`, else the time of the last write of the file.
@@ -1081,15 +1082,17 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 **The session and the role.**
 
 - The session is the session file of `claude.exe` in `~/.claude/sessions`, with the same process ID. On Windows, `procStart` of the file must be the start of that `claude.exe`.
-- The role comes from the fleet registry. The registry has two sources: the role files `~/git/fleet/registry/roles/<id>.json` and the old file `~/git/fleet/registry/roles.json`.
-- The file of a role wins over the entry of that role in `roles.json`. The other roles come from `roles.json`. These are the rules of `readRoleDocs` of the fleet.
+- The role comes from the role registry. The registry has two sources: the role files and the old file `roles.json`.
+- The file of a role wins over the entry of that role in `roles.json`. The other roles come from `roles.json`.
 - The name of a role file without `.json` is the ID of its role. A file with a different `id` in it does not count.
 - The daemon skips a file that is not JSON, a hidden file and a temporary file. The entry in `roles.json` then applies.
 - Each call reads the names of the role files, and the time and the size of each source. The daemon reads the two sources again only after a change.
 - The role with the ID of the session wins. Then the role with the name of the session as its session name wins. For example, the session `strategies` gives the role `strategist`.
 - Then the role with the name of the session as its ID wins, for a parked role with no session name. A retired role does not match.
 - A role file can retire a role. Then that role does not match, also when `roles.json` gives the role as `active`.
-- `EngineOptions.rolesFile` sets another registry. The folder `roles` next to that file holds its role files.
+- The setting `rolesFile` gives the registry, and it has no default. `headroom config roles-file <path>` sets it. `EngineOptions.rolesFile` sets another registry for one engine. The folder `roles` next to that file holds its role files.
+- With no setting, `RoleBook.state` is `roles unknown`. The role list is empty, the engine reads no file, and the answer has `rolesUnknown: true` and no role.
+- A setting with a missing file is `roles known`, with an empty list. The setting is there, so the state tells nothing more.
 
 **Cost and the caches.**
 
@@ -1269,13 +1272,15 @@ Docker Desktop keeps the containers in the WSL 2 VM. Windows shows the VM as one
 - **The disk use**: `GET /system/df` every 10 minutes, with its own time limit of 30 seconds. API 1.52 and later give a summary of each type with its total and its reclaimable part. An older engine gives only the lists, so the reader adds them up as `docker system df` does.
 - **No engine**: no pipe gives the state `absent`, and another failure gives `down`. The reader then has no read, so `Status.docker` is `null`, and the owner `docker` stays as it is. The log gets one line for each change of the state.
 
-**The owner of a container.** `ContainerOwners` reads the field `repos` of each role of the fleet registry. A retired role does not count.
+**The owner of a container.** `ContainerOwners` reads the field `repos` of each role of the role registry. A retired role does not count.
 
 1. The label `com.docker.compose.project.working_dir` in a folder of a role gives `session:<role>`. The match compares the path and its real path, in lower case. On this laptop, `~/git` is a link to `D:\git`.
 2. A folder `<repo>-<name>` next to a repository, for example a worktree, counts for that repository.
 3. Two roles with the same folder: the role with the name of the folder wins. Then the main repository of a role, then an active role, then the first role.
 4. Else the label `com.docker.compose.project` with the ID of a role gives `session:<project>`.
 5. Else the owner is `docker:<project>`, or `docker:<name>` for a container with no compose project.
+
+**Roles unknown.** With no setting `rolesFile`, each container gets the last rule. `Status.docker.rolesUnknown` is `true`, and `headroom docker` writes a line with the command that sets the file. The state changes no alert. The rules `orphan` and `runaway` examine processes, not containers. The Docker client sends only `GET` requests, so no state of headroom stops a container.
 
 **The split.** `splitOwners()` gives each owner of a running container its part of the owner `docker`. The parts are the memory of the containers. When the containers have more than the owner `docker`, each part gets the same scale.
 
@@ -1443,7 +1448,7 @@ These were the open questions. The session decided each one as a technical call.
 | Is Docker a resource kind (H38)? | No. It is `Status.docker`, with the alert kind `docker`. | The id `docker` is a slot, and `kindOf()` gives a kind from the start of an id. A kind `docker` changes the slot of each `--slot docker` lease. |
 | How does headroom read the containers? | GET requests on the pipe of the engine, from the tick of the daemon: the containers every 30 seconds, the disk use every 10 minutes. | The engine API gives the memory and the processor time of each container with no new process. `GET /system/df` takes some seconds in the engine. |
 | What is the memory of a container? | Its use less its inactive file cache, as `docker stats` gives it. | The inactive file cache is free when the VM needs memory. The number agrees with the number that Mark sees in `docker stats`. |
-| Who owns a container? | The fleet role of the folder of its compose project, else the role with its project name, else `docker:<project>`. | The compose label gives the folder, and the role files give the folders of each session. A container has no process on Windows, so a process tree cannot tell. |
+| Who owns a container? | The role of the folder of its compose project, else the role with its project name, else `docker:<project>`. | The compose label gives the folder, and the role files give the folders of each session. A container has no process on Windows, so a process tree cannot tell. |
 | Who gets the memory of the Docker VM? | The owners of the containers, by their memory. The rest is `docker (VM)`. | The VM is one process. Its memory is the memory of the containers, of the VM kernel and cache, and of the other distributions. |
 | Does headroom prune Docker? | No. The alert gives the size and the commands. | A prune removes the images and the cache of all the sessions. The owner of the work decides. |
 | Does the sampler read the memory of each protected process? | Yes (H49): the private memory and the private working set of each process, from one read of `SystemProcessInformation`. | The read opens no process, so it needs no admin rights. The private working sets add up to less than the RAM in use, because a shared page is in no process. |

@@ -71,8 +71,8 @@ export const CHECK_TIMEOUT_MS = 3000;
 /** An answer slower than this, in milliseconds, makes the state `slow`. */
 export const SLOW_MS = 1000;
 
-/** The URLs that the monitor checks without the setting `health`: the fleet site only. */
-export const DEFAULT_HEALTH: Readonly<Record<string, string>> = { "fleet-site": "http://127.0.0.1:4731/" };
+/** The URLs that the monitor checks without the setting `health`: none (H57). */
+export const DEFAULT_HEALTH: Readonly<Record<string, string>> = {};
 
 /** The name of a URL check: letters, digits, `.`, `-` and `_`. A colon is not in it, so it is different from `mcp:<server>`. */
 export const HEALTH_NAME: RegExp = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;

@@ -12,7 +12,7 @@ import { z } from "zod";
 const Amounts = z.record(z.string().min(1).max(64), z.number().min(0)).describe("The amounts: memory in MB, cpu in processors, or a slot of a named pool");
 
 const LeaseInput = z.object({
-  holder: z.string().min(1).max(200).describe("The holder: a session or a role, for example graph"),
+  holder: z.string().min(1).max(200).describe("The holder: a session or a role, for example shop"),
   job: z.string().min(1).max(500).describe("The name of the job, for example pnpm test"),
   amounts: Amounts,
   priority: z.number().int().min(-100).max(100).optional().describe("A higher priority goes first (default: 0)"),
@@ -104,7 +104,7 @@ const ConfigSetInput = z.object({
     .record(z.string().min(1).max(64), z.string().min(1).max(2000))
     .nullable()
     .optional()
-    .describe("The URLs that the service monitor checks, by name (H27). null gives the default: the fleet site. {} checks no URL."),
+    .describe("The URLs that the service monitor checks, by name (H27). null removes the setting, and the monitor then checks no URL."),
   spawnHeavy: z
     .number()
     .int()
@@ -127,14 +127,14 @@ const ConfigSetInput = z.object({
     .max(1000)
     .nullable()
     .optional()
-    .describe("The usage file of the fleet for the condition usage<N (H31). null gives the default file."),
+    .describe("The usage file for the condition usage<N (H31). It has no default. null removes the setting, and usage<N then waits."),
   rolesFile: z
     .string()
     .min(1)
     .max(1000)
     .nullable()
     .optional()
-    .describe("The registry of the roles for the owners of Docker projects and for peers (H57). The folder roles next to it holds the role files. null gives the default file."),
+    .describe("The registry of the roles for the owners of Docker projects and for peers (H57). The folder roles next to it holds the role files. It has no default. null removes the setting, and the roles are then unknown."),
   cpuReserve: z
     .number()
     .min(0)
@@ -453,7 +453,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Peer>())
     .meta({
       description:
-        "Give the process at the other end of a loopback TCP connection, the nearest claude.exe above it, its session and its fleet role (H46). Errors: NO_CONNECTION, PEER_GONE, NOT_SUPPORTED.",
+        "Give the process at the other end of a loopback TCP connection, the nearest claude.exe above it, its session and its role (H46). Errors: NO_CONNECTION, PEER_GONE, NOT_SUPPORTED.",
       args: ["localPort", "remotePort"],
       output: "json",
       effects: { reads: ["headroom", "process"], writes: [], destructive: false },

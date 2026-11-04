@@ -66,11 +66,12 @@ export {
   CONDITIONS,
   conditionsText,
   conditionWait,
-  defaultUsageFile,
   HEAVY_MEMORY_MB,
   heavyWhy,
   isConditionWait,
   knownConditionsText,
+  NO_USAGE_FILE,
+  NO_USAGE_FILE_WAIT,
   leaseConditions,
   localClock,
   nextUnmet,
@@ -85,6 +86,7 @@ export {
   unmetText,
   USAGE_CACHE_MS,
   USAGE_FRESH_MS,
+  USAGE_UNSET,
   UsageReader,
   waitsForRoom,
 } from "./conditions.ts";
@@ -125,8 +127,8 @@ export type { ProcessRecord, RecordChanges } from "./orphans.ts";
 export { gainAt, gainPerMinute, HANDLE_HOLDERS_SHOWN, HandleTracker, handleStatus, handlesLines, handlesText, HANDLES_FLOOR, HANDLES_TRAIL_MS } from "./handles.ts";
 export type { HandleHolder, HandleStatus } from "./handles.ts";
 export type { Attribution, KeptOwner, OwnerRule } from "./owners.ts";
-export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, rolesDir, rolesFile } from "./peer.ts";
-export type { FleetRole, Peer, PeerErrorCode, PeerInput, PeerSources } from "./peer.ts";
+export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf } from "./peer.ts";
+export type { Peer, PeerErrorCode, PeerInput, PeerSources, Role, RolesState } from "./peer.ts";
 export {
   DEFAULT_DYNAMIC_PORTS,
   dynamicUse,

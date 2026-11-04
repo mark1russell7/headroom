@@ -63,9 +63,6 @@ import {
   CPU_AUTO_DEFAULT,
   CPU_RESERVE_DEFAULT,
   cpuLine,
-  conditionsText,
-  defaultUsageFile,
-  rolesFile,
   parseWhen,
   AWAY_AFTER_DEFAULT_MS,
   BUSY_WAIT_DEFAULT_MS,
@@ -75,7 +72,6 @@ import {
   presenceLine,
   stateText,
   readSessions,
-  unmetText,
   SPAWN_HEAVY_DEFAULT,
   spawnClassText,
   spawnLine,
@@ -118,6 +114,7 @@ import { windowsCommand } from "./winshell.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
+import { leaseRow, problemLines, rolesFileLine, SET_ROLES_FILE, usageFileLine } from "./status-lines.ts";
 import * as service from "./service.ts";
 
 const HELP = `headroom: the memory and job broker of this computer
@@ -168,15 +165,16 @@ const HELP = `headroom: the memory and job broker of this computer
                The state of a job: queued, running or exited, with its exit code. No job: exit 3.
   headroom config [job-temp <folder> | job-temp --clear]   (show or change the settings)
   headroom config health [<name> <url> | <name> --clear | --clear]
-               The URLs that the service monitor checks. The default: ${DEFAULT_HEALTH_TEXT}.
+               The URLs that the service monitor checks. With no setting, it checks ${DEFAULT_HEALTH_TEXT}.
   headroom config spawn-heavy [<n> | --clear]
                The limit of a spawn-heavy job, in process starts a minute. The default: ${SPAWN_HEAVY_DEFAULT}.
   headroom config battery-floor [<pct> | --clear]
                On battery below this charge, a heavy job waits. 0: no floor. The default: ${BATTERY_FLOOR_DEFAULT}.
   headroom config usage-file [<path> | --clear]
-               The usage file of the fleet for --when usage<N.
+               The usage file for --when usage<N. It has no default. With no file, a job with usage<N waits.
   headroom config roles-file [<path> | --clear]
                The registry of the roles: the owners of Docker projects and of peers. The folder roles next to it holds the role files.
+               It has no default. With no file, the roles are unknown, and headroom reports each container by its Docker project.
   headroom config cpu-reserve [<cores> | --clear]
                The cores that the leases do not take, for Mark. 0: no reserve. The default: ${CPU_RESERVE_DEFAULT}.
   headroom config presence [on | off | --clear]
@@ -279,13 +277,16 @@ function amountText(name: string, amount: number): string {
 function printStatus(status: DaemonStatus): void {
   const { memory } = status;
   for (const alert of status.alerts ?? []) console.log(`ALERT since ${clock(alert.since)} UTC: ${alert.message}`);
+  // H57: a job that only a setting can start.
+  const problems = problemLines(status.leases);
+  for (const line of problems) console.log(line);
   if (status.restart) console.log(service.pendingLine(status.restart));
   // H34: the planned drain, and a recommendation to reboot. A daemon of an older version gives no reboot budget.
   const drain = status.reboot === undefined ? null : drainLine(status.reboot.drain);
   if (drain !== null) console.log(drain);
   const advice = status.reboot?.advice;
   if (advice !== undefined && advice.level !== "none") console.log(`Reboot: ${advice.text}`);
-  if ((status.alerts ?? []).length > 0 || status.restart || drain !== null || (advice !== undefined && advice.level !== "none")) console.log("");
+  if ((status.alerts ?? []).length > 0 || problems.length > 0 || status.restart || drain !== null || (advice !== undefined && advice.level !== "none")) console.log("");
   // H33: Mark at the laptop. A daemon of an older version and a computer with no read of the presence give no line.
   const you = presenceLine(status.presence, status.leases);
   if (you !== null) console.log(you);
@@ -349,14 +350,8 @@ function printStatus(status: DaemonStatus): void {
   console.log(status.leases.length === 0 ? "\nNo active leases." : "\nActive leases:");
   for (const lease of status.leases) {
     const amounts = Object.entries(lease.amounts).map(([name, amount]) => `${name} ${amountText(name, amount)}`).join(", ");
-    // H31: the conditions of the lease. A granted lease that runs without one of its conditions says so.
-    const conditions = conditionsText(lease.conditions);
-    const note = (lease.unmet?.until === null ? unmetText(lease.unmet) : null) ?? lease.reason;
     // H36: the GPU memory of the job and its peak.
-    const gpu = leaseGpuText(lease, status.gpu);
-    console.log(
-      `  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${conditions === null ? "" : `  [${conditions}]`}${gpu === null ? "" : `  ${gpu}`}${note ? `  (${note})` : ""}`,
-    );
+    console.log(leaseRow(lease, amounts, leaseGpuText(lease, status.gpu)));
   }
   console.log("\nMemory by owner (private, then in RAM now):");
   for (const owner of status.owners.slice(0, 14)) {
@@ -625,10 +620,10 @@ function checkDisks(status: Status | null, force: boolean): number | null {
     if (level === null) continue;
     const free = `headroom: drive ${disk.mount} has only ${diskSize(disk.freeMb)} free.`;
     if (level === "critical" && !force) {
-      console.error(`${free} The job does not start, because a full drive stops the whole fleet. Free space, or start it with --force-disk.`);
+      console.error(`${free} The job does not start, because a full drive stops each job on this computer. Free space, or start it with --force-disk.`);
       return 75;
     }
-    console.error(`${free} Free space soon, because a full drive stops the whole fleet.${level === "critical" ? " The job starts because of --force-disk." : ""}`);
+    console.error(`${free} Free space soon, because a full drive stops each job on this computer.${level === "critical" ? " The job starts because of --force-disk." : ""}`);
   }
   return null;
 }
@@ -1064,7 +1059,7 @@ async function showPeer(argv: string[]): Promise<number> {
     return 0;
   }
   console.log(`Session: ${peer.session}${peer.sessionId === undefined ? "" : ` (${peer.sessionId})`}`);
-  console.log(`Role: ${peer.role ?? "none (no role of the fleet registry matches the session)"}`);
+  console.log(`Role: ${peer.role ?? (peer.rolesUnknown === true ? `unknown (no roles file is set. ${SET_ROLES_FILE})` : "none (no role of the registry matches the session)")}`);
   return 0;
 }
 
@@ -1087,13 +1082,9 @@ function printConfig(config: Config): void {
         : `battery-floor: ${config.batteryFloor}%${named}. On battery below it, a heavy job waits. --battery-ok starts it.`,
     );
   }
-  if (typeof config.usageFile === "string") {
-    console.log(`usage-file: ${config.usageFile}${config.usageFile === defaultUsageFile() ? " (the default)" : ""}. The condition usage<N reads it.`);
-  }
-  // H57: a daemon of an older version has no roles file.
-  if (typeof config.rolesFile === "string") {
-    console.log(`roles-file: ${config.rolesFile}${config.rolesFile === rolesFile() ? " (the default)" : ""}. The owners of Docker projects and of peers come from it.`);
-  }
+  // H57: these settings have no default. A daemon of an older version has no roles file, so it gives no line.
+  if (config.usageFile !== undefined) console.log(usageFileLine(config.usageFile));
+  if (config.rolesFile !== undefined) console.log(rolesFileLine(config.rolesFile));
   // H23: a daemon of an older version has no CPU reserve.
   if (typeof config.cpuReserve === "number") {
     const named = config.cpuReserve === CPU_RESERVE_DEFAULT ? " (the default)" : "";
@@ -1243,10 +1234,10 @@ async function batteryFloorConfig(connection: Connection, value: string | undefi
   return 0;
 }
 
-/** `headroom config usage-file <path>` sets the usage file for `usage<N` (H31), and `--clear` gives the default file. */
+/** `headroom config usage-file <path>` sets the usage file for `usage<N` (H31), and `--clear` removes the setting. */
 async function usageFileConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
   if ((value === undefined) === !clear || extra) {
-    console.error("Usage: headroom config usage-file <path>, or headroom config usage-file --clear (the default file of the fleet)");
+    console.error("Usage: headroom config usage-file <path>, or headroom config usage-file --clear (no usage file, so usage<N waits)");
     return 2;
   }
   // The daemon has its own current folder, so a relative path resolves here.
@@ -1254,10 +1245,10 @@ async function usageFileConfig(connection: Connection, value: string | undefined
   return 0;
 }
 
-/** `headroom config roles-file <path>` sets the registry of the roles (H57), and `--clear` gives the default file. */
+/** `headroom config roles-file <path>` sets the registry of the roles (H57), and `--clear` removes the setting. */
 async function rolesFileConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
   if ((value === undefined) === !clear || extra) {
-    console.error("Usage: headroom config roles-file <path>, or headroom config roles-file --clear (the default file)");
+    console.error("Usage: headroom config roles-file <path>, or headroom config roles-file --clear (no registry, so the roles are unknown)");
     return 2;
   }
   // The daemon has its own current folder, so a relative path resolves here.
