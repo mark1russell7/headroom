@@ -1,6 +1,6 @@
 # The resource model of headroom
 
-On 2026-10-24, Mark decided that headroom becomes the general resource manager of this computer (hub decision `2026-10-24-headroom-resources`). Memory and slots come first. Disk is next. CPU, network, ports and GPU follow when the fleet competes for them.
+On 2026-10-24, Mark decided that headroom becomes the general resource manager of this computer (hub decision `2026-10-24-headroom-resources`). Memory and slots come first. Disk is next. CPU, network, ports and GPU follow when the sessions compete for them.
 
 This document gives one model for all of them. Memory is the first resource on the model. Disk is the second resource, not a special case. The roadmap item is H22.
 
@@ -128,7 +128,7 @@ export interface ProcessInfo {
 
 /** The owner of each process at one tick. */
 export interface Owners {
-  /** The owner of each process: `session:graph`, `mcp:vex`, `docker`, `system`. */
+  /** The owner of each process: `session:shop`, `mcp:vex`, `docker`, `system`. */
   readonly ownerOf: ReadonlyMap<number, string>;
   readonly kindOf: ReadonlyMap<string, OwnerKind>;
   /** The lease of each process under a granted lease: the lease process and its descendants. */
@@ -494,13 +494,13 @@ On 2026-10-24, after a start of the computer, the owners held approximately 16 G
 - `SystemMemory` has `cacheMb`, `kernelPagedResidentMb` and `driversMb`. Linux does not give them, so Linux has only the owner `kernel`.
 - On this computer on 2026-10-25, the owners held 19.4 GB in RAM, and 7.2 GB was available, of 27.6 GB. The difference of approximately 1.7 GB is the pages that wait for a disk write, the page tables and the shared pages.
 
-**The services.** Task Scheduler starts the daemon of headroom and the fleet site. Before this step, their owner was `system`, because `svchost.exe` is their ancestor.
+**The services.** Task Scheduler starts the daemon of headroom and the local site. Before this step, their owner was `system`, because `svchost.exe` is their ancestor.
 
 - The Windows sampler reads the command line of each new `node.exe` with `NtQueryInformationProcess(ProcessCommandLineInformation)`. It keeps the option `--title=<name>` for each process ID and start, and it forgets the processes that stopped.
 - A title replaces the rule `system` farther up. Thus `node --title=headroom-daemon` from Task Scheduler is the owner `service:headroom-daemon`, with its descendants. The kind is `service`.
 - A session and a server of the MCP gateway win over a title. A title under another rule, for example the editor, gives that rule. A title with no rule farther up is an orphan, so it stays `other`.
 - The runaway rule examines the services, because a service is not the system.
-- The owner `service:fleet-site` is the process of the health instance `service:fleet-site` (H27), when the title and the name are the same.
+- The owner `service:local-site` is the process of the health instance `service:local-site` (H27), when the title and the name are the same.
 
 **The pool tags after a start.** The store keeps the pool tag snapshots (PR #26). A start of the computer empties the pools, so the change of a tag across a start is not a change.
 
@@ -646,7 +646,7 @@ On 2026-10-24, Mark asked if the model covers more than the disk. H24 puts the n
 
 ### H27: the health of the shared services
 
-On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its time limit, Mongo went down, and the e2e tests of graph lost it. The MCP server vex of the gateway did not start, because a package was missing. Nothing told the sessions. H27 puts the shared services on the model with the kind `service`.
+On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its time limit, Mongo went down, and the e2e tests of shop lost it. The MCP server vex of the gateway did not start, because a package was missing. Nothing told the sessions. H27 puts the shared services on the model with the kind `service`.
 
 **Measure.** The service monitor in `services.ts` reads the services, and the kind calculates, as the design rule tells.
 
@@ -671,11 +671,11 @@ On 2026-10-24, the Docker engine stopped to answer: `docker ps` stopped at its t
 
 **The setting.** The setting `health` in the table `settings` gives the URLs by name, as JSON. `config.get` and `config.set` read and change it. `headroom config health <name> <url>` adds a URL, and `--clear` removes one URL or makes the list empty. With no setting, the list is empty.
 
-**Status and the command.** `headroom status` gives one line, for example `Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.` `headroom services` and the procedure `resources.services` give the health of each service. The dashboard shows each service as a panel with its state.
+**Status and the command.** `headroom status` gives one line, for example `Services: docker ok (12 ms), local-site ok (3 ms), mcp:vex ok, mcp:loom idle.` `headroom services` and the procedure `resources.services` give the health of each service. The dashboard shows each service as a panel with its state.
 
 ### H29: process starts by owner
 
-On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`: two file objects of approximately 0.9 KB for each new process. The non-paged pool grew approximately 800 MB each hour. Git Bash starts one process for each stage of a pipeline, so a test that starts `gh | tr | base64` starts many processes. Until Mark updates the driver (hub ask `amd-driver`), the fleet must see who starts the most processes.
+On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`: two file objects of approximately 0.9 KB for each new process. The non-paged pool grew approximately 800 MB each hour. Git Bash starts one process for each stage of a pipeline, so a test that starts `gh | tr | base64` starts many processes. Until Mark updates the driver (hub ask `amd-driver`), the sessions must see who starts the most processes.
 
 **Measure.** The kind `procs` has one instance, `procs`, in the unit `per minute`. Its capacity is `null`.
 
@@ -759,7 +759,7 @@ Mark asked for the battery as a resource on battery power. An event or a cheap r
 
 **Admit.** None in this item. H31 adds the conditions in `conditions.ts`. They read the power source and the charge, not an amount, so the `admit` part of `battery` stays `null`.
 
-**Status.** `Status.power` gives the power source, the power mode, the lid, `eco`, the reason of the power request and the last sleep. `headroom status` gives one line, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:graph 2.4 W.`
+**Status.** `Status.power` gives the power source, the power mode, the lid, `eco`, the reason of the power request and the last sleep. `headroom status` gives one line, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:shop 2.4 W.`
 
 **Cost.** The battery read is one call of approximately 32 bytes. The PDH query costs approximately 4 MB of private memory and approximately 900 ms once, at the first read. Each collection takes 4 to 28 ms. The PerfLib V2 consumer API can replace PDH later, if the 4 MB matter.
 
@@ -813,7 +813,7 @@ The first check that does not hold gives the reason. Each reason starts with "wa
 
 **The power events.** A power event of H30 sets the state of the engine. The daemon then asks for a tick at once, and that tick reads the battery and runs the admission. Thus a lease that waits for `ac` starts within a second after the charger goes in. Without an event, the battery read comes with the read of the processes, every 10 seconds.
 
-**The process starts.** `starts<N` lets a job wait for a quiet computer. On 2026-10-25, the browsers of graph failed with `0xC0000142` again, at approximately 1,108 starts in one minute.
+**The process starts.** `starts<N` lets a job wait for a quiet computer. On 2026-10-25, the browsers of shop failed with `0xC0000142` again, at approximately 1,108 starts in one minute.
 
 - The rate comes from the start tracker of H29. It is the rate of the instance `procs`, but over the reads of the last 2 minutes, not 10.
 - On Windows, the rate is exact: the sequence numbers of the new processes. Elsewhere, it is a lower bound.
@@ -850,7 +850,7 @@ The first check that does not hold gives the reason. Each reason starts with "wa
 
 ### H32: forecasts
 
-Mark approved this item on 2026-10-24. Each resource gets a time to a limit from its history, so the fleet acts before the limit. H34 builds on the forecast of the non-paged pool: the AMD display driver leaks kernel memory with each new process until a reboot.
+Mark approved this item on 2026-10-24. Each resource gets a time to a limit from its history, so the sessions act before the limit. H34 builds on the forecast of the non-paged pool: the AMD display driver leaks kernel memory with each new process until a reboot.
 
 **The forecast part.** A kind can have a sixth part, `forecast` (`ForecastPart` in `resources.ts`). A kind with no forecast part has no forecast.
 
@@ -1045,7 +1045,7 @@ Mark approved this item on 2026-10-24. When heat or a power limit slows the CPU,
 **Alert `heat`.** A check rule in the alert part of `thermal`:
 
 - A warning when the limit holds for 5 minutes (`heatForMs`). An active alert stays until 2 minutes with no throttle (`heatClearMs`), so a short break does not end it.
-- The message names the speed, the cause and the owners, for example `The CPU runs at 62% of its speed for 5 min: a power or heat limit. Most CPU: session:graph 6.1 cores, 7.6 W (leased: vitest).`
+- The message names the speed, the cause and the owners, for example `The CPU runs at 62% of its speed for 5 min: a power or heat limit. Most CPU: session:shop 6.1 cores, 7.6 W (leased: vitest).`
 - A passive limit names its zone: `a heat limit of the thermal zone \_TZ.THM0`.
 
 **Admit.** The condition `cool` of H31 holds when no read of the last 2 minutes was a throttle (`COOL_MS`). `--timing` waits for `ac` and `cool`. A computer with no read counts as cool.
@@ -1061,7 +1061,7 @@ Mark approved this item on 2026-10-24. When heat or a power limit slows the CPU,
 
 ### H46: the peer of a local connection
 
-The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP tools over Streamable HTTP to `claude.exe`. Each call needs the fleet role of the caller, from the TCP peer and not from a header. The step fp-identity of the organizer (`principalOf`) uses the same answer. The daemon reads the TCP table and the process tree already, so the procedure `resources.peer` gives the answer.
+The local site (the item fp-mcp of server-stack) serves its procedures as MCP tools over Streamable HTTP to `claude.exe`. Each call needs the role of the caller, from the TCP peer and not from a header. The step fp-identity of the organizer (`principalOf`) uses the same answer. The daemon reads the TCP table and the process tree already, so the procedure `resources.peer` gives the answer.
 
 **The connection.** The input is `{ localPort, remotePort }`: the two ports that the site sees on loopback.
 
@@ -1070,7 +1070,7 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 - The two ends must be loopback addresses: `127.0.0.0/8`, `::1`, or `127.0.0.0/8` mapped into IPv6.
 - No row with a process gives the error `NO_CONNECTION`. Rows of two processes also give `NO_CONNECTION`, because the call fails closed.
 
-**The walk.** The peer of a call from a session is often not `claude.exe`. An example is `node scripts/fleet.mjs` from the Bash tool of a session.
+**The walk.** The peer of a call from a session is often not `claude.exe`. An example is a `node` script from the Bash tool of a session.
 
 - `GetProcessTimes` gives the live start of the peer. A peer that ended before the walk gives the error `PEER_GONE`.
 - The walk uses the process snapshot of the daemon. A peer that is younger than the snapshot, or an entry with a different start, starts one fresh read.
@@ -1114,7 +1114,7 @@ The fleet site (the item fp-mcp of server-stack) serves its procedures as MCP to
 
 ### H47: spawn-heavy jobs and browser tests
 
-On 2026-10-24, the Playwright browsers of graph did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases:
+On 2026-10-24, the Playwright browsers of shop did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases:
 
 - The organizer's `site-audit-gates` started 923 processes in 84 seconds.
 - The `test-churn` of server-stack started approximately 1,870 processes in one minute. The computer had a peak of 3,637 starts in one minute.
@@ -1155,13 +1155,13 @@ On 2026-10-24, the Playwright browsers of graph did not start three times, with 
 The reasons of a wait name the other lease. They do not start with `waits for memory`, so the hook of the plugin does not count them:
 
 ```text
-waits for the browser tests of graph (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
+waits for the browser tests of shop (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
 waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it
 ```
 
 When the other lease waits before it in the queue, the reason has "to run first and end". A job name that starts with `memory` gets the words "the job" before it.
 
-**The sum of the start rates.** On 2026-10-25, the computer started approximately 1,108 processes in one minute, and the browsers of graph failed again. No lease was above the limit of 600. A first run, a type check, a vitest run and a release job ran together beside the browser test. Thus the engine also gives `startsSumConflict()` to the broker, as its group rule:
+**The sum of the start rates.** On 2026-10-25, the computer started approximately 1,108 processes in one minute, and the browsers of shop failed again. No lease was above the limit of 600. A first run, a type check, a vitest run and a release job ran together beside the browser test. Thus the engine also gives `startsSumConflict()` to the broker, as its group rule:
 
 - The rate of a lease is its own rate of the last 30 seconds, from `windowRate()`, when it has two counts. Else, it is its learned peak.
 - A first run with no past runs counts 0 until its second count. Then its own rate counts.
@@ -1176,7 +1176,7 @@ The reasons name each lease of the sum, the highest rate first. A lease that wai
 
 ```text
 waits for the other jobs to start fewer processes: tsc (client) 400 and vitest (vex, queued) 300 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
-waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
+waits for the browser tests of shop (pnpm e2e) to end: this job 300 and tsc (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
 ```
 
 **Status.** `headroom status` gives the line `Spawn-heavy now: test-churn (server-stack), 1,870 a minute.` for each granted spawn-heavy lease. `headroom job` gives the peak and the class, for example `at most 1,870 starts a minute, spawn-heavy (about 1,870 a minute in past runs)`. The JSON gives `peakStartsPerMin`, `averageStartsPerMin` and `spawn`. The dashboard gives the peak and the class in the tooltip of each job of the timeline.
@@ -1220,7 +1220,7 @@ Thus "GPU memory counts against memory" was already true. The free part of `memo
 
 - The Bash call ended after 2 minutes, but `find.exe` stayed. Its parent `bash` ended, so it was an orphan, and it searched `/` through the mounts of MSYS.
 - At 05:40, it held 1,313,105 handles. The paged pool grew 593 MB in one hour, with the pool tags `Key` and `FMfn`.
-- The free memory fell under 1 GB, and the Playwright run of graph failed with `0xC0000142`.
+- The free memory fell under 1 GB, and the Playwright run of shop failed with `0xC0000142`.
 - headroom gave no alert for the process. After a restart of the daemon, it named no owner, because the parent had ended. The organizer found the owner in the session transcripts.
 
 H48 shipped in one change. These parts are as built:
@@ -1294,12 +1294,12 @@ The other protected processes counted as 0 until H49. The daemon has no admin ri
 
 **The alerts** (kind `docker`, level warning): `docker:build-cache` above 20 GB of build cache, and `docker:images` above 10 GB of images with no container. The limits are `dockerBuildCacheMb` and `dockerUnusedImagesMb` of `AlertRules`. `detect()` adds them after the rules of the kinds.
 
-**The read on this laptop on 2026-10-25.** Docker 29.9.2 with API 1.56 had 4 containers. Only `graph-mongo-1` was `running`, with 566 MB.
+**The read on this laptop on 2026-10-25.** Docker 29.9.2 with API 1.56 had 4 containers. Only `shop-mongo-1` was `running`, with 566 MB.
 
 | Container | State | Owner | Rule |
 |---|---|---|---|
 | `shop-mongo-1` | `running` | `session:shop` | The folder `D:\git\Shop` is the main repository of `shop`. |
-| `minimongo-db` | `exited` | `session:server-stack` | The folder is in `~/git/MiniMongo`, a repository of `server-stack`. |
+| `store-db` | `exited` | `session:server-stack` | The folder is in `~/git/Store`, a repository of `server-stack`. |
 | `mongo-db` | `created` | `docker:mongo` | The folder `~/git/docker/mongo` is in no role. |
 | `dynamodb-local` | `exited` | `docker:dynamodb-local` | No compose project. |
 

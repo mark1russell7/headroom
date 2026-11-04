@@ -1,5 +1,5 @@
 /**
- * The process starts of each owner (H29). The AMD display driver leaks kernel memory for each new process, so the fleet
+ * The process starts of each owner (H29). The AMD display driver leaks kernel memory for each new process, so the sessions
  * must see who starts the most processes.
  *
  * - The total of the computer is exact on Windows. Windows gives each new process the next sequence number. The change
@@ -18,7 +18,7 @@ import type { OwnerKind, ProcessInfo } from "./types.ts";
 
 /** The starts of one owner in one minute, as an average over the last 10 minutes. */
 export interface OwnerStarts {
-  /** The owner: `session:graph`, `mcp:vex`, `system` or `other`. */
+  /** The owner: `session:shop`, `mcp:vex`, `system` or `other`. */
   readonly owner: string;
   readonly kind: OwnerKind;
   /** All the starts of the owner in one minute: its jobs and its own commands. */
@@ -337,7 +337,7 @@ export function topStartsText(starts: ProcessStarts, limit: number): string {
 
 /**
  * This function gives the line of `headroom status`, for example "Process starts: 820 a minute. Most (at least):
- * session:graph 410.". It gives `null` before two reads.
+ * session:shop 410.". It gives `null` before two reads.
  */
 export function startsLine(starts: ProcessStarts, limit = 3): string | null {
   if (starts.spanMs <= 0) return null;

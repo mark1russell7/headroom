@@ -6,7 +6,7 @@ const MB = 1024 * 1024;
 const p = (pid: number, writeMb: number, cpuMs: number, startedAt = 0): ProcessInfo => ({
   pid, ppid: 1, name: `p${pid}.exe`, privateMb: 10, workingMb: 10, startedAt, cpuMs, writeBytes: writeMb * MB,
 });
-const kinds = new Map<string, OwnerKind>([["session:graph", "session"], ["mcp:vex", "mcp"]]);
+const kinds = new Map<string, OwnerKind>([["session:shop", "session"], ["mcp:vex", "mcp"]]);
 
 describe("counterDelta", () => {
   it("gives the change of a total of the same process, and 0 when the total decreased", () => {
@@ -34,7 +34,7 @@ describe("counterDelta", () => {
 describe("CounterTracker", () => {
   it("gives the MB of the last hour, the speed of the last 10 minutes and the cores of the last minute of each owner", () => {
     const tracker = new CounterTracker();
-    const ownerOf = new Map([[10, "session:graph"], [20, "mcp:vex"], [30, "session:graph"]]);
+    const ownerOf = new Map([[10, "session:shop"], [20, "mcp:vex"], [30, "session:shop"]]);
     let at = 0;
     tracker.read(at, [p(10, 5000, 0), p(20, 1, 0)], ownerOf, kinds);
     expect(tracker.writes(at)).toEqual([]);
@@ -45,28 +45,28 @@ describe("CounterTracker", () => {
       tracker.read(at, [p(10, 5000 + step * 100, step * 15_000), p(20, 1 + step, step * 1000)], ownerOf, kinds);
     }
     expect(tracker.writes(at)).toEqual([
-      { owner: "session:graph", kind: "session", mbPerMin: 600, mbLastHour: 600 },
+      { owner: "session:shop", kind: "session", mbPerMin: 600, mbLastHour: 600 },
       { owner: "mcp:vex", kind: "mcp", mbPerMin: 6, mbLastHour: 6 },
     ]);
     expect(tracker.cores(at)).toEqual([
-      { owner: "session:graph", kind: "session", cores: 1.5 },
+      { owner: "session:shop", kind: "session", cores: 1.5 },
       { owner: "mcp:vex", kind: "mcp", cores: 0.1 },
     ]);
     // A process that starts after the previous read counts with all of its writes.
     at = 70_000;
     tracker.read(at, [p(10, 5600, 90_000), p(20, 7, 6000), p(30, 50, 0, 65_000)], ownerOf, kinds);
-    expect(tracker.writes(at)[0]).toMatchObject({ owner: "session:graph", mbLastHour: 650 });
+    expect(tracker.writes(at)[0]).toMatchObject({ owner: "session:shop", mbLastHour: 650 });
   });
 
   it("keeps the closed minutes for one hour, and continues the hour from the stored minutes", () => {
     const tracker = new CounterTracker();
-    const ownerOf = new Map([[10, "session:graph"]]);
+    const ownerOf = new Map([[10, "session:shop"]]);
     tracker.read(0, [p(10, 0, 0)], ownerOf, kinds);
     tracker.read(60_000, [p(10, 2048, 0)], ownerOf, kinds);
     const closed = tracker.close(60_000);
-    expect(closed.get("writeBytes")?.get("session:graph")).toBe(2048 * MB);
+    expect(closed.get("writeBytes")?.get("session:shop")).toBe(2048 * MB);
     // After 20 minutes with no writes, the speed is 0 and the hour keeps the 2 GB.
-    expect(tracker.writes(20 * 60_000)).toEqual([{ owner: "session:graph", kind: "session", mbPerMin: 0, mbLastHour: 2048 }]);
+    expect(tracker.writes(20 * 60_000)).toEqual([{ owner: "session:shop", kind: "session", mbPerMin: 0, mbLastHour: 2048 }]);
     tracker.close(61 * 60_000);
     expect(tracker.writes(61 * 60_000)).toEqual([]);
 
@@ -80,8 +80,8 @@ describe("CounterTracker", () => {
 
   it("gives the reads of each owner with the counter readBytes, and no reads without it (H50)", () => {
     const reader = (pid: number, readMb: number): ProcessInfo => ({ ...p(pid, 0, 0), readBytes: readMb * MB });
-    const ownerOf = new Map([[10, "system:search"], [20, "session:graph"]]);
-    const searchKinds = new Map<string, OwnerKind>([["system:search", "system"], ["session:graph", "session"]]);
+    const ownerOf = new Map([[10, "system:search"], [20, "session:shop"]]);
+    const searchKinds = new Map<string, OwnerKind>([["system:search", "system"], ["session:shop", "session"]]);
     const tracker = new CounterTracker(["cpuMs", "writeBytes", "readBytes"]);
     const plain = new CounterTracker();
     for (const each of [tracker, plain]) {
@@ -90,7 +90,7 @@ describe("CounterTracker", () => {
     }
     expect(tracker.reads(60_000)).toEqual([
       { owner: "system:search", kind: "system", mbPerMin: 3000, mbLastHour: 3000 },
-      { owner: "session:graph", kind: "session", mbPerMin: 100, mbLastHour: 100 },
+      { owner: "session:shop", kind: "session", mbPerMin: 100, mbLastHour: 100 },
     ]);
     expect(tracker.writes(60_000)).toEqual([]);
     expect(plain.reads(60_000)).toEqual([]);
@@ -100,22 +100,22 @@ describe("CounterTracker", () => {
 describe("CounterTracker after a sleep (H30)", () => {
   it("gives no rate across a gap, and measures again from the next read", () => {
     const tracker = new CounterTracker();
-    const ownerOf = new Map([[10, "session:graph"]]);
+    const ownerOf = new Map([[10, "session:shop"]]);
     tracker.read(0, [p(10, 0, 0)], ownerOf, kinds);
     tracker.gap();
     // Two hours of processor time in the sleep: no rate spans the sleep.
     const wake = 2 * 3_600_000;
     tracker.read(wake, [p(10, 0, 7_200_000)], ownerOf, kinds);
-    expect(tracker.cores(wake)?.find((each) => each.owner === "session:graph")).toBeUndefined();
+    expect(tracker.cores(wake)?.find((each) => each.owner === "session:shop")).toBeUndefined();
     tracker.read(wake + 60_000, [p(10, 0, 7_230_000)], ownerOf, kinds);
-    expect(tracker.cores(wake + 60_000)?.find((each) => each.owner === "session:graph")?.cores).toBe(0.5);
+    expect(tracker.cores(wake + 60_000)?.find((each) => each.owner === "session:shop")?.cores).toBe(0.5);
   });
 });
 
 describe("CounterTracker groups (H23)", () => {
   it("gives a trail of one-minute averages for all processes and for each group, and the groups of the last reads", () => {
     const tracker = new CounterTracker();
-    const ownerOf = new Map([[10, "session:graph"], [20, "session:graph"], [30, "mcp:vex"]]);
+    const ownerOf = new Map([[10, "session:shop"], [20, "session:shop"], [30, "mcp:vex"]]);
     const groupOf = new Map([[10, "tree:10"], [20, "lease:abc"], [30, "tree:30"]]);
     // Each read is 10 seconds later. The tree uses 4 cores, the lease 1 core and the server 0.01 core, below the floor of a group.
     for (let step = 0; step <= 72; step++) {

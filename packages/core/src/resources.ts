@@ -182,7 +182,7 @@ export interface Measure {
 
 /** The owner of each process at one tick. */
 export interface Owners {
-  /** The owner of each process: `session:graph`, `mcp:vex`, `docker` or `system`. */
+  /** The owner of each process: `session:shop`, `mcp:vex`, `docker` or `system`. */
   readonly ownerOf: ReadonlyMap<number, string>;
   /** The kind of each owner. */
   readonly kindOf: ReadonlyMap<string, OwnerKind>;

@@ -18,7 +18,7 @@ export type LeaseState = "waiting" | "granted" | "released" | "expired" | "cance
 
 /** A request for a lease. */
 export interface LeaseRequest {
-  /** The holder: a session or a role, for example `graph`. */
+  /** The holder: a session or a role, for example `shop`. */
   readonly holder: string;
   /** The name of the job, for example `pnpm test`. */
   readonly job: string;

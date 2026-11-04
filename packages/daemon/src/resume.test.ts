@@ -8,7 +8,7 @@ import { resumePlanFile, resumePlanLines, resumePlanMarkdown, writeResumePlan } 
 const sessions: SessionInfo[] = [
   { pid: 11, name: "vex", sessionId: "e189", status: null, cwd: "C:\\Users\\<you>\\git\\Vex" },
   { pid: 12, name: "organizer", sessionId: "e283", status: null, cwd: "C:\\Users\\<you>" },
-  { pid: 13, name: "graph", sessionId: "79a9", status: null, cwd: null },
+  { pid: 13, name: "shop", sessionId: "79a9", status: null, cwd: null },
 ];
 
 describe("the resume plan (H13, H34)", () => {
@@ -19,7 +19,7 @@ describe("the resume plan (H13, H34)", () => {
       "# organizer",
       'Set-Location "C:\\Users\\<you>"; claude --resume e283',
       "",
-      "# graph",
+      "# shop",
       'Set-Location "."; claude --resume 79a9',
       "",
       "# vex",

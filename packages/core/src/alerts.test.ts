@@ -9,7 +9,7 @@ const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessI
 const memory = { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
 
 const lease = (pid: number): Lease => ({
-  id: "l1", holder: "graph", job: "vitest", amounts: { memory: 6000 }, priority: 0, pid, ttlMs: 0, state: "granted",
+  id: "l1", holder: "shop", job: "vitest", amounts: { memory: 6000 }, priority: 0, pid, ttlMs: 0, state: "granted",
   requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null,
 });
 
@@ -28,11 +28,11 @@ describe("detect", () => {
   it("flags a large process with no lease, and not one under a lease or in Docker", () => {
     const processes = [p(1, 0, "claude.exe", 500), p(2, 1, "grep.exe", 16_000), p(3, 1, "node.exe", 1000), p(4, 3, "vitest.exe", 6000), p(5, 0, "vmmemWSL", 8000)];
     const owners: Record<number, [string, OwnerKind]> = {
-      1: ["session:graph", "session"], 2: ["session:graph", "session"], 3: ["session:graph", "session"], 4: ["session:graph", "session"], 5: ["docker", "docker"],
+      1: ["session:shop", "session"], 2: ["session:shop", "session"], 3: ["session:shop", "session"], 4: ["session:shop", "session"], 5: ["docker", "docker"],
     };
     const alerts = detect(input(processes, owners, { leases: [lease(3)] }));
     expect(alerts.map((alert) => alert.id)).toEqual(["runaway:2"]);
-    expect(alerts[0]?.message).toBe("grep.exe (2) of session:graph holds 15.6 GB with no lease");
+    expect(alerts[0]?.message).toBe("grep.exe (2) of session:shop holds 15.6 GB with no lease");
   });
 
   it("flags a large orphan with no owner", () => {
@@ -83,7 +83,7 @@ describe("detect", () => {
     const disks = [{ mount: "C:", freeMb: 4300, totalMb: 974_848, droppedMb: 39_014, windowMinutes: 60 }];
     const writes = [
       { owner: "mcp:vex", kind: "mcp" as const, mbPerMin: 2, mbLastHour: 2150 },
-      { owner: "session:graph", kind: "session" as const, mbPerMin: 500, mbLastHour: 31_949 },
+      { owner: "session:shop", kind: "session" as const, mbPerMin: 500, mbLastHour: 31_949 },
       { owner: "docker", kind: "docker" as const, mbPerMin: 1, mbLastHour: 400 },
       { owner: "system", kind: "system" as const, mbPerMin: 1, mbLastHour: 120 },
       { owner: "editor", kind: "editor" as const, mbPerMin: 0, mbLastHour: 99 },
@@ -92,7 +92,7 @@ describe("detect", () => {
     expect(alerts).toStrictEqual([
       {
         id: "disk:C:", kind: "disk", subject: "drive C:", pid: null, mb: 4300, severity: "critical",
-        message: "Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB, docker 400 MB. Run `headroom disk report` to see what uses the space.",
+        message: "Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Most writes in the last hour: session:shop 31.2 GB, mcp:vex 2.1 GB, docker 400 MB. Run `headroom disk report` to see what uses the space.",
       },
     ]);
     // No owner above 100 MB: the message is the same as before.
@@ -142,7 +142,7 @@ describe("detect", () => {
       return { dynamic: { first: 1000, count: 1000 }, connections };
     }
     const owners: Record<number, [string, OwnerKind]> = {
-      1: ["session:graph", "session"], 2: ["session:graph", "session"], 3: ["mcp:vex", "mcp"], 4: ["docker", "docker"], 5: ["system", "system"],
+      1: ["session:shop", "session"], 2: ["session:shop", "session"], 3: ["mcp:vex", "mcp"], 4: ["docker", "docker"], 5: ["system", "system"],
     };
 
     it("warns above 80% of the dynamic ports, and names the 3 owners with the most connections and the count in TIME_WAIT", () => {
@@ -151,7 +151,7 @@ describe("detect", () => {
         {
           id: "ports:tcp", kind: "ports", subject: "TCP ports", pid: null, mb: 0, severity: "warning",
           message:
-            "810 of 1000 dynamic TCP ports are in use (81%), 190 of them in TIME_WAIT. Most connections: session:graph 400, mcp:vex 150, docker 50." +
+            "810 of 1000 dynamic TCP ports are in use (81%), 190 of them in TIME_WAIT. Most connections: session:shop 400, mcp:vex 150, docker 50." +
             " When no dynamic port is free, new connections fail.",
         },
       ]);
@@ -197,22 +197,22 @@ describe("detect: services (H27)", () => {
 
   it("gives a critical alert for Docker after two checks that are down, and none after one", () => {
     expect(detect(services(health("docker", "down", 1)))).toEqual([]);
-    const docker = health("docker", "down", 2, { needs: "Containers such as Mongo and the graph tests need it." });
+    const docker = health("docker", "down", 2, { needs: "Containers such as Mongo and the shop tests need it." });
     const [alert] = detect(services(docker));
     expect(alert).toMatchObject({ id: "service:docker", kind: "service", subject: "docker", severity: "critical", pid: null, mb: 0 });
     expect(alert?.message).toBe(
-      "The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the graph tests need it. headroom does not restart it.",
+      "The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the shop tests need it. headroom does not restart it.",
     );
   });
 
   it("gives a warning for a URL that is down, and names the last error of an MCP server that does not start", () => {
-    const alerts = detect(services(health("fleet-site", "down", 2), health("mcp:vex", "down", 2, { error: "Error: Cannot find module 'zod'." })));
-    expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["service:fleet-site", "warning"], ["service:mcp:vex", "critical"]]);
+    const alerts = detect(services(health("local-site", "down", 2), health("mcp:vex", "down", 2, { error: "Error: Cannot find module 'zod'." })));
+    expect(alerts.map((alert) => [alert.id, alert.severity])).toEqual([["service:local-site", "warning"], ["service:mcp:vex", "critical"]]);
     expect(alerts[1]?.message).toBe("The MCP server vex does not start: Error: Cannot find module 'zod'.");
   });
 
   it("gives no alert for an idle MCP server, for no Docker engine, or for a good service", () => {
-    expect(detect(services(health("mcp:loom", "idle", 40), health("docker", "absent", 40), health("fleet-site", "ok", 40)))).toEqual([]);
+    expect(detect(services(health("mcp:loom", "idle", 40), health("docker", "absent", 40), health("local-site", "ok", 40)))).toEqual([]);
   });
 
   it("gives a warning after three slow checks in a row", () => {
@@ -267,7 +267,7 @@ describe("battery alerts (H30)", () => {
   const onBattery: BatteryRead = { ac: false, charging: false, discharging: true, maxMwh: 50_000, remainingMwh: 34_000, rateMw: -18_000, estimatedSeconds: 7080 };
   const cores = [
     { owner: "session:server-stack", kind: "session" as const, cores: 3 },
-    { owner: "session:graph", kind: "session" as const, cores: 2 },
+    { owner: "session:shop", kind: "session" as const, cores: 2 },
     { owner: "session:vex", kind: "session" as const, cores: 1 },
     { owner: "docker", kind: "docker" as const, cores: 0.5 },
   ];
@@ -277,7 +277,7 @@ describe("battery alerts (H30)", () => {
     const alerts = detect(input([], {}, { battery: onBattery, meters, cores, leases: [lease(0)] }));
     expect(alerts.map((alert) => [alert.id, alert.kind, alert.severity])).toEqual([["battery:jobs", "battery", "warning"]]);
     expect(alerts[0]?.message).toBe(
-      "The laptop runs on battery (68%, 18.0 W, 1 h 58 min left), and 1 leased job runs: vitest of graph. Most power (estimate): session:server-stack 3.0 W, session:graph 2.0 W, session:vex 1.0 W." +
+      "The laptop runs on battery (68%, 18.0 W, 1 h 58 min left), and 1 leased job runs: vitest of shop. Most power (estimate): session:server-stack 3.0 W, session:shop 2.0 W, session:vex 1.0 W." +
         " The jobs run in efficiency mode. Connect the charger for full speed.",
     );
     // A lease that waits does not run.
@@ -313,10 +313,10 @@ describe("CPU alerts (H23)", () => {
     return points;
   };
   const endOf = (trail: readonly { at: number }[]): number => (trail.at(-1)?.at ?? 0) + 10_000;
-  const owners: Record<number, [string, OwnerKind]> = { 1: ["session:graph", "session"], 2: ["mcp:vex", "mcp"], 3: ["docker", "docker"], 4: ["session:client", "session"] };
+  const owners: Record<number, [string, OwnerKind]> = { 1: ["session:shop", "session"], 2: ["mcp:vex", "mcp"], 3: ["docker", "docker"], 4: ["session:client", "session"] };
   const processes = [p(1, 0, "node.exe", 100), p(2, 0, "vex.exe", 100), p(3, 0, "dockerd.exe", 100), p(4, 0, "node.exe", 100)];
   const cores = [
-    { owner: "session:graph", kind: "session" as const, cores: 8 },
+    { owner: "session:shop", kind: "session" as const, cores: 8 },
     { owner: "mcp:vex", kind: "mcp" as const, cores: 4 },
     { owner: "docker", kind: "docker" as const, cores: 2 },
     { owner: "session:client", kind: "session" as const, cores: 0.4 },
@@ -347,10 +347,10 @@ describe("CPU alerts (H23)", () => {
   });
 
   it("names the top 3 owners with their cores, and their leased jobs", () => {
-    const leased: Lease = { ...lease(1), id: "l9", job: "graph-e2e", amounts: { cpu: 4 } };
+    const leased: Lease = { ...lease(1), id: "l9", job: "shop-e2e", amounts: { cpu: 4 } };
     const [alert] = cpuAlerts(trailOf([14.4, 5]), [], { leases: [leased], leaseCores: new Map([["l9", 3.96]]) });
     expect(alert?.message).toBe(
-      "14.4 of 16 cores are in use (90%), above 85% for 5 minutes. Most cores: session:graph 8.0 (leased: graph-e2e 4.0), mcp:vex 4.0, docker 2.0." +
+      "14.4 of 16 cores are in use (90%), above 85% for 5 minutes. Most cores: session:shop 8.0 (leased: shop-e2e 4.0), mcp:vex 4.0, docker 2.0." +
         " A full processor makes the laptop slow for Mark, and timing tests of other sessions fail.",
     );
   });
@@ -360,7 +360,7 @@ describe("runaway process trees (H23)", () => {
   const MIN = 60_000;
   const trailOf = (cores: number, minutes: number, from = 0): { at: number; value: number }[] =>
     Array.from({ length: (minutes * MIN) / 10_000 }, (_, step) => ({ at: from + step * 10_000, value: cores }));
-  const owners: Record<number, [string, OwnerKind]> = { 10: ["session:graph", "session"], 11: ["session:graph", "session"], 30: ["docker", "docker"] };
+  const owners: Record<number, [string, OwnerKind]> = { 10: ["session:shop", "session"], 11: ["session:shop", "session"], 30: ["docker", "docker"] };
   const processes = [p(10, 0, "node.exe", 100), p(11, 10, "node.exe", 100), p(30, 1, "vmmem.exe", 100)];
   const treeAlerts = (trail: { at: number; value: number }[], pid = 10, active: AlertInput["active"] = [], extra: Partial<AlertInput> = {}) =>
     detect(input(processes, owners, { at: (trail.at(-1)?.at ?? 0) + 10_000, processors: 16, trees: [{ pid, processes: 2, trail }], active, ...extra })).filter(
@@ -377,7 +377,7 @@ describe("runaway process trees (H23)", () => {
         subject: "node.exe (10)",
         pid: 10,
         mb: 0,
-        message: "node.exe (10) of session:graph and its 1 child process use 6 cores with no lease, above 4 cores for 10 minutes. Run such work with headroom run --cpu.",
+        message: "node.exe (10) of session:shop and its 1 child process use 6 cores with no lease, above 4 cores for 10 minutes. Run such work with headroom run --cpu.",
       },
     ]);
   });
@@ -398,20 +398,20 @@ describe("cache alerts (H50)", () => {
   const full = { ...memory, availableMb: 1000, cacheMb: 10_342 };
   const reads = [
     { owner: "system:search", kind: "system" as const, mbPerMin: 900, mbLastHour: 52_000 },
-    { owner: "session:graph", kind: "session" as const, mbPerMin: 20, mbLastHour: 1200 },
+    { owner: "session:shop", kind: "session" as const, mbPerMin: 20, mbLastHour: 1200 },
     { owner: "mcp:vex", kind: "mcp" as const, mbPerMin: 0, mbLastHour: 40 },
   ];
 
   it("gives a critical cache alert that names the top readers and writers, next to the memory alert", () => {
-    const writes = [{ owner: "session:graph", kind: "session" as const, mbPerMin: 10, mbLastHour: 600 }];
+    const writes = [{ owner: "session:shop", kind: "session" as const, mbPerMin: 10, mbLastHour: 600 }];
     const alerts = detect({ ...input([], {}), memory: full, reads, writes });
     expect(alerts.map((alert) => alert.id)).toEqual(["memory", "cache"]);
     expect(alerts[1]).toStrictEqual({
       id: "cache", kind: "cache", subject: "cache", pid: null, mb: 10_342, severity: "critical",
       message:
         "The system file cache holds 10.1 GB, and only 1.0 GB of memory is available. Windows does not count these pages as available memory, " +
-        "and it trims them slowly. Most reads in the last hour: system:search 50.8 GB, session:graph 1.2 GB. Most writes in the last hour: " +
-        "session:graph 600 MB. Run jobs that read many files with `headroom run --slot files`, so that they do not run at the same time.",
+        "and it trims them slowly. Most reads in the last hour: system:search 50.8 GB, session:shop 1.2 GB. Most writes in the last hour: " +
+        "session:shop 600 MB. Run jobs that read many files with `headroom run --slot files`, so that they do not run at the same time.",
     });
   });
 

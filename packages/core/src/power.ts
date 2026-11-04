@@ -229,7 +229,7 @@ export function powerOwners(cores: readonly OwnerCores[] | undefined, cpuW: numb
     .sort((a, b) => b.watts - a.watts);
 }
 
-/** This function writes the owners with the most power, for example "session:graph 3.1 W, docker 1.0 W", or "" when none uses 0.1 W. */
+/** This function writes the owners with the most power, for example "session:shop 3.1 W, docker 1.0 W", or "" when none uses 0.1 W. */
 export function ownersWattsText(owners: readonly { readonly owner: string; readonly watts: number }[], limit = 3): string {
   return owners
     .filter((each) => each.watts >= 0.1)
@@ -276,7 +276,7 @@ interface PowerLineResource {
 
 /**
  * This function gives the line of `headroom status`, for example "Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode:
- * balanced). Most (estimate): session:graph 3.1 W." It gives `null` with no battery and no Energy Meter.
+ * balanced). Most (estimate): session:shop 3.1 W." It gives `null` with no battery and no Energy Meter.
  */
 export function powerLine(resources: readonly PowerLineResource[], power: PowerStatus | undefined): string | null {
   const battery = resources.find((each) => each.id === "battery")?.battery;

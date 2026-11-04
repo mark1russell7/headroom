@@ -282,7 +282,7 @@ export function heatOwners(
     });
 }
 
-/** This function writes the owners: "session:graph 6.1 cores, 3.1 W (leased: vitest)". The power is an estimate. */
+/** This function writes the owners: "session:shop 6.1 cores, 3.1 W (leased: vitest)". The power is an estimate. */
 export function heatOwnersText(owners: readonly HeatOwner[]): string {
   return owners
     .map((each) => {
@@ -327,7 +327,7 @@ const speedPhrase = (state: ThermalState): string => `${Math.round(state.speed ?
 
 /**
  * This function gives the message of the heat alert, for example "The CPU runs at 62% of its speed for 5 min: a power or heat
- * limit. Most CPU: session:graph 6.1 cores (leased: vitest)."
+ * limit. Most CPU: session:shop 6.1 cores (leased: vitest)."
  */
 export function heatMessage(state: ThermalState, owners: readonly HeatOwner[], now: number, limits: HeatLimits): string {
   const most = owners.length === 0 ? "" : ` Most CPU: ${heatOwnersText(owners)}.${owners.some((each) => each.watts !== null) ? " The power is an estimate." : ""}`;

@@ -173,7 +173,7 @@ describe("the safe cleanup (H21)", () => {
   it("refuses a *.before-devdrive copy, a disk image, a fenced folder and a path that is not directly in a temp folder", () => {
     const fenced = [join(base, "git")];
     expect(refusal(join(temp, "git.before-devdrive"), [temp], fenced)).toMatch(/before-devdrive/);
-    expect(refusal(join(temp, "Jarvis.BEFORE-DEVDRIVE"), [temp], fenced)).toMatch(/before-devdrive/);
+    expect(refusal(join(temp, "Assistant.BEFORE-DEVDRIVE"), [temp], fenced)).toMatch(/before-devdrive/);
     expect(refusal(join(temp, "docker_data.vhdx"), [temp], fenced)).toMatch(/disk image/);
     expect(refusal(join(base, "git", "repo", "x.cpuprofile"), [join(base, "git", "repo")], fenced)).toMatch(/it is in/);
     expect(refusal(join(temp, "sub", "x.cpuprofile"), [temp], fenced)).toMatch(/not directly/);

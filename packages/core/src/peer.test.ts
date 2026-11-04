@@ -19,8 +19,8 @@ const rows = (pid: number, address: string = "127.0.0.1", client: number = CLIEN
 const ROLES: Role[] = [
   { id: "headroom", status: "active", sessionId: "19f84d12-aaaa", sessionName: "headroom" },
   { id: "strategist", status: "active", sessionId: "13a01f2a-bbbb", sessionName: "strategies" },
-  { id: "bubble", status: "parked", sessionId: null, sessionName: null },
-  { id: "jarvis-client", status: "retired", sessionId: "9e129985-cccc", sessionName: "jarvis-client" },
+  { id: "lab", status: "parked", sessionId: null, sessionName: null },
+  { id: "assistant-client", status: "retired", sessionId: "9e129985-cccc", sessionName: "assistant-client" },
 ];
 
 interface Fake {
@@ -240,12 +240,12 @@ describe("roleOf", () => {
   it("matches the session ID first, then the session name, then the role ID", () => {
     expect(roleOf({ sessionId: "19f84d12-aaaa", name: "renamed" }, ROLES)).toBe("headroom");
     expect(roleOf({ sessionId: "other", name: "strategies" }, ROLES)).toBe("strategist");
-    expect(roleOf({ sessionId: "", name: "bubble" }, ROLES)).toBe("bubble");
+    expect(roleOf({ sessionId: "", name: "lab" }, ROLES)).toBe("lab");
     expect(roleOf({ sessionId: "other", name: "nobody" }, ROLES)).toBeUndefined();
   });
 
   it("does not match a retired role", () => {
-    expect(roleOf({ sessionId: "9e129985-cccc", name: "jarvis-client" }, ROLES)).toBeUndefined();
+    expect(roleOf({ sessionId: "9e129985-cccc", name: "assistant-client" }, ROLES)).toBeUndefined();
   });
 });
 
@@ -253,7 +253,7 @@ describe("parseRoles and RoleBook", () => {
   const json = JSON.stringify({
     roles: [
       { id: "organizer", status: "active", session: { name: "organizer", id: "e283aec6" } },
-      { id: "bubble", status: "parked", session: { name: null, id: "763a6c34" } },
+      { id: "lab", status: "parked", session: { name: null, id: "763a6c34" } },
       { title: "no id" },
     ],
   });
@@ -261,7 +261,7 @@ describe("parseRoles and RoleBook", () => {
   it("reads the roles with their sessions", () => {
     expect(parseRoles(json)).toEqual([
       { id: "organizer", status: "active", sessionId: "e283aec6", sessionName: "organizer" },
-      { id: "bubble", status: "parked", sessionId: "763a6c34", sessionName: null },
+      { id: "lab", status: "parked", sessionId: "763a6c34", sessionName: null },
     ]);
     expect(parseRoles("{}")).toEqual([]);
   });
@@ -273,7 +273,7 @@ describe("parseRoles and RoleBook", () => {
       const book = new RoleBook(file);
       expect(book.roles()).toEqual([]);
       writeFileSync(file, json);
-      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble"]);
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "lab"]);
       writeFileSync(file, "{ not json, and longer than before");
       expect(book.roles()).toEqual([]);
     } finally {
@@ -340,7 +340,7 @@ describe("RoleBook with the role files", () => {
   const registry = {
     roles: [
       { id: "organizer", status: "active", session: { name: "organizer", id: "e283aec6" } },
-      { id: "bubble", status: "parked", session: { name: null, id: "763a6c34" } },
+      { id: "lab", status: "parked", session: { name: null, id: "763a6c34" } },
       { id: "vex", status: "active", session: { name: "vex", id: "aa11" } },
     ],
   };
@@ -363,7 +363,7 @@ describe("RoleBook with the role files", () => {
   it("lets a role file win over the entry of its role in roles.json, at the same place", () => {
     const file = { id: "organizer", status: "active", session: { name: "organizer", id: "f00d" } };
     withRegistry({ "roles.json": registry, "roles/organizer.json": file }, (book) => {
-      expect(book.roles().map((role) => [role.id, role.sessionId])).toEqual([["organizer", "f00d"], ["bubble", "763a6c34"], ["vex", "aa11"]]);
+      expect(book.roles().map((role) => [role.id, role.sessionId])).toEqual([["organizer", "f00d"], ["lab", "763a6c34"], ["vex", "aa11"]]);
       expect(roleOf({ sessionId: "f00d", name: "renamed" }, book.roles())).toBe("organizer");
       expect(roleOf({ sessionId: "e283aec6", name: "renamed" }, book.roles())).toBeUndefined();
     });
@@ -372,7 +372,7 @@ describe("RoleBook with the role files", () => {
   it("keeps an ID only in roles.json, and puts an ID only in a file after the roles of roles.json, by ID", () => {
     const files = { "roles.json": registry, "roles/zeta.json": { id: "zeta", status: "active" }, "roles/maker.json": { id: "maker", status: "active", session: { id: "bb22", name: "maker" } } };
     withRegistry(files, (book) => {
-      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex", "maker", "zeta"]);
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "lab", "vex", "maker", "zeta"]);
       expect(roleOf({ sessionId: "bb22", name: "x" }, book.roles())).toBe("maker");
       expect(roleOf({ sessionId: "aa11", name: "x" }, book.roles())).toBe("vex");
     });
@@ -380,7 +380,7 @@ describe("RoleBook with the role files", () => {
 
   it("reads the role files without roles.json, and roles.json without the folder of the role files", () => {
     withRegistry({ "roles/maker.json": { id: "maker" } }, (book) => expect(book.roles().map((role) => role.id)).toEqual(["maker"]));
-    withRegistry({ "roles.json": registry }, (book) => expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex"]));
+    withRegistry({ "roles.json": registry }, (book) => expect(book.roles().map((role) => role.id)).toEqual(["organizer", "lab", "vex"]));
     withRegistry({}, (book) => expect(book.roles()).toEqual([]));
   });
 
@@ -396,7 +396,7 @@ describe("RoleBook with the role files", () => {
       "roles/notes.txt": "{}",
     };
     withRegistry(files, (book) => {
-      expect(book.roles().map((role) => [role.id, role.sessionId])).toEqual([["organizer", "e283aec6"], ["bubble", "763a6c34"], ["vex", "aa11"]]);
+      expect(book.roles().map((role) => [role.id, role.sessionId])).toEqual([["organizer", "e283aec6"], ["lab", "763a6c34"], ["vex", "aa11"]]);
     });
   });
 
@@ -418,13 +418,13 @@ describe("RoleBook with the role files", () => {
       expect(book.roles()).toBe(first);
       mkdirSync(join(dir, "roles"));
       writeFileSync(join(dir, "roles", "maker.json"), JSON.stringify({ id: "maker" }));
-      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex", "maker"]);
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "lab", "vex", "maker"]);
       const second = book.roles();
       expect(book.roles()).toBe(second);
       writeFileSync(join(dir, "roles", "maker.json"), JSON.stringify({ id: "maker", status: "paused" }));
       expect(book.roles().find((role) => role.id === "maker")?.status).toBe("paused");
       rmSync(join(dir, "roles", "maker.json"));
-      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "bubble", "vex"]);
+      expect(book.roles().map((role) => role.id)).toEqual(["organizer", "lab", "vex"]);
     });
   });
 
@@ -438,7 +438,7 @@ describe("RoleBook with the role files", () => {
 });
 
 describe("parseRoleFile and mergeRoles", () => {
-  it("gives the role of a file only when its ID is the name of the file and a fleet role ID", () => {
+  it("gives the role of a file only when its ID is the name of the file and a role ID", () => {
     expect(parseRoleFile("maker", JSON.stringify({ id: "maker", session: { id: "bb22" } }))).toEqual({ id: "maker", status: null, sessionId: "bb22", sessionName: null });
     expect(parseRoleFile("maker", JSON.stringify({ id: "other" }))).toBeUndefined();
     for (const name of ["Maker", "a--b", "a-", "-a", "1a", "a".repeat(65)]) expect(parseRoleFile(name, JSON.stringify({ id: name }))).toBeUndefined();

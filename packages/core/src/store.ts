@@ -169,7 +169,7 @@ function spawnLimitOf(value: string | undefined): number {
   return value !== undefined && Number.isFinite(limit) && limit > 0 ? limit : SPAWN_HEAVY_DEFAULT;
 }
 
-/** This function reads the setting `health`. A value that is not an object of strings gives the default list. */
+/** This function reads the setting `health`. A value that is not an object of strings gives the empty default list. */
 function healthOf(value: string | undefined): Readonly<Record<string, string>> {
   if (value === undefined) return DEFAULT_HEALTH;
   try {

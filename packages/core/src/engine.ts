@@ -730,7 +730,7 @@ export class Engine {
 
   /**
    * This function gives the last read of the Docker engine with the owner of each container (H38), or `null` with no read.
-   * The owners come from the fleet roles, one time for each new read.
+   * The owners come from the roles, one time for each new read.
    */
   #readDocker(): { readonly read: DockerRead; readonly containers: readonly DockerContainerStatus[]; readonly shares: readonly DockerShare[] } | null {
     let read: DockerRead | undefined;

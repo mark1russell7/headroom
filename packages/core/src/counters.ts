@@ -22,7 +22,7 @@ export type Counter = "cpuMs" | "readBytes" | "writeBytes";
  * (H50) have the same fields: the MB that the owner read.
  */
 export interface OwnerWrites {
-  /** The owner: `session:graph`, `mcp:vex`, `docker` or `system`. */
+  /** The owner: `session:shop`, `mcp:vex`, `docker` or `system`. */
   readonly owner: string;
   readonly kind: OwnerKind;
   /** The MB that the owner writes in one minute, as an average over the last 10 minutes. */

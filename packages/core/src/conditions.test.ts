@@ -49,7 +49,7 @@ function facts(fields: Partial<ConditionFacts> = {}): ConditionFacts {
 
 function lease(id: string, fields: Partial<Lease> = {}): Lease {
   return {
-    id, holder: "graph", job: "pnpm bench", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, state: "waiting",
+    id, holder: "shop", job: "pnpm bench", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, state: "waiting",
     requestedAt: 0, grantedAt: null, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null, ...fields,
   };
 }
@@ -310,7 +310,7 @@ describe("Broker conditions (H31)", () => {
 
   it("holds a lease until its condition holds, and keeps the time when it held", () => {
     const { broker, advance, plug, now } = setup();
-    const bench = broker.request({ holder: "graph", job: "bench", amounts: { memory: 100 }, when: ["ac"] });
+    const bench = broker.request({ holder: "shop", job: "bench", amounts: { memory: 100 }, when: ["ac"] });
     expect(bench.conditions).toEqual({ when: ["ac"] });
     broker.tick(cap);
     expect(broker.get(bench.id)).toMatchObject({ state: "waiting", reason: "waits until the laptop is plugged in" });
@@ -322,14 +322,14 @@ describe("Broker conditions (H31)", () => {
 
   it("refuses an unknown condition at the request", () => {
     const { broker } = setup();
-    expect(() => broker.request({ holder: "graph", job: "bench", amounts: {}, when: ["night"] })).toThrow(/H42/);
+    expect(() => broker.request({ holder: "shop", job: "bench", amounts: {}, when: ["night"] })).toThrow(/H42/);
     expect(broker.leases()).toEqual([]);
   });
 
   it("does not let a lease that waits for a condition hold the head of the queue or a conflict", () => {
     const { broker, advance } = setup();
     // The bench waits for AC power for a long time, before the other leases.
-    const bench = broker.request({ holder: "graph", job: "bench", amounts: { memory: 100 }, when: ["ac"] }, HEAVY);
+    const bench = broker.request({ holder: "shop", job: "bench", amounts: { memory: 100 }, when: ["ac"] }, HEAVY);
     broker.tick(cap);
     advance(60_000);
     const e2e = broker.request({ holder: "site", job: "pnpm e2e", amounts: { browser: 1 } });
@@ -351,7 +351,7 @@ describe("Store condition columns (H31)", () => {
       priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
       requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT,
       peak_mb REAL, usage TEXT, exit_code INTEGER, signal TEXT, log TEXT, processes INTEGER, peak_starts_per_min REAL, spawn TEXT)`);
-    old.exec(`INSERT INTO leases VALUES ('old1', 'graph', 'bench', '{}', 0, 42, 300000, 'released', 1000, 1000, 61000, 61000,
+    old.exec(`INSERT INTO leases VALUES ('old1', 'shop', 'bench', '{}', 0, 42, 300000, 'released', 1000, 1000, 61000, 61000,
       'released', NULL, NULL, 0, NULL, NULL, 10, 20, NULL)`);
     old.close();
     const store = new Store(path);
@@ -401,7 +401,7 @@ describe("Engine conditions (H31)", () => {
     unplug();
     engine.powerEvent({ type: "source", ac: false });
     engine.tick();
-    const bench = engine.request({ holder: "graph", job: "pnpm bench", amounts: { memory: 512 }, ...ttl, when: ["ac"] });
+    const bench = engine.request({ holder: "shop", job: "pnpm bench", amounts: { memory: 512 }, ...ttl, when: ["ac"] });
     expect(bench).toMatchObject({ state: "waiting", reason: "waits until the laptop is plugged in", conditions: { when: ["ac"] } });
     // The charger is in, but no event came and no read of the battery is due: the lease still waits.
     plug();
@@ -426,7 +426,7 @@ describe("Engine conditions (H31)", () => {
     };
     const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
     engine.tick();
-    const e2e = engine.request({ holder: "graph", job: "pnpm e2e", amounts: {}, ...ttl, when: ["starts<700"] });
+    const e2e = engine.request({ holder: "shop", job: "pnpm e2e", amounts: {}, ...ttl, when: ["starts<700"] });
     expect(e2e).toMatchObject({ state: "waiting", reason: "waits until the computer starts fewer than 700 processes a minute (no count yet)" });
     // A burst for 2 minutes: 185 starts in each read of 10 seconds, 1,110 a minute.
     for (let read = 0; read < 12; read += 1) {
@@ -454,8 +454,8 @@ describe("Engine conditions (H31)", () => {
 
   it("refuses an unknown or a planned condition at the request", () => {
     const { engine } = setup();
-    expect(() => engine.request({ holder: "graph", job: "x", amounts: {}, ...ttl, when: ["night"] })).toThrow(/"night" is a planned condition: H42 adds it/);
-    expect(() => engine.request({ holder: "graph", job: "x", amounts: {}, ...ttl, when: ["plugged"] })).toThrow(/not a known condition/);
+    expect(() => engine.request({ holder: "shop", job: "x", amounts: {}, ...ttl, when: ["night"] })).toThrow(/"night" is a planned condition: H42 adds it/);
+    expect(() => engine.request({ holder: "shop", job: "x", amounts: {}, ...ttl, when: ["plugged"] })).toThrow(/not a known condition/);
     expect(engine.status().leases).toEqual([]);
   });
 
@@ -464,13 +464,13 @@ describe("Engine conditions (H31)", () => {
     unplug(18);
     engine.powerEvent({ type: "source", ac: false });
     engine.tick();
-    const big = engine.request({ holder: "graph", job: "pnpm build", amounts: { memory: 4096 }, ...ttl });
+    const big = engine.request({ holder: "shop", job: "pnpm build", amounts: { memory: 4096 }, ...ttl });
     expect(big.state).toBe("waiting");
     expect(big.reason).toBe("waits until the battery is at 25% or more, or plugged in (now 18%): this job is heavy (it asks for 4.0 GB of memory). --battery-ok starts it on a low battery");
     const e2e = engine.request({ holder: "site", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
     expect(e2e.reason).toMatch(/this job is heavy \(it runs browser tests\)/);
     expect(engine.request({ holder: "client", job: "vitest", amounts: { memory: 1024 }, ...ttl }).state).toBe("granted");
-    expect(engine.request({ holder: "graph", job: "pnpm build", amounts: { memory: 4096 }, ...ttl, batteryOk: true }).state).toBe("granted");
+    expect(engine.request({ holder: "shop", job: "pnpm build", amounts: { memory: 4096 }, ...ttl, batteryOk: true }).state).toBe("granted");
     // A floor of 15 lets the waiting leases start at once.
     expect(engine.setConfig({ batteryFloor: 15 }).batteryFloor).toBe(15);
     expect(engine.get(big.id)?.state).toBe("granted");
@@ -492,7 +492,7 @@ describe("Engine conditions (H31)", () => {
 
   it("records a granted lease that runs without its condition, and closes the record when AC power returns", () => {
     const { engine, unplug, plug, advance, now } = setup();
-    const bench = engine.request({ holder: "graph", job: "pnpm bench", amounts: {}, ...ttl, when: ["ac"] });
+    const bench = engine.request({ holder: "shop", job: "pnpm bench", amounts: {}, ...ttl, when: ["ac"] });
     expect(bench.state).toBe("granted");
     advance(MINUTE);
     unplug();

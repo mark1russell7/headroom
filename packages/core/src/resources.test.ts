@@ -20,13 +20,13 @@ const readings: Readings = {
 };
 
 const lease = (pid: number | null): Lease => ({
-  id: "l1", holder: "graph", job: "vitest", amounts: { memory: 6000 }, priority: 0, pid, ttlMs: 0, state: "granted",
+  id: "l1", holder: "shop", job: "vitest", amounts: { memory: 6000 }, priority: 0, pid, ttlMs: 0, state: "granted",
   requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null,
 });
 
 const owners: Owners = {
-  ownerOf: new Map([[1, "session:graph"], [2, "session:graph"], [3, "session:graph"], [4, "docker"]]),
-  kindOf: new Map([["session:graph", "session"], ["docker", "docker"]]),
+  ownerOf: new Map([[1, "session:shop"], [2, "session:shop"], [3, "session:shop"], [4, "docker"]]),
+  kindOf: new Map([["session:shop", "session"], ["docker", "docker"]]),
   leaseOf: new Map([[2, "l1"], [3, "l1"]]),
 };
 
@@ -85,7 +85,7 @@ describe("resources", () => {
     expect(statuses.map((each) => [each.id, each.kind, each.unit, each.owners])).toEqual([
       ["net:in", "net", "MB/s", []],
       ["net:out", "net", "MB/s", []],
-      ["ports:tcp", "ports", "count", [{ owner: "session:graph", kind: "session", value: 2, unit: "count" }, { owner: "docker", kind: "docker", value: 1, unit: "count" }]],
+      ["ports:tcp", "ports", "count", [{ owner: "session:shop", kind: "session", value: 2, unit: "count" }, { owner: "docker", kind: "docker", value: 1, unit: "count" }]],
     ]);
     // Without a read, the kinds give no instance. Before the second read, the network has no used part.
     expect(measure(readings).some((each) => each.id.startsWith("net:") || each.id.startsWith("ports:"))).toBe(false);
@@ -122,7 +122,7 @@ describe("resources", () => {
     const use = RESOURCES.get("memory")?.attribute?.read(readings, owners);
     expect(use).toEqual([
       { resource: "memory", owner: "docker", kind: "docker", amount: 8000, processes: 1 },
-      { resource: "memory", owner: "session:graph", kind: "session", amount: 4500, processes: 3 },
+      { resource: "memory", owner: "session:shop", kind: "session", amount: 4500, processes: 3 },
       { resource: "memory", owner: "lease:l1", kind: "lease", amount: 4000, processes: 2 },
     ]);
   });

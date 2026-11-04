@@ -22,16 +22,16 @@ const processes: ProcessInfo[] = [
 
 describe("attribute", () => {
   it("gives each process tree to its session, its rule or other", () => {
-    const sessions = [{ pid: 11, name: "graph", sessionId: "s1", status: "busy", cwd: null }];
+    const sessions = [{ pid: 11, name: "shop", sessionId: "s1", status: "busy", cwd: null }];
     const memory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 1000, kernelNonpagedMb: 5000 };
     const { owners, ownerOf } = attribute(processes, sessions, memory);
-    expect(ownerOf.get(13)).toBe("session:graph");
+    expect(ownerOf.get(13)).toBe("session:shop");
     expect(ownerOf.get(21)).toBe("browser");
     expect(ownerOf.get(30)).toBe("docker");
     expect(ownerOf.get(40)).toBe("editor");
     expect(ownerOf.get(50)).toBe("other");
     expect(owners[0]).toEqual({ owner: "kernel", kind: "kernel", privateMb: 6000, workingMb: 6000, processes: 0 });
-    expect(owners.find((owner) => owner.owner === "session:graph")).toMatchObject({ privateMb: 990, processes: 3 });
+    expect(owners.find((owner) => owner.owner === "session:shop")).toMatchObject({ privateMb: 990, processes: 3 });
   });
 
   it("gives the process tree of a gateway server to mcp:<name>", () => {
@@ -83,10 +83,10 @@ describe("attribute", () => {
       titled(64, 62, "headroom-mcp-vex"),
       ...processes,
       titled(14, 12, "headroom-cli"),
-      titled(41, 10, "fleet-site"),
+      titled(41, 10, "local-site"),
       titled(70, 999, "headroom-cli"),
     ];
-    const sessions = [{ pid: 11, name: "graph", sessionId: "s1", status: null, cwd: null }];
+    const sessions = [{ pid: 11, name: "shop", sessionId: "s1", status: null, cwd: null }];
     const { owners, ownerOf } = attribute(list, sessions, undefined, undefined, new Map([[64, "vex"]]));
     // The title is nearer than the rule of svchost.
     expect(ownerOf.get(62)).toBe("service:headroom-daemon");
@@ -94,7 +94,7 @@ describe("attribute", () => {
     expect(ownerOf.get(61)).toBe("system");
     // A server of the gateway and a session win over a title.
     expect(ownerOf.get(64)).toBe("mcp:vex");
-    expect(ownerOf.get(14)).toBe("session:graph");
+    expect(ownerOf.get(14)).toBe("session:shop");
     // A title replaces only the rule system. An orphan with a title stays other.
     expect(ownerOf.get(41)).toBe("editor");
     expect(ownerOf.get(70)).toBe("other");
@@ -176,7 +176,7 @@ describe("unattributedRow (H49)", () => {
 
 describe("titleOf", () => {
   it("reads the option --title of a Node command line", () => {
-    expect(titleOf("C:\\nvm4w\\nodejs\\node.exe --title=fleet-site C:\\fleet\\cli.ts serve")).toBe("fleet-site");
+    expect(titleOf("C:\\nvm4w\\nodejs\\node.exe --title=local-site C:\\site\\cli.ts serve")).toBe("local-site");
     expect(titleOf('"C:\\Program Files\\nodejs\\node.exe" --title "my server" app.js')).toBe("my server");
     expect(titleOf('node.exe "--title=quoted" app.js')).toBe("quoted");
     expect(titleOf("node.exe app.js")).toBeNull();
@@ -223,12 +223,12 @@ describe("treeMb", () => {
 describe("readSessions", () => {
   it("reads the session files and skips the bad ones", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-"));
-    writeFileSync(join(dir, "11.json"), JSON.stringify({ pid: 11, sessionId: "abcdef12-0000", name: "graph", status: "idle", cwd: "C:\\x" }));
+    writeFileSync(join(dir, "11.json"), JSON.stringify({ pid: 11, sessionId: "abcdef12-0000", name: "shop", status: "idle", cwd: "C:\\x" }));
     writeFileSync(join(dir, "12.json"), JSON.stringify({ pid: 12, sessionId: "1234567890" }));
     writeFileSync(join(dir, "13.json"), "{ not json");
     const sessions = readSessions(dir).sort((a, b) => a.pid - b.pid);
     expect(sessions).toEqual([
-      { pid: 11, name: "graph", sessionId: "abcdef12-0000", status: "idle", cwd: "C:\\x" },
+      { pid: 11, name: "shop", sessionId: "abcdef12-0000", status: "idle", cwd: "C:\\x" },
       { pid: 12, name: "12345678", sessionId: "1234567890", status: null, cwd: null },
     ]);
     expect(readSessions(join(dir, "missing"))).toEqual([]);

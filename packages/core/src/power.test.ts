@@ -117,25 +117,25 @@ describe("the power texts", () => {
     const owners = powerOwners(
       [
         { owner: "session:server-stack", kind: "session", cores: 1.5 },
-        { owner: "session:graph", kind: "session", cores: 0.5 },
+        { owner: "session:shop", kind: "session", cores: 0.5 },
         { owner: "docker", kind: "docker", cores: 0 },
       ],
       8,
     );
     expect(owners).toEqual([
       { owner: "session:server-stack", kind: "session", watts: 6 },
-      { owner: "session:graph", kind: "session", watts: 2 },
+      { owner: "session:shop", kind: "session", watts: 2 },
     ]);
-    expect(ownersWattsText(owners)).toBe("session:server-stack 6.0 W, session:graph 2.0 W");
+    expect(ownersWattsText(owners)).toBe("session:server-stack 6.0 W, session:shop 2.0 W");
     expect(powerOwners(undefined, 8)).toEqual([]);
     expect(powerOwners([{ owner: "a", kind: "other", cores: 1 }], null)).toEqual([]);
   });
 
   it("writes the power line of the status", () => {
     const battery = { id: "battery", used: 15, battery: { ac: false, charging: false, percent: 68, rateW: -18, minutesLeft: 118 }, owners: [] };
-    const power = { id: "power", used: 18, owners: [{ owner: "session:server-stack", value: 3.1 }, { owner: "session:graph", value: 2.4 }, { owner: "docker", value: 0.05 }] };
+    const power = { id: "power", used: 18, owners: [{ owner: "session:server-stack", value: 3.1 }, { owner: "session:shop", value: 2.4 }, { owner: "docker", value: 0.05 }] };
     expect(powerLine([battery, power], { ...NO_POWER, powerMode: "balanced" })).toBe(
-      "Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:graph 2.4 W.",
+      "Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:shop 2.4 W.",
     );
     const plugged = { ...battery, battery: { ac: true, charging: true, percent: 92, rateW: 15, minutesLeft: null } };
     expect(powerLine([plugged], undefined)).toBe("Power: plugged in, charging, 92%.");

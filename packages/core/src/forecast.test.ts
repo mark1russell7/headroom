@@ -219,7 +219,7 @@ describe("the text of a forecast", () => {
 describe("the forecast alerts", () => {
   const p = (pid: number, privateMb: number): ProcessInfo => ({ pid, ppid: 0, name: "node.exe", privateMb, workingMb: privateMb });
   const memory = { totalMb: 28_000, availableMb: 8000, commitMb: 60_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 2500 };
-  const owners: Record<number, [string, OwnerKind]> = { 1: ["session:graph", "session"], 2: ["docker", "docker"] };
+  const owners: Record<number, [string, OwnerKind]> = { 1: ["session:shop", "session"], 2: ["docker", "docker"] };
   const input = (forecasts: Record<string, Forecast[]>, extra: Partial<AlertInput> = {}): AlertInput => ({
     memory,
     processes: [p(1, 6200), p(2, 4096)],
@@ -227,7 +227,7 @@ describe("the forecast alerts", () => {
     kindOf: new Map(Object.values(owners).map(([owner, kind]) => [owner, kind])),
     leases: [],
     disks: [{ mount: "C:", freeMb: 26_000, totalMb: 974_848 }],
-    writes: [{ owner: "session:graph", kind: "session", mbLastHour: 3277, mbPerMin: 55 }],
+    writes: [{ owner: "session:shop", kind: "session", mbLastHour: 3277, mbPerMin: 55 }],
     forecasts: new Map(Object.entries(forecasts)),
     ...extra,
   });
@@ -242,7 +242,7 @@ describe("the forecast alerts", () => {
     expect(rest).toEqual([]);
     expect(alert).toMatchObject({ id: "forecast:disk:C:", kind: "forecast", severity: "warning", subject: "drive C:", mb: 26_000 });
     expect(alert?.message).toBe(
-      "Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB. Run `headroom disk report` to see what uses the space.",
+      "Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:shop 3.2 GB. Run `headroom disk report` to see what uses the space.",
     );
     // The warning level alone does not alert, and a critical level after 24 hours does not alert.
     expect(forecastAlerts(detect(input({ "disk:C:": [warning] })))).toEqual([]);
@@ -270,7 +270,7 @@ describe("the forecast alerts", () => {
     const [alert] = forecastAlerts(detect(input({ commit: [commit(24)] })));
     expect(alert).toMatchObject({ id: "forecast:commit", subject: "commit", mb: 60_000 });
     expect(alert?.message).toBe(
-      "The commit charge grows 29.3 GB an hour. At this rate, it reaches 90% of its limit (70.3 GB) in 24 min, at 06:40 UTC. Most private memory: session:graph 6.1 GB, docker 4.0 GB. At the limit, new allocations fail.",
+      "The commit charge grows 29.3 GB an hour. At this rate, it reaches 90% of its limit (70.3 GB) in 24 min, at 06:40 UTC. Most private memory: session:shop 6.1 GB, docker 4.0 GB. At the limit, new allocations fail.",
     );
     expect(forecastAlerts(detect(input({ commit: [commit(45)] })))).toEqual([]);
   });

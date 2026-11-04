@@ -20,7 +20,7 @@ const GPU: GpuStatus = {
       limitsFrom: "dxgi",
       busyPercent: 40,
       engines: { "3d": 35, video: 40 },
-      owners: [{ owner: "session:graph", kind: "session", mb: 561, dedicatedMb: 523, sharedMb: 38, busyPercent: 40, processes: 2, top: "Code.exe" }],
+      owners: [{ owner: "session:shop", kind: "session", mb: 561, dedicatedMb: 523, sharedMb: 38, busyPercent: 40, processes: 2, top: "Code.exe" }],
     },
     {
       id: "gpu:2",
@@ -43,7 +43,7 @@ const GPU: GpuStatus = {
   leases: { "3f2a9c1e-0000": 150 },
 };
 
-const LEASE = { id: "3f2a9c1e-0000", holder: "graph", job: "playwright test", peakGpuMb: 400 } as Lease;
+const LEASE = { id: "3f2a9c1e-0000", holder: "shop", job: "playwright test", peakGpuMb: 400 } as Lease;
 
 describe("headroom gpu (H36)", () => {
   it("writes each adapter, its owners, the leased jobs and the memory rule", () => {
@@ -52,7 +52,7 @@ describe("headroom gpu (H36)", () => {
     expect(lines).toContain("  Memory: 1.3 GB of 17.8 GB, 16.5 GB free. Dedicated 1 GB of 4 GB. Shared 300 MB of 13.8 GB, in RAM.");
     expect(lines).toContain("  Busy: 40% (3D 35%, video 40%).");
     expect(lines).toContain("  Limits from DXGI. The DXGI budget of one process is 17.0 GB.");
-    expect(lines.some((line) => line.includes("session:graph") && line.includes("Code.exe") && line.includes("561 MB"))).toBe(true);
+    expect(lines.some((line) => line.includes("session:shop") && line.includes("Code.exe") && line.includes("561 MB"))).toBe(true);
     expect(lines).toContain("  Busy: no read yet (the use needs two reads).");
     expect(lines).toContain("  No owner has GPU memory on this adapter.");
     expect(lines.some((line) => line.includes("playwright test") && line.endsWith("GPU 150 MB, peak 400 MB"))).toBe(true);

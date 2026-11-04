@@ -42,7 +42,7 @@ function facts(fields: Omit<Partial<PresenceFacts>, "read"> & { readonly read?: 
 
 function lease(fields: Partial<Lease> = {}): Lease {
   return {
-    id: "l1", holder: "graph", job: "pnpm e2e", amounts: { memory: 4096 }, priority: 0, pid: null, ttlMs: 300_000, state: "waiting",
+    id: "l1", holder: "shop", job: "pnpm e2e", amounts: { memory: 4096 }, priority: 0, pid: null, ttlMs: 300_000, state: "waiting",
     requestedAt: NOW, grantedAt: null, endedAt: null, heartbeatAt: NOW, reason: null, peakMb: null, ...fields,
   };
 }
@@ -283,7 +283,7 @@ describe("Engine presence (H33)", () => {
       callReads: () => callReads,
     };
   }
-  const heavy = { holder: "graph", job: "pnpm e2e", amounts: { memory: 4096 }, ttlMs: 3_600_000 };
+  const heavy = { holder: "shop", job: "pnpm e2e", amounts: { memory: 4096 }, ttlMs: 3_600_000 };
 
   it("holds a new heavy lease while Mark is on a call, starts it after the busy wait in eco mode, and lets a light lease run", () => {
     const { engine, advance } = setup({ call: { camera: false, microphone: true } });
@@ -291,7 +291,7 @@ describe("Engine presence (H33)", () => {
     expect(engine.status().presence).toMatchObject({ enabled: true, state: "busy", busy: "call", call: "microphone", idleSeconds: 1, eco: true });
     const waiting = engine.request(heavy);
     expect(waiting).toMatchObject({ state: "waiting", reason: `waits while Mark is on a call (at most until ${localClock(NOW + 20 * MINUTE)}, then in eco mode)` });
-    expect(engine.request({ holder: "graph", job: "tsc", amounts: { memory: 512 }, ttlMs: 3_600_000 }).state).toBe("granted");
+    expect(engine.request({ holder: "shop", job: "tsc", amounts: { memory: 512 }, ttlMs: 3_600_000 }).state).toBe("granted");
     expect(engine.request({ ...heavy, ignorePresence: true }).state).toBe("granted");
     advance(20 * MINUTE);
     engine.tick();
@@ -322,12 +322,12 @@ describe("Engine presence (H33)", () => {
     const { engine, advance, setRead } = setup();
     engine.tick();
     const job = engine.request(heavy);
-    const light = engine.request({ holder: "graph", job: "tsc", amounts: { memory: 512, cpu: 2 }, ttlMs: 3_600_000 });
+    const light = engine.request({ holder: "shop", job: "tsc", amounts: { memory: 512, cpu: 2 }, ttlMs: 3_600_000 });
     expect(engine.ecoOf(job)).toEqual({ on: true, reason: "Mark works at the laptop" });
     expect(engine.ecoOf(light)).toEqual({ on: false, reason: null });
     expect(engine.status()).toMatchObject({ cpuReserve: 4, free: { cpu: 10 } });
     // A lease above the reserve of this time waits for Mark to leave. It is not cancelled.
-    const wide = engine.request({ holder: "graph", job: "bench", amounts: { cpu: 13 }, ttlMs: 3_600_000 });
+    const wide = engine.request({ holder: "shop", job: "bench", amounts: { cpu: 13 }, ttlMs: 3_600_000 });
     expect(wide).toMatchObject({ state: "waiting", reason: "waits for cpu: needs 13, 10 free" });
     advance(2000);
     setRead({ idleMs: 6 * MINUTE, notification: 5 });

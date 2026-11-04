@@ -543,7 +543,7 @@ export class DockerReader {
 
 // ---- the owners ----
 
-/** One folder of a fleet role, in its normal forms. */
+/** One folder of a role, in its normal forms. */
 export interface RoleFolder {
   readonly role: string;
   /** The normal forms of the folder: its path and its real path. */
@@ -664,7 +664,7 @@ export function containerOwner(
 }
 
 /**
- * The owners of the containers of each read, from the fleet roles. The folders of the roles stay until the roles change. The
+ * The owners of the containers of each read, from the roles. The folders of the roles stay until the roles change. The
  * real path of each folder of a project stays for the life of the daemon.
  */
 export class ContainerOwners {
@@ -876,7 +876,7 @@ const coresText = (cores: number): string => `${cores < 0.1 ? cores.toFixed(2) :
 
 /**
  * This function gives the Docker line of `headroom status`, or `null` with no read. For example: "Docker: 6 containers,
- * 2.1 GB. Most: session:graph neo4j 1.2 GB. Build cache 14 GB."
+ * 2.1 GB. Most: session:shop neo4j 1.2 GB. Build cache 14 GB."
  */
 export function dockerLine(docker: DockerStatus | null | undefined): string | null {
   if (docker === null || docker === undefined) return null;

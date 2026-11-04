@@ -7,7 +7,7 @@
  * session of its own, and each request of a session goes to the one copy.
  *
  * - The gateway starts a server at the first request, and stops it after an idle time.
- * - `warm` starts the servers before the first request, for example before the sessions of the fleet start.
+ * - `warm` starts the servers before the first request, for example before the sessions start.
  * - After a server stops, the next request starts it again. After each failure, the wait before the next start is longer.
  * - The checks of the client apply: the token of the daemon, and no request from a web page.
  * - The SDK of MCP loads at the first request. Thus a daemon with no MCP server does not pay its memory.

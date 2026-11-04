@@ -51,7 +51,7 @@ export interface ListeningPort {
   readonly pid: number;
   /** The name of the process, or "" without a process. */
   readonly name: string;
-  /** The owner of the process, for example `session:graph`, or "" without a process. */
+  /** The owner of the process, for example `session:shop`, or "" without a process. */
   readonly owner: string;
 }
 
