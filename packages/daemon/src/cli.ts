@@ -104,6 +104,7 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { diskCommand } from "./disk-cli.ts";
+import { clientArgs, detachedLine, detachedLogPath, startClient, tellParent } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
@@ -130,13 +131,15 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g|auto] [--cpu 2|auto] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
                [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
-               [--battery-ok] [--during-drain] [--ignore-presence] -- <command> [args...]
+               [--battery-ok] [--during-drain] [--ignore-presence] [--detach] -- <command> [args...]
                --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
                Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
                --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
                The leases do not take the last ${CPU_RESERVE_DEFAULT} cores: headroom config cpu-reserve changes them.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
                --log file: the output of the job also goes to the end of the file.
+               --detach: the job runs as a detached process, and the run returns at once. It needs --job.
+               The output goes to the --log file, or to a file under the folder of headroom. headroom job <name> gives the state.
                The run prints the lease id first: headroom job <id> gives the state of the job.
                --disk 5g: space on the drive of the current folder. --disk D:=5g: on the drive D:.
                With a temp root (headroom config job-temp), the job gets its own TEMP folder,
@@ -373,15 +376,16 @@ const LOG_DRAIN_MS = 2000;
 /**
  * This function runs a command, and gives its exit code and its exit. `env` adds variables to the environment of the
  * command. With a log file, the output and the errors of the command go to the console and to the end of the file.
+ * With `hidden`, a console program opens no window. A detached client has no console, so Windows otherwise opens one for each program (H56).
  */
-function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}, log: string | null = null): Promise<CommandEnd> {
+function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}, log: string | null = null, hidden: boolean = false): Promise<CommandEnd> {
   return new Promise((resolve) => {
     const [file, ...args] = command;
     if (!file) return resolve({ code: 2, exit: { code: null, signal: null } });
     const sink = log === null ? null : createWriteStream(log, { flags: "a" });
     sink?.on("error", (error) => console.error(`headroom: the log file ${log ?? ""} failed: ${error.message}`));
     const stdio: StdioOptions = sink === null ? "inherit" : ["inherit", "pipe", "pipe"];
-    const options = { stdio, env: jobEnv(env) };
+    const options = { stdio, env: jobEnv(env), windowsHide: hidden };
     // On Windows, a program starts directly. A .cmd file, such as npm, starts in cmd with each argument escaped.
     const win = process.platform === "win32" ? windowsCommand(command, { env: options.env }) : null;
     const child = win === null ? spawn(file, args, options) : spawn(win.file, win.args, { ...options, windowsVerbatimArguments: win.verbatim });
@@ -427,6 +431,8 @@ interface Enforcement extends LimitOptions {
   readonly keep: boolean;
   /** True (--no-eco): the job keeps its full speed on battery (H30). */
   readonly noEco?: boolean | undefined;
+  /** True for a detached client (H56): the programs of the job open no window. */
+  readonly hidden?: boolean | undefined;
 }
 
 /** The efficiency mode of a job from the answer of a heartbeat (H30), with its reason (H33). */
@@ -517,7 +523,7 @@ async function runEnforced(
   first?.unref();
   let end: CommandEnd;
   try {
-    end = await runCommand(command, env, log);
+    end = await runCommand(command, env, log, enforcement.hidden === true);
   } finally {
     if (timer !== null) clearInterval(timer);
     if (first !== null) clearTimeout(first);
@@ -625,9 +631,10 @@ function checkDisks(status: Status | null, force: boolean): number | null {
 }
 
 async function run(argv: string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
+  const { values, positionals, tokens } = parseArgs({
     args: argv,
     allowPositionals: true,
+    tokens: true,
     options: {
       mem: { type: "string" },
       cpu: { type: "string" },
@@ -651,12 +658,23 @@ async function run(argv: string[]): Promise<number> {
       "battery-ok": { type: "boolean" },
       "during-drain": { type: "boolean" },
       "ignore-presence": { type: "boolean" },
+      detach: { type: "boolean" },
+      "detached-client": { type: "boolean" },
     },
   });
   if (positionals.length === 0) {
     console.error("headroom run needs a command after --. Example: headroom run --mem 2g -- pnpm test");
     return 2;
   }
+  // H56: the wait of a session needs a name, because the run returns before the job ends.
+  const detach = values.detach === true;
+  if (detach && values.job === undefined) {
+    console.error("headroom run --detach needs --job <name>, for the wait with headroom job <name>. Example: headroom run --detach --job tests --mem 2g -- pnpm test");
+    return 2;
+  }
+  // H56: the output of a detached client is already the log file, so the job writes to it directly, and a line does not come two times.
+  const detachedClient = values["detached-client"] === true;
+  const started = detachedClient ? tellParent : (): void => undefined;
   // H31: the conditions of the job. A wrong condition stops the run here, with the list of the known conditions.
   let when: string[];
   try {
@@ -675,12 +693,14 @@ async function run(argv: string[]): Promise<number> {
   }
   // H47: the option of the run. Without it, the past runs of the job decide.
   const spawnHeavy = values["spawn-heavy"] === true ? true : values["no-spawn-heavy"] === true ? false : undefined;
-  const opened = values.log === undefined ? null : openLog(values.log);
+  const logFile = values.log ?? (detach ? detachedLogPath() : undefined);
+  const opened = logFile === undefined ? null : openLog(logFile);
   if (opened !== null && "error" in opened) {
     console.error(`headroom: ${opened.error}`);
     return 2;
   }
   const log = opened?.path ?? null;
+  const sink = detachedClient ? null : log;
   const amounts: Record<string, number> = {};
   if (values.mem && values.mem !== "auto") amounts["memory"] = parseMemory(values.mem);
   if (values.cpu && values.cpu !== "auto") {
@@ -697,7 +717,7 @@ async function run(argv: string[]): Promise<number> {
   for (const slot of values["no-auto-slot"] === true ? [] : autoSlots(positionals.join(" "))) {
     if (amounts[slot] !== undefined) continue;
     amounts[slot] = 1;
-    if (slot === BROWSER_SLOT) console.error(`headroom: this job runs browser tests, so it takes the slot "${BROWSER_SLOT}": one browser test job at a time.`);
+    if (slot === BROWSER_SLOT && !detach) console.error(`headroom: this job runs browser tests, so it takes the slot "${BROWSER_SLOT}": one browser test job at a time.`);
   }
   const job = values.job ?? positionals.join(" ").slice(0, 500);
   if (values.limit && !values.mem && !values.cpu) {
@@ -714,11 +734,22 @@ async function run(argv: string[]): Promise<number> {
     }
   }
 
+  // H56: the detached process is this same code, without --detach. It gives each message of the run to the log.
+  if (detach && log !== null) {
+    const detachAt = new Set(tokens.flatMap((token) => (token.kind === "option" && token.name === "detach" ? [token.index] : [])));
+    const start = await startClient(import.meta.filename, clientArgs(argv, detachAt, values.holder ?? (await holderOf()), log), log);
+    const { line, code } = detachedLine(job, log, start);
+    if (code === 0) console.log(line);
+    else console.error(line);
+    return code;
+  }
+
   let connection = connect() ?? (await afterPlannedRestart());
   if (!connection) {
     const conditions = when.length > 0 || timing ? " and without its conditions" : "";
     console.error(`headroom: the daemon does not run, so the job runs without a lease${conditions}.`);
-    return (await runEnforced(positionals, { keep, limit: false, leaseMb: null }, {}, log)).code;
+    started(null);
+    return (await runEnforced(positionals, { keep, limit: false, leaseMb: null, hidden: detachedClient }, {}, sink)).code;
   }
   // When the daemon does not answer, the lease request that comes next reports it.
   const status = await connection.call<Status>(["resources", "status"], {}).catch(() => null);
@@ -754,7 +785,7 @@ async function run(argv: string[]): Promise<number> {
   }
   const limit = values.limit === true;
   const leaseCores = amounts["cpu"] ?? null;
-  const enforcement: Enforcement = { keep, limit, leaseMb: amounts["memory"] ?? null, leaseCores, noEco: values["no-eco"] === true };
+  const enforcement: Enforcement = { keep, limit, leaseMb: amounts["memory"] ?? null, leaseCores, noEco: values["no-eco"] === true, hidden: detachedClient };
   const request = {
     holder,
     job,
@@ -781,13 +812,15 @@ async function run(argv: string[]): Promise<number> {
     if (next === null) {
       if (!isNetworkError(error)) throw error;
       console.error("headroom: the daemon does not answer, so the job runs without a lease.");
-      return (await runEnforced(positionals, enforcement, {}, log)).code;
+      started(null);
+      return (await runEnforced(positionals, enforcement, {}, sink)).code;
     }
     connection = next;
     first = await next.call<Lease>(["resources", "lease"], request);
   }
   // H26: a session can wait on this id with `headroom job <id>`, also after its shell stops.
   console.error(leaseLine(first));
+  started(first.id);
   // H31: a daemon of an older version does not know the conditions, and it grants the lease without them.
   if ((when.length > 0 || timing) && first.conditions === undefined) {
     console.error("headroom: the daemon is older than --when and --timing, so the job runs without its conditions. Run headroom service restart.");
@@ -828,7 +861,7 @@ async function run(argv: string[]): Promise<number> {
       () => undefined,
     );
   try {
-    result = await runEnforced(positionals, enforcement, temp?.env ?? {}, log, report);
+    result = await runEnforced(positionals, enforcement, temp?.env ?? {}, sink, report);
   } finally {
     if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
   }
