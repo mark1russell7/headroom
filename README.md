@@ -500,7 +500,8 @@ On Windows, `headroom run` puts the job into a job object:
 - The run writes the peak memory of the job, for example `the job used at most 248 MB of its lease of 300 MB`. The ended lease keeps the peak.
 - The run also writes the count of processes that the job started (H29). The lease keeps the count.
 - On battery, the run puts the processes of the job in efficiency mode (EcoQoS), and writes one line when the mode changes (H30). `--no-eco` turns this off.
-- A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom pool browser 2` lets two run.
+- A browser test (`playwright test`, `cypress run`, or a command that names `e2e`) takes the slot `browser` by itself. Thus one browser test job runs at a time. Two jobs at the same time start many browser processes, and new processes can then fail with `0xC0000142`. A script that runs browser tests inside it, for example a gate, takes the slot with `--slot browser`. `--no-auto-slot` turns it off, and `headroom run --slot browser` adds it. `headroom pool browser 2` lets two run.
+- The rating reads each part of the line (H55). For `vitest` and `jest`, the word `e2e` is a filter word, so it gives no slot, unless the part has `--browser`. A unit test runner that starts a browser from its own code takes the slot with `--slot browser`.
 - A spawn-heavy job does not run beside a browser test (H47). `--spawn-heavy` and `--no-spawn-heavy` set the class of the job.
 - `--when ac,usage<80` makes the job wait for its conditions, and `--timing` makes it wait for AC power (H31). On a low battery, a heavy job waits. `--battery-ok` starts it.
 - `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
@@ -591,6 +592,8 @@ The plugin `headroom` has a hook for the Bash and PowerShell tools. When a sessi
 
 - The memory is tight when less than 4 GB is free for a lease, or when jobs wait.
 - The hook does not approve a command. The session sends the new form, and the permission rules of the user apply to it.
+- The hook reads the command words of each part of the line, not the text (H55). The text of a quoted string or of a comment does not count, so `git commit -m "fix vitest"` is light. A shell that runs its argument is different: `bash -c "pnpm test"` is heavy. `sh -c`, `powershell -Command`, `pwsh -Command` and `cmd /c` are the same.
+- A text reader is light, whatever its arguments say. The text readers are `grep`, `rg`, `git grep`, `sed`, `cat`, `echo`, `head`, `tail`, `ls`, `Select-String` and `Get-Content`.
 - Without a daemon, or for a light command, the hook does nothing. It adds approximately 65 ms to each command.
 
 To turn it on in Claude Code: `/plugin marketplace add C:\Users\<you>\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
