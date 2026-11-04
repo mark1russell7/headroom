@@ -145,7 +145,7 @@ const HELP = `headroom: the memory and job broker of this computer
                With a temp root (headroom config job-temp), the job gets its own TEMP folder,
                and the run removes it at the end. --keep-temp: keep the folder.
                A browser test (playwright test, e2e) takes the slot browser. --no-auto-slot: not.
-               For vitest and jest, the word e2e gives no slot, unless the command has --browser.
+               For vitest and jest, the word e2e gives no slot, unless the command has --browser, or --project or --config names e2e.
                A job whose past runs start more than 600 processes a minute is spawn-heavy:
                it does not run beside a browser test. --spawn-heavy: say so for a new job.
                --no-spawn-heavy: a normal job, also with high past runs. Beside a browser test, the
