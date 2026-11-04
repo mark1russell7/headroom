@@ -65,8 +65,8 @@ const PROCESSES = [proc(2320, "dwm.exe"), proc(13_048, "Code.exe"), proc(500, "c
 const NAMES = new Map(PROCESSES.map((info) => [info.pid, info.name]));
 const OWNER_OF: Record<number, [string, OwnerKind]> = {
   2320: ["system", "system"],
-  13_048: ["session:graph", "session"],
-  500: ["session:graph", "session"],
+  13_048: ["session:shop", "session"],
+  500: ["session:shop", "session"],
   9784: ["system", "system"],
   18_800: ["system", "system"],
 };
@@ -205,7 +205,7 @@ describe("GPU owners (H36)", () => {
 
   it("sums the GPU memory and the use of each owner on one adapter, with a row for the leased job", () => {
     expect(gpuOwners(read, OWNERS, NAMES, "gpu:0")).toEqual([
-      { owner: "session:graph", kind: "session", mb: 561, dedicatedMb: 523, sharedMb: 38, busyPercent: 40, processes: 2, top: "Code.exe" },
+      { owner: "session:shop", kind: "session", mb: 561, dedicatedMb: 523, sharedMb: 38, busyPercent: 40, processes: 2, top: "Code.exe" },
       { owner: "system", kind: "system", mb: 513, dedicatedMb: 216, sharedMb: 297, busyPercent: 20, processes: 1, top: "dwm.exe" },
       { owner: "lease:L1", kind: "lease", mb: 150, dedicatedMb: 150, sharedMb: 0, busyPercent: 40, processes: 1, top: "chrome.exe" },
     ]);
@@ -216,9 +216,9 @@ describe("GPU owners (H36)", () => {
   it("gives the status of each adapter, the GPU memory of each lease, and the lines of headroom status", () => {
     const status = gpuStatus(read, OWNERS, NAMES);
     expect(status?.leases).toEqual({ L1: 150 });
-    expect(status?.adapters[0]).toMatchObject({ freeMb: 18_251 - 1324, owners: [{ owner: "session:graph" }, { owner: "system" }] });
+    expect(status?.adapters[0]).toMatchObject({ freeMb: 18_251 - 1324, owners: [{ owner: "session:shop" }, { owner: "system" }] });
     expect(gpuLines(status)).toEqual([
-      "GPU 0 (AMD Radeon(TM) 860M Graphics): 1.3 of 17.8 GB (0.3 GB in RAM), 40% busy. Most: session:graph Code.exe 561 MB, system dwm.exe 513 MB.",
+      "GPU 0 (AMD Radeon(TM) 860M Graphics): 1.3 of 17.8 GB (0.3 GB in RAM), 40% busy. Most: session:shop Code.exe 561 MB, system dwm.exe 513 MB.",
       "GPU 2 (adapter 0x0001dfbe): 0.6 of 13.8 GB (0.6 GB in RAM), 10% busy. Most: system WorkloadsSessionHost.exe 325 MB.",
     ]);
     const one = gpuStatus({ adapters: read.adapters.slice(0, 1), processes: read.processes.filter((each) => each.adapter === "gpu:0") }, OWNERS, NAMES);
@@ -234,7 +234,7 @@ describe("GPU owners (H36)", () => {
       processors: 16, pools: {}, granted: {}, gpu: read,
     };
     const resources = withKinds(measure(readings), { readings, owners: OWNERS });
-    expect(resources.find((each) => each.id === "gpu:0")?.owners.map((each) => [each.owner, each.value])).toEqual([["session:graph", 561], ["system", 513]]);
+    expect(resources.find((each) => each.id === "gpu:0")?.owners.map((each) => [each.owner, each.value])).toEqual([["session:shop", 561], ["system", 513]]);
     expect(resources.find((each) => each.id === "gpu:2")?.owners.map((each) => [each.owner, each.value])).toEqual([["system", 325]]);
   });
 });
@@ -269,7 +269,7 @@ describe("the GPU alert (H36)", () => {
     const [alert] = detect(input(120_000, [0, 60_000, 120_000]), DEFAULT_ALERT_RULES);
     expect(alert).toMatchObject({ id: "gpu:0", kind: "gpu", severity: "warning", subject: "AMD Radeon(TM) 860M Graphics", mb: 16_800 });
     expect(alert?.message).toBe(
-      "The GPU memory of AMD Radeon(TM) 860M Graphics is 16.4 GB of 17.8 GB (92%), above 90% for 2 minutes. Most GPU memory: session:graph Code.exe 561 MB, system dwm.exe 513 MB. The shared part (0.3 GB) is in the RAM, so less memory is available for the jobs.",
+      "The GPU memory of AMD Radeon(TM) 860M Graphics is 16.4 GB of 17.8 GB (92%), above 90% for 2 minutes. Most GPU memory: session:shop Code.exe 561 MB, system dwm.exe 513 MB. The shared part (0.3 GB) is in the RAM, so less memory is available for the jobs.",
     );
   });
 
@@ -294,7 +294,7 @@ describe("the engine with a GPU (H36)", () => {
     };
     const sampler: Sampler = { memory, processes: () => [proc(self, "node.exe"), ...PROCESSES], gpu, close: () => undefined };
     const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere", processors: 16, now: () => now });
-    const lease = engine.request({ holder: "graph", job: "e2e", amounts: {}, ttlMs: 3_600_000, pid: self });
+    const lease = engine.request({ holder: "shop", job: "e2e", amounts: {}, ttlMs: 3_600_000, pid: self });
     engine.tick();
     expect(engine.status().gpu?.leases[lease.id]).toBe(300);
     expect(engine.status().resources.find((each) => each.id === "gpu:0")).toMatchObject({ kind: "gpu", unit: "MB", used: 1324, capacity: 18_251 });

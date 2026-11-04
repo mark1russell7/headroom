@@ -42,12 +42,12 @@ describe("ServiceMonitor", () => {
   it("runs each check one time in each round, and drops a check that the list no longer has", async () => {
     let now = 0;
     const docker = fake("docker", [ok(5), down("connect ECONNREFUSED")]);
-    const site = fake("fleet-site", [ok(3)], false);
+    const site = fake("local-site", [ok(3)], false);
     let checks: ServiceCheck[] = [docker, site];
     const monitor = new ServiceMonitor({ checks: () => checks, now: () => now });
     expect(monitor.list()).toEqual([]);
     await monitor.check();
-    expect(monitor.list().map((each) => [each.name, each.state])).toEqual([["docker", "ok"], ["fleet-site", "ok"]]);
+    expect(monitor.list().map((each) => [each.name, each.state])).toEqual([["docker", "ok"], ["local-site", "ok"]]);
     now = 30_000;
     checks = [docker];
     await monitor.check();
@@ -83,7 +83,7 @@ describe("ServiceMonitor", () => {
 
 describe("checkHealth", () => {
   it("gives each URL in its normal form, and refuses a bad name or a URL that is not http", () => {
-    expect(checkHealth({ "fleet-site": "http://127.0.0.1:4731" })).toEqual({ "fleet-site": "http://127.0.0.1:4731/" });
+    expect(checkHealth({ "local-site": "http://127.0.0.1:4731" })).toEqual({ "local-site": "http://127.0.0.1:4731/" });
     expect(() => checkHealth({ "mcp:vex": "http://127.0.0.1/" })).toThrow(/not valid/);
     expect(() => checkHealth({ site: "file:///C:/x" })).toThrow(/not http or https/);
     expect(() => checkHealth({ site: "not a url" })).toThrow(/not valid/);

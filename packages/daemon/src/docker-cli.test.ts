@@ -24,7 +24,7 @@ const container = (name: string, owner: string, state: string, memoryMb: number 
   ownerFrom: owner.startsWith("session:") ? "folder" : "docker",
 });
 
-const CONTAINERS = [container("graph-mongo-1", "session:graph", "running", 566, 0.55, "graph"), container("dynamodb-local", "docker:dynamodb-local", "exited", null, null, null)];
+const CONTAINERS = [container("shop-mongo-1", "session:shop", "running", 566, 0.55, "shop"), container("dynamodb-local", "docker:dynamodb-local", "exited", null, null, null)];
 
 const DOCKER: DockerStatus = dockerStatus({
   read: {
@@ -51,9 +51,9 @@ describe("headroom docker (H38)", () => {
     // H49: the times are in the local clock, as in the other commands.
     const at = localClock(Date.parse("2026-10-25T09:57:00Z"));
     expect(lines[0]).toBe(`Docker 29.9.2 (API 1.56), read at ${at}: 1 of 2 containers run, 566 MB, 0.55 cores.`);
-    expect(lines.some((line) => line.startsWith("graph-mongo-1") && line.includes("session:graph") && line.includes("566 MB") && line.endsWith("graph"))).toBe(true);
+    expect(lines.some((line) => line.startsWith("shop-mongo-1") && line.includes("session:shop") && line.includes("566 MB") && line.endsWith("shop"))).toBe(true);
     expect(lines.some((line) => line.startsWith("dynamodb-local") && line.includes("docker:dynamodb-local") && line.includes("exited"))).toBe(true);
-    expect(lines).toContain("  session:graph                   566 MB   0.55 cores  1 container");
+    expect(lines).toContain("  session:shop                    566 MB   0.55 cores  1 container");
     expect(lines).toContain("VM: vmmemWSL 1.3 GB in RAM, 2.1 GB committed.");
     expect(lines).toContain("docker (VM) keeps 1.4 GB in RAM and 0.30 cores: the VM, its cache and the Docker programs of Windows, less the containers.");
     expect(lines).toContain(`Disk, read at ${at}: images 33.1 GB (102), images with no container 26.2 GB (99).`);
@@ -85,7 +85,7 @@ describe("the transport of the Docker reader on a pipe (H38)", () => {
       res.setHeader("content-type", "application/json");
       if (url === "/version") res.end(JSON.stringify({ Version: "29.9.2", ApiVersion: "1.56", Os: "linux" }));
       else if (url.startsWith("/v1.56/containers/json")) {
-        res.end(JSON.stringify([{ Id: "abc", Names: ["/neo4j"], Image: "neo4j", State: "running", Labels: { "com.docker.compose.project": "graph" } }]));
+        res.end(JSON.stringify([{ Id: "abc", Names: ["/neo4j"], Image: "neo4j", State: "running", Labels: { "com.docker.compose.project": "shop" } }]));
       } else if (url.startsWith("/v1.56/containers/abc/stats")) {
         total += 6e9;
         res.end(JSON.stringify({ read: new Date().toISOString(), memory_stats: { usage: 1300 * 1048576, stats: { inactive_file: 100 * 1048576 } }, cpu_stats: { cpu_usage: { total_usage: total } } }));
@@ -103,7 +103,7 @@ describe("the transport of the Docker reader on a pipe (H38)", () => {
   it("reads the fake engine with GET requests only, and gives the CPU from two reads", async () => {
     const reader = new DockerReader({ get: dockerGet(pipe), everyMs: 0 });
     const first = await reader.read();
-    expect(first?.containers[0]).toMatchObject({ name: "neo4j", project: "graph", memoryMb: 1200, cores: null });
+    expect(first?.containers[0]).toMatchObject({ name: "neo4j", project: "shop", memoryMb: 1200, cores: null });
     expect(first?.disk?.buildCacheMb).toBe(22 * 1024);
     await new Promise((resolve) => setTimeout(resolve, 50));
     const second = await reader.read();

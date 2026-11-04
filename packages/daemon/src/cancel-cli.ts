@@ -23,7 +23,7 @@ export interface CancelOutput {
 
 const CONSOLE: CancelOutput = { out: (text) => console.log(text), err: (text) => console.error(text) };
 
-/** This function writes a lease in one line: "pnpm test (3f2a9c1e) of graph". */
+/** This function writes a lease in one line: "pnpm test (3f2a9c1e) of shop". */
 function leaseText(lease: Lease): string {
   return `${lease.job} (${lease.id.slice(0, 8)}) of ${lease.holder}`;
 }

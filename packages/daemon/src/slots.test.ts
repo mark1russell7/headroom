@@ -13,7 +13,7 @@ describe("autoSlots", () => {
 
   it("gives no slot to other jobs", () => {
     expect(autoSlots("pnpm test")).toEqual([]);
-    expect(autoSlots("jarvis gate")).toEqual([]);
+    expect(autoSlots("assistant gate")).toEqual([]);
     expect(autoSlots("pnpm exec tsc -b")).toEqual([]);
   });
 

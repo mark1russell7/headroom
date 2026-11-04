@@ -119,7 +119,7 @@ export interface McpServerSpec {
 
 /** The memory of one owner: the sum over the processes that it owns. */
 export interface OwnerUsage {
-  /** The name of the owner, for example `session:graph` or `docker`. */
+  /** The name of the owner, for example `session:shop` or `docker`. */
   readonly owner: string;
   readonly kind: OwnerKind;
   readonly privateMb: number;

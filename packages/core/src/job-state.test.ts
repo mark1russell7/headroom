@@ -9,8 +9,8 @@ const NOW = Date.UTC(2026, 9, 24, 18, 0);
 function lease(id: string, fields: Partial<Lease> = {}): Lease {
   return {
     id,
-    holder: "graph",
-    job: "graph-e2e",
+    holder: "shop",
+    job: "shop-e2e",
     amounts: { browser: 1 },
     priority: 0,
     pid: 42,
@@ -37,8 +37,8 @@ describe("jobState", () => {
     const state = jobState(lease("3f2a9c1e-0000-4000-8000-000000000001", { exitCode: 1, log: "D:\\logs\\e2e.log", processes: 9800 }), NOW);
     expect(state).toEqual({
       id: "3f2a9c1e-0000-4000-8000-000000000001",
-      job: "graph-e2e",
-      holder: "graph",
+      job: "shop-e2e",
+      holder: "shop",
       state: "exited",
       exitCode: 1,
       signal: null,
@@ -99,12 +99,12 @@ describe("findJobs", () => {
 
   it("finds the latest job of a name, optionally of one holder, and each match of 24 hours with all", () => {
     const store = storeOf(leases);
-    expect(findJobs(store, { query: "graph-e2e" }, NOW).map((job) => job.id.slice(0, 8))).toEqual(["7c00ffee"]);
-    expect(findJobs(store, { query: "graph-e2e", holder: "vex" }, NOW).map((job) => job.exitCode)).toEqual([0]);
+    expect(findJobs(store, { query: "shop-e2e" }, NOW).map((job) => job.id.slice(0, 8))).toEqual(["7c00ffee"]);
+    expect(findJobs(store, { query: "shop-e2e", holder: "vex" }, NOW).map((job) => job.exitCode)).toEqual([0]);
     expect(findJobs(store, { query: "pnpm test" }, NOW).map((job) => job.job)).toEqual(["pnpm test"]);
-    const all = findJobs(store, { query: "graph-e2e", all: true }, NOW).map((job) => job.id.slice(0, 13));
+    const all = findJobs(store, { query: "shop-e2e", all: true }, NOW).map((job) => job.id.slice(0, 13));
     expect(all).toEqual(["7c00ffee-cccc", "3f2a9c1e-bbbb", "3f2a9c1e-aaaa"]);
-    expect(findJobs(store, { query: "graph-e2e", holder: "graph", all: true }, NOW)).toHaveLength(2);
+    expect(findJobs(store, { query: "shop-e2e", holder: "shop", all: true }, NOW)).toHaveLength(2);
     store.close();
   });
 
@@ -112,7 +112,7 @@ describe("findJobs", () => {
     const store = storeOf(leases);
     expect(findJobs(store, { query: "no-such-job" }, NOW)).toEqual([]);
     expect(findJobs(store, { query: "7c00ffee", holder: "vex" }, NOW)).toEqual([]);
-    expect(findJobs(store, { query: "graph-e2e", holder: "nobody", all: true }, NOW)).toEqual([]);
+    expect(findJobs(store, { query: "shop-e2e", holder: "nobody", all: true }, NOW)).toEqual([]);
     store.close();
   });
 });

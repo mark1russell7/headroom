@@ -140,7 +140,7 @@ export interface EngineOptions {
    */
   readonly sleepGapMs?: number | undefined;
   /**
-   * The fleet registry of the roles for `resources.peer` (H46). The default is the setting `rolesFile` (H57).
+   * The role registry for `resources.peer` (H46). The default is the setting `rolesFile` (H57).
    * The folder `roles` next to this file holds the role files.
    */
   readonly rolesFile?: string | undefined;
@@ -252,7 +252,7 @@ export interface ConfigChange {
   readonly spawnHeavy?: number | null | undefined;
   /** The battery floor in percent (H31): a whole number from 0 to 100. `null` gives the default of 25. */
   readonly batteryFloor?: number | null | undefined;
-  /** The usage file for `usage<N` (H31): an absolute path. `null` gives the default file of the fleet. */
+  /** The usage file for `usage<N` (H31): an absolute path. `null` gives the default file. */
   readonly usageFile?: string | null | undefined;
   /** The registry of the roles (H57): an absolute path. `null` gives the default file. */
   readonly rolesFile?: string | null | undefined;
@@ -534,7 +534,7 @@ export class Engine {
   readonly #records = new OwnerRecords();
   /** The handles of each process with many handles over the last 7 minutes (H48). */
   readonly #handles = new HandleTracker();
-  /** The fleet registry of the roles: `resources.peer` (H46) and the owners of the containers (H38) read it. */
+  /** The role registry: `resources.peer` (H46) and the owners of the containers (H38) read it. */
   readonly #roles: RoleBook;
   /** The source of the reads of the Docker engine (H38), the owners of the containers, and the last read with its owners. */
   readonly #dockerSource: () => DockerRead | undefined;
@@ -730,7 +730,7 @@ export class Engine {
 
   /**
    * This function gives the last read of the Docker engine with the owner of each container (H38), or `null` with no read.
-   * The owners come from the fleet roles, one time for each new read.
+   * The owners come from the roles, one time for each new read.
    */
   #readDocker(): { readonly read: DockerRead; readonly containers: readonly DockerContainerStatus[]; readonly shares: readonly DockerShare[] } | null {
     let read: DockerRead | undefined;

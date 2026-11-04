@@ -143,7 +143,7 @@ describe("the drain (H34)", () => {
   const drain: Drain = { at: NOW + 50 * 60_000, until: NOW + 5 * 3_600_000, setAt: NOW, startedAt: null, readyAt: null };
 
   it("holds a lease from its time to its end, except a lease of --during-drain", () => {
-    const plain = lease("a", "waiting", "pnpm test", "graph");
+    const plain = lease("a", "waiting", "pnpm test", "shop");
     expect(drainWait(plain, drain, NOW, clock)).toBeNull();
     const reason = drainWait(plain, drain, drain.at, clock);
     expect(reason).toBe("waits for the planned reboot at 02:30 (headroom drain)");
@@ -156,15 +156,15 @@ describe("the drain (H34)", () => {
   });
 
   it("gives the status line and the alerts of the drain", () => {
-    const leases = [lease("a", "granted", "pnpm test", "graph"), lease("b", "granted", "vitest", "vex"), lease("c", "waiting", "tsc", "client"), lease("d", "waiting", "ok", "x", true)];
+    const leases = [lease("a", "granted", "pnpm test", "shop"), lease("b", "granted", "vitest", "vex"), lease("c", "waiting", "tsc", "client"), lease("d", "waiting", "ok", "x", true)];
     expect(drainLine(drainStatus(drain, leases, NOW), clock)).toBe("Drain planned for the reboot at 02:30: from 02:30, new jobs wait. The drain ends at 06:40 if no reboot comes.");
     expect(drainAlerts(drainStatus(drain, leases, NOW), clock)).toEqual([]);
     const active = drainStatus(drain, leases, drain.at);
-    expect(active).toMatchObject({ state: "active", waiting: 1, running: [{ id: "a", job: "pnpm test", holder: "graph" }, { id: "b", job: "vitest", holder: "vex" }] });
+    expect(active).toMatchObject({ state: "active", waiting: 1, running: [{ id: "a", job: "pnpm test", holder: "shop" }, { id: "b", job: "vitest", holder: "vex" }] });
     expect(drainLine(active, clock)).toBe("Drain for the reboot at 02:30: 2 jobs still run. 1 job waits for the reboot. The drain ends at 06:40 if no reboot comes.");
     const alerts = drainAlerts(active, clock);
     expect(alerts.map((alert) => alert.id)).toEqual(["drain"]);
-    expect(alerts[0]).toMatchObject({ kind: "drain", message: "The drain for the planned reboot at 02:30 started: new jobs wait. 2 jobs still run: pnpm test (graph), vitest (vex)." });
+    expect(alerts[0]).toMatchObject({ kind: "drain", message: "The drain for the planned reboot at 02:30 started: new jobs wait. 2 jobs still run: pnpm test (shop), vitest (vex)." });
     const ready = drainStatus({ ...drain, until: null }, [], drain.at);
     expect(drainLine(ready, clock)).toBe("Drain for the reboot at 02:30: no job runs, ready for the reboot.");
     expect(drainAlerts(ready, clock).map((alert) => alert.message)).toEqual([
@@ -184,12 +184,12 @@ describe("the drain (H34)", () => {
 
   it("gives the reason, the line, the alerts and the end of an automatic drain", () => {
     const auto: Drain = { at: NOW, until: null, setAt: NOW, startedAt: NOW, readyAt: null, auto: { levelMb: 6144, poolsMb: 6250 } };
-    const plain = { ...lease("a", "waiting", "playwright test", "graph"), amounts: { browser: 1 } };
+    const plain = { ...lease("a", "waiting", "playwright test", "shop"), amounts: { browser: 1 } };
     const heavy = "and this job is heavy: it runs browser tests (headroom drain, automatic: heavy jobs wait)";
     expect(drainWait(plain, auto, NOW, clock, 6400)).toBe(`waits for a reboot: the kernel pools are at 6.3 GB, ${heavy}`);
     expect(drainWait(plain, auto, NOW, clock)).toBe(`waits for a reboot: the kernel pools are at 6.1 GB, ${heavy}`);
     // A light lease does not wait in an automatic drain, and the drain does not count it.
-    const light = lease("c", "waiting", "pnpm lint", "graph");
+    const light = lease("c", "waiting", "pnpm lint", "shop");
     expect(drainWait(light, auto, NOW, clock)).toBeNull();
     expect(drainName(auto, clock)).toBe("the automatic drain of 01:40");
     expect(drainName({ ...auto, auto: null }, clock)).toBe("the drain for the reboot at 01:40");

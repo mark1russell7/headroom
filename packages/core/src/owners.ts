@@ -127,18 +127,18 @@ export function isOrphan(info: ProcessInfo, byPid: ReadonlyMap<number, ProcessIn
   return info.ppid > 0 && parentOf(info, byPid) === undefined;
 }
 
-/** The label of an owner that comes from the record of an orphan (H48): `session:graph (orphan)`. */
+/** The label of an owner that comes from the record of an orphan (H48): `session:shop (orphan)`. */
 export const ORPHAN_LABEL = " (orphan)";
 
 /**
  * This function gives the name of the owner of a process for the text of an alert (H48). An orphan gets the label
- * `(orphan)` one time: `other` gives `other (orphan)`, and `session:graph (orphan)` stays as it is.
+ * `(orphan)` one time: `other` gives `other (orphan)`, and `session:shop (orphan)` stays as it is.
  */
 export function orphanName(owner: string, orphan: boolean): string {
   return orphan && !owner.endsWith(ORPHAN_LABEL) ? `${owner}${ORPHAN_LABEL}` : owner;
 }
 
-/** This function gives an owner without the label of an orphan: `session:graph (orphan)` gives `session:graph`. */
+/** This function gives an owner without the label of an orphan: `session:shop (orphan)` gives `session:shop`. */
 export function baseOwner(owner: string): string {
   return owner.endsWith(ORPHAN_LABEL) ? owner.slice(0, -ORPHAN_LABEL.length) : owner;
 }

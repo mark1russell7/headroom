@@ -189,7 +189,7 @@ const OWNERS_SHOWN = 3;
 
 /**
  * This function gives the CPU line of `headroom status`, for example "CPU: 11.2 of 16 cores in use (2 kept for Mark).
- * Capped: graph-e2e 4 cores." A daemon of an older version gives no reserve and no cap. Before two reads, it gives `null`.
+ * Capped: shop-e2e 4 cores." A daemon of an older version gives no reserve and no cap. Before two reads, it gives `null`.
  */
 export function cpuLine(cpu: ResourceStatus | undefined, reserve: number | undefined, leases: readonly Lease[]): string | null {
   if (cpu === undefined || cpu.used === null || cpu.capacity === null) return null;

@@ -68,9 +68,9 @@ describe("the disk report (H21)", () => {
 
   it("finds the *.before-devdrive copies, in any case of the name", () => {
     mkdirSync(join(base, "git.before-devdrive"));
-    mkdirSync(join(base, "Jarvis.BEFORE-DEVDRIVE"));
+    mkdirSync(join(base, "Assistant.BEFORE-DEVDRIVE"));
     mkdirSync(join(base, "git"));
-    expect(findBeforeDevdrive([base, join(base, "absent")])).toEqual([join(base, "Jarvis.BEFORE-DEVDRIVE"), join(base, "git.before-devdrive")].sort());
+    expect(findBeforeDevdrive([base, join(base, "absent")])).toEqual([join(base, "Assistant.BEFORE-DEVDRIVE"), join(base, "git.before-devdrive")].sort());
   });
 
   it("gives the known places with their classes: kept copies, live and ended job folders, images, the store and node_modules", () => {

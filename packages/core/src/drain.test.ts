@@ -45,7 +45,7 @@ describe("Engine drain for a reboot (H34)", () => {
       const first = new Engine(options());
       const ask = (engine: Engine, holder: string, job: string, duringDrain = false) =>
         engine.request({ holder, job, amounts: {}, ttlMs: 24 * HOUR, ...(duringDrain ? { duringDrain } : {}) });
-      const a = ask(first, "graph", "pnpm test");
+      const a = ask(first, "shop", "pnpm test");
       expect(a.state).toBe("granted");
       const at = START + 10 * 60_000;
       const planned = first.setDrain(at, START + 4 * HOUR);
@@ -67,7 +67,7 @@ describe("Engine drain for a reboot (H34)", () => {
       expect(started).toBe(1);
       const drainAlert = first.alerts().active.find((alert) => alert.id === "drain");
       expect(drainAlert).toMatchObject({ kind: "drain", since: at });
-      expect(drainAlert?.message).toContain("2 jobs still run: pnpm test (graph), vitest (vex).");
+      expect(drainAlert?.message).toContain("2 jobs still run: pnpm test (shop), vitest (vex).");
       const held = ask(first, "client", "tsc");
       expect(held).toMatchObject({ state: "waiting", reason: `waits for the planned reboot at ${localClock(at)} (headroom drain)` });
       const quick = ask(first, "organizer", "git status", true);

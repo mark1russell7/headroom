@@ -49,7 +49,7 @@ describe("the checks of the daemon", () => {
 
   it("gives ok for a URL that answers, and down for a status of 500 or more", async () => {
     const signal = new AbortController().signal;
-    const good = await urlCheck("fleet-site", `${base}/`).run(signal);
+    const good = await urlCheck("local-site", `${base}/`).run(signal);
     expect(good.state).toBe("ok");
     expect(good.latencyMs).toBeGreaterThanOrEqual(0);
     expect(await urlCheck("site", `${base}/broken`).run(signal)).toMatchObject({ state: "down", error: "HTTP 503" });
@@ -76,25 +76,25 @@ describe("headroom services", () => {
     nextHealth(undefined, { name, type: "url", title: name, target: null, critical: false, run: async () => ({ state, latencyMs, error }) }, { state, latencyMs, error }, at - 180_000);
 
   it("gives the services line of headroom status", () => {
-    const list = [health("docker", "ok", 12), health("fleet-site", "ok", 3), health("mcp:vex", "ok", null), health("mcp:loom", "idle", null)];
-    expect(servicesLine(list)).toBe("Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.");
+    const list = [health("docker", "ok", 12), health("local-site", "ok", 3), health("mcp:vex", "ok", null), health("mcp:loom", "idle", null)];
+    expect(servicesLine(list)).toBe("Services: docker ok (12 ms), local-site ok (3 ms), mcp:vex ok, mcp:loom idle.");
     expect(servicesLine([health("docker", "down", null, "No answer in 3 s")])).toBe("Services: docker down since 18:42 UTC.");
     expect(servicesLine([])).toBeNull();
   });
 
   it("gives one row for each service, with the state, the latency, the start of the state and the last error", () => {
-    const rows = servicesTable([health("docker", "down", null, "No answer in 3 s"), health("fleet-site", "ok", 3)], at);
+    const rows = servicesTable([health("docker", "down", null, "No answer in 3 s"), health("local-site", "ok", 3)], at);
     expect(rows[0]).toMatch(/^SERVICE\s+STATE\s+LATENCY\s+SINCE \(UTC\)\s+LAST OK\s+LAST ERROR$/);
     expect(rows[1]).toMatch(/^docker\s+down\s+-\s+18:42 \(3 min\)\s+-\s+18:42 No answer in 3 s$/);
-    expect(rows[2]).toMatch(/^fleet-site\s+ok\s+3 ms\s+18:42 \(3 min\)\s+18:42\s+-$/);
+    expect(rows[2]).toMatch(/^local-site\s+ok\s+3 ms\s+18:42 \(3 min\)\s+18:42\s+-$/);
     expect(rows.at(-1)).toBe("The last check was 3 min ago. headroom does not restart a service.");
     expect(servicesTable([], at)).toEqual(["No check of the services yet. The daemon checks them every 30 seconds."]);
   });
 
   it("changes the setting health: add, remove, back to the default", () => {
-    const current = { "fleet-site": "http://127.0.0.1:4731/" };
+    const current = { "local-site": "http://127.0.0.1:4731/" };
     expect(healthChange(current, "grafana", "http://localhost:3000/", false)).toEqual({ ...current, grafana: "http://localhost:3000/" });
-    expect(healthChange(current, "fleet-site", undefined, true)).toEqual({});
+    expect(healthChange(current, "local-site", undefined, true)).toEqual({});
     expect(healthChange(current, undefined, undefined, true)).toBeNull();
     expect(healthChange(current, undefined, undefined, false)).toBeUndefined();
     expect(healthChange(current, "unknown", undefined, true)).toBeUndefined();

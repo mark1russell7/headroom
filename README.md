@@ -58,12 +58,12 @@ The list "Memory by owner" gives the private memory and the memory in RAM of eac
 `headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network, the TCP connections and the shared services:
 
 ```text
-Writes (last hour): session:graph 31.2 GB, mcp:vex 2.1 GB.
-CPU: 11.2 of 16 cores in use (2 kept for Mark). Most: session:graph 6.1, mcp:vex 2.0. Capped: graph-e2e 4 cores.
+Writes (last hour): session:shop 31.2 GB, mcp:vex 2.1 GB.
+CPU: 11.2 of 16 cores in use (2 kept for Mark). Most: session:shop 6.1, mcp:vex 2.0. Capped: shop-e2e 4 cores.
 Process starts: 1,450 a minute. Most (at least): session:client 410 (jobs 12, own commands 398, job e2e: 9,800 so far), session:organizer 120.
 Network: 1.2 MB/s in, 0.3 MB/s out.
 TCP: 812 connections (120 waiting to close), 2% of the dynamic ports.
-Services: docker ok (12 ms), fleet-site ok (3 ms), mcp:vex ok, mcp:loom idle.
+Services: docker ok (12 ms), local-site ok (3 ms), mcp:vex ok, mcp:loom idle.
 ```
 
 - The writes come from the write counter of each process: `WriteTransferCount` on Windows, and `write_bytes` of `/proc/<pid>/io` on Linux. The line names the 5 owners above 10 MB.
@@ -80,7 +80,7 @@ Sessions start dev servers, and two servers on the same port collide. `headroom 
 ```text
 PORT       PID  PROCESS                    OWNER                  ADDRESSES
 135        932  svchost.exe                system                 0.0.0.0, ::
-3000     21512  node.exe                   session:graph          127.0.0.1
+3000     21512  node.exe                   session:shop           127.0.0.1
 5173     30404  node.exe                   session:client         ::1
 
 3 listening ports. Outgoing connections use the dynamic ports 49152-65535, so give a dev server a port below 49152.
@@ -88,15 +88,15 @@ PORT       PID  PROCESS                    OWNER                  ADDRESSES
 
 ### The peer of a local connection (H46)
 
-The fleet site serves its procedures as MCP tools to `claude.exe`. Each call needs the fleet role of the caller. The site gets the role from the TCP peer, not from a header. The procedure `resources.peer` gives it:
+The local site serves its procedures as MCP tools to `claude.exe`. Each call needs the role of the caller. The site gets the role from the TCP peer, not from a header. The procedure `resources.peer` gives it:
 
 - The input is `{ localPort, remotePort }`: the two ports that the site sees on its loopback connection.
 - The daemon reads the client row of the connection from the IPv4 and the IPv6 table. The two ends must be loopback addresses.
 - The output is `{ pid, exe, via, sessionId?, session?, role? }`. `via` gives the process IDs from the peer up to the nearest `claude.exe`.
 - A peer with no `claude.exe` above it is anonymous. It has no session and no role. This is not an error.
 - The errors are `NO_CONNECTION` (no row for the two ports) and `PEER_GONE` (the process ended before the walk). Linux gives `NOT_SUPPORTED`.
-- The role comes from the fleet registry: first by the session ID, then by the session name.
-- The registry has the role files `~/git/fleet/registry/roles/<id>.json` and `roles.json`. The file of a role wins over its entry in `roles.json`.
+- The role comes from the role registry: first by the session ID, then by the session name.
+- The local registry has the role files and `roles.json`. The file of a role wins over its entry in `roles.json`.
 
 `headroom peer <localPort> <remotePort>` shows the same answer for a check by hand. `--json` gives the JSON. An error gives the exit code 3.
 
@@ -126,7 +126,7 @@ The alerts use the reads of the processor times that the daemon already makes ea
 
 ### Process starts (H29)
 
-On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`. Each new process leaks approximately 0.9 KB of the non-paged pool. With 14 or more new processes each second, the pool grew approximately 800 MB each hour. Until Mark updates the driver (hub ask `amd-driver`), the fleet must start fewer processes. headroom shows who starts them:
+On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sys`. Each new process leaks approximately 0.9 KB of the non-paged pool. With 14 or more new processes each second, the pool grew approximately 800 MB each hour. Until Mark updates the driver (hub ask `amd-driver`), the sessions must start fewer processes. headroom shows who starts them:
 
 - **The computer**: an exact count on Windows. Windows gives each new process the next sequence number. The daemon reads the number of the newest process with `NtQueryInformationProcess(ProcessSequenceNumber)` at each read, every 10 seconds.
 - **A leased job**: an exact count. The job object of `headroom run` counts each process of the job (`TotalProcesses`). The client reports the count every 30 seconds and at the release.
@@ -144,7 +144,7 @@ On 2026-10-24, this computer started 1,450 processes in one minute. A read every
 
 ### Spawn-heavy jobs and browser tests (H47)
 
-On 2026-10-24, the Playwright browsers of graph did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases. The desktop heap, the memory, the commit charge and the kernel pools had room. Thus the burst itself stops the start of a browser.
+On 2026-10-24, the Playwright browsers of shop did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases. The desktop heap, the memory, the commit charge and the kernel pools had room. Thus the burst itself stops the start of a browser.
 
 A spawn-heavy job and a browser test do not run at the same time:
 
@@ -160,7 +160,7 @@ A spawn-heavy job and a browser test do not run at the same time:
 `headroom status` gives the line `Spawn-heavy now: test-churn (server-stack), 1,870 a minute.` `headroom job` and its JSON give the peak, the average and the class of a job. The dashboard gives them in the timeline of the jobs. A wait gives a reason that names the other job:
 
 ```text
-waits for the browser tests of graph (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
+waits for the browser tests of shop (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it
 waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it
 waits for the other jobs to start fewer processes: tsc (client) 400 and vitest (vex) 300 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it
 ```
@@ -204,7 +204,7 @@ On a laptop, the battery is a resource too. headroom reads it with the processes
 - A computer with no battery has no `battery`, and a computer with no counter set `Energy Meter` has no `power`. The values are absent, not 0. Linux and macOS have neither resource.
 - Windows tells the daemon when the power source, the percent, the lid or the power mode changes, and when the laptop sleeps or wakes. The daemon then reads the battery at once. If an event does not register, the daemon writes one line to its log and reads every 10 seconds.
 
-The line `Power` of `headroom status` gives the state, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:graph 2.4 W.` or `Power: plugged in, charging, 92%.` The dashboard has a panel for each resource and a chip `Power`.
+The line `Power` of `headroom status` gives the state, for example `Power: on battery, 68%, 18.0 W, 1 h 58 min left (power mode: balanced). Most (estimate): session:server-stack 3.1 W, session:shop 2.4 W.` or `Power: plugged in, charging, 92%.` The dashboard has a panel for each resource and a chip `Power`.
 
 - **Alerts** (kind `battery`): a warning when leased jobs run on battery, with the 3 owners that use the most power. A warning below 30 minutes left. A critical alert below 10 minutes or below 10%. Each alert ends when AC power returns.
 - **Efficiency mode**: on battery, `headroom run` puts the processes of its job in EcoQoS, and takes them out of it when AC power returns. The answer of each heartbeat tells the client the power source. `--no-eco` keeps the full speed.
@@ -225,7 +225,7 @@ The GPU of this laptop, a Radeon 860M, uses the main memory. headroom reads the 
 - An adapter that DXGI does not list, for example an NPU, gets its LUID as its name. Its shared limit is half of the RAM, the default of Windows.
 - A computer with no GPU counters has no `gpu` instance. Linux and macOS have none.
 
-The line `GPU` of `headroom status` gives the state, for example `GPU: 1.3 of 17.8 GB (0.3 GB in RAM), 34% busy. Most: session:graph chrome.exe 820 MB.` `headroom gpu` gives each adapter, its owners and the leased jobs, and `--json` gives `Status.gpu`. The dashboard has a panel for each adapter.
+The line `GPU` of `headroom status` gives the state, for example `GPU: 1.3 of 17.8 GB (0.3 GB in RAM), 34% busy. Most: session:shop chrome.exe 820 MB.` `headroom gpu` gives each adapter, its owners and the leased jobs, and `--json` gives `Status.gpu`. The dashboard has a panel for each adapter.
 
 - **The alert** (kind `gpu`): a warning when the GPU memory of an adapter stays above 90% of its limits for 2 minutes. The alert names the 3 owners with the most GPU memory. It ends after one minute below the line.
 - **No amount.** A job object has no GPU limit, so a lease has no GPU amount.
@@ -238,12 +238,12 @@ Docker Desktop keeps its containers in one VM. Windows shows the VM as one proce
 - **The read.** Every 30 seconds, the daemon sends GET requests to the pipe of the engine: the list of the containers and one-shot stats of each running container. It starts no `docker` process and no timer.
 - **The memory** of a container is its use less its inactive file cache, as `docker stats` gives it. **The cores** come from the change of its processor time between two reads.
 - **The disk use**: every 10 minutes, `GET /system/df` gives the images, the images with no container, the build cache, the volumes and the writable layers.
-- **The owner** of a container is the session of its compose project. The folder of the project in a folder of a fleet role gives `session:<role>`. A project with the name of a role also gives that role. Else the owner is `docker:<project>` or `docker:<name>`.
+- **The owner** of a container is the session of its compose project. The folder of the project in a folder of a role gives `session:<role>`. A project with the name of a role also gives that role. Else the owner is `docker:<project>` or `docker:<name>`.
 - **The split.** In the memory and the CPU of the owners, the containers get their part of the owner `docker`. The rest is `docker (VM)`: the VM, its cache and the Docker programs of Windows.
 - **The VM memory.** `vmmemWSL` gives no memory counters to `K32GetProcessMemoryInfo`. The sampler reads its memory from `SystemProcessInformation`, as for each process (H49). The split moves a part of the VM memory to the containers, so the VM counts one time.
 - No pipe or no answer: no Docker read and no split. The log of the daemon gets one line for each change of the state of the engine.
 
-The line `Docker` of `headroom status` gives the state, for example `Docker: 1 container, 0.6 GB, 0.55 cores. Most: session:graph graph-mongo-1 0.6 GB. Build cache 17.1 GB. Unused images 26.2 GB`. `headroom docker` gives each container with its owner, memory, cores and state, the VM, the disk use and the cost of the reads. `--json` gives `Status.docker`. The dashboard has one card, after the card of the Docker engine.
+The line `Docker` of `headroom status` gives the state, for example `Docker: 1 container, 0.6 GB, 0.55 cores. Most: session:shop shop-mongo-1 0.6 GB. Build cache 17.1 GB. Unused images 26.2 GB`. `headroom docker` gives each container with its owner, memory, cores and state, the VM, the disk use and the cost of the reads. `--json` gives `Status.docker`. The dashboard has one card, after the card of the Docker engine.
 
 - **The alerts** (kind `docker`): a warning when the build cache is above 20 GB, or the images with no container are above 10 GB. The message gives the size and the prune commands.
 - headroom does not prune, stop or start a container, an image or Docker. `docker builder prune` or `docker image prune` frees the space.
@@ -251,7 +251,7 @@ The line `Docker` of `headroom status` gives the state, for example `Docker: 1 c
 
 ### Forecasts (H32)
 
-headroom tells the time until each resource reaches a limit, so the fleet acts before the limit. The forecast comes from the history of the last hour:
+headroom tells the time until each resource reaches a limit, so the sessions act before the limit. The forecast comes from the history of the last hour:
 
 - **The fit**: the daemon fits a robust line to the points of each instance at each sample, one time each minute. The slope is the median of the slopes of all the pairs of points (Theil–Sen), so one outlier does not move it.
 - **The confidence**: Kendall's tau of the points, from 0 to 1. A fit below 0.5 gives no forecast. A fit also needs 30 minutes of points. A sleep, a restart of the computer or a gap of more than 5 minutes starts the fit again.
@@ -262,7 +262,7 @@ headroom tells the time until each resource reaches a limit, so the fleet acts b
 `headroom forecast` lists the forecast of each instance to its nearest limit, for example `Drive D: 20 GB free in 4 days (at 1.1 GB an hour, confidence 0.65).` `--json` gives the data. `headroom status` adds the line `Forecast (24 h)` with the forecasts under 24 hours. Each card of the dashboard shows its forecast in one line, and `Status.resources` gives the field `forecast`.
 
 - **Alerts** (kind `forecast`): a warning before a limit. A drive reaches its critical level within 24 hours, a kernel pool its alert level within 2 hours, or the commit charge 90% within 30 minutes.
-- The message names the rate and the time, for example `Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:graph 3.2 GB.` A drive message ends with the hint of H21.
+- The message names the rate and the time, for example `Drive C: loses 4.1 GB an hour. At this rate, it has 5 GB free in 3 h 10 min, at 06:40 UTC. Most writes in the last hour: session:shop 3.2 GB.` A drive message ends with the hint of H21.
 - A pool alert names the owners with the most process starts and the pool tags that grow. A commit alert names the owners with the most private memory.
 - An active forecast alert ends past 1.25 times its horizon, so a small change of the rate does not end it and start it again.
 
@@ -334,7 +334,7 @@ headroom run --when "starts<700" -- pnpm e2e
 |---|---|
 | `ac` | The laptop is plugged in. A computer with no battery counts as plugged in. |
 | `battery>=N` | The battery is at N% or more, or the laptop is plugged in. |
-| `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file of the fleet. |
+| `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file. |
 | `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. The daemon tests it at each read of the processes. |
 | `away` | Mark is away from the laptop (H33). A computer with no read of the presence counts as away. |
 | `cool` | The CPU was not throttled in the last 2 minutes (H35). A computer with no read of the speed counters counts as cool. |
@@ -347,7 +347,7 @@ headroom run --when "starts<700" -- pnpm e2e
 
 **The battery policy.** On battery below the floor, a new heavy lease waits. A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. `--battery-ok` starts it. `headroom config battery-floor 15` changes the floor, and `0` turns the rule off. The default is 25%.
 
-**The usage data.** `usage<N` reads `~/git/fleet/artifacts/hub/db/usage/current.json`, at most one time in 30 seconds. `headroom config usage-file <path>` changes the file. `headroom config roles-file <path>` changes the registry of the roles in the same way. The condition fails closed:
+**The usage data.** `usage<N` reads the usage file, at most one time in 30 seconds. `headroom config usage-file <path>` changes the file. `headroom config roles-file <path>` changes the registry of the roles in the same way. The condition fails closed:
 
 - A missing or unreadable file stops the job, and the reason names the path.
 - Data older than 70 minutes stops the job, and the reason gives its age.
@@ -403,7 +403,7 @@ headroom config presence off        # measure only: no wait, no efficiency mode,
 
 ### The reboot budget and a planned drain (H34)
 
-The AMD display driver of this laptop leaks kernel memory with each new process. Only a reboot gives the memory back. As the leak grows, process starts fail at smaller bursts (0xC0000142). A reboot works best in a planned window: no job runs, each session wrote its handoff, and the resume plan brings the fleet back.
+The AMD display driver of this laptop leaks kernel memory with each new process. Only a reboot gives the memory back. As the leak grows, process starts fail at smaller bursts (0xC0000142). A reboot works best in a planned window: no job runs, each session wrote its handoff, and the resume plan brings the sessions back.
 
 headroom does not reboot the computer, and it does not log off. Only Mark does these actions.
 
@@ -476,14 +476,14 @@ On 2026-10-24, the Docker engine stopped to answer, and an MCP server of the gat
 
 - **Docker**: a `GET /_ping` on the pipe of the engine, `\\.\pipe\docker_engine` on Windows and `/var/run/docker.sock` on Linux. headroom starts no `docker` process. When the pipe does not exist, the state is `absent`, and no alert starts.
 - **The MCP servers of the gateway**: the state of the gateway, with no call. A server that did not start is `down`, with the last error line of its stderr. A server that the gateway stopped for idle is `idle`, not `down`. A server that exited is `idle`, because the next request starts it again. With 3 exits in 10 minutes, it is `down`.
-- **The URLs of the setting `health`**: a `GET` of each URL. An answer with a status below 500 is good. The default list has the fleet site only: `fleet-site` at `http://127.0.0.1:4731/`.
+- **The URLs of the setting `health`**: a `GET` of each URL. An answer with a status below 500 is good. The default list has the local site only, at `http://127.0.0.1:4731/`.
 
 Each service has a state: `ok`, `slow` (an answer after more than 1 second), `down`, `idle` or `absent`. `headroom services` shows the state, the latency, the start of the state, the last good check and the last error of each service. `--json` gives the list.
 
 ```text
 SERVICE                  STATE    LATENCY  SINCE (UTC)      LAST OK  LAST ERROR
 docker                   ok         12 ms  16:02 (2.7 h)    18:45    -
-fleet-site               ok          3 ms  16:02 (2.7 h)    18:45    -
+local-site               ok          3 ms  16:02 (2.7 h)    18:45    -
 mcp:vex                  down           -  18:41 (4 min)    -        18:45 Error: Cannot find module 'zod'
 mcp:loom                 idle           -  16:02 (2.7 h)    -        -
 ```
@@ -511,14 +511,14 @@ A pool with no capacity is a lock of 1. Set a capacity with `headroom pool docke
 A queued job can run after the shell that started it stops. `headroom job` gives the state of a job, so a session can wait for the end of the job and read its exit code:
 
 ```sh
-headroom run --job graph-e2e --log D:\logs\e2e.log -- pnpm e2e
-headroom job graph-e2e
+headroom run --job shop-e2e --log D:\logs\e2e.log -- pnpm e2e
+headroom job shop-e2e
 headroom job 3f2a9c1e --json
 ```
 
 ```text
-headroom: lease 3f2a9c1e for graph-e2e, queued for browser.
-graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6 min, peak 1.8 GB, 412 processes started, at most 380 starts a minute, normal (about 350 a minute in past runs). Log: D:\logs\e2e.log
+headroom: lease 3f2a9c1e for shop-e2e, queued for browser.
+shop-e2e (3f2a9c1e) of shop: exited with code 1 at 17:42, waited 12 min, ran 6 min, peak 1.8 GB, 412 processes started, at most 380 starts a minute, normal (about 350 a minute in past runs). Log: D:\logs\e2e.log
 ```
 
 - `headroom run` writes the lease id and the job first. The release of the lease records the exit code of the job, or the signal that stopped it.
@@ -534,12 +534,12 @@ graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6
 Use `headroom run --detach` in place of a background shell. It is for a job that waits in a queue or runs for more than a few minutes.
 
 ```sh
-headroom run --detach --job graph-e2e --mem 2g -- pnpm e2e
-headroom job graph-e2e
+headroom run --detach --job shop-e2e --mem 2g -- pnpm e2e
+headroom job shop-e2e
 ```
 
 ```text
-headroom: job graph-e2e runs detached, lease 3f2a9c1e. Log: C:\Users\you\.headroom\jobs\5d1c0f3a.log. State: headroom job graph-e2e
+headroom: job shop-e2e runs detached, lease 3f2a9c1e. Log: C:\Users\you\.headroom\jobs\5d1c0f3a.log. State: headroom job shop-e2e
 ```
 
 Claude Code stops a background shell when the runtime gives memory pressure "critical", no turn or agent runs, and the last input is 30 minutes old. On Windows, it reads no memory figure. Thus it stops a client of `headroom run` that only waits in the queue. On 2026-11-04, two clients stopped this way with approximately 5 GB available. The stop reaches the shell. It does not always reach the job: a script can continue without its shell. A detached job is not a child of that shell.
@@ -555,11 +555,11 @@ A session can take its queued job off the queue with `headroom cancel`, for exam
 
 ```sh
 headroom cancel 3f2a9c1e                       # the lease id, or its first 8 characters
-headroom cancel --job graph-e2e --holder graph # only the jobs of one holder
+headroom cancel --job shop-e2e --holder shop # only the jobs of one holder
 headroom cancel --job "pnpm test" --all        # each waiting match
 ```
 
-- The job does not start. Its waiting `headroom run` exits with code 75 and writes `headroom: graph-e2e was cancelled by graph before it started. Nothing ran.`
+- The job does not start. Its waiting `headroom run` exits with code 75 and writes `headroom: shop-e2e was cancelled by shop before it started. Nothing ran.`
 - The lease records who cancelled it: the session of the caller (`HEADROOM_HOLDER` or the session of the process tree), else `cli`. Its state is `cancelled`.
 - `--job` with more than one waiting match lists the matches and cancels none. `--all` cancels each match.
 - A running job does not change. `headroom cancel` tells it and gives exit code 1. `headroom release <id>` ends its lease, but the job does not stop.
@@ -601,9 +601,9 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `commit` | The commit charge is above 90% of its limit. |
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
-| `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It names the 3 owners that wrote most in the last hour, each above 100 MB, for example `Most writes in the last hour: session:graph 31.2 GB, mcp:vex 2.1 GB.` It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
+| `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It names the 3 owners that wrote most in the last hour, each above 100 MB, for example `Most writes in the last hour: session:shop 31.2 GB, mcp:vex 2.1 GB.` It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
 | `ports` | More than 80% of the dynamic TCP ports are in use (a warning), or more than 95% (critical). When no dynamic port is free, new connections fail. The alert names the 3 owners with the most connections, and the count in `TIME_WAIT`. |
-| `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the graph tests need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
+| `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the shop tests need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
@@ -627,7 +627,7 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - The top section shows what uses the computer. One bar shows the memory in RAM by owner, the unattributed memory and the free memory. A second bar shows the processors by owner. The memory card also gives the unattributed memory (H49).
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
-- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the fleet site. On a laptop, a chip gives the power source and the charge. The chip `Heat` gives the speed of the CPU and its hottest zone (H35).
+- A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the local site. On a laptop, a chip gives the power source and the charge. The chip `Heat` gives the speed of the CPU and its hottest zone (H35).
 - The section "Resources" has one panel for each resource of `Status.resources`. These are the drives, memory, commit charge, processors, CPU speed and heat, and the GPU adapters. The other panels are network, TCP ports, services, slots, kernel pools, desktop, process starts, battery and power. The page makes each panel from the model, so a new resource gets a panel with no change to the page.
 - Each panel shows the free part and the capacity in the unit of the resource, and a bar of the used part. It shows a line of the window from `History.resources`, and the change in one hour for a size.
 - A panel also shows the active alert of its resource and the leases that hold an amount of it. When the status gives the top users of the resource, the panel shows them. A disk lease shows the temp folder of its job.
@@ -668,7 +668,7 @@ headroom mcp warm --timeout 120s
 - Without names, it starts each configured server. With names, for example `headroom mcp warm loom vex`, it starts only those servers.
 - First, it waits until the daemon answers, because the daemon can still start after a logon. Then it waits until each server answers its `initialize` request.
 - It shows the servers and the time. The exit code is 0 only when each server runs. Otherwise, the exit code is 1.
-- `~/git/start-fleet.ps1` runs it before it starts the sessions of the fleet.
+- The start script of the sessions runs it before it starts the sessions.
 
 A program that starts only stdio servers, for example the launcher of a plugin, uses the bridge:
 

@@ -41,20 +41,20 @@ describe("headroom cancel", () => {
   afterEach(() => engine.close());
 
   it("cancels a waiting job by its id prefix, and its waiting client exits with code 75 and the name of who cancelled it", async () => {
-    ask("graph", "docker build");
-    const queued = ask("jarvis", "pnpm test");
+    ask("shop", "docker build");
+    const queued = ask("assistant", "pnpm test");
     const wait = engine.waitFor(queued.id, { timeoutMs: 60_000 });
-    expect(await cancelCommand([queued.id.slice(0, 8)], connection, "jarvis", io())).toBe(0);
-    expect(calls).toEqual([{ path: ["resources", "cancel"], input: { id: queued.id.slice(0, 8), all: false, by: "jarvis" } }]);
-    expect(lines).toEqual([`Cancelled pnpm test (${queued.id.slice(0, 8)}) of jarvis. It did not start, and its headroom run exits with code 75.`]);
+    expect(await cancelCommand([queued.id.slice(0, 8)], connection, "assistant", io())).toBe(0);
+    expect(calls).toEqual([{ path: ["resources", "cancel"], input: { id: queued.id.slice(0, 8), all: false, by: "assistant" } }]);
+    expect(lines).toEqual([`Cancelled pnpm test (${queued.id.slice(0, 8)}) of assistant. It did not start, and its headroom run exits with code 75.`]);
     const ended = await wait;
     expect(NOT_STARTED).toBe(75);
-    expect(notStartedLine("pnpm test", ended)).toBe("headroom: pnpm test was cancelled by jarvis before it started. Nothing ran.");
+    expect(notStartedLine("pnpm test", ended)).toBe("headroom: pnpm test was cancelled by assistant before it started. Nothing ran.");
   });
 
   it("cancels by job, lists more than one match and cancels none, and cancels each with --all", async () => {
-    ask("graph", "docker build");
-    const a = ask("jarvis", "pnpm test");
+    ask("shop", "docker build");
+    const a = ask("assistant", "pnpm test");
     const b = ask("vex", "pnpm test");
     expect(await cancelCommand(["--job", "pnpm test"], connection, "cli", io())).toBe(1);
     expect(errors[0]).toBe('headroom: 2 waiting jobs match "pnpm test", so none is cancelled. Give the id of one, or --all to cancel each:');
@@ -68,14 +68,14 @@ describe("headroom cancel", () => {
   });
 
   it("does not take a running job, tells of an ended job, and gives 3 with no match", async () => {
-    const runs = ask("graph", "docker build");
+    const runs = ask("shop", "docker build");
     expect(await cancelCommand([runs.id], connection, "cli", io())).toBe(1);
     expect(errors).toEqual([
-      `headroom: docker build (${runs.id.slice(0, 8)}) of graph runs, so headroom cancel does not take it. headroom release ${runs.id} ends its lease, but the job does not stop.`,
+      `headroom: docker build (${runs.id.slice(0, 8)}) of shop runs, so headroom cancel does not take it. headroom release ${runs.id} ends its lease, but the job does not stop.`,
     ]);
     engine.release(runs.id, "the job ended with code 0");
     expect(await cancelCommand([runs.id], connection, "cli", io())).toBe(0);
-    expect(lines).toEqual([`docker build (${runs.id.slice(0, 8)}) of graph ended already: released (the job ended with code 0). Nothing waits.`]);
+    expect(lines).toEqual([`docker build (${runs.id.slice(0, 8)}) of shop ended already: released (the job ended with code 0). Nothing waits.`]);
     expect(await cancelCommand(["--job", "nothing"], connection, "cli", io())).toBe(NO_JOB);
     expect(errors.at(-1)).toBe('headroom: no waiting job matches "nothing".');
   });
@@ -87,14 +87,14 @@ describe("headroom cancel", () => {
     expect(errors.at(-1)).toBe("headroom: give the lease id or its first 8 characters or more, not abc.");
     expect(calls).toEqual([]);
     expect(await cancelCommand(["abcdefgh"], null, "cli", io())).toBe(1);
-    ask("graph", "docker build");
-    const queued = ask("jarvis", "pnpm test");
+    ask("shop", "docker build");
+    const queued = ask("assistant", "pnpm test");
     expect(await cancelCommand([queued.id, "--json"], connection, "cli", io())).toBe(0);
     expect(JSON.parse(lines.join("\n"))).toMatchObject({ cancelled: [{ id: queued.id, state: "cancelled" }], matches: [{ id: queued.id }] });
   });
 
   it("gives the old line for a lease that ended without a cancel", () => {
-    const lease = ask("graph", "docker build");
+    const lease = ask("shop", "docker build");
     expect(notStartedLine("docker build", { ...lease, state: "expired", reason: "the process exited" })).toBe(
       "headroom: the lease ended before the job started: the process exited",
     );
