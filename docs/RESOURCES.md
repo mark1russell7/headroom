@@ -1293,7 +1293,7 @@ The other protected processes counted as 0 until H49. The daemon has no admin ri
 
 | Container | State | Owner | Rule |
 |---|---|---|---|
-| `graph-mongo-1` | `running` | `session:graph` | The folder `D:\git\Graph` is the main repository of `graph`. |
+| `shop-mongo-1` | `running` | `session:shop` | The folder `D:\git\Shop` is the main repository of `shop`. |
 | `minimongo-db` | `exited` | `session:server-stack` | The folder is in `~/git/MiniMongo`, a repository of `server-stack`. |
 | `mongo-db` | `created` | `docker:mongo` | The folder `~/git/docker/mongo` is in no role. |
 | `dynamodb-local` | `exited` | `docker:dynamodb-local` | No compose project. |
