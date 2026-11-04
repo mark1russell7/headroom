@@ -104,7 +104,7 @@ export function promote(spawn: SpawnClass | undefined, rate: number, limit: numb
 /**
  * This function ends the spawn-heavy class of a job that went quiet (H58). The reports must cover the last 5 minutes, and
  * no 30-second window that ends in those minutes can be above the limit. Without this rule, one burst at the start of a
- * server holds each browser test for the whole run of the server: on 2026-11-04, a job with 645 starts in 4 hours did that.
+ * server holds each browser test for the whole run of the server. On 2026-11-04, a job with 645 starts in 4 hours did that.
  * A later burst makes the job spawn-heavy again. A job with `--spawn-heavy` keeps its class, because its owner says so.
  */
 export function settle(
