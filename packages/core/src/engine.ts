@@ -5,7 +5,7 @@
 
 import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
-import { conditionWait, localClock, nextUnmet, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
+import { conditionWait, localClock, nextUnmet, USAGE_UNSET, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerReads, type OwnerWrites } from "./counters.ts";
 import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TrailPoint, type TreeUse } from "./cpu.ts";
@@ -252,9 +252,9 @@ export interface ConfigChange {
   readonly spawnHeavy?: number | null | undefined;
   /** The battery floor in percent (H31): a whole number from 0 to 100. `null` gives the default of 25. */
   readonly batteryFloor?: number | null | undefined;
-  /** The usage file for `usage<N` (H31): an absolute path. `null` gives the default file. */
+  /** The usage file for `usage<N` (H31): an absolute path. `null` removes the setting, and `usage<N` then waits. */
   readonly usageFile?: string | null | undefined;
-  /** The registry of the roles (H57): an absolute path. `null` gives the default file. */
+  /** The registry of the roles (H57): an absolute path. `null` removes the setting, and the roles are then unknown. */
   readonly rolesFile?: string | null | undefined;
   /** The cores that the broker keeps for Mark (H23): a number from 0 to the count of processors. `null` gives the default of 2. */
   readonly cpuReserve?: number | null | undefined;
@@ -785,7 +785,7 @@ export class Engine {
       const cores = this.#counters.cores(now);
       this.#cores = docker === null ? cores : splitCores(cores, docker.shares);
       this.#docker =
-        docker === null ? null : dockerStatus({ ...docker, processes: this.#processes, owners: this.#owners, cores: this.#cores });
+        docker === null ? null : dockerStatus({ ...docker, processes: this.#processes, owners: this.#owners, cores: this.#cores, rolesState: this.#roles.state });
       this.#leaseCores = new Map([...this.#counters.groupCores(now, LEASE_GROUP)].map(([group, cores]) => [group.slice(LEASE_GROUP.length), cores]));
       this.#recordPeakCores();
       this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
@@ -1197,6 +1197,7 @@ export class Engine {
       sessions: () => this.#sessions,
       freshSessions: () => readSessions(this.#sessionsDir),
       roles: () => roles.roles(),
+      rolesState: () => roles.state,
     });
   }
 
@@ -1584,7 +1585,7 @@ export class Engine {
       presence: this.#sampler.presence === undefined ? null : (this.#presence.current?.state ?? null),
       thermal: this.#thermal.state(now),
       get usage(): UsageFacts {
-        usage ??= reader.read(config.usageFile, now);
+        usage ??= config.usageFile === null ? USAGE_UNSET : reader.read(config.usageFile, now);
         return usage;
       },
       get starts(): number | null {

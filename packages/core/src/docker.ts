@@ -14,7 +14,7 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import type { AlertRules } from "./alerts.ts";
 import type { OwnerCores } from "./counters.ts";
-import type { FleetRole } from "./peer.ts";
+import type { Role, RolesState } from "./peer.ts";
 import type { OwnerUse } from "./resources.ts";
 import { errorText } from "./services.ts";
 import type { OwnerKind, OwnerUsage, ProcessInfo } from "./types.ts";
@@ -166,6 +166,11 @@ export interface DockerStatus {
   readonly cores: number | null;
   /** The memory and the cores of each owner, the most memory first. */
   readonly owners: readonly DockerShare[];
+  /**
+   * True when the setting `rolesFile` is not set (H57). An owner `docker:<project>` then tells only the project, and not that no
+   * role owns the container.
+   */
+  readonly rolesUnknown?: true;
   /** The VM processes of Windows. Linux and a computer with no VM process give `null`. */
   readonly vm: DockerVm | null;
   /** The part of the owner `docker` that no container explains: the owner `docker (VM)`. */
@@ -584,7 +589,7 @@ export function pathForms(path: string, home: string = homedir()): string[] {
 }
 
 /** This function gives the folders of the roles that are not retired, from the field `repos` of each role. */
-export function roleFolders(roles: readonly FleetRole[], forms: (path: string) => readonly string[] = (path) => pathForms(path)): RoleFolder[] {
+export function roleFolders(roles: readonly Role[], forms: (path: string) => readonly string[] = (path) => pathForms(path)): RoleFolder[] {
   const folders: RoleFolder[] = [];
   roles.forEach((role, order) => {
     if (role.status === "retired") return;
@@ -664,7 +669,7 @@ export function containerOwner(
  */
 export class ContainerOwners {
   readonly #home: string;
-  #roles: readonly FleetRole[] | null = null;
+  #roles: readonly Role[] | null = null;
   #folders: readonly RoleFolder[] = [];
   #ids: ReadonlySet<string> = new Set();
   readonly #forms = new Map<string, readonly string[]>();
@@ -674,7 +679,7 @@ export class ContainerOwners {
   }
 
   /** This function gives each container with its owner. */
-  attribute(containers: readonly DockerContainer[], roles: readonly FleetRole[]): DockerContainerStatus[] {
+  attribute(containers: readonly DockerContainer[], roles: readonly Role[]): DockerContainerStatus[] {
     if (roles !== this.#roles) {
       this.#roles = roles;
       this.#folders = roleFolders(roles, (path) => pathForms(path, this.#home));
@@ -793,6 +798,8 @@ export interface DockerFacts {
   readonly owners: readonly OwnerUsage[];
   /** The cores of each owner after the split. */
   readonly cores: readonly OwnerCores[] | undefined;
+  /** The state of the roles (H57). Without it, the roles are known. */
+  readonly rolesState?: RolesState | undefined;
 }
 
 /** This function gives the Docker resource of the status. */
@@ -810,6 +817,7 @@ export function dockerStatus(facts: DockerFacts): DockerStatus {
     memoryMb: running.reduce((sum, container) => sum + (container.memoryMb ?? 0), 0),
     cores: measured.length === 0 ? null : measured.reduce((sum, container) => sum + (container.cores ?? 0), 0),
     owners: facts.shares,
+    ...(facts.rolesState === "roles unknown" ? { rolesUnknown: true as const } : {}),
     vm: vmOf(facts.processes),
     rest: rest === undefined ? null : { privateMb: rest.privateMb, workingMb: rest.workingMb, cores: restCores?.cores ?? null },
     disk: facts.read.disk,

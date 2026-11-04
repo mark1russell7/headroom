@@ -14,10 +14,9 @@ import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
-import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
+import { BATTERY_FLOOR_DEFAULT, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
 import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } from "./presence.ts";
-import { rolesFile } from "./peer.ts";
 import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
@@ -83,7 +82,7 @@ export interface Config {
   readonly jobTemp: string | null;
   /**
    * The URLs that the service monitor checks (H27), by name. Each one gives the instance `service:<name>`. Without the
-   * setting, the list has the fleet site only. An empty list checks no URL.
+   * setting, the list is empty and the monitor checks no URL.
    */
   readonly health: Readonly<Record<string, string>>;
   /**
@@ -96,10 +95,13 @@ export interface Config {
    * rule off.
    */
   readonly batteryFloor: number;
-  /** The usage file of the fleet for the condition `usage<N` (H31). The default is `~/git/fleet/artifacts/hub/db/usage/current.json`. */
-  readonly usageFile: string;
-  /** The registry of the roles (H57). The folder `roles` next to this file holds the role files. */
-  readonly rolesFile: string;
+  /** The usage file for the condition `usage<N` (H31). It has no default (H57): `null` with no setting, and `usage<N` then waits. */
+  readonly usageFile: string | null;
+  /**
+   * The registry of the roles (H57). The folder `roles` next to this file holds the role files. It has no default: `null`
+   * with no setting, and the roles are then unknown.
+   */
+  readonly rolesFile: string | null;
   /**
    * The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). The `cpu` amounts of the granted leases
    * do not take them. The default is 2, and 0 turns the reserve off.
@@ -167,7 +169,7 @@ function spawnLimitOf(value: string | undefined): number {
   return value !== undefined && Number.isFinite(limit) && limit > 0 ? limit : SPAWN_HEAVY_DEFAULT;
 }
 
-/** This function reads the setting `health`. A value that is not an object of strings gives the default list. */
+/** This function reads the setting `health`. A value that is not an object of strings gives the empty default list. */
 function healthOf(value: string | undefined): Readonly<Record<string, string>> {
   if (value === undefined) return DEFAULT_HEALTH;
   try {
@@ -302,8 +304,8 @@ export class Store {
       health: healthOf(values.get("health")),
       spawnHeavy: spawnLimitOf(values.get("spawnHeavy")),
       batteryFloor: batteryFloorOf(values.get("batteryFloor")),
-      usageFile: values.get("usageFile") ?? defaultUsageFile(),
-      rolesFile: values.get("rolesFile") ?? rolesFile(),
+      usageFile: values.get("usageFile") ?? null,
+      rolesFile: values.get("rolesFile") ?? null,
       cpuReserve: cpuReserveOf(values.get("cpuReserve")),
       presence: values.get("presence") !== "off",
       awayAfterMs: msOf(values.get("awayAfterMs"), AWAY_AFTER_MIN_MS, AWAY_AFTER_DEFAULT_MS),

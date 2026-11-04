@@ -62,6 +62,17 @@ describe("headroom docker (H38)", () => {
     expect(lines.at(-1)).toContain("headroom does not prune, stop or start a container.");
   });
 
+  it("tells that the roles are unknown, and flags no container for that state (H57)", () => {
+    const owner = container("shop-mongo-1", "docker:shop", "running", 566, 0.55, "shop");
+    const lines = dockerLinesOf({ ...DOCKER, containers: [owner], rolesUnknown: true });
+    expect(lines.filter((line) => line.startsWith("Roles unknown:"))).toEqual([
+      "Roles unknown: no roles file is set, so an owner docker:<project> tells only the project. Set it with: headroom config roles-file <path>",
+    ]);
+    expect(lines.some((line) => line.startsWith("shop-mongo-1") && line.includes("docker:shop"))).toBe(true);
+    expect(lines.join("\n")).not.toMatch(/orphan|stray/i);
+    expect(dockerLinesOf(DOCKER).join("\n")).not.toContain("Roles unknown");
+  });
+
   it("tells when the daemon gives no Docker read, and gives the JSON of the status", async () => {
     expect(dockerLinesOf(null)[0]).toMatch(/^No Docker read\./);
     expect(dockerLinesOf({ ...DOCKER, disk: null, vm: null, rest: null, containers: [], owners: [] })).toContain("Disk: no read yet. The daemon reads the disk use every 10 minutes.");

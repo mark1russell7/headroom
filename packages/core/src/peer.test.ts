@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { isLoopback, mergeRoles, parseRoleFile, parseRoles, PeerError, PeerResolver, RoleBook, roleOf, type FleetRole, type PeerSources } from "./peer.ts";
+import { isLoopback, mergeRoles, parseRoleFile, parseRoles, PeerError, PeerResolver, RoleBook, roleOf, type Role, type PeerSources } from "./peer.ts";
 import type { ProcessLink, SessionInfo, TcpEndpoints } from "./types.ts";
 
 const SITE = 4731;
@@ -16,7 +16,7 @@ const rows = (pid: number, address: string = "127.0.0.1", client: number = CLIEN
   { localAddress: address, localPort: SITE, remoteAddress: address, remotePort: client, state: "established", pid: 999 },
 ];
 
-const ROLES: FleetRole[] = [
+const ROLES: Role[] = [
   { id: "headroom", status: "active", sessionId: "19f84d12-aaaa", sessionName: "headroom" },
   { id: "strategist", status: "active", sessionId: "13a01f2a-bbbb", sessionName: "strategies" },
   { id: "lab", status: "parked", sessionId: null, sessionName: null },
@@ -90,6 +90,16 @@ describe("PeerResolver", () => {
   it("finds the connection on the IPv6 loopback and on a mapped IPv4 address", () => {
     expect(new PeerResolver(fake({ tcp: rows(12, "::1") }).sources).resolve(input).pid).toBe(12);
     expect(new PeerResolver(fake({ tcp: rows(12, "::ffff:7f00:1") }).sources).resolve(input).pid).toBe(12);
+  });
+
+  it("tells that the roles are unknown, and gives no role, when no roles file is set (H57)", () => {
+    const { sources } = fake({});
+    const unknown: PeerSources = { ...sources, roles: () => [], rolesState: () => "roles unknown" };
+    const peer = new PeerResolver(unknown).resolve(input);
+    expect(peer).toMatchObject({ pid: 12, session: "headroom", rolesUnknown: true });
+    expect(peer).not.toHaveProperty("role");
+    const known: PeerSources = { ...sources, rolesState: () => "roles known" };
+    expect(new PeerResolver(known).resolve(input)).not.toHaveProperty("rolesUnknown");
   });
 
   it("gives an anonymous peer with no claude.exe above it, and no error", () => {
@@ -276,6 +286,35 @@ describe("parseRoles and RoleBook", () => {
   });
 });
 
+describe("RoleBook with no roles file (H57)", () => {
+  it("has no roles, and reports the state roles unknown", () => {
+    const book = new RoleBook(null);
+    expect(book.roles()).toEqual([]);
+    expect(book.state).toBe("roles unknown");
+  });
+
+  it("changes the state with the setting, and forgets the roles of the file at a clear", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-roles-state-"));
+    try {
+      const file = join(dir, "roles.json");
+      writeFileSync(file, JSON.stringify({ roles: [{ id: "shop" }] }));
+      const book = new RoleBook(null);
+      book.useFile(file);
+      expect(book.state).toBe("roles known");
+      expect(book.roles().map((role) => role.id)).toEqual(["shop"]);
+      book.useFile(null);
+      expect(book.state).toBe("roles unknown");
+      expect(book.roles()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stays known with a file that does not exist: the setting is there, so the roles are an empty list", () => {
+    expect(new RoleBook("/nowhere/roles.json").state).toBe("roles known");
+  });
+});
+
 describe("RoleBook.useFile (H57)", () => {
   it("reads the new registry and the role files next to it", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-roles-"));
@@ -408,7 +447,7 @@ describe("parseRoleFile and mergeRoles", () => {
   });
 
   it("keeps the first of two entries with the same ID", () => {
-    const role = (id: string, status: string): FleetRole => ({ id, status, sessionId: null, sessionName: null });
+    const role = (id: string, status: string): Role => ({ id, status, sessionId: null, sessionName: null });
     expect(mergeRoles([role("a", "retired"), role("a", "active")], []).map((entry) => entry.status)).toEqual(["retired"]);
   });
 });

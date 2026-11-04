@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ALERT_RULES, detect } from "./alerts.ts";
+import { DEFAULT_ALERT_RULES, detect, type Alert } from "./alerts.ts";
 import {
   compareApi,
   containerOwner,
@@ -31,9 +31,9 @@ import {
   type DockerDisk,
   type DockerGet,
 } from "./docker.ts";
-import { Engine } from "./engine.ts";
+import { Engine, type Status } from "./engine.ts";
 import { attribute, unattributedMb } from "./owners.ts";
-import type { FleetRole } from "./peer.ts";
+import type { Role } from "./peer.ts";
 import type { OwnerUse } from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
 import { Store } from "./store.ts";
@@ -124,7 +124,7 @@ function fakeEngine(routes: Record<string, unknown | (() => unknown)>): { get: D
   return { get, paths };
 }
 
-const role = (id: string, repos: string[], status = "active"): FleetRole => ({ id, status, sessionId: null, sessionName: id, repos });
+const role = (id: string, repos: string[], status = "active"): Role => ({ id, status, sessionId: null, sessionName: id, repos });
 /** The normal forms of a path with no file system: `~/git` is a link to `D:\git`, as on this computer. */
 const forms = (path: string): string[] => {
   const normal = normalPath(path, HOME);
@@ -532,6 +532,86 @@ describe("the Docker alerts and the line of the status", () => {
     const status = dockerStatus({ read, containers, shares: dockerShares(containers), processes: [], owners: [], cores: undefined });
     expect(dockerLine(status)).toBe("Docker: 2 containers, 2.1 GB, 0.5 cores. Most: session:shop neo4j 1.2 GB. Build cache 14 GB. Unused images 2 GB.");
     expect(dockerLine(null)).toBeNull();
+  });
+});
+
+describe("a container that a role would own, with no roles file (H57)", () => {
+  /** A size above each process rule, so a flag on the container cannot stay hidden. */
+  const LARGE_MB = 6000;
+  const memory: SystemMemory = { totalMb: 28_000, availableMb: 9000, commitMb: 20_000, commitLimitMb: 80_000, kernelPagedMb: 500, kernelNonpagedMb: 400 };
+  const processes: ProcessInfo[] = [
+    { pid: 4, ppid: 0, name: "System", privateMb: 0, workingMb: 0 },
+    { pid: 7804, ppid: 4, name: "vmmemWSL", privateMb: 8000, workingMb: 7000 },
+    { pid: 5228, ppid: 1, name: "com.docker.backend.exe", privateMb: 200, workingMb: 100 },
+  ];
+
+  /** This function runs the engine for 10 minutes on a fake Docker engine, and keeps each alert that it saw. */
+  async function run(rolesFile: string | undefined) {
+    let clock = 1_000_000;
+    let total = 1e12;
+    const docker = fakeEngine({
+      "/version": { Version: "29.9.2", ApiVersion: "1.56", Os: "linux" },
+      "/v1.56/containers/json": LIST,
+      [`/v1.56/containers/${ID_SHOP}/stats`]: () => stats(LARGE_MB, 0, total, new Date(clock).toISOString()),
+      [`/v1.56/containers/${ID_MONGO}/stats`]: () => stats(300, 0, 0, new Date(clock).toISOString()),
+      "/v1.56/system/df": DF_NEW,
+    });
+    const reader = new DockerReader({ get: docker.get, now: () => clock, log: () => undefined });
+    const sampler: Sampler = { memory: () => memory, processes: () => processes, close: () => undefined };
+    const engine = new Engine({
+      sampler,
+      store: new Store(":memory:"),
+      sessionsDir: "/nowhere",
+      processors: 16,
+      now: () => clock,
+      docker: () => reader.last(),
+      ...(rolesFile === undefined ? {} : { rolesFile }),
+    });
+    const alerts = new Map<string, Alert>();
+    for (let round = 0; round < 40; round += 1) {
+      await reader.read();
+      engine.tick();
+      for (const alert of engine.status().alerts) alerts.set(alert.id, alert);
+      clock += 15_000;
+      total += 6e9;
+    }
+    const status = engine.status();
+    engine.close();
+    return { status, alerts: [...alerts.values()], paths: docker.paths };
+  }
+
+  it("gets no stop and no flag: the same alerts as with the role, only reads of Docker, and the owner of the project", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-no-roles-"));
+    try {
+      const file = join(dir, "roles.json");
+      writeFileSync(file, JSON.stringify({ roles: [{ id: "shop", status: "active", repos: ["D:\\git\\Shop"], session: { name: "shop" } }] }));
+      const owned = await run(file);
+      const unknown = await run(undefined);
+
+      // The fixture is right: with the file, the role owns the container, so the second run differs only in its roles.
+      const shopOf = (status: Status) => status.docker?.containers.find((each) => each.name === "shop-mongo-1");
+      expect(shopOf(owned.status)).toMatchObject({ owner: "session:shop", ownerKind: "session", memoryMb: LARGE_MB });
+      expect(owned.status.docker).not.toHaveProperty("rolesUnknown");
+
+      // With no file, the container keeps a plain Docker owner: not a stray, and not an orphan.
+      expect(unknown.status.docker?.rolesUnknown).toBe(true);
+      expect(shopOf(unknown.status)).toMatchObject({ owner: "docker:shop", ownerKind: "docker", ownerFrom: "docker", state: "running", memoryMb: LARGE_MB });
+
+      // No flag: the same alerts as with the role, and no alert names the container or its project.
+      const ids = (alerts: readonly Alert[]) => alerts.map((alert) => alert.id).sort();
+      expect(ids(unknown.alerts)).toEqual(ids(owned.alerts));
+      for (const alert of unknown.alerts) {
+        expect(["orphan", "runaway", "stop"]).not.toContain(alert.kind);
+        expect(`${alert.id} ${alert.subject} ${alert.message}`).not.toMatch(/shop|no owner|stray|orphan/i);
+      }
+
+      // No stop: the fake Docker engine saw only the four reads, and no write.
+      expect(unknown.paths.length).toBeGreaterThan(0);
+      for (const path of unknown.paths) expect(path).toMatch(/^\/(version|v1\.56\/containers\/json|v1\.56\/containers\/[0-9a-f]+\/stats|v1\.56\/system\/df)(\?|$)/);
+      expect(new Set(unknown.paths)).toEqual(new Set(owned.paths));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

@@ -1,14 +1,13 @@
 /**
  * The peer of a local TCP connection (H46). The peer is the process at the client end of the connection. This file also
- * finds the nearest `claude.exe` above the peer, with the session and the fleet role of that `claude.exe`.
- * The fleet site uses `resources.peer` one time for each MCP session or each keep-alive connection.
+ * finds the nearest `claude.exe` above the peer, with the session and the role of that `claude.exe`.
+ * A local site uses `resources.peer` one time for each MCP session or each keep-alive connection.
  *
  * The limit: this attribution is as strong as "the same Windows user". It is not a security boundary. A process of that
  * user can choose its parent with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`, and it can write a session file.
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { programName } from "./owners.ts";
 import type { ProcessLink, SessionInfo, TcpEndpoints } from "./types.ts";
@@ -33,8 +32,10 @@ export interface Peer {
   readonly sessionId?: string;
   /** The name of the session, as the owner `session:<name>` uses it. */
   readonly session?: string;
-  /** The fleet role of the session, from the role files and `roles.json` of the registry. It is absent when no role matches. */
+  /** The role of the session, from the role files and `roles.json` of the registry. It is absent when no role matches. */
   readonly role?: string;
+  /** True when the setting `rolesFile` is not set (H57). The role is then not known, which is different from no role. */
+  readonly rolesUnknown?: true;
 }
 
 /** The error codes of `resources.peer`. */
@@ -51,8 +52,8 @@ export class PeerError extends Error {
   }
 }
 
-/** One role of the fleet registry, from a role file or from `roles.json`, with the fields that `roleOf()` uses. */
-export interface FleetRole {
+/** One role of the registry, from a role file or from `roles.json`, with the fields that `roleOf()` uses. */
+export interface Role {
   readonly id: string;
   /** The status of the role, for example `active`, `parked` or `retired`. */
   readonly status: string | null;
@@ -67,36 +68,32 @@ export interface FleetRole {
   readonly repos?: readonly string[] | undefined;
 }
 
-/** The old file of the fleet registry of the roles: `~/git/fleet/registry/roles.json`. */
-export function rolesFile(): string {
-  return join(homedir(), "git", "fleet", "registry", "roles.json");
-}
+/**
+ * The state of a role book (H57). `roles known`: the book has a registry file. `roles unknown`: the setting `rolesFile` is
+ * not set, so headroom does not know who owns a thing. This state is not evidence of "no owner".
+ */
+export type RolesState = "roles known" | "roles unknown";
 
-/** The folder of the role files of the fleet registry: `~/git/fleet/registry/roles`. The file `<id>.json` holds the role `<id>`. */
-export function rolesDir(): string {
-  return join(homedir(), "git", "fleet", "registry", "roles");
-}
-
-const text = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
+const text =(value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** The characters of a role ID. The function `isRoleId()` also refuses two adjacent hyphens and a hyphen at the end. */
 const ROLE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 
-/** This function tells if a text is a fleet role ID: lower-case letters, digits and single hyphens, with 64 characters or fewer. */
+/** This function tells if a text is a role ID: lower-case letters, digits and single hyphens, with 64 characters or fewer. */
 function isRoleId(id: string): boolean {
   return ROLE_ID.test(id) && !id.includes("--") && !id.endsWith("-");
 }
 
 /** This function gives the role of one entry, or `undefined` for an entry that is not an object with an `id`. */
-function roleOfEntry(item: unknown): FleetRole | undefined {
+function roleOfEntry(item: unknown): Role | undefined {
   if (!isRecord(item)) return undefined;
   const id = text(item["id"]);
   if (id === null) return undefined;
   const session = isRecord(item["session"]) ? item["session"] : {};
   const repos = Array.isArray(item["repos"]) ? (item["repos"] as unknown[]).flatMap((repo) => (typeof repo === "string" && repo.trim() !== "" ? [repo] : [])) : [];
-  const role: FleetRole = { id, status: text(item["status"]), sessionId: text(session["id"]), sessionName: text(session["name"]) };
+  const role: Role = { id, status: text(item["status"]), sessionId: text(session["id"]), sessionName: text(session["name"]) };
   return repos.length === 0 ? role : { ...role, repos };
 }
 
@@ -104,11 +101,11 @@ function roleOfEntry(item: unknown): FleetRole | undefined {
  * This function reads the roles of `roles.json`: an object with a `roles` list, or a list. A role with no `id` is skipped.
  * A text that is not JSON gives an error.
  */
-export function parseRoles(json: string): FleetRole[] {
+export function parseRoles(json: string): Role[] {
   const data: unknown = JSON.parse(json);
   const list: unknown = Array.isArray(data) ? data : isRecord(data) ? data["roles"] : undefined;
   if (!Array.isArray(list)) return [];
-  const roles: FleetRole[] = [];
+  const roles: Role[] = [];
   for (const item of list as unknown[]) {
     const role = roleOfEntry(item);
     if (role !== undefined) roles.push(role);
@@ -120,22 +117,22 @@ export function parseRoles(json: string): FleetRole[] {
  * This function reads one role file. The name of the file without `.json` is `name`. The file must hold one role with the ID `name`.
  * Another value gives `undefined`. A text that is not JSON gives an error.
  */
-export function parseRoleFile(name: string, json: string): FleetRole | undefined {
+export function parseRoleFile(name: string, json: string): Role | undefined {
   const role = roleOfEntry(JSON.parse(json));
   return role !== undefined && role.id === name && isRoleId(name) ? role : undefined;
 }
 
 /**
- * This function merges the two sources of the fleet registry, as `readRoleDocs` of the fleet merges them.
+ * This function merges the two sources of the registry.
  *
  * - The file of a role replaces the entry of that role in `roles.json`, at the same place in the list.
  * - The roles with only a file come after the roles of `roles.json`, in the sequence of their IDs.
  * - A second role with the same ID does not count.
  */
-export function mergeRoles(registry: readonly FleetRole[], files: readonly FleetRole[]): FleetRole[] {
+export function mergeRoles(registry: readonly Role[], files: readonly Role[]): Role[] {
   const byId = new Map(files.map((role) => [role.id, role]));
   const seen = new Set<string>();
-  const merged: FleetRole[] = [];
+  const merged: Role[] = [];
   for (const role of registry) {
     if (seen.has(role.id)) continue;
     seen.add(role.id);
@@ -156,7 +153,7 @@ export function mergeRoles(registry: readonly FleetRole[], files: readonly Fleet
  * 2. Then the role with the name of the session as its session name wins. The role `strategist` has the session name `strategies`.
  * 3. Then the role with the name of the session as its ID wins. A parked role has no session name.
  */
-export function roleOf(session: Pick<SessionInfo, "sessionId" | "name">, roles: readonly FleetRole[]): string | undefined {
+export function roleOf(session: Pick<SessionInfo, "sessionId" | "name">, roles: readonly Role[]): string | undefined {
   const open = roles.filter((role) => role.status !== "retired");
   const byId = session.sessionId === "" ? undefined : open.find((role) => role.sessionId === session.sessionId);
   return (byId ?? open.find((role) => role.sessionName === session.name) ?? open.find((role) => role.id === session.name))?.id;
@@ -173,48 +170,61 @@ function stampOf(file: string): string {
 }
 
 /**
- * The roles of the fleet registry, from two sources. The role files in the folder `roles` win over the entries of `roles.json`.
+ * The roles of the registry, from two sources. The role files in the folder `roles` win over the entries of `roles.json`.
  *
  * - Each call reads the names of the role files, and the time and the size of each file. A change of one of them starts a new read.
  * - A file name with `.json` at its end gives a role file. A file name with a `.` at its start is a temporary file or a hidden file.
  * - A role file that is not JSON, or that holds a role with a different ID, does not count. The entry in `roles.json` then applies.
  * - A retired role stays in the list. The function `roleOf()` does not match it.
+ * - The file `null` gives no roles and the state `roles unknown` (H57). The book reads no file in this state.
  */
 export class RoleBook {
-  #file: string;
-  #dir: string;
+  #file: string | null;
+  #dir: string | null;
   #stamp = "";
-  #roles: readonly FleetRole[] = [];
+  #roles: readonly Role[] = [];
 
   /** The default folder of the role files is the folder `roles` next to the file `roles.json`. */
-  constructor(file: string = rolesFile(), dir: string = join(dirname(file), "roles")) {
+  constructor(file: string | null, dir: string | null = folderOf(file)) {
     this.#file = file;
     this.#dir = dir;
   }
 
-  /** This function changes the registry file. The folder `roles` next to the new file holds the role files, and the next call of `roles()` reads them. */
-  useFile(file: string): void {
+  /** The state of the book: `roles unknown` when it has no registry file. */
+  get state(): RolesState {
+    return this.#file === null ? "roles unknown" : "roles known";
+  }
+
+  /**
+   * This function changes the registry file. The folder `roles` next to the new file holds the role files, and the next
+   * call of `roles()` reads them. The file `null` gives no roles and the state `roles unknown`.
+   */
+  useFile(file: string | null): void {
     this.#file = file;
-    this.#dir = join(dirname(file), "roles");
+    this.#dir = folderOf(file);
     this.#stamp = "";
+    this.#roles = [];
   }
 
   /** This function gives the roles. Without the two sources, it gives no roles. A source that is not JSON does not count. */
-  roles(): readonly FleetRole[] {
-    const names = this.#fileNames();
-    const stamp = [stampOf(this.#file), ...names.map((name) => `${name}=${stampOf(join(this.#dir, name))}`)].join("|");
+  roles(): readonly Role[] {
+    const file = this.#file;
+    const dir = this.#dir;
+    if (file === null || dir === null) return this.#roles;
+    const names = fileNames(dir);
+    const stamp = [stampOf(file), ...names.map((name) => `${name}=${stampOf(join(dir, name))}`)].join("|");
     if (stamp === this.#stamp) return this.#roles;
     let complete = true;
-    let registry: FleetRole[] = [];
+    let registry: Role[] = [];
     try {
-      registry = parseRoles(readFileSync(this.#file, "utf8"));
+      registry = parseRoles(readFileSync(file, "utf8"));
     } catch (error) {
       if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") complete = false;
     }
-    const files: FleetRole[] = [];
+    const files: Role[] = [];
     for (const name of names) {
       try {
-        const role = parseRoleFile(name.slice(0, -".json".length), readFileSync(join(this.#dir, name), "utf8"));
+        const role = parseRoleFile(name.slice(0, -".json".length), readFileSync(join(dir, name), "utf8"));
         if (role !== undefined) files.push(role);
       } catch {
         complete = false;
@@ -225,16 +235,21 @@ export class RoleBook {
     this.#stamp = complete ? stamp : "";
     return this.#roles;
   }
+}
 
-  /** This function gives the names of the role files in their sequence. A missing folder gives no names. */
-  #fileNames(): string[] {
-    try {
-      return readdirSync(this.#dir)
-        .filter((name) => name.endsWith(".json") && !name.startsWith("."))
-        .sort();
-    } catch {
-      return [];
-    }
+/** This function gives the folder `roles` next to a registry file, or `null` with no file. */
+function folderOf(file: string | null): string | null {
+  return file === null ? null : join(dirname(file), "roles");
+}
+
+/** This function gives the names of the role files of a folder in their sequence. A missing folder gives no names. */
+function fileNames(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".json") && !name.startsWith("."))
+      .sort();
+  } catch {
+    return [];
   }
 }
 
@@ -252,8 +267,10 @@ export interface PeerSources {
   readonly sessions: () => readonly SessionInfo[];
   /** One fresh read of the session files, for a session that is younger than the last read. */
   readonly freshSessions: () => readonly SessionInfo[];
-  /** The roles of the fleet registry. */
-  readonly roles: () => readonly FleetRole[];
+  /** The roles of the registry. */
+  readonly roles: () => readonly Role[];
+  /** The state of the roles (H57). Without it, the roles are known. */
+  readonly rolesState?: (() => RolesState) | undefined;
 }
 
 /** The walk from one peer process, which stays the same for the life of that process. */
@@ -399,7 +416,14 @@ export class PeerResolver {
     const session = this.#sessionOf(claude);
     if (session === undefined) return peer;
     const role = roleOf(session, this.#sources.roles());
-    return { ...peer, ...(session.sessionId === "" ? {} : { sessionId: session.sessionId }), session: session.name, ...(role === undefined ? {} : { role }) };
+    const unknown = this.#sources.rolesState?.() === "roles unknown";
+    return {
+      ...peer,
+      ...(session.sessionId === "" ? {} : { sessionId: session.sessionId }),
+      session: session.name,
+      ...(role === undefined ? {} : { role }),
+      ...(unknown ? { rolesUnknown: true as const } : {}),
+    };
   }
 
   /** This function tells if the `claude.exe` of a walk still runs, with the same start. Without a live start read, it counts as live. */

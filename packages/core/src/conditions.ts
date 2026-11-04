@@ -10,8 +10,6 @@
  */
 
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Lease } from "./broker.ts";
 import type { PresenceState } from "./presence.ts";
 import { BROWSER_SLOT, isSpawnHeavy } from "./spawn.ts";
@@ -19,7 +17,7 @@ import { countText } from "./starts.ts";
 import type { ThermalState } from "./thermal.ts";
 import { MEMORY } from "./types.ts";
 
-/** The usage of the five-hour window of Claude, from the usage file of the fleet. */
+/** The usage of the five-hour window of Claude, from the usage file. The state `unset` tells that the setting `usageFile` has no value (H57). */
 export type UsageFacts =
   | {
       readonly state: "ok";
@@ -31,6 +29,7 @@ export type UsageFacts =
       /** The time of the data: the field `updatedAt`, else the time of the last write of the file. */
       readonly updatedAt: number;
     }
+  | { readonly state: "unset" }
   | { readonly state: "missing"; readonly path: string }
   | { readonly state: "unreadable"; readonly path: string; readonly error: string };
 
@@ -142,16 +141,20 @@ export const TIMING_REASON = "timing numbers on battery or on a throttled CPU ar
 /** The condition `cool` holds after this time with no throttle of the CPU (H35). */
 export const COOL_MS = 120_000;
 
-/** Usage data older than this is stale, so `usage<N` does not hold. The fleet writes the file approximately each hour. */
+/** Usage data older than this is stale, so `usage<N` does not hold. The writer of the file writes it approximately each hour. */
 export const USAGE_FRESH_MS: number = 70 * 60_000;
 
 /** The time that the engine keeps a read of the usage file. */
 export const USAGE_CACHE_MS = 30_000;
 
-/** The usage file of the fleet: `~/git/fleet/artifacts/hub/db/usage/current.json`. `headroom config usage-file <path>` changes it. */
-export function defaultUsageFile(): string {
-  return join(homedir(), "git", "fleet", "artifacts", "hub", "db", "usage", "current.json");
-}
+/** The facts of the usage with no setting `usageFile` (H57). headroom has no default file, so the condition `usage<N` fails closed. */
+export const USAGE_UNSET: UsageFacts = { state: "unset" };
+
+/** The state of a lease that runs with `usage<N` and no usage file. */
+export const NO_USAGE_FILE = "no usage file is set";
+
+/** The reason of a lease that waits for `usage<N` with no usage file. It gives the command that sets the file. */
+export const NO_USAGE_FILE_WAIT: string = `waits for the usage data: ${NO_USAGE_FILE}. Set it with: headroom config usage-file <path>`;
 
 /** This function writes a time as the local clock: "02:10". */
 export function localClock(at: number): string {
@@ -188,6 +191,7 @@ function coolState(thermal: ThermalState | null | undefined): string {
 /** This function tells why the usage data does not give a ratio, or gives `null` when it is fresh. */
 function usageProblem(facts: ConditionFacts): string | null {
   const usage = facts.usage;
+  if (usage.state === "unset") return NO_USAGE_FILE_WAIT;
   if (usage.state === "missing") return `waits for the usage data: ${usage.path} is missing`;
   if (usage.state === "unreadable") return `waits for the usage data: ${usage.path} ${usage.error}`;
   const age = facts.now - usage.updatedAt;
@@ -229,6 +233,7 @@ export const CONDITIONS: readonly Condition[] = [
       return `waits until the five-hour usage window is under ${value ?? 0}% (now ${percentText(facts.usage.ratio)}${resets})`;
     },
     state: (facts) => {
+      if (facts.usage.state === "unset") return NO_USAGE_FILE;
       if (usageProblem(facts) !== null || facts.usage.state !== "ok") return "no fresh usage data";
       return `the usage window at ${percentText(facts.usage.ratio)}`;
     },

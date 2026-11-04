@@ -92,11 +92,12 @@ The local site serves its procedures as MCP tools to `claude.exe`. Each call nee
 
 - The input is `{ localPort, remotePort }`: the two ports that the site sees on its loopback connection.
 - The daemon reads the client row of the connection from the IPv4 and the IPv6 table. The two ends must be loopback addresses.
-- The output is `{ pid, exe, via, sessionId?, session?, role? }`. `via` gives the process IDs from the peer up to the nearest `claude.exe`.
+- The output is `{ pid, exe, via, sessionId?, session?, role?, rolesUnknown? }`. `via` gives the process IDs from the peer up to the nearest `claude.exe`.
 - A peer with no `claude.exe` above it is anonymous. It has no session and no role. This is not an error.
 - The errors are `NO_CONNECTION` (no row for the two ports) and `PEER_GONE` (the process ended before the walk). Linux gives `NOT_SUPPORTED`.
 - The role comes from the role registry: first by the session ID, then by the session name.
-- The local registry has the role files and `roles.json`. The file of a role wins over its entry in `roles.json`.
+- The registry has the role files and `roles.json`. The file of a role wins over its entry in `roles.json`.
+- The registry has no default. `headroom config roles-file <path>` sets it. With no setting, the state is `roles unknown`: the output has `rolesUnknown: true` and no role.
 
 `headroom peer <localPort> <remotePort>` shows the same answer for a check by hand. `--json` gives the JSON. An error gives the exit code 3.
 
@@ -239,6 +240,7 @@ Docker Desktop keeps its containers in one VM. Windows shows the VM as one proce
 - **The memory** of a container is its use less its inactive file cache, as `docker stats` gives it. **The cores** come from the change of its processor time between two reads.
 - **The disk use**: every 10 minutes, `GET /system/df` gives the images, the images with no container, the build cache, the volumes and the writable layers.
 - **The owner** of a container is the session of its compose project. The folder of the project in a folder of a role gives `session:<role>`. A project with the name of a role also gives that role. Else the owner is `docker:<project>` or `docker:<name>`.
+- **No roles file.** With no setting `rolesFile`, the state is `roles unknown`. Each container then has the owner `docker:<project>` or `docker:<name>`. `headroom docker` writes a line about the state. headroom does not flag or stop a container because of this state. It stops no container in any state.
 - **The split.** In the memory and the CPU of the owners, the containers get their part of the owner `docker`. The rest is `docker (VM)`: the VM, its cache and the Docker programs of Windows.
 - **The VM memory.** `vmmemWSL` gives no memory counters to `K32GetProcessMemoryInfo`. The sampler reads its memory from `SystemProcessInformation`, as for each process (H49). The split moves a part of the VM memory to the containers, so the VM counts one time.
 - No pipe or no answer: no Docker read and no split. The log of the daemon gets one line for each change of the state of the engine.
@@ -334,7 +336,7 @@ headroom run --when "starts<700" -- pnpm e2e
 |---|---|
 | `ac` | The laptop is plugged in. A computer with no battery counts as plugged in. |
 | `battery>=N` | The battery is at N% or more, or the laptop is plugged in. |
-| `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file. |
+| `usage<N` | The five-hour usage window of Claude is under N%. The data comes from the usage file. Set the file with `headroom config usage-file <path>`. |
 | `starts<N` | The computer starts fewer than N processes in one minute, over the last 2 minutes. The daemon tests it at each read of the processes. |
 | `away` | Mark is away from the laptop (H33). A computer with no read of the presence counts as away. |
 | `cool` | The CPU was not throttled in the last 2 minutes (H35). A computer with no read of the speed counters counts as cool. |
@@ -347,8 +349,9 @@ headroom run --when "starts<700" -- pnpm e2e
 
 **The battery policy.** On battery below the floor, a new heavy lease waits. A lease is heavy when it asks for 2 GB of memory or more, holds the slot `browser`, or is spawn-heavy. `--battery-ok` starts it. `headroom config battery-floor 15` changes the floor, and `0` turns the rule off. The default is 25%.
 
-**The usage data.** `usage<N` reads the usage file, at most one time in 30 seconds. `headroom config usage-file <path>` changes the file. `headroom config roles-file <path>` changes the registry of the roles in the same way. The condition fails closed:
+**The usage data.** `usage<N` reads the usage file, at most one time in 30 seconds. The file has no default. `headroom config usage-file <path>` sets it, and `--clear` removes it. `headroom config roles-file <path>` sets the registry of the roles in the same way. The condition fails closed:
 
+- With no setting, the job waits. Its reason gives the command that sets the file. `headroom status` shows the reason in the row of the job and in a line `Problem:`.
 - A missing or unreadable file stops the job, and the reason names the path.
 - Data older than 70 minutes stops the job, and the reason gives its age.
 - After the reset time of the window, the old ratio does not apply, so the condition holds.
@@ -476,7 +479,7 @@ On 2026-10-24, the Docker engine stopped to answer, and an MCP server of the gat
 
 - **Docker**: a `GET /_ping` on the pipe of the engine, `\\.\pipe\docker_engine` on Windows and `/var/run/docker.sock` on Linux. headroom starts no `docker` process. When the pipe does not exist, the state is `absent`, and no alert starts.
 - **The MCP servers of the gateway**: the state of the gateway, with no call. A server that did not start is `down`, with the last error line of its stderr. A server that the gateway stopped for idle is `idle`, not `down`. A server that exited is `idle`, because the next request starts it again. With 3 exits in 10 minutes, it is `down`.
-- **The URLs of the setting `health`**: a `GET` of each URL. An answer with a status below 500 is good. The default list has the local site only, at `http://127.0.0.1:4731/`.
+- **The URLs of the setting `health`**: a `GET` of each URL. An answer with a status below 500 is good. The list has no default, so with no setting the monitor checks no URL.
 
 Each service has a state: `ok`, `slow` (an answer after more than 1 second), `down`, `idle` or `absent`. `headroom services` shows the state, the latency, the start of the state, the last good check and the last error of each service. `--json` gives the list.
 
@@ -489,7 +492,7 @@ mcp:loom                 idle           -  16:02 (2.7 h)    -        -
 ```
 
 - `headroom config health <name> <url>` adds a URL or changes it. `headroom config health <name> --clear` removes one URL.
-- `headroom config health --clear` sets the default list again. `headroom config health` shows the list.
+- `headroom config health --clear` makes the list empty. `headroom config health` shows the list.
 - headroom does not restart a service for its health. A person or the session that owns the service decides.
 
 On Windows, `headroom run` puts the job into a job object:
@@ -603,7 +606,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
 | `disk` | A fixed drive has less than 20 GB free (a warning), or less than 5 GB free (critical). The alert gives the free space that the drive lost in the last hour. It names the 3 owners that wrote most in the last hour, each above 100 MB, for example `Most writes in the last hour: session:shop 31.2 GB, mcp:vex 2.1 GB.` It also names the 3 largest files above 1 GB of the last 2 hours in the home folder, the downloads, the temporary folders and the root of the drive. A drive smaller than 100 GB uses 20% and 5% of its size. |
 | `ports` | More than 80% of the dynamic TCP ports are in use (a warning), or more than 95% (critical). When no dynamic port is free, new connections fail. The alert names the 3 owners with the most connections, and the count in `TIME_WAIT`. |
-| `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the shop tests need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
+| `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the test databases need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.

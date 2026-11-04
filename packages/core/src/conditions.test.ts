@@ -16,12 +16,15 @@ import {
   leaseConditions,
   localClock,
   nextUnmet,
+  NO_USAGE_FILE,
+  NO_USAGE_FILE_WAIT,
   parseCondition,
   parseUsage,
   parseWhen,
   readUsage,
   unmetCheck,
   unmetText,
+  USAGE_UNSET,
   UsageReader,
   waitsForRoom,
   type ConditionFacts,
@@ -179,6 +182,20 @@ describe("the tests of the conditions (H31)", () => {
     expect(waitsForRoom({ state: "waiting", reason: "waits until the laptop is plugged in" })).toBe(false);
     expect(waitsForRoom({ state: "waiting", reason: "waits for memory: needs 2048, 100 free" })).toBe(true);
     expect(waitsForRoom({ state: "granted", reason: null })).toBe(false);
+  });
+});
+
+describe("no usage file in the settings (H57)", () => {
+  const fanout = lease("u", { conditions: { when: ["usage<80"] } });
+
+  it("is a wait for a condition, so a restart of the daemon does not wait for such a lease", () => {
+    expect(conditionWait(fanout, facts({ usage: USAGE_UNSET }), null)).toBe(NO_USAGE_FILE_WAIT);
+    expect(isConditionWait(NO_USAGE_FILE_WAIT)).toBe(true);
+    expect(MEMORY_WAIT.test(NO_USAGE_FILE_WAIT)).toBe(false);
+  });
+
+  it("gives the reason of the state of the condition", () => {
+    expect(unmetCheck({ ...fanout, state: "granted" }, facts({ usage: USAGE_UNSET }))).toEqual({ condition: "usage<80", state: NO_USAGE_FILE });
   });
 });
 
@@ -363,6 +380,8 @@ describe("Engine conditions (H31)", () => {
       close: () => undefined,
     };
     const store = new Store(":memory:");
+    // A fake reader of the usage needs a setting: with no usage file, the engine reads no file (H57).
+    if (readUsage !== undefined) store.setConfig("usageFile", join(tmpdir(), "headroom-usage", "current.json"));
     const engine = new Engine({ sampler, store, now: () => now, sessionsDir: "/nowhere", readUsage });
     // The first tick reads the battery.
     engine.tick();
@@ -521,7 +540,7 @@ describe("Engine conditions (H31)", () => {
     const path = join(tmpdir(), "headroom-roles", "roles.json");
     expect(engine.setConfig({ rolesFile: path }).rolesFile).toBe(path);
     expect(() => engine.setConfig({ rolesFile: "roles.json" })).toThrow(RangeError);
-    expect(engine.setConfig({ rolesFile: null }).rolesFile).not.toBe(path);
+    expect(engine.setConfig({ rolesFile: null }).rolesFile).toBeNull();
   });
 
   it("fails closed when the usage file is missing, with the path of the setting", () => {
@@ -537,5 +556,27 @@ describe("Engine conditions (H31)", () => {
     writeFileSync(next, JSON.stringify({ updatedAt: new Date(now()).toISOString(), limits: { five_hour: { ratio: 0.2, resetsAt: new Date(now() + 3_600_000).toISOString() } } }));
     engine.setConfig({ usageFile: next });
     expect(engine.get(fanout.id)?.state).toBe("granted");
+  });
+
+  it("fails closed with no usage file in the settings, tells the command, and starts when the setting comes (H57)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-usage-unset-"));
+    const { engine, now } = setup();
+    expect(engine.config().usageFile).toBeNull();
+    const job = engine.request({ holder: "shop", job: "pnpm bench", amounts: {}, ...ttl, when: ["usage<80"] });
+    expect(job).toMatchObject({ state: "waiting", reason: NO_USAGE_FILE_WAIT });
+    expect(job.reason).toContain("headroom config usage-file <path>");
+    // Each next tick keeps the lease waiting: no time starts it.
+    engine.tick();
+    expect(engine.get(job.id)).toMatchObject({ state: "waiting", reason: NO_USAGE_FILE_WAIT });
+    // A job with no usage condition does not wait for the setting.
+    expect(engine.request({ holder: "shop", job: "pnpm test", amounts: {}, ...ttl }).state).toBe("granted");
+    const path = join(dir, "current.json");
+    writeFileSync(path, JSON.stringify({ updatedAt: new Date(now()).toISOString(), limits: { five_hour: { ratio: 0.2, resetsAt: new Date(now() + 3_600_000).toISOString() } } }));
+    engine.setConfig({ usageFile: path });
+    expect(engine.get(job.id)?.state).toBe("granted");
+    // A clear of the setting makes the condition fail closed again.
+    expect(engine.setConfig({ usageFile: null }).usageFile).toBeNull();
+    const next = engine.request({ holder: "shop", job: "pnpm bench 2", amounts: {}, ...ttl, when: ["usage<80"] });
+    expect(next).toMatchObject({ state: "waiting", reason: NO_USAGE_FILE_WAIT });
   });
 });

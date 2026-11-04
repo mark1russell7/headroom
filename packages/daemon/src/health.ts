@@ -16,7 +16,7 @@ import type { McpServerState } from "./gateway.ts";
 export const DOCKER_PIPE: string = process.platform === "win32" ? "\\\\.\\pipe\\docker_engine" : "/var/run/docker.sock";
 
 /** The sentence of the Docker alert that tells who needs the engine. */
-const DOCKER_NEEDS = "Containers such as Mongo and the graph tests need it.";
+const DOCKER_NEEDS = "Containers such as Mongo and the test databases need it.";
 
 /** An MCP server with this count of unexpected exits in 10 minutes is `down`: it stops again after each start. */
 export const MCP_EXITS_DOWN = 3;
@@ -107,7 +107,7 @@ export function urlCheck(name: string, url: string): ServiceCheck {
   return {
     name,
     type: "url",
-    title: name === "fleet-site" ? "The fleet site" : `The service ${name}`,
+    title: `The service ${name}`,
     target: url,
     critical: false,
     run: (signal) => httpProbe({ url }, signal),

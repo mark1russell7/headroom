@@ -10,6 +10,7 @@ import { parseArgs } from "node:util";
 import { diskSize, DOCKER_VM, localClock, type DockerContainerStatus, type DockerStatus } from "@headroom/core";
 import type { Connection } from "./client.ts";
 import type { DaemonStatus } from "./procedures.ts";
+import { SET_ROLES_FILE } from "./status-lines.ts";
 
 export const DOCKER_USAGE = "headroom docker [--json]";
 
@@ -48,6 +49,7 @@ export function dockerLinesOf(docker: DockerStatus | null | undefined): string[]
     lines.push("", `${"NAME".padEnd(28)} ${"OWNER".padEnd(28)} ${"STATE".padEnd(10)} ${"MEMORY".padStart(9)} ${"CORES".padStart(6)}  PROJECT`);
     for (const container of docker.containers) lines.push(containerRow(container));
   }
+  if (docker.rolesUnknown === true) lines.push("", `Roles unknown: no roles file is set, so an owner docker:<project> tells only the project. ${SET_ROLES_FILE}`);
   if (docker.owners.length > 0) {
     lines.push("", "Owners of the running containers:");
     for (const share of docker.owners) {

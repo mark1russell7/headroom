@@ -6,7 +6,7 @@
  */
 
 import { parseArgs } from "node:util";
-import { CHECK_EVERY_MS, DEFAULT_HEALTH, type ServiceHealth } from "@headroom/core";
+import { CHECK_EVERY_MS, type ServiceHealth } from "@headroom/core";
 import type { Connection } from "./client.ts";
 
 export const SERVICES_USAGE = "headroom services [--json]";
@@ -82,7 +82,7 @@ export function healthLines(health: Readonly<Record<string, string>>): string[] 
 
 /**
  * This function gives the new list of URLs for `headroom config health`. A name and a URL add or change one check.
- * A name with `--clear` removes one check. `--clear` alone gives `null`, the default list. Other arguments give `undefined`.
+ * A name with `--clear` removes one check. `--clear` alone gives `null`, which removes the setting. Other arguments give `undefined`.
  */
 export function healthChange(
   current: Readonly<Record<string, string>>,
@@ -97,5 +97,5 @@ export function healthChange(
   return rest;
 }
 
-/** The default list of the setting `health`, for the help of `headroom config`. */
-export const DEFAULT_HEALTH_TEXT: string = Object.entries(DEFAULT_HEALTH).map(([name, url]) => `${name} ${url}`).join(", ");
+/** The text of the default of the setting `health`, for the help of `headroom config`. */
+export const DEFAULT_HEALTH_TEXT = "no URL";
