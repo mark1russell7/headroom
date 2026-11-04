@@ -1357,7 +1357,7 @@ Before H49, the sampler opened each process for `K32GetProcessMemoryInfo`. The d
 
 ### H50: the system file cache
 
-On 2026-10-25, the available memory fell two times, and the reaper of Claude Code stopped jobs. No job used much memory. These are the numbers from the samples of headroom:
+On 2026-10-25, the available memory fell two times, and the reaper of Claude Code stopped jobs. No job used much memory. The stop does not need low memory: on 2026-11-04 it came with approximately 5 GB available (H56). These are the numbers from the samples of headroom:
 
 | Event | System file cache | Kernel pools | Available memory |
 |---|---|---|---|
