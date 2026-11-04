@@ -10,7 +10,7 @@
 import { Broker, type Capacity, type Lease } from "@headroom/core/src/broker.ts";
 import { CPU_RESERVE_DEFAULT } from "@headroom/core/src/cpu.ts";
 import { rooms, type Measurement } from "@headroom/core/src/resources.ts";
-import { BROWSER_SLOT, learnSpawn, leaseRate, promote, SPAWN_HEAVY_DEFAULT, spawnConflict, startsSumConflict, windowRate } from "@headroom/core/src/spawn.ts";
+import { BROWSER_SLOT, learnSpawn, leaseRate, promote, settle, SPAWN_HEAVY_DEFAULT, spawnConflict, startsSumConflict, windowRate } from "@headroom/core/src/spawn.ts";
 import { MEMORY } from "@headroom/core/src/types.ts";
 import { gb } from "@headroom/core/src/units.ts";
 import { KINDS, kindOf, type JobKind, type Machine } from "./catalog.ts";
@@ -251,7 +251,7 @@ export class Simulation {
     const rate = windowRate(job.points);
     if (rate === null) return;
     const peak = Math.max(lease.peakStartsPerMin ?? 0, Math.round(rate));
-    const spawn = promote(lease.spawn, peak, SPAWN_HEAVY_DEFAULT);
+    const spawn = settle(promote(lease.spawn, rate, SPAWN_HEAVY_DEFAULT), job.points, SPAWN_HEAVY_DEFAULT);
     this.#broker.update(lease.id, { peakStartsPerMin: peak, ...(spawn === undefined ? {} : { spawn }) });
   }
 

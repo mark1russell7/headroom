@@ -153,6 +153,7 @@ A spawn-heavy job and a browser test do not run at the same time:
 - **The past runs.** A job name is spawn-heavy when the peak of its past runs is above the limit. The rule is the rule of `--mem auto`: the 90th percentile of the last 20 runs, the runs of the same holder first.
 - **The limit.** The default is 600 starts in one minute. `headroom config spawn-heavy 900` changes it. `headroom config spawn-heavy --clear` sets the default again.
 - **A new job.** A job with no past runs is normal. When its own peak goes above the limit, it becomes spawn-heavy at once, and each later browser test waits for it.
+- **A quiet job.** A job stops being spawn-heavy when no 30-second window of its last 5 minutes is above the limit. So one burst at the start of a server does not hold the browser tests for the whole run of the server. A new burst makes the job spawn-heavy again. A job with `--spawn-heavy` keeps its class.
 - **The queue.** A spawn-heavy lease waits while a browser test runs, and a browser test waits while a spawn-heavy lease runs. A later lease does not go before an earlier waiting lease that it conflicts with.
 - Two spawn-heavy jobs can run together. Two browser tests follow the capacity of the slot `browser`.
 - **The options.** `--spawn-heavy` marks a new job that starts many processes. `--no-spawn-heavy` marks a job as normal, also when its past runs are above the limit.

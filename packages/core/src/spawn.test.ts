@@ -13,6 +13,7 @@ import {
   leaseRate,
   percentile90,
   promote,
+  settle,
   spawnClassText,
   spawnConflict,
   spawnLine,
@@ -70,6 +71,26 @@ describe("spawn learning (H47)", () => {
   it("takes the options of the run: --spawn-heavy and --no-spawn-heavy", () => {
     expect(learnSpawn([], 600, true)).toEqual({ heavy: true, source: "declared", perMinute: null, runs: 0 });
     expect(learnSpawn([1870], 600, false)).toEqual({ heavy: false, source: "opted-out", perMinute: 1870, runs: 1 });
+  });
+
+  it("ends the class of a job with no window above the limit in the last 5 minutes (H58)", () => {
+    const burst = [[0, 0], [30_000, 640]] as const;
+    const quiet = Array.from({ length: 11 }, (_, index) => [60_000 + index * 30_000, 640 + index] as const);
+    const heavy = { heavy: true, source: "live", perMinute: 1280, runs: 0 } as const;
+    // Too short: the reports do not cover 5 minutes.
+    expect(settle(heavy, burst, 600)).toBe(heavy);
+    expect(settle(heavy, [...burst, ...quiet.slice(0, 8)], 600)).toBe(heavy);
+    expect(settle(heavy, [...burst, ...quiet], 600)).toEqual({ heavy: false, source: "settled", perMinute: 1280, runs: 0 });
+    // A burst inside the 5 minutes keeps the class.
+    expect(settle(heavy, [...burst, ...quiet.slice(0, 10), [360_000, 1000]], 600)).toBe(heavy);
+    // A class from past runs ends too, but not a class that the owner declared.
+    const past = { heavy: true, source: "history", perMinute: 900, runs: 4 } as const;
+    expect(settle(past, [...burst, ...quiet], 600)?.heavy).toBe(false);
+    const declared = { heavy: true, source: "declared", perMinute: null, runs: 0 } as const;
+    expect(settle(declared, [...burst, ...quiet], 600)).toBe(declared);
+    expect(settle(undefined, [...burst, ...quiet], 600)).toBeUndefined();
+    // A settled job becomes spawn-heavy again at a new burst.
+    expect(promote({ heavy: false, source: "settled", perMinute: 1280, runs: 0 }, 700, 600)).toEqual({ heavy: true, source: "live", perMinute: 700, runs: 0 });
   });
 
   it("promotes a normal job when its own peak goes above the limit, but not a job with --no-spawn-heavy", () => {
@@ -488,6 +509,27 @@ describe("Engine spawn rule (H47)", () => {
     expect(later.reason).toBe("waits for site-audit-gates of organizer to end: it starts many processes (about 924 a minute), and browsers can fail to start beside it");
     expect(engine.status().leases.find((each) => each.id === first.id)?.spawn?.source).toBe("live");
     expect(spawnLine(engine.status().leases)).toBe("Spawn-heavy now: site-audit-gates (organizer), 924 a minute. Browser tests wait until it ends.");
+  });
+
+  it("lets a browser test run when a server that burst at its start goes quiet (H58)", () => {
+    const { engine, advance } = setup();
+    const server = engine.request({ holder: "assistant", job: "serve", amounts: {}, ...ttl });
+    advance(30_000);
+    engine.renew(server.id, 10);
+    advance(30_000);
+    expect(engine.renew(server.id, 330)?.spawn).toMatchObject({ heavy: true, source: "live" });
+    const browser = engine.request({ holder: "site", job: "playwright test", amounts: { browser: 1 }, ...ttl });
+    expect(browser.state).toBe("waiting");
+    let processes = 330;
+    for (let step = 0; step < 10; step++) {
+      advance(30_000);
+      expect(engine.renew(server.id, ++processes)?.spawn?.heavy).toBe(true);
+    }
+    advance(30_000);
+    expect(engine.renew(server.id, ++processes)?.spawn).toMatchObject({ heavy: false, source: "settled" });
+    expect(spawnLine(engine.status().leases)).toBeNull();
+    engine.tick();
+    expect(engine.get(browser.id)?.state).toBe("granted");
   });
 
   it("counts the live rate of a first run in the sum of the start rates, in each order", () => {

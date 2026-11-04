@@ -28,13 +28,17 @@ export const SPAWN_WINDOW_MS = 30_000;
 /** The count of past runs that the learned peak uses, as `--mem auto` does. */
 export const SPAWN_RUNS = 20;
 
+/** The time with no window above the limit after which a measured spawn-heavy job stops being spawn-heavy (H58). */
+export const SPAWN_QUIET_MS: number = 5 * 60_000;
+
 const MINUTE_MS = 60_000;
 
 /**
  * Where the spawn class of a lease comes from: `history` (the past runs of the job name), `declared` (`--spawn-heavy`),
- * `opted-out` (`--no-spawn-heavy`) or `live` (the peak of the job itself went above the limit).
+ * `opted-out` (`--no-spawn-heavy`), `live` (the rate of the job itself went above the limit) or `settled` (the job was
+ * spawn-heavy from its past runs or its own rate, and then stayed under the limit for 5 minutes).
  */
-export type SpawnSource = "history" | "declared" | "opted-out" | "live";
+export type SpawnSource = "history" | "declared" | "opted-out" | "live" | "settled";
 
 /** The spawn class of a lease (H47). */
 export interface SpawnClass {
@@ -89,12 +93,33 @@ export function learnSpawn(peaks: readonly number[], limit: number, override?: b
 }
 
 /**
- * This function gives the new spawn class of a lease after a new peak, or the class that it has. A job that is not
- * spawn-heavy becomes spawn-heavy when its peak goes above the limit. A job with `--no-spawn-heavy` stays normal.
+ * This function gives the new spawn class of a lease after a new rate, or the class that it has. A job that is not
+ * spawn-heavy becomes spawn-heavy when its rate goes above the limit. A job with `--no-spawn-heavy` stays normal.
  */
-export function promote(spawn: SpawnClass | undefined, peak: number, limit: number): SpawnClass | undefined {
-  if (spawn?.heavy === true || spawn?.source === "opted-out" || !(peak > limit)) return spawn;
-  return { heavy: true, source: "live", perMinute: Math.round(peak), runs: spawn?.runs ?? 0 };
+export function promote(spawn: SpawnClass | undefined, rate: number, limit: number): SpawnClass | undefined {
+  if (spawn?.heavy === true || spawn?.source === "opted-out" || !(rate > limit)) return spawn;
+  return { heavy: true, source: "live", perMinute: Math.round(rate), runs: spawn?.runs ?? 0 };
+}
+
+/**
+ * This function ends the spawn-heavy class of a job that went quiet (H58). The reports must cover the last 5 minutes, and
+ * no 30-second window that ends in those minutes can be above the limit. Without this rule, one burst at the start of a
+ * server holds each browser test for the whole run of the server. On 2026-11-04, a job with 645 starts in 4 hours did that.
+ * A later burst makes the job spawn-heavy again. A job with `--spawn-heavy` keeps its class, because its owner says so.
+ */
+export function settle(
+  spawn: SpawnClass | undefined,
+  points: readonly (readonly [at: number, processes: number])[],
+  limit: number,
+  quietMs: number = SPAWN_QUIET_MS,
+): SpawnClass | undefined {
+  if (spawn?.heavy !== true || spawn.source === "declared") return spawn;
+  const first = points[0];
+  const last = points.at(-1);
+  if (first === undefined || last === undefined || last[0] - first[0] < quietMs) return spawn;
+  const from = last[0] - quietMs;
+  const burst = points.some((point, index) => point[0] >= from && (windowRate(points.slice(0, index + 1)) ?? 0) > limit);
+  return burst ? spawn : { ...spawn, heavy: false, source: "settled" };
 }
 
 /** This function tells if a lease holds the slot `browser`. */
