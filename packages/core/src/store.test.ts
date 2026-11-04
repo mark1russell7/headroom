@@ -16,7 +16,7 @@ describe("Store", () => {
   it("keeps the leases, the pools and the samples", () => {
     const store = new Store(":memory:");
     const broker = new Broker({ now: () => 5000, newId: () => "l1" });
-    const lease = broker.request({ holder: "graph", job: "build", amounts: { memory: 2000, docker: 1 }, pid: 42 });
+    const lease = broker.request({ holder: "shop", job: "build", amounts: { memory: 2000, docker: 1 }, pid: 42 });
     store.saveLease(lease);
     expect(store.activeLeases()).toEqual([lease]);
     store.saveLease({ ...lease, state: "released", endedAt: 6000, reason: "released" });
@@ -45,9 +45,9 @@ describe("Store", () => {
     store.setConfig("jobTemp", null);
     expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: defaultUsageFile(), cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
 
-    // H27: the setting health. Without it, the list has the fleet site. An empty list checks no URL.
-    store.setConfig("health", JSON.stringify({ "fleet-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
-    expect(store.config().health).toEqual({ "fleet-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" });
+    // H27: the setting health. Without it, the list has the local site. An empty list checks no URL.
+    store.setConfig("health", JSON.stringify({ "local-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
+    expect(store.config().health).toEqual({ "local-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" });
     store.setConfig("health", "{}");
     expect(store.config().health).toEqual({});
     store.setConfig("health", "not json");
@@ -79,7 +79,7 @@ describe("Store", () => {
     expect(store.autoDrainHold()).toBeNull();
 
     const broker = new Broker({ now: () => 5000, newId: () => "l1" });
-    const lease = broker.request({ holder: "graph", job: "test", amounts: { "disk:D:": 5120 } });
+    const lease = broker.request({ holder: "shop", job: "test", amounts: { "disk:D:": 5120 } });
     store.saveLease(lease);
     expect(store.lease("l1")).toEqual(lease);
     expect(store.lease("l1")?.usage).toBeUndefined();
@@ -93,7 +93,7 @@ describe("Store", () => {
     const store = new Store(":memory:");
     let now = 5000;
     const broker = new Broker({ now: () => now, newId: () => "l1", isAlive: () => true });
-    const lease = broker.request({ holder: "graph", job: "e2e", amounts: {}, pid: 42, log: "D:\\logs\\e2e.log" });
+    const lease = broker.request({ holder: "shop", job: "e2e", amounts: {}, pid: 42, log: "D:\\logs\\e2e.log" });
     store.saveLease(lease);
     expect(store.lease("l1")?.log).toBe("D:\\logs\\e2e.log");
     expect(store.lease("l1")?.exitCode).toBeUndefined();
@@ -117,7 +117,7 @@ describe("Store", () => {
       id TEXT PRIMARY KEY, holder TEXT NOT NULL, job TEXT NOT NULL, amounts TEXT NOT NULL,
       priority INTEGER NOT NULL, pid INTEGER, ttl_ms INTEGER NOT NULL, state TEXT NOT NULL,
       requested_at INTEGER NOT NULL, granted_at INTEGER, ended_at INTEGER, heartbeat_at INTEGER NOT NULL, reason TEXT)`);
-    old.exec(`INSERT INTO leases VALUES ('old1', 'graph', 'build', '{"memory":512}', 0, 42, 300000, 'released', 1000, 1500, 9000, 9000, 'released')`);
+    old.exec(`INSERT INTO leases VALUES ('old1', 'shop', 'build', '{"memory":512}', 0, 42, 300000, 'released', 1000, 1500, 9000, 9000, 'released')`);
     old.close();
     const store = new Store(path);
     const kept = store.lease("old1");
@@ -162,7 +162,7 @@ describe("Store", () => {
 
   it("finds the leases by an id prefix and by the job, and keeps the ended leases for their own time", () => {
     const store = new Store(":memory:");
-    const base = { holder: "graph", job: "e2e", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, grantedAt: null, heartbeatAt: 0, reason: null, peakMb: null };
+    const base = { holder: "shop", job: "e2e", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, grantedAt: null, heartbeatAt: 0, reason: null, peakMb: null };
     store.saveLease({ ...base, id: "aaaa1111-1", state: "released", requestedAt: 1000, endedAt: 2000 });
     store.saveLease({ ...base, id: "aaaa1111-2", state: "released", requestedAt: 3000, endedAt: 4000, holder: "vex" });
     store.saveLease({ ...base, id: "bbbb2222-1", state: "waiting", requestedAt: 5000, endedAt: null });
@@ -170,7 +170,7 @@ describe("Store", () => {
     expect(store.leasesByPrefix("aaaa1111-1").map((lease) => lease.id)).toEqual(["aaaa1111-1"]);
     expect(store.leasesByPrefix("a%")).toEqual([]);
     expect(store.leasesOfJob("e2e").map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2", "aaaa1111-1"]);
-    expect(store.leasesOfJob("e2e", { holder: "graph", limit: 1 }).map((lease) => lease.id)).toEqual(["bbbb2222-1"]);
+    expect(store.leasesOfJob("e2e", { holder: "shop", limit: 1 }).map((lease) => lease.id)).toEqual(["bbbb2222-1"]);
     expect(store.leasesOfJob("e2e", { since: 3500 }).map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2"]);
     store.prune(10_000, 3000);
     expect(store.leasesOfJob("e2e").map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2"]);
@@ -274,17 +274,17 @@ describe("Store writes of the owners", () => {
     old.close();
     const store = new Store(path);
     const memory = { totalMb: 28000, availableMb: 9000, commitMb: 30000, commitLimitMb: 80000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
-    const owners = [{ owner: "session:graph", kind: "session" as const, privateMb: 800, workingMb: 700, processes: 4 }];
-    const writes = new Map([["session:graph", { kind: "session" as const, mb: 512.25 }], ["mcp:vex", { kind: "mcp" as const, mb: 3 }]]);
+    const owners = [{ owner: "session:shop", kind: "session" as const, privateMb: 800, workingMb: 700, processes: 4 }];
+    const writes = new Map([["session:shop", { kind: "session" as const, mb: 512.25 }], ["mcp:vex", { kind: "mcp" as const, mb: 3 }]]);
     store.saveSample(61_000, memory, owners, undefined, [], writes);
     expect(store.ownersSince(0)).toEqual([
       { at: 1000, owner: "docker", kind: "docker", privateMb: 900, workingMb: 900, processes: 3 },
-      { at: 61_000, owner: "session:graph", kind: "session", privateMb: 800, workingMb: 700, processes: 4, writeMb: 512.25 },
+      { at: 61_000, owner: "session:shop", kind: "session", privateMb: 800, workingMb: 700, processes: 4, writeMb: 512.25 },
       { at: 61_000, owner: "mcp:vex", kind: "mcp", privateMb: 0, workingMb: 0, processes: 0, writeMb: 3 },
     ]);
     expect(store.writesSince(0)).toEqual([
       { at: 61_000, owner: "mcp:vex", kind: "mcp", amount: 3 },
-      { at: 61_000, owner: "session:graph", kind: "session", amount: 512.25 },
+      { at: 61_000, owner: "session:shop", kind: "session", amount: 512.25 },
     ]);
     store.close();
   });

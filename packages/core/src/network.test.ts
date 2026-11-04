@@ -220,8 +220,8 @@ describe("the use of the TCP ports", () => {
       { localPort: 65_535, state: "other", pid: 30 },
     ],
   };
-  const ownerOf = new Map([[10, "session:graph"], [11, "session:graph"], [20, "mcp:vex"], [4, "system"]]);
-  const kindOf = new Map<string, OwnerKind>([["session:graph", "session"], ["mcp:vex", "mcp"], ["system", "system"]]);
+  const ownerOf = new Map([[10, "session:shop"], [11, "session:shop"], [20, "mcp:vex"], [4, "system"]]);
+  const kindOf = new Map<string, OwnerKind>([["session:shop", "session"], ["mcp:vex", "mcp"], ["system", "system"]]);
   const p = (pid: number, name: string): ProcessInfo => ({ pid, ppid: 1, name, privateMb: 0, workingMb: 0 });
 
   it("counts the rows in the dynamic range in each state, and the part in TIME_WAIT", () => {
@@ -231,7 +231,7 @@ describe("the use of the TCP ports", () => {
 
   it("gives the dynamic connections of each owner, the largest first, with no owner for a row with no process", () => {
     expect(tcpByOwner(tcp, ownerOf, kindOf)).toEqual([
-      { owner: "session:graph", kind: "session", connections: 2, processes: 2 },
+      { owner: "session:shop", kind: "session", connections: 2, processes: 2 },
       { owner: "mcp:vex", kind: "mcp", connections: 1, processes: 1 },
       { owner: "other", kind: "other", connections: 1, processes: 1 },
     ]);
@@ -240,7 +240,7 @@ describe("the use of the TCP ports", () => {
   it("gives the listening ports by port, one row for each process with its addresses", () => {
     expect(listeningPorts(tcp, [p(10, "node.exe"), p(4, "System")], ownerOf)).toEqual([
       { port: 135, addresses: ["0.0.0.0"], pid: 4, name: "System", owner: "system" },
-      { port: 3000, addresses: ["0.0.0.0", "::"], pid: 10, name: "node.exe", owner: "session:graph" },
+      { port: 3000, addresses: ["0.0.0.0", "::"], pid: 10, name: "node.exe", owner: "session:shop" },
     ]);
     // Linux gives no process.
     expect(listeningPorts({ ...tcp, connections: [{ localPort: 22, state: "listen", pid: 0, address: "0.0.0.0" }] }, [], ownerOf)).toEqual([

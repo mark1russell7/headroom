@@ -93,8 +93,8 @@ describe("cpuGroups", () => {
   const p = (pid: number, ppid: number): ProcessInfo => ({ pid, ppid, name: `p${pid}.exe`, privateMb: 1, workingMb: 1 });
   // The session process 100 starts a shell 110, and the shell starts a test 120. Process 200 is the job of a lease.
   const processes = [p(100, 1), p(110, 100), p(120, 110), p(200, 110), p(210, 200), p(300, 4), p(310, 300)];
-  const ownerOf = new Map([[100, "session:graph"], [110, "session:graph"], [120, "session:graph"], [200, "session:graph"], [210, "session:graph"], [300, "mcp:vex"], [310, "mcp:vex"]]);
-  const kindOf = new Map<string, OwnerKind>([["session:graph", "session"], ["mcp:vex", "mcp"]]);
+  const ownerOf = new Map([[100, "session:shop"], [110, "session:shop"], [120, "session:shop"], [200, "session:shop"], [210, "session:shop"], [300, "mcp:vex"], [310, "mcp:vex"]]);
+  const kindOf = new Map<string, OwnerKind>([["session:shop", "session"], ["mcp:vex", "mcp"]]);
   const leaseOf = new Map([[200, "l1"], [210, "l1"]]);
 
   it("groups a leased process by its lease, and another process by the top process of its owner, below the session process", () => {
@@ -138,18 +138,18 @@ describe("suggestCores and the CPU line", () => {
       used: 11.24,
       free: 4.76,
       owners: [
-        { owner: "session:graph", kind: "session", value: 6.04, unit: "cores" },
+        { owner: "session:shop", kind: "session", value: 6.04, unit: "cores" },
         { owner: "mcp:vex", kind: "mcp", value: 2, unit: "cores" },
         { owner: "docker", kind: "docker", value: 1, unit: "cores" },
         { owner: "system", kind: "system", value: 0.5, unit: "cores" },
       ],
     };
     const lease = (job: string, state: Lease["state"], cpuCap?: number): Lease => ({
-      id: job, holder: "graph", job, amounts: { cpu: 4 }, priority: 0, pid: 1, ttlMs: 1, state, requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null,
+      id: job, holder: "shop", job, amounts: { cpu: 4 }, priority: 0, pid: 1, ttlMs: 1, state, requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null,
       ...(cpuCap === undefined ? {} : { cpuCap }),
     });
-    expect(cpuLine(cpu, 2, [lease("graph-e2e", "granted", 4), lease("lint", "granted"), lease("old", "released", 2)])).toBe(
-      "CPU: 11.2 of 16 cores in use (2 kept for Mark). Most: session:graph 6.0, mcp:vex 2.0, docker 1.0. Capped: graph-e2e 4 cores.",
+    expect(cpuLine(cpu, 2, [lease("shop-e2e", "granted", 4), lease("lint", "granted"), lease("old", "released", 2)])).toBe(
+      "CPU: 11.2 of 16 cores in use (2 kept for Mark). Most: session:shop 6.0, mcp:vex 2.0, docker 1.0. Capped: shop-e2e 4 cores.",
     );
     // A daemon of an older version gives no reserve. Before two reads, the processors have no used part.
     expect(cpuLine({ ...cpu, owners: [] }, undefined, [])).toBe("CPU: 11.2 of 16 cores in use.");

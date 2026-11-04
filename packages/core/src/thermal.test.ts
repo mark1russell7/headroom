@@ -139,13 +139,13 @@ describe("the throttle rule (H35)", () => {
 });
 
 const cores = [
-  { owner: "session:graph", kind: "session" as const, cores: 6.1 },
+  { owner: "session:shop", kind: "session" as const, cores: 6.1 },
   { owner: "session:vex", kind: "session" as const, cores: 2 },
   { owner: "docker", kind: "docker" as const, cores: 1 },
   { owner: "mcp:vex", kind: "mcp" as const, cores: 0.5 },
 ];
 const vitest: Lease = {
-  id: "l1", holder: "graph", job: "vitest", amounts: { cpu: 4 }, priority: 0, pid: 40, ttlMs: 0, state: "granted",
+  id: "l1", holder: "shop", job: "vitest", amounts: { cpu: 4 }, priority: 0, pid: 40, ttlMs: 0, state: "granted",
   requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null,
 };
 
@@ -159,9 +159,9 @@ function throttled(minutes: number): { readonly tracker: ThermalTracker; readonl
 
 describe("the owners of the heat (H35)", () => {
   it("names the 3 owners with the most cores, their power as an estimate and their leased jobs", () => {
-    const owners = heatOwners(cores, 12, [vitest, { ...vitest, id: "l2", job: "waits", state: "waiting" }], new Map([[40, "session:graph"]]));
+    const owners = heatOwners(cores, 12, [vitest, { ...vitest, id: "l2", job: "waits", state: "waiting" }], new Map([[40, "session:shop"]]));
     expect(owners).toEqual([
-      { owner: "session:graph", kind: "session", cores: 6.1, watts: 7.6, jobs: ["vitest"] },
+      { owner: "session:shop", kind: "session", cores: 6.1, watts: 7.6, jobs: ["vitest"] },
       { owner: "session:vex", kind: "session", cores: 2, watts: 2.5, jobs: [] },
       { owner: "docker", kind: "docker", cores: 1, watts: 1.3, jobs: [] },
     ]);
@@ -175,7 +175,7 @@ describe("the heat alert (H35)", () => {
   const alertInput = (state: ThermalState | null, now: number, extra: Partial<AlertInput> = {}): AlertInput => ({
     memory: { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 },
     processes: [],
-    ownerOf: new Map([[40, "session:graph"]]),
+    ownerOf: new Map([[40, "session:shop"]]),
     kindOf: new Map(),
     leases: [vitest],
     at: now,
@@ -192,7 +192,7 @@ describe("the heat alert (H35)", () => {
     const alerts = detect(alertInput(long.tracker.state(long.now), long.now));
     expect(alerts.map((alert) => [alert.id, alert.kind, alert.severity])).toEqual([["heat", "heat", "warning"]]);
     expect(alerts[0]?.message).toBe(
-      "The CPU runs at 62% of its speed for 5 min: a power or heat limit. The zone \\_TZ.THM0 is at 85.0 °C. Most CPU: session:graph 6.1 cores, 7.6 W (leased: vitest)," +
+      "The CPU runs at 62% of its speed for 5 min: a power or heat limit. The zone \\_TZ.THM0 is at 85.0 °C. Most CPU: session:shop 6.1 cores, 7.6 W (leased: vitest)," +
         " session:vex 2.0 cores, 2.5 W, docker 1.0 core, 1.3 W. The power is an estimate. Timing numbers are wrong on a slow CPU, so jobs with --timing wait.",
     );
   });
@@ -265,9 +265,9 @@ describe("the lines of the heat (H35)", () => {
     hot.add(NOW, read(100, 100, 99.4));
     expect(thermalLine(status(hot.state(NOW)), clock)).toBe("Heat: 99.4 °C in the zone \\_TZ.THM0. The CPU runs at full speed (3.0 GHz).");
     const { tracker, now } = throttled(5);
-    const owners = heatOwners(cores, 12, [vitest], new Map([[40, "session:graph"]]), 1);
+    const owners = heatOwners(cores, 12, [vitest], new Map([[40, "session:shop"]]), 1);
     expect(thermalLine(status(tracker.state(now), owners), clock)).toBe(
-      "Heat: the CPU runs at 62% of its speed since 12:00: a power or heat limit. 85.0 °C in the zone \\_TZ.THM0. Most CPU: session:graph 6.1 cores, 7.6 W (leased: vitest). Jobs with --timing or --when cool wait.",
+      "Heat: the CPU runs at 62% of its speed since 12:00: a power or heat limit. 85.0 °C in the zone \\_TZ.THM0. Most CPU: session:shop 6.1 cores, 7.6 W (leased: vitest). Jobs with --timing or --when cool wait.",
     );
   });
 
@@ -326,7 +326,7 @@ describe("the engine with the heat (H35)", () => {
     run(MINUTE, read(62));
     expect(engine.status().thermal).toMatchObject({ throttled: true, cool: false, speed: 62 });
     expect(engine.status().resources.find((each) => each.id === "thermal")).toMatchObject({ used: 38, free: 62 });
-    const bench = engine.request({ holder: "graph", job: "pnpm bench", amounts: {}, ttlMs: 3_600_000, timing: true });
+    const bench = engine.request({ holder: "shop", job: "pnpm bench", amounts: {}, ttlMs: 3_600_000, timing: true });
     expect(bench).toMatchObject({ state: "waiting" });
     expect(bench.reason).toMatch(/^waits until the CPU runs at full speed \(now 62%, a power or heat limit\) \(--timing\)/);
     run(MINUTE, read(100));

@@ -1,6 +1,6 @@
 # The Dev Drive plan
 
-This plan moves the code of this computer to a Dev Drive. Mark does 3 steps with admin rights. The sessions do the other steps. The fleet item is `dev-drive`.
+This plan moves the code of this computer to a Dev Drive. Mark does 3 steps with admin rights. The sessions do the other steps. The tracker item is `dev-drive`.
 
 ## Why
 
@@ -16,9 +16,9 @@ This plan moves the code of this computer to a Dev Drive. Mark does 3 steps with
 | Where is the space? | A new partition. Settings makes `C:` 200 GB smaller. | `C:` has 417 GB free of 952 GB, and keeps 217 GB free for Windows, Docker and WSL. A partition is always mounted after a restart, and it is a little faster than a VHD. |
 | Which size? | 200 GB | The moved data is approximately 22 GB at this time (the table below). 200 GB leaves room for growth. |
 | Which letter? | `D:` | No volume uses it. |
-| What moves? | `~/git`, `~/jarvis`, the pnpm store, the npm cache | These are the code, the build output and the package caches. |
+| What moves? | `~/git`, `~/assistant`, the pnpm store, the npm cache | These are the code, the build output and the package caches. |
 | What stays on `C:`? | `~/.claude`, the tools (Node, Git, VS Code), Docker and WSL data, OneDrive folders | Microsoft tells to keep tools on `C:`. Claude Code writes `~/.claude` while the sessions run. |
-| Do the paths change? | No. A junction at each old path points to the new folder. | The fleet registry, each `CLAUDE.md`, the scheduled task of headroom and the Claude Code projects (named by their path) keep their paths. |
+| Do the paths change? | No. A junction at each old path points to the new folder. | The role registry, each `CLAUDE.md`, the scheduled task of headroom and the Claude Code projects (named by their path) keep their paths. |
 | Does `node_modules` move? | No. Each repository installs again from the store on `D:`. | A copy of `node_modules` is slow, and its links point to the old store. A new install uses block cloning. |
 | Defender | Performance mode, the default for a trusted Dev Drive. No folder exclusions. | Microsoft recommends it. It keeps real-time protection on all other volumes. |
 | Other filters | The default: none. | This computer uses Docker with Linux containers. Their bind mounts go through WSL, not through `bindflt` or `wcifs`. |
@@ -30,7 +30,7 @@ Measured on 2026-10-20 with `robocopy /L`:
 | Folder | All the files | Without `node_modules` | Moves |
 |---|---|---|---|
 | `~/git` | 52.5 GB, 3.07 million files | 3.1 GB, 236,012 files | yes |
-| `~/jarvis` | 8.0 GB, 311,006 files | 4.5 GB, 26,833 files | yes |
+| `~/assistant` | 8.0 GB, 311,006 files | 4.5 GB, 26,833 files | yes |
 | the pnpm store | 5.1 GB, 317,619 files | | yes |
 | the npm cache | 9.4 GB, 283,760 files | | yes |
 | `~/.claude/projects` | 7.0 GB, 4,649 files | | no |
@@ -75,13 +75,13 @@ The sessions can continue to work during part A.
    headroom service stop
    ```
 
-3. Close VS Code, and quit Docker Desktop completely: right-click its icon in the notification area, and click `Quit Docker Desktop`. When you only close its window, Docker Desktop continues to hold the folders of the compose projects open. No program can use `~/git` or `~/jarvis` during the move. A shell whose folder is in `~/git` also blocks the move: the session that moves sets its shell folder to `C:\Users\<you>` first.
+3. Close VS Code, and quit Docker Desktop completely: right-click its icon in the notification area, and click `Quit Docker Desktop`. When you only close its window, Docker Desktop continues to hold the folders of the compose projects open. No program can use `~/git` or `~/assistant` during the move. A shell whose folder is in `~/git` also blocks the move: the session that moves sets its shell folder to `C:\Users\<you>` first.
 4. Move each folder. The script makes a copy without `node_modules`, compares it, keeps the old folder as `<name>.before-devdrive`, and makes the junction. Without `-Apply`, it only prints its plan.
 
    ```powershell
    .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\git -Target D:\git
    .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\git -Target D:\git -Apply
-   .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\jarvis -Target D:\jarvis -Apply
+   .\scripts\dev-drive\move.ps1 -Source C:\Users\<you>\assistant -Target D:\assistant -Apply
    ```
 
    Run the first command from a copy of the script outside `~/git`, for example from `C:\Users\<you>\dev-drive-move.ps1`. The move renames `~/git`.
@@ -107,7 +107,7 @@ The sessions can continue to work during part A.
    ```
 
 7. The organizer starts the sessions from the resume plan. Each session runs one quick check: a typecheck or the tests of one package.
-8. After one day of normal work, headroom lists the old folders and their sizes: `~/git.before-devdrive`, `~/jarvis.before-devdrive` and the old caches. Mark decides if they go.
+8. After one day of normal work, headroom lists the old folders and their sizes: `~/git.before-devdrive`, `~/assistant.before-devdrive` and the old caches. Mark decides if they go.
 
 ## Lessons from the move
 

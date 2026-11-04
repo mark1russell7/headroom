@@ -440,7 +440,7 @@ export function gpuStatus(read: GpuRead | null | undefined, owners: Owners, name
 /** The count of owners that a GPU line and the GPU alert name. */
 export const GPU_OWNERS_SHOWN = 3;
 
-/** This function gives "session:graph chrome.exe 0.8 GB, docker 300 MB" for the owners with at least 1 MB. */
+/** This function gives "session:shop chrome.exe 0.8 GB, docker 300 MB" for the owners with at least 1 MB. */
 export function gpuOwnersText(owners: readonly GpuOwnerUse[], count: number = GPU_OWNERS_SHOWN): string {
   return owners
     .filter((each) => each.kind !== "lease" && each.mb >= 1)
@@ -451,7 +451,7 @@ export function gpuOwnersText(owners: readonly GpuOwnerUse[], count: number = GP
 
 /**
  * This function gives one line for each adapter for `headroom status`, for example "GPU: 1.2 of 17.8 GB (0.3 GB in RAM),
- * 34% busy. Most: session:graph chrome.exe 0.8 GB." A computer with no GPU counters gives no line.
+ * 34% busy. Most: session:shop chrome.exe 0.8 GB." A computer with no GPU counters gives no line.
  */
 export function gpuLines(gpu: GpuStatus | null | undefined): string[] {
   const adapters = gpu?.adapters ?? [];

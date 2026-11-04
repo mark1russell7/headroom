@@ -1,7 +1,7 @@
 /**
  * The `headroom job <name|id> [--holder <h>] [--all] [--json]` command (H26): the state of a job of `headroom run`.
  *
- * A job of `headroom run` can run after the shell that started it stops. A session or the fleet sweep uses this command
+ * A job of `headroom run` can run after the shell that started it stops. A session or a sweep uses this command
  * to see if the job is queued, running or exited, and with which exit code.
  */
 
@@ -40,7 +40,7 @@ function clockOf(at: string, now: number): string {
 }
 
 /**
- * This function gives the line of one job, for example "e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12
+ * This function gives the line of one job, for example "e2e (3f2a9c1e) of shop: exited with code 1 at 17:42, waited 12
  * min, ran 6 min, normal (no past runs)." It ends with the spawn class of the job (H47) and its conditions (H31).
  */
 export function jobLine(state: JobState, now: number): string {

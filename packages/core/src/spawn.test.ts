@@ -29,7 +29,7 @@ const MEMORY_WAIT = /^waits for memory\b/;
 
 function lease(id: string, fields: Partial<Lease> = {}): Lease {
   return {
-    id, holder: "graph", job: "pnpm e2e", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, state: "granted",
+    id, holder: "shop", job: "pnpm e2e", amounts: {}, priority: 0, pid: null, ttlMs: 300_000, state: "granted",
     requestedAt: 0, grantedAt: 0, endedAt: null, heartbeatAt: 0, reason: null, peakMb: null, ...fields,
   };
 }
@@ -90,13 +90,13 @@ describe("spawn learning (H47)", () => {
 });
 
 describe("spawn conflicts (H47)", () => {
-  const browser = lease("b", { holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+  const browser = lease("b", { holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
   const churn = lease("s", { holder: "server-stack", job: "test-churn", spawn: HEAVY });
 
   it("gives a reason in each order, with a prefix that the hook does not count as a memory wait", () => {
     const heavyWaits = spawnConflict(churn, browser);
     expect(heavyWaits).toBe(
-      "waits for the browser tests of graph (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it",
+      "waits for the browser tests of shop (pnpm e2e) to end: this job starts many processes (about 1,870 a minute in past runs), and browsers can fail to start beside it",
     );
     const browserWaits = spawnConflict(browser, churn);
     expect(browserWaits).toBe("waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it");
@@ -138,12 +138,12 @@ describe("Broker spawn rule (H47)", () => {
 
   it("holds a spawn-heavy job while a browser test runs, and grants it after the end", () => {
     const { broker, ask, advance } = setup();
-    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const e2e = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     broker.tick(cap());
     advance(1000);
     const churn = ask({ holder: "server-stack", job: "test-churn" }, HEAVY);
     broker.tick(cap());
-    expect(broker.get(churn.id)).toMatchObject({ state: "waiting", reason: expect.stringMatching(/^waits for the browser tests of graph \(pnpm e2e\) to end:/) });
+    expect(broker.get(churn.id)).toMatchObject({ state: "waiting", reason: expect.stringMatching(/^waits for the browser tests of shop \(pnpm e2e\) to end:/) });
     broker.release(e2e.id);
     broker.tick(cap());
     expect(broker.get(churn.id)).toMatchObject({ state: "granted", reason: null });
@@ -153,7 +153,7 @@ describe("Broker spawn rule (H47)", () => {
     const { broker, ask } = setup();
     const churn = ask({ holder: "server-stack", job: "test-churn" }, HEAVY);
     broker.tick(cap());
-    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const e2e = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     broker.tick(cap());
     expect(broker.get(e2e.id)?.state).toBe("waiting");
     expect(broker.get(e2e.id)?.reason).toMatch(/^waits for test-churn of server-stack to end: it starts many processes \(about 1,870 a minute\)/);
@@ -166,7 +166,7 @@ describe("Broker spawn rule (H47)", () => {
   it("keeps the queue order: a later browser test does not go before a spawn-heavy job that waits", () => {
     const { broker, ask, advance } = setup();
     const pools = { browser: 2 };
-    const first = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const first = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     broker.tick(cap(pools));
     advance(1000);
     const churn = ask({ holder: "server-stack", job: "test-churn" }, HEAVY);
@@ -187,7 +187,7 @@ describe("Broker spawn rule (H47)", () => {
 
   it("keeps the queue order in the other direction: a later spawn-heavy job waits behind a browser test that waits", () => {
     const { broker, ask, advance } = setup();
-    const running = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const running = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     broker.tick(cap());
     advance(1000);
     const queued = ask({ holder: "site", job: "playwright test", amounts: { browser: 1 } });
@@ -210,7 +210,7 @@ describe("Broker spawn rule (H47)", () => {
     expect([broker.get(a.id)?.state, broker.get(b.id)?.state]).toEqual(["granted", "granted"]);
     broker.release(a.id);
     broker.release(b.id);
-    const c = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const c = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     const d = ask({ holder: "site", job: "playwright test", amounts: { browser: 1 } });
     broker.tick(cap());
     expect(broker.get(d.id)?.reason).toBe("waits for browser: needs 1, 0 free");
@@ -220,7 +220,7 @@ describe("Broker spawn rule (H47)", () => {
 
   it("takes the options of a request without a class from the engine", () => {
     const { broker, ask } = setup();
-    ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     const opted = ask({ holder: "server-stack", job: "test-churn", spawnHeavy: false });
     const declared = ask({ holder: "organizer", job: "new-gates", spawnHeavy: true });
     broker.tick(cap());
@@ -267,14 +267,14 @@ describe("the sum of the start rates (H47)", () => {
     const next = lease("v", { state: "waiting", holder: "vex", job: "vitest run", spawn: learned(300) });
     const reason = startsSumConflict(next, [e2e, tsc], [], rate, 600);
     expect(reason).toBe(
-      "waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc --noEmit (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
+      "waits for the browser tests of shop (pnpm e2e) to end: this job 300 and tsc --noEmit (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
     );
     expect(isSpawnWait(reason)).toBe(true);
     expect(startsSumConflict(next, [tsc], [], rate, 600)).toBeNull();
     expect(startsSumConflict(next, [e2e, tsc], [], rate, 700)).toBeNull();
     // A browser test that waits first counts as a browser test that runs.
     expect(startsSumConflict(next, [tsc], [lease("e", { state: "waiting", amounts: { browser: 1 } })], rate, 600)).toMatch(
-      /^waits for the browser tests of graph \(pnpm e2e\) to run first and end: this job 300 and tsc --noEmit \(client\) 400/,
+      /^waits for the browser tests of shop \(pnpm e2e\) to run first and end: this job 300 and tsc --noEmit \(client\) 400/,
     );
     // A lease with no rate also waits while the sum is above the limit.
     expect(startsSumConflict(lease("n", { state: "waiting" }), [e2e, tsc, vitest], [], rate, 600)).toMatch(
@@ -309,7 +309,7 @@ describe("Broker sum of the start rates (H47)", () => {
     ask({ holder: "client", job: "tsc" }, learned(400));
     const vitest = ask({ holder: "vex", job: "vitest" }, learned(300));
     broker.tick(cap());
-    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const e2e = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     broker.tick(cap());
     expect(broker.get(e2e.id)).toMatchObject({
       state: "waiting",
@@ -322,7 +322,7 @@ describe("Broker sum of the start rates (H47)", () => {
 
   it("holds a new job that pushes the sum above the limit while a browser test runs, and a later job does not go before it", () => {
     const { broker, ask } = setup();
-    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const e2e = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     const tsc = ask({ holder: "client", job: "tsc" }, learned(400));
     broker.tick(cap());
     expect(broker.get(tsc.id)?.state).toBe("granted");
@@ -330,14 +330,14 @@ describe("Broker sum of the start rates (H47)", () => {
     broker.tick(cap());
     expect(broker.get(vitest.id)).toMatchObject({
       state: "waiting",
-      reason: "waits for the browser tests of graph (pnpm e2e) to end: this job 300 and tsc (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
+      reason: "waits for the browser tests of shop (pnpm e2e) to end: this job 300 and tsc (client) 400 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
     });
     // 400 and 100 fit in the limit, but the earlier job that waits gets its part first.
     const small = ask({ holder: "site", job: "lint" }, learned(100));
     broker.tick(cap());
     expect(broker.get(small.id)).toMatchObject({
       state: "waiting",
-      reason: "waits for the browser tests of graph (pnpm e2e) to end: this job 100, tsc (client) 400 and vitest (vex, queued) 300 start 800 a minute together, above the limit of 600, and browsers can fail to start beside it",
+      reason: "waits for the browser tests of shop (pnpm e2e) to end: this job 100, tsc (client) 400 and vitest (vex, queued) 300 start 800 a minute together, above the limit of 600, and browsers can fail to start beside it",
     });
     broker.release(e2e.id);
     broker.tick(cap());
@@ -352,7 +352,7 @@ describe("Broker sum of the start rates (H47)", () => {
     const build = ask({ holder: "server-stack", job: "build", amounts: { memory: 12_000 } }, learned(400));
     broker.tick(cap());
     expect(broker.get(build.id)?.reason).toBe("waits for memory: needs 12000, 11000 free");
-    const e2e = ask({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 } });
+    const e2e = ask({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 } });
     broker.tick(cap());
     expect(broker.get(e2e.id)).toMatchObject({ state: "waiting", reason: expect.stringContaining(": build (server-stack, queued) 400 and tsc (client) 300 start 700 a minute together,") });
     // The earlier job gets its memory and runs. The sum is 700, so the browser test still waits.
@@ -383,11 +383,11 @@ describe("Store spawn columns (H47)", () => {
     expect(store.lease("old1")?.peakStartsPerMin).toBeUndefined();
     expect(store.lease("old1")?.spawn).toBeUndefined();
     expect(store.startPeaksOf("test-churn")).toEqual([1800]);
-    store.saveLease(lease("new1", { holder: "graph", job: "test-churn", state: "released", grantedAt: 70_000, endedAt: 90_000, processes: 10, peakStartsPerMin: 20, spawn: HEAVY }));
+    store.saveLease(lease("new1", { holder: "shop", job: "test-churn", state: "released", grantedAt: 70_000, endedAt: 90_000, processes: 10, peakStartsPerMin: 20, spawn: HEAVY }));
     expect(store.lease("new1")).toMatchObject({ peakStartsPerMin: 20, spawn: HEAVY });
     // The newest first. A holder gives only its own runs.
     expect(store.startPeaksOf("test-churn")).toEqual([20, 1800]);
-    expect(store.startPeaksOf("test-churn", "graph")).toEqual([20]);
+    expect(store.startPeaksOf("test-churn", "shop")).toEqual([20]);
     expect(store.startPeaksOf("test-churn", undefined, 1)).toEqual([20]);
     // A lease that did not run, or a run with no count, gives no peak.
     store.saveLease(lease("never", { job: "test-churn", state: "cancelled", grantedAt: null, endedAt: 95_000 }));
@@ -439,9 +439,9 @@ describe("Engine spawn rule (H47)", () => {
     expect(engine.spawnClass("test-churn", "server-stack")).toEqual({ heavy: false, source: "history", perMinute: null, runs: 0 });
     past("a", "test-churn", "server-stack", 1870);
     past("b", "test-churn", "server-stack", 400);
-    past("c", "test-churn", "graph", 90);
+    past("c", "test-churn", "shop", 90);
     expect(engine.spawnClass("test-churn", "server-stack")).toEqual({ heavy: true, source: "history", perMinute: 1870, runs: 2 });
-    expect(engine.spawnClass("test-churn", "graph")).toEqual({ heavy: false, source: "history", perMinute: 90, runs: 1 });
+    expect(engine.spawnClass("test-churn", "shop")).toEqual({ heavy: false, source: "history", perMinute: 90, runs: 1 });
     expect(engine.spawnClass("test-churn", "organizer")).toMatchObject({ heavy: true, perMinute: 1870, runs: 3 });
     expect(engine.config().spawnHeavy).toBe(600);
     expect(engine.setConfig({ spawnHeavy: 2000 }).spawnHeavy).toBe(2000);
@@ -457,7 +457,7 @@ describe("Engine spawn rule (H47)", () => {
     past("a", "test-churn", "server-stack", 1870);
     const churn = engine.request({ holder: "server-stack", job: "test-churn", amounts: {}, ...ttl });
     expect(churn).toMatchObject({ state: "granted", spawn: { heavy: true, source: "history", perMinute: 1870, runs: 1 } });
-    const e2e = engine.request({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
+    const e2e = engine.request({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
     expect(e2e.state).toBe("waiting");
     expect(e2e.reason).toBe("waits for test-churn of server-stack to end: it starts many processes (about 1,870 a minute), and browsers can fail to start beside it");
     engine.release(churn.id);
@@ -466,7 +466,7 @@ describe("Engine spawn rule (H47)", () => {
     expect(engine.request({ holder: "server-stack", job: "test-churn", amounts: {}, ...ttl, spawnHeavy: false }).state).toBe("granted");
     const declared = engine.request({ holder: "organizer", job: "new-gates", amounts: {}, ...ttl, spawnHeavy: true });
     expect(declared).toMatchObject({ state: "waiting", spawn: { heavy: true, source: "declared" } });
-    expect(declared.reason).toMatch(/^waits for the browser tests of graph \(pnpm e2e\) to end: this job starts many processes \(declared with --spawn-heavy\)/);
+    expect(declared.reason).toMatch(/^waits for the browser tests of shop \(pnpm e2e\) to end: this job starts many processes \(declared with --spawn-heavy\)/);
   });
 
   it("promotes a first run when its own rate goes above the limit, so a later browser test waits", () => {
@@ -476,7 +476,7 @@ describe("Engine spawn rule (H47)", () => {
     advance(30_000);
     expect(engine.renew(first.id, 200)?.spawn?.heavy).toBe(false);
     // The job is normal: a browser test runs beside it.
-    const beside = engine.request({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
+    const beside = engine.request({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
     expect(beside.state).toBe("granted");
     engine.release(beside.id);
     advance(30_000);
@@ -492,7 +492,7 @@ describe("Engine spawn rule (H47)", () => {
 
   it("counts the live rate of a first run in the sum of the start rates, in each order", () => {
     const { engine, advance } = setup();
-    const e2e = engine.request({ holder: "graph", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
+    const e2e = engine.request({ holder: "shop", job: "pnpm e2e", amounts: { browser: 1 }, ...ttl });
     const audit = engine.request({ holder: "organizer", job: "site-audit", amounts: {}, ...ttl });
     const tsc = engine.request({ holder: "client", job: "tsc", amounts: {}, ...ttl });
     // First runs with no past runs count 0, so they run beside the browser test.
@@ -504,7 +504,7 @@ describe("Engine spawn rule (H47)", () => {
     const vitest = engine.request({ holder: "vex", job: "vitest", amounts: {}, ...ttl });
     expect(vitest).toMatchObject({
       state: "waiting",
-      reason: "waits for the browser tests of graph (pnpm e2e) to end: site-audit (organizer) 500 and tsc (client) 200 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
+      reason: "waits for the browser tests of shop (pnpm e2e) to end: site-audit (organizer) 500 and tsc (client) 200 start 700 a minute together, above the limit of 600, and browsers can fail to start beside it",
     });
     engine.release(e2e.id);
     expect(engine.get(vitest.id)?.state).toBe("granted");

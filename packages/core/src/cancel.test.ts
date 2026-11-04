@@ -34,15 +34,15 @@ describe("Engine cancel (headroom cancel)", () => {
 
   it("cancels a waiting lease by its id or its first 8 characters, records who, and ends the wait of its client", async () => {
     const { store, engine, ask } = setup();
-    const runs = ask("graph", "docker build");
-    const first = ask("jarvis", "pnpm test");
-    const second = ask("jarvis", "pnpm lint");
+    const runs = ask("shop", "docker build");
+    const first = ask("assistant", "pnpm test");
+    const second = ask("assistant", "pnpm lint");
     expect([runs.state, first.state, second.state]).toEqual(["granted", "waiting", "waiting"]);
     const wait = engine.waitFor(first.id, { timeoutMs: 60_000 });
-    const result = engine.cancel({ id: first.id, by: "jarvis" });
+    const result = engine.cancel({ id: first.id, by: "assistant" });
     expect(result.cancelled.map((lease) => lease.id)).toEqual([first.id]);
-    expect(await wait).toMatchObject({ state: "cancelled", cancelledBy: "jarvis", reason: "cancelled by jarvis (headroom cancel)" });
-    expect(store.lease(first.id)).toMatchObject({ state: "cancelled", cancelledBy: "jarvis" });
+    expect(await wait).toMatchObject({ state: "cancelled", cancelledBy: "assistant", reason: "cancelled by assistant (headroom cancel)" });
+    expect(store.lease(first.id)).toMatchObject({ state: "cancelled", cancelledBy: "assistant" });
     const prefix = engine.cancel({ id: second.id.slice(0, 8), by: "cli" });
     expect(prefix.cancelled).toMatchObject([{ id: second.id, cancelledBy: "cli" }]);
     expect(engine.get(runs.id)?.state).toBe("granted");
@@ -51,8 +51,8 @@ describe("Engine cancel (headroom cancel)", () => {
 
   it("cancels by job: one match, more than one with or without all, and the jobs of one holder", () => {
     const { engine, ask } = setup();
-    ask("graph", "docker build");
-    const a = ask("jarvis", "pnpm test");
+    ask("shop", "docker build");
+    const a = ask("assistant", "pnpm test");
     const b = ask("vex", "pnpm test");
     const c = ask("vex", "pnpm lint");
     expect(engine.cancel({ job: "pnpm lint", by: "vex" }).cancelled.map((lease) => lease.id)).toEqual([c.id]);
@@ -70,7 +70,7 @@ describe("Engine cancel (headroom cancel)", () => {
 
   it("does not cancel a granted lease, gives an ended lease for its id, and refuses a wrong query", () => {
     const { engine, ask } = setup();
-    const runs = ask("graph", "docker build");
+    const runs = ask("shop", "docker build");
     const result = engine.cancel({ job: "docker build", by: "cli" });
     expect(result.cancelled).toEqual([]);
     expect(result.matches).toMatchObject([{ id: runs.id, state: "granted" }]);
@@ -88,8 +88,8 @@ describe("Engine waiting leases of a dead client", () => {
   it("ends the waiting lease of a dead client of headroom run at the next tick, by its process", () => {
     let now = 1_000_000;
     const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
-    engine.request({ holder: "graph", job: "docker build", amounts: { docker: 1 }, pid: process.pid });
-    const dead = engine.request({ holder: "jarvis", job: "pnpm test", amounts: { docker: 1 }, pid: DEAD });
+    engine.request({ holder: "shop", job: "docker build", amounts: { docker: 1 }, pid: process.pid });
+    const dead = engine.request({ holder: "assistant", job: "pnpm test", amounts: { docker: 1 }, pid: DEAD });
     expect(engine.get(dead.id)).toMatchObject({ state: "expired", reason: "the process exited" });
     now += 2000;
     engine.tick();
@@ -100,8 +100,8 @@ describe("Engine waiting leases of a dead client", () => {
   it("keeps a waiting lease with no process while its client waits, and ends it after its limit with no call", async () => {
     let now = 1_000_000;
     const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
-    engine.request({ holder: "graph", job: "docker build", amounts: { docker: 1 }, pid: process.pid });
-    const waits = engine.request({ holder: "jarvis", job: "gate", amounts: { docker: 1 }, ttlMs: MINUTE });
+    engine.request({ holder: "shop", job: "docker build", amounts: { docker: 1 }, pid: process.pid });
+    const waits = engine.request({ holder: "assistant", job: "gate", amounts: { docker: 1 }, ttlMs: MINUTE });
     // Each call of resources.wait counts as a heartbeat.
     for (let step = 0; step < 5; step += 1) {
       now += 50_000;
@@ -122,9 +122,9 @@ describe("Engine waiting leases of a dead client", () => {
       let now = 1_000_000;
       const options = () => ({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
       const first = new Engine(options());
-      const runs = first.request({ holder: "graph", job: "docker build", amounts: { docker: 1 }, pid: process.pid });
+      const runs = first.request({ holder: "shop", job: "docker build", amounts: { docker: 1 }, pid: process.pid });
       // This process stands in for two clients: one comes back after the restart, and one does not (its process ID went to another process).
-      const back = first.request({ holder: "jarvis", job: "pnpm test", amounts: { docker: 1 }, pid: process.pid });
+      const back = first.request({ holder: "assistant", job: "pnpm test", amounts: { docker: 1 }, pid: process.pid });
       const gone = first.request({ holder: "vex", job: "pnpm lint", amounts: { docker: 1 }, pid: process.pid });
       const quiet = first.request({ holder: "mcp", job: "tsc", amounts: { docker: 1 }, ttlMs: 2 * MINUTE });
       first.close();

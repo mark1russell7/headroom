@@ -8,8 +8,8 @@ const MINUTE = 60_000;
 
 const BASE: Lease = {
   id: "3f2a9c1e-0000-4000-8000-000000000001",
-  holder: "graph",
-  job: "graph-e2e",
+  holder: "shop",
+  job: "shop-e2e",
   amounts: { browser: 1 },
   priority: 0,
   pid: 42,
@@ -49,9 +49,9 @@ describe("headroom job", () => {
   });
   afterEach(() => store.close());
 
-  it("writes the state of the job as JSON with exactly the fields of the fleet wait", async () => {
-    expect(await jobCommand(["graph-e2e", "--json"], connection, io())).toBe(0);
-    expect(calls).toEqual([{ path: ["resources", "job"], input: { query: "graph-e2e", all: false } }]);
+  it("writes the state of the job as JSON with exactly the fields of the typed wait", async () => {
+    expect(await jobCommand(["shop-e2e", "--json"], connection, io())).toBe(0);
+    expect(calls).toEqual([{ path: ["resources", "job"], input: { query: "shop-e2e", all: false } }]);
     const state = JSON.parse(lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(state)).toEqual([
       "id", "job", "holder", "state", "exitCode", "signal", "reason", "queuedAt", "startedAt", "endedAt", "waitedMs", "ranMs", "peakMb", "processes",
@@ -77,8 +77,8 @@ describe("headroom job", () => {
 
   it("writes a list with --all, and passes the holder", async () => {
     store.saveLease({ ...BASE, id: "7c00ffee-0000-4000-8000-000000000002", requestedAt: NOW - 5 * MINUTE, state: "granted", endedAt: null, exitCode: undefined });
-    expect(await jobCommand(["graph-e2e", "--all", "--holder", "graph", "--json"], connection, io())).toBe(0);
-    expect(calls[0]?.input).toEqual({ query: "graph-e2e", all: true, holder: "graph" });
+    expect(await jobCommand(["shop-e2e", "--all", "--holder", "shop", "--json"], connection, io())).toBe(0);
+    expect(calls[0]?.input).toEqual({ query: "shop-e2e", all: true, holder: "shop" });
     const states = JSON.parse(lines.join("\n")) as { state: string }[];
     expect(states.map((each) => each.state)).toEqual(["running", "exited"]);
   });
@@ -92,15 +92,15 @@ describe("headroom job", () => {
 
   it("writes one line for a person, and refuses a wrong use", async () => {
     expect(await jobCommand(["3f2a9c1e"], connection, io())).toBe(0);
-    expect(lines).toEqual(["graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:48, waited 12 min, ran 6 min, peak 1.8 GB. Log: D:\\logs\\e2e.log"]);
+    expect(lines).toEqual(["shop-e2e (3f2a9c1e) of shop: exited with code 1 at 17:48, waited 12 min, ran 6 min, peak 1.8 GB. Log: D:\\logs\\e2e.log"]);
     expect(await jobCommand([], connection, io())).toBe(2);
-    expect(await jobCommand(["graph-e2e"], null, io())).toBe(1);
+    expect(await jobCommand(["shop-e2e"], null, io())).toBe(1);
   });
 });
 
 describe("jobLine", () => {
   const state = {
-    id: "3f2a9c1e-0000", job: "e2e", holder: "graph", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
+    id: "3f2a9c1e-0000", job: "e2e", holder: "shop", exitCode: null, signal: null, log: null, peakMb: null, processes: null,
     queuedAt: new Date(NOW - 20 * MINUTE).toISOString(), startedAt: null, endedAt: null, peakStartsPerMin: null, averageStartsPerMin: null, spawn: null,
     conditions: null, unmet: null, peakCores: null, peakGpuMb: null, cpuCap: null,
   } as const;
@@ -109,12 +109,12 @@ describe("jobLine", () => {
     const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
     const queued = { ...state, state: "queued", reason: "waits until the laptop is plugged in", waitedMs: 20 * MINUTE, ranMs: null } as const;
     expect(jobLine({ ...queued, conditions: { when: ["ac", "usage<80"], batteryOk: true } }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: queued since 17:40, waited 20 min (waits until the laptop is plugged in), when ac, usage<80, --battery-ok.",
+      "e2e (3f2a9c1e) of shop: queued since 17:40, waited 20 min (waits until the laptop is plugged in), when ac, usage<80, --battery-ok.",
     );
     const running = { ...state, state: "running", reason: null, startedAt, waitedMs: 0, ranMs: 5 * MINUTE, conditions: { when: [], timing: true } } as const;
     const open = { condition: "ac", state: "on battery", since: NOW - 3 * MINUTE, until: null };
     expect(jobLine({ ...running, unmet: open }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: running since 17:55, waited 0 s, ran 5 min so far, when --timing, runs without its condition: on battery since 17:57.",
+      "e2e (3f2a9c1e) of shop: running since 17:55, waited 0 s, ran 5 min so far, when --timing, runs without its condition: on battery since 17:57.",
     );
     expect(jobLine({ ...running, unmet: { ...open, until: NOW - MINUTE } }, NOW)).toContain("ran without its condition ac: on battery from 17:57 to 17:59.");
   });
@@ -123,7 +123,7 @@ describe("jobLine", () => {
     const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
     const running = { ...state, state: "running", reason: null, startedAt, waitedMs: 0, ranMs: 5 * MINUTE, processes: 9350 } as const;
     expect(jobLine({ ...running, peakStartsPerMin: 1870, averageStartsPerMin: 1870, spawn: { heavy: true, source: "history", perMinute: 1870, runs: 4 } }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: running since 17:55, waited 0 s, ran 5 min so far, 9,350 processes started, at most 1,870 starts a minute, spawn-heavy (about 1,870 a minute in past runs).",
+      "e2e (3f2a9c1e) of shop: running since 17:55, waited 0 s, ran 5 min so far, 9,350 processes started, at most 1,870 starts a minute, spawn-heavy (about 1,870 a minute in past runs).",
     );
     expect(jobLine({ ...running, spawn: { heavy: false, source: "history", perMinute: null, runs: 0 } }, NOW)).toContain("9,350 processes started, normal (no past runs).");
     expect(jobLine({ ...running, spawn: { heavy: true, source: "live", perMinute: 900, runs: 0 } }, NOW)).toContain("spawn-heavy (about 900 a minute in this run).");
@@ -134,28 +134,28 @@ describe("jobLine", () => {
   it("names the peak cores and the CPU cap of a job (H23)", () => {
     const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
     const running = { ...state, state: "running", reason: null, startedAt, waitedMs: 0, ranMs: 5 * MINUTE } as const;
-    expect(jobLine({ ...running, peakCores: 3.46 }, NOW)).toBe("e2e (3f2a9c1e) of graph: running since 17:55, waited 0 s, ran 5 min so far, peak 3.5 cores.");
+    expect(jobLine({ ...running, peakCores: 3.46 }, NOW)).toBe("e2e (3f2a9c1e) of shop: running since 17:55, waited 0 s, ran 5 min so far, peak 3.5 cores.");
     expect(jobLine({ ...running, peakCores: 1, cpuCap: 4 }, NOW)).toContain("ran 5 min so far, peak 1 core, capped at 4 cores.");
   });
 
   it("names a queued, a running and a stopped job", () => {
     expect(jobLine({ ...state, state: "queued", reason: "waits for browser: needs 1, 0 free", waitedMs: 20 * MINUTE, ranMs: null }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: queued since 17:40, waited 20 min (waits for browser: needs 1, 0 free).",
+      "e2e (3f2a9c1e) of shop: queued since 17:40, waited 20 min (waits for browser: needs 1, 0 free).",
     );
     const startedAt = new Date(NOW - 5 * MINUTE).toISOString();
     expect(jobLine({ ...state, state: "running", reason: null, startedAt, waitedMs: 15 * MINUTE, ranMs: 5 * MINUTE }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: running since 17:55, waited 15 min, ran 5 min so far.",
+      "e2e (3f2a9c1e) of shop: running since 17:55, waited 15 min, ran 5 min so far.",
     );
     // H29: the count of the job object.
     expect(jobLine({ ...state, state: "running", reason: null, startedAt, waitedMs: 15 * MINUTE, ranMs: 5 * MINUTE, processes: 9800 }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: running since 17:55, waited 15 min, ran 5 min so far, 9,800 processes started.",
+      "e2e (3f2a9c1e) of shop: running since 17:55, waited 15 min, ran 5 min so far, 9,800 processes started.",
     );
     const endedAt = new Date(NOW - 26 * 3_600_000).toISOString();
     expect(jobLine({ ...state, state: "exited", reason: "the process exited", startedAt, endedAt, waitedMs: 40_000, ranMs: 125 * MINUTE }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: ended at 2026-10-23 16:00 with no exit code (the process exited), waited 40 s, ran 2 h 5 min.",
+      "e2e (3f2a9c1e) of shop: ended at 2026-10-23 16:00 with no exit code (the process exited), waited 40 s, ran 2 h 5 min.",
     );
     expect(jobLine({ ...state, state: "exited", reason: null, signal: "SIGTERM", waitedMs: 0, ranMs: null }, NOW)).toBe(
-      "e2e (3f2a9c1e) of graph: exited with signal SIGTERM, waited 0 s, did not start.",
+      "e2e (3f2a9c1e) of shop: exited with signal SIGTERM, waited 0 s, did not start.",
     );
     expect(span(59_400)).toBe("59 s");
   });

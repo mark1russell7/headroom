@@ -131,25 +131,25 @@ describe("owner records and orphans (H48)", () => {
   });
 
   it("names an orphan in the CPU runaway alert of H23", () => {
-    const owners = new Map([[13, "session:graph (orphan)"]]);
+    const owners = new Map([[13, "session:shop (orphan)"]]);
     const trail = Array.from({ length: 61 }, (_, step) => ({ at: step * 10_000, value: 6 }));
     const [alert] = detect({
       memory: { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 },
       processes: [p(13, 12, "find.exe", 0)],
       ownerOf: owners,
-      kindOf: new Map([["session:graph (orphan)", "other"]]),
+      kindOf: new Map([["session:shop (orphan)", "other"]]),
       leases: [],
       at: 610_000,
       processors: 16,
       trees: [{ pid: 13, processes: 1, trail }],
     }, DEFAULT_ALERT_RULES).filter((each) => each.id === "runaway:cpu:13");
-    expect(alert?.message).toBe("find.exe (13) of session:graph (orphan) uses 6 cores with no lease, above 4 cores for 10 minutes. Run such work with headroom run --cpu.");
+    expect(alert?.message).toBe("find.exe (13) of session:shop (orphan) uses 6 cores with no lease, above 4 cores for 10 minutes. Run such work with headroom run --cpu.");
   });
 
   it("writes the owner of an orphan for an alert", () => {
-    expect(ownerText("session:graph", true)).toBe("session:graph (orphan, parent ended)");
-    expect(ownerText("session:graph (orphan)", true)).toBe("session:graph (orphan, parent ended)");
-    expect(ownerText("session:graph (orphan)", false)).toBe("session:graph (orphan)");
+    expect(ownerText("session:shop", true)).toBe("session:shop (orphan, parent ended)");
+    expect(ownerText("session:shop (orphan)", true)).toBe("session:shop (orphan, parent ended)");
+    expect(ownerText("session:shop (orphan)", false)).toBe("session:shop (orphan)");
     expect(baseOwner("mcp:vex (orphan)")).toBe("mcp:vex");
   });
 });

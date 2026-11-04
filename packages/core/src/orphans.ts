@@ -71,7 +71,7 @@ export function ownerText(owner: string, orphan: boolean): string {
   return orphan ? `${baseOwner(owner)} (orphan, parent ended)` : owner;
 }
 
-/** This function tells if an owner comes from the record of an orphan: `session:graph (orphan)`. */
+/** This function tells if an owner comes from the record of an orphan: `session:shop (orphan)`. */
 export function isOrphanOwner(owner: string): boolean {
   return owner.endsWith(ORPHAN_LABEL);
 }

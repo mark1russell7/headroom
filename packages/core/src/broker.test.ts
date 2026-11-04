@@ -39,8 +39,8 @@ const diskCap = (freeMb: number, limits: AlertRules = DEFAULT_ALERT_RULES, more:
 describe("Broker", () => {
   it("grants a request that fits and holds one that does not", () => {
     const { broker } = setup();
-    const a = broker.request({ holder: "graph", job: "build", amounts: { memory: 2000 } });
-    const b = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 } });
+    const a = broker.request({ holder: "shop", job: "build", amounts: { memory: 2000 } });
+    const b = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 } });
     const changed = broker.tick(cap(6000));
     expect(broker.get(a.id)?.state).toBe("granted");
     expect(broker.get(b.id)?.state).toBe("waiting");
@@ -50,7 +50,7 @@ describe("Broker", () => {
 
   it("counts only the unused part of a granted lease against new requests", () => {
     const { broker } = setup({ used: 1500 });
-    broker.request({ holder: "graph", job: "build", amounts: { memory: 2000 }, pid: 10 });
+    broker.request({ holder: "shop", job: "build", amounts: { memory: 2000 }, pid: 10 });
     broker.tick(cap(6000));
     // 6000 available - 1000 reserve - (2000 - 1500 unused) = 4500
     expect(broker.free(cap(6000))["memory"]).toBe(4500);
@@ -58,8 +58,8 @@ describe("Broker", () => {
 
   it("treats a pool with no capacity as a lock of 1", () => {
     const { broker } = setup();
-    const a = broker.request({ holder: "graph", job: "mongo", amounts: { docker: 1 } });
-    const b = broker.request({ holder: "jarvis", job: "lab", amounts: { docker: 1 } });
+    const a = broker.request({ holder: "shop", job: "mongo", amounts: { docker: 1 } });
+    const b = broker.request({ holder: "assistant", job: "lab", amounts: { docker: 1 } });
     broker.tick(cap(8000));
     expect(broker.get(a.id)?.state).toBe("granted");
     expect(broker.get(b.id)?.state).toBe("waiting");
@@ -91,7 +91,7 @@ describe("Broker", () => {
   it("lets a smaller request go first, until the first request waited too long", () => {
     const { broker, advance } = setup();
     // A process holds it, so it does not expire for lack of a heartbeat while it waits.
-    const big = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 }, pid: 7 });
+    const big = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 7 });
     advance(1000);
     const small = broker.request({ holder: "vex", job: "test", amounts: { memory: 500 } });
     broker.tick(cap(3000));
@@ -107,7 +107,7 @@ describe("Broker", () => {
   it("ends a lease when its process exits", () => {
     const alive = new Set([10]);
     const { broker } = setup({ alive });
-    const lease = broker.request({ holder: "graph", job: "build", amounts: { memory: 1000 }, pid: 10 });
+    const lease = broker.request({ holder: "shop", job: "build", amounts: { memory: 1000 }, pid: 10 });
     broker.tick(cap(8000));
     alive.delete(10);
     broker.tick(cap(8000));
@@ -259,22 +259,22 @@ describe("Broker", () => {
 describe("Broker cancel and the leases of a restart", () => {
   it("cancels a waiting lease with who cancelled it, and does not change a granted lease", () => {
     const { broker } = setup();
-    const runs = broker.request({ holder: "graph", job: "build", amounts: { memory: 6000 } });
-    const waits = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 } });
+    const runs = broker.request({ holder: "shop", job: "build", amounts: { memory: 6000 } });
+    const waits = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 } });
     broker.tick(cap(8000));
     expect(broker.get(waits.id)?.state).toBe("waiting");
-    expect(broker.cancel(waits.id, "jarvis")).toMatchObject({ state: "cancelled", reason: "cancelled by jarvis (headroom cancel)", cancelledBy: "jarvis", endedAt: 1_000_000 });
-    expect(broker.cancel(runs.id, "jarvis")).toMatchObject({ state: "granted" });
+    expect(broker.cancel(waits.id, "assistant")).toMatchObject({ state: "cancelled", reason: "cancelled by assistant (headroom cancel)", cancelledBy: "assistant", endedAt: 1_000_000 });
+    expect(broker.cancel(runs.id, "assistant")).toMatchObject({ state: "granted" });
     expect(broker.cancel("nothing", "cli")).toBeUndefined();
     // A second cancel does not change the lease.
-    expect(broker.cancel(waits.id, "cli")).toMatchObject({ cancelledBy: "jarvis" });
+    expect(broker.cancel(waits.id, "cli")).toMatchObject({ cancelledBy: "assistant" });
   });
 
   it("ends a waiting lease of a dead client at the next tick, by its process", () => {
     const alive = new Set([10, 11]);
     const { broker, advance } = setup({ alive });
-    broker.request({ holder: "graph", job: "build", amounts: { memory: 6000 }, pid: 10 });
-    const waits = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 }, pid: 11 });
+    broker.request({ holder: "shop", job: "build", amounts: { memory: 6000 }, pid: 10 });
+    const waits = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 11 });
     broker.tick(cap(8000));
     alive.delete(11);
     advance(2000);
@@ -284,8 +284,8 @@ describe("Broker cancel and the leases of a restart", () => {
 
   it("ends a waiting lease with no process when its client stops its heartbeat, after its limit", () => {
     const { broker, advance } = setup();
-    broker.request({ holder: "graph", job: "build", amounts: { memory: 6000 }, ttlMs: 3_600_000 });
-    const waits = broker.request({ holder: "jarvis", job: "gate", amounts: { memory: 4000 }, ttlMs: 60_000 });
+    broker.request({ holder: "shop", job: "build", amounts: { memory: 6000 }, ttlMs: 3_600_000 });
+    const waits = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, ttlMs: 60_000 });
     broker.tick(cap(8000));
     advance(60_000);
     broker.tick(cap(8000));
