@@ -569,7 +569,7 @@ export function normalPath(path: string, home: string = homedir()): string {
 
 /**
  * This function gives the normal forms of a path: the path, and its real path when it exists. On this computer, `~/git` is
- * a link to `D:\git`, so a compose project in `D:\git\Graph` matches the folder `~/git/Graph` of a role.
+ * a link to `D:\git`, so a compose project in `D:\git\Shop` matches the folder `~/git/Shop` of a role.
  */
 export function pathForms(path: string, home: string = homedir()): string[] {
   const forms = [normalPath(path, home)];

@@ -61,7 +61,7 @@ export interface FleetRole {
   /** The name of the session that holds the role. */
   readonly sessionName: string | null;
   /**
-   * The folders of the repositories of the role, from the field `repos`, for example `~/git/Graph`. The first folder is the
+   * The folders of the repositories of the role, from the field `repos`, for example `~/git/Shop`. The first folder is the
    * main repository. A role with no folders has no field. Docker uses them for the owner of a compose project (H38).
    */
   readonly repos?: readonly string[] | undefined;
