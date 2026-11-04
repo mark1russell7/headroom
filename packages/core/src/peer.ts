@@ -181,8 +181,8 @@ function stampOf(file: string): string {
  * - A retired role stays in the list. The function `roleOf()` does not match it.
  */
 export class RoleBook {
-  readonly #file: string;
-  readonly #dir: string;
+  #file: string;
+  #dir: string;
   #stamp = "";
   #roles: readonly FleetRole[] = [];
 
@@ -190,6 +190,13 @@ export class RoleBook {
   constructor(file: string = rolesFile(), dir: string = join(dirname(file), "roles")) {
     this.#file = file;
     this.#dir = dir;
+  }
+
+  /** This function changes the registry file. The folder `roles` next to the new file holds the role files, and the next call of `roles()` reads them. */
+  useFile(file: string): void {
+    this.#file = file;
+    this.#dir = join(dirname(file), "roles");
+    this.#stamp = "";
   }
 
   /** This function gives the roles. Without the two sources, it gives no roles. A source that is not JSON does not count. */

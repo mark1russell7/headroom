@@ -276,6 +276,27 @@ describe("parseRoles and RoleBook", () => {
   });
 });
 
+describe("RoleBook.useFile (H57)", () => {
+  it("reads the new registry and the role files next to it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-roles-"));
+    try {
+      const first = join(dir, "a", "roles.json");
+      const second = join(dir, "b", "roles.json");
+      mkdirSync(join(dir, "a"));
+      mkdirSync(join(dir, "b", "roles"), { recursive: true });
+      writeFileSync(first, JSON.stringify({ roles: [{ id: "first" }] }));
+      writeFileSync(second, JSON.stringify({ roles: [{ id: "second" }] }));
+      writeFileSync(join(dir, "b", "roles", "third.json"), JSON.stringify({ id: "third" }));
+      const book = new RoleBook(first);
+      expect(book.roles().map((role) => role.id)).toEqual(["first"]);
+      book.useFile(second);
+      expect(book.roles().map((role) => role.id).sort()).toEqual(["second", "third"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("RoleBook with the role files", () => {
   const registry = {
     roles: [

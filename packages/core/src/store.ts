@@ -17,6 +17,7 @@ import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, defaultUsageFile, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
 import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } from "./presence.ts";
+import { rolesFile } from "./peer.ts";
 import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
@@ -97,6 +98,8 @@ export interface Config {
   readonly batteryFloor: number;
   /** The usage file of the fleet for the condition `usage<N` (H31). The default is `~/git/fleet/artifacts/hub/db/usage/current.json`. */
   readonly usageFile: string;
+  /** The registry of the roles (H57). The folder `roles` next to this file holds the role files. */
+  readonly rolesFile: string;
   /**
    * The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). The `cpu` amounts of the granted leases
    * do not take them. The default is 2, and 0 turns the reserve off.
@@ -300,6 +303,7 @@ export class Store {
       spawnHeavy: spawnLimitOf(values.get("spawnHeavy")),
       batteryFloor: batteryFloorOf(values.get("batteryFloor")),
       usageFile: values.get("usageFile") ?? defaultUsageFile(),
+      rolesFile: values.get("rolesFile") ?? rolesFile(),
       cpuReserve: cpuReserveOf(values.get("cpuReserve")),
       presence: values.get("presence") !== "off",
       awayAfterMs: msOf(values.get("awayAfterMs"), AWAY_AFTER_MIN_MS, AWAY_AFTER_DEFAULT_MS),

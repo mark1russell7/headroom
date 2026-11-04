@@ -140,7 +140,7 @@ export interface EngineOptions {
    */
   readonly sleepGapMs?: number | undefined;
   /**
-   * The fleet registry of the roles for `resources.peer` (H46). The default is `~/git/fleet/registry/roles.json`.
+   * The fleet registry of the roles for `resources.peer` (H46). The default is the setting `rolesFile` (H57).
    * The folder `roles` next to this file holds the role files.
    */
   readonly rolesFile?: string | undefined;
@@ -254,6 +254,8 @@ export interface ConfigChange {
   readonly batteryFloor?: number | null | undefined;
   /** The usage file for `usage<N` (H31): an absolute path. `null` gives the default file of the fleet. */
   readonly usageFile?: string | null | undefined;
+  /** The registry of the roles (H57): an absolute path. `null` gives the default file. */
+  readonly rolesFile?: string | null | undefined;
   /** The cores that the broker keeps for Mark (H23): a number from 0 to the count of processors. `null` gives the default of 2. */
   readonly cpuReserve?: number | null | undefined;
   /** The presence rules (H33): true for on, false for off. `null` gives the default: on. */
@@ -557,7 +559,7 @@ export class Engine {
     this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
     this.#sleepGapMs = options.sleepGapMs ?? Number.POSITIVE_INFINITY;
     this.#startedAt = this.#now();
-    this.#roles = new RoleBook(options.rolesFile);
+    this.#roles = new RoleBook(options.rolesFile ?? this.#store.config().rolesFile);
     this.#peers = this.#peerResolver(this.#roles);
     this.#dockerSource = options.docker ?? (() => undefined);
     this.#usage = new UsageReader(options.readUsage);
@@ -981,6 +983,8 @@ export class Engine {
     if (typeof floor === "number" && !(Number.isInteger(floor) && floor >= 0 && floor <= 100)) throw new RangeError("The battery floor must be a whole number from 0 to 100");
     const usageFile = change.usageFile;
     if (typeof usageFile === "string" && !isAbsolute(usageFile)) throw new RangeError(`The usage file must be an absolute path: ${usageFile}`);
+    const roles = change.rolesFile;
+    if (typeof roles === "string" && !isAbsolute(roles)) throw new RangeError(`The roles file must be an absolute path: ${roles}`);
     const reserve = change.cpuReserve;
     if (typeof reserve === "number" && !(Number.isFinite(reserve) && reserve >= 0 && reserve <= this.#processors)) {
       throw new RangeError(`The CPU reserve must be a number from 0 to ${this.#processors}, the count of processors`);
@@ -995,6 +999,10 @@ export class Engine {
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
     if (floor !== undefined) this.#store.setConfig("batteryFloor", floor === null ? null : String(floor));
     if (usageFile !== undefined) this.#store.setConfig("usageFile", usageFile);
+    if (roles !== undefined) {
+      this.#store.setConfig("rolesFile", roles);
+      this.#roles.useFile(this.#store.config().rolesFile);
+    }
     if (reserve !== undefined) {
       this.#store.setConfig("cpuReserve", reserve === null ? null : String(reserve));
       this.#cpuReserve = this.#store.config().cpuReserve;

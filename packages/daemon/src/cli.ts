@@ -12,7 +12,7 @@
  * - `headroom alerts [--watch]`: a runaway process, an orphan, many handles, low memory, the commit charge, the kernel pool and low free space on a drive.
  * - `headroom forecast [--json]`: the time of each resource to its nearest limit, from the fit of its history (H32).
  * - `headroom thermal [--json]`: the speed limits, the speed and the thermal zones of the CPU, and the throttle (H35).
- * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [cpu-reserve <cores>]`: show or change the settings.
+ * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [roles-file <path>] [cpu-reserve <cores>]`: show or change the settings.
  * - `headroom config [presence on|off] [away-after <time>] [busy-wait <time>] [present-reserve <cores>]`: the presence rules (H33).
  * - `headroom config auto-drain <size>|off`: the level of the kernel pools that starts an automatic drain (H34).
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
@@ -65,6 +65,7 @@ import {
   cpuLine,
   conditionsText,
   defaultUsageFile,
+  rolesFile,
   parseWhen,
   AWAY_AFTER_DEFAULT_MS,
   BUSY_WAIT_DEFAULT_MS,
@@ -174,6 +175,8 @@ const HELP = `headroom: the memory and job broker of this computer
                On battery below this charge, a heavy job waits. 0: no floor. The default: ${BATTERY_FLOOR_DEFAULT}.
   headroom config usage-file [<path> | --clear]
                The usage file of the fleet for --when usage<N.
+  headroom config roles-file [<path> | --clear]
+               The registry of the roles: the owners of Docker projects and of peers. The folder roles next to it holds the role files.
   headroom config cpu-reserve [<cores> | --clear]
                The cores that the leases do not take, for Mark. 0: no reserve. The default: ${CPU_RESERVE_DEFAULT}.
   headroom config presence [on | off | --clear]
@@ -1087,6 +1090,10 @@ function printConfig(config: Config): void {
   if (typeof config.usageFile === "string") {
     console.log(`usage-file: ${config.usageFile}${config.usageFile === defaultUsageFile() ? " (the default)" : ""}. The condition usage<N reads it.`);
   }
+  // H57: a daemon of an older version has no roles file.
+  if (typeof config.rolesFile === "string") {
+    console.log(`roles-file: ${config.rolesFile}${config.rolesFile === rolesFile() ? " (the default)" : ""}. The owners of Docker projects and of peers come from it.`);
+  }
   // H23: a daemon of an older version has no CPU reserve.
   if (typeof config.cpuReserve === "number") {
     const named = config.cpuReserve === CPU_RESERVE_DEFAULT ? " (the default)" : "";
@@ -1247,6 +1254,17 @@ async function usageFileConfig(connection: Connection, value: string | undefined
   return 0;
 }
 
+/** `headroom config roles-file <path>` sets the registry of the roles (H57), and `--clear` gives the default file. */
+async function rolesFileConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra) {
+    console.error("Usage: headroom config roles-file <path>, or headroom config roles-file --clear (the default file)");
+    return 2;
+  }
+  // The daemon has its own current folder, so a relative path resolves here.
+  printConfig(await connection.call<Config>(["config", "set"], { rolesFile: value === undefined ? null : resolve(value) }));
+  return 0;
+}
+
 /** `headroom config spawn-heavy <n>` sets the limit of a spawn-heavy job (H47), and `--clear` gives the default. */
 async function spawnHeavyConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
   const limit = value === undefined ? null : Number(value);
@@ -1285,6 +1303,7 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "spawn-heavy") return spawnHeavyConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "battery-floor") return batteryFloorConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "usage-file") return usageFileConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "roles-file") return rolesFileConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "cpu-reserve") return cpuReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "presence") return presenceConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "away-after" || name === "busy-wait") return presenceTimeConfig(connection, name, value, values.clear === true, positionals.length > 2);
@@ -1292,7 +1311,7 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "auto-drain") return autoDrainConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }
