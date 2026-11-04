@@ -164,6 +164,8 @@ describe("headroom run --detach with a daemon", () => {
     });
     expect(exited.exitCode).toBe(7);
     expect((await headroom(home, ["job", "detached"])).out).toContain("exited with code 7");
-    expect(readFileSync(log, "utf8")).toContain("the job used at most");
+    // The client writes to the log too. The line of the peak comes from the job object, which only Windows has.
+    expect(readFileSync(log, "utf8")).toContain("headroom: lease");
+    if (process.platform === "win32") expect(readFileSync(log, "utf8")).toContain("the job used at most");
   });
 });
