@@ -529,6 +529,28 @@ graph-e2e (3f2a9c1e) of graph: exited with code 1 at 17:42, waited 12 min, ran 6
 - The command gives the exit code 0 when it finds a job. With no match, it gives the exit code 3, and `--json` writes `{ "error": "no job", "query": "..." }`.
 - The store keeps each ended lease for at least 7 days.
 
+### A job that runs without its shell (H56)
+
+Use `headroom run --detach` in place of a background shell. It is for a job that waits in a queue or runs for more than a few minutes.
+
+```sh
+headroom run --detach --job graph-e2e --mem 2g -- pnpm e2e
+headroom job graph-e2e
+```
+
+```text
+headroom: job graph-e2e runs detached, lease 3f2a9c1e. Log: C:\Users\you\.headroom\jobs\5d1c0f3a.log. State: headroom job graph-e2e
+```
+
+Claude Code stops a background shell when the runtime gives memory pressure "critical", no turn or agent runs, and the last input is 30 minutes old. On Windows, it reads no memory figure. Thus it stops a client of `headroom run` that only waits in the queue. On 2026-11-04, two clients stopped this way with approximately 5 GB available. The stop reaches the shell. It does not always reach the job: a script can continue without its shell. A detached job is not a child of that shell.
+
+- The run starts the same client as a detached process with no window, and returns when the client has its lease. The lease can wait in the queue.
+- The queue, the slots, the limits, the job object, the exit record and the release are the same as for a foreground run. `--wait` still sets the longest wait in the queue, and its default is 30 minutes.
+- `--detach` needs `--job <name>`, so that the wait has a name. Without `--job`, the run stops with the exit code 2.
+- The output of the client and the job goes to the file of `--log`, or to a new file `jobs/<uuid>.log` under the folder of headroom. `headroom job <name>` gives the path of the log.
+- `headroom job <name>` gives the state and the exit code of the job. The run itself gives 0 when the client starts, not the exit code of the job.
+- Without a daemon, the job runs without a lease, as a foreground run does. Then `headroom job` has no state of it, so read the log.
+
 A session can take its queued job off the queue with `headroom cancel`, for example after its subagent ended:
 
 ```sh
