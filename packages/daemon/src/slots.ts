@@ -7,7 +7,7 @@
  *   beside a browser test either (H47).
  *
  * The rating reads the command words of each part of the line (H55). A false slot costs a wait, and a missing slot
- * risks failed process starts. Thus only one case gives no slot: the word e2e for a unit test runner.
+ * risks failed process starts. Thus only one case gives no slot: the word e2e as a filter word of a unit test runner.
  */
 
 import { BROWSER_SLOT } from "@headroom/core";
@@ -42,6 +42,9 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 /** The option of Vitest that runs the tests in a browser. Other forms are `--browser=chromium` and `--browser.name`. */
 const BROWSER_OPTION = /(?:^|\s)--browser(?:[\s=.]|$)/i;
 
+/** An option that picks an e2e suite. Such a suite can start a browser from its own code, so the word e2e counts there. */
+const E2E_SUITE = /(?:^|\s)(?:--projects?|--config|-c)[=\s]\S*e2e/i;
+
 /** This function gives the name of a program from its path, without the folder and the extension. */
 function programName(word: string): string {
   return (word.split(/[\\/]/).pop() ?? "").replace(/\.(?:exe|cmd|bat|ps1|mjs|cjs|js)$/i, "").toLowerCase();
@@ -65,9 +68,9 @@ function runnerOf(part: string): string {
   return "";
 }
 
-/** This function tells if one part of a line runs browser tests. For a unit test runner, the word e2e does not count, unless the part has `--browser`. */
+/** This function tells if one part of a line runs browser tests. For a unit test runner, the word e2e does not count, unless the part has `--browser` or picks an e2e suite. */
 function runsBrowserTests(part: string): boolean {
-  const filterWord = UNIT_RUNNERS.has(runnerOf(part)) && !BROWSER_OPTION.test(part);
+  const filterWord = UNIT_RUNNERS.has(runnerOf(part)) && !BROWSER_OPTION.test(part) && !E2E_SUITE.test(part);
   return BROWSER_TESTS.test(filterWord ? part.replace(E2E_WORD, "") : part);
 }
 

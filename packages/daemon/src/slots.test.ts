@@ -47,6 +47,16 @@ describe("autoSlots", () => {
     expect(autoSlots("vitest e2e --browser.name chromium")).toEqual(["browser"]);
   });
 
+  it("gives the slot to a unit test runner that picks an e2e suite (H55)", () => {
+    expect(autoSlots("vitest run --project e2e")).toEqual(["browser"]);
+    expect(autoSlots("pnpm exec vitest run --project=web-e2e")).toEqual(["browser"]);
+    expect(autoSlots("vitest --config vitest.e2e.config.ts")).toEqual(["browser"]);
+    expect(autoSlots("npx vitest -c vitest.e2e.config.ts run")).toEqual(["browser"]);
+    expect(autoSlots("jest --config=jest.e2e.json")).toEqual(["browser"]);
+    expect(autoSlots("jest --projects e2e")).toEqual(["browser"]);
+    expect(autoSlots("vitest run e2e-map --project unit")).toEqual([]);
+  });
+
   it("keeps the slot when the program is not the runner itself (H55)", () => {
     // A script or a shell can start a browser. A false slot costs a wait, and a missing slot risks failed process starts.
     expect(autoSlots("pnpm run vitest e2e")).toEqual(["browser"]);
