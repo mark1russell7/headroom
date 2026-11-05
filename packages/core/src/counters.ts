@@ -221,7 +221,7 @@ export class CounterTracker {
    * This function closes the minute of the processes that read much (H66). It gives the processes that read the most, the
    * largest first, and starts a new minute.
    */
-  closeReaders(limit = READERS_LIMIT, floorMb = READERS_FLOOR_MB): ProcessReads[] {
+  closeReaders(limit: number = READERS_LIMIT, floorMb: number = READERS_FLOOR_MB): ProcessReads[] {
     const readers = [...this.#openReaders]
       .map(([pid, each]) => ({ pid, name: each.name, owner: each.owner, mb: round(each.bytes / MB) }))
       .filter((each) => each.mb >= floorMb)
