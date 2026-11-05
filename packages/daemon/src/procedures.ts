@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, CancelResult, Config, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { Alerts, CancelResult, Config, ConfigChange, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
@@ -135,6 +135,13 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The registry of the roles for the owners of Docker projects and for peers (H57). The folder roles next to it holds the role files. It has no default. null removes the setting, and the roles are then unknown."),
+  memoryReserveMb: z
+    .number()
+    .int()
+    .min(0)
+    .nullable()
+    .optional()
+    .describe("The memory in MB that a lease does not take (H60). A grant waits when it would leave less. null gives the default: 1024."),
   cpuReserve: z
     .number()
     .min(0)
@@ -180,7 +187,7 @@ const ConfigSetInput = z.object({
     .describe(
       "The level of the automatic drain in MB of the two kernel pools together (H34). At or above it for 2 minutes, new jobs wait for a reboot. 0 turns it off. null gives the default: 6144.",
     ),
-});
+}).strict();
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
 const HistoryInput = z.object({
@@ -512,21 +519,25 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
     })
     .handler(
-      async (input: ConfigSetInput): Promise<Config> =>
-        engine.setConfig({
+      async (input: ConfigSetInput): Promise<Config> => {
+        // Each field of the engine is named here, so the type check fails on a setting that this list leaves out.
+        const change: { readonly [K in keyof Required<ConfigChange>]: ConfigChange[K] } = {
           jobTemp: input.jobTemp,
           health: input.health,
           spawnHeavy: input.spawnHeavy,
           batteryFloor: input.batteryFloor,
           usageFile: input.usageFile,
           rolesFile: input.rolesFile,
+          memoryReserveMb: input.memoryReserveMb,
           cpuReserve: input.cpuReserve,
           presence: input.presence,
           awayAfterMs: input.awayAfterMs,
           busyWaitMs: input.busyWaitMs,
           presentReserve: input.presentReserve,
           autoDrainMb: input.autoDrainMb,
-        }),
+        };
+        return engine.setConfig(change);
+      },
     )
     .build() as AnyProcedure;
 
