@@ -25,6 +25,11 @@ describe("jobLimits (H23)", () => {
 });
 
 describe("jobEnv", () => {
+  it("does not give the shell of the client to the job, also with another case", () => {
+    expect(jobEnv({}, { HEADROOM_SHELL: "4242", PATH: "/bin" })).toEqual({ PATH: "/bin" });
+    expect(jobEnv({}, { Headroom_Shell: "4242" })).toEqual({});
+  });
+
   it("replaces the temp variables of the parent, also with another case", () => {
     const env = jobEnv({ TEMP: "D:\\t\\l1", TMP: "D:\\t\\l1" }, { Temp: "C:\\old", tmp: "C:\\old", PATH: "C:\\bin" });
     expect(env).toEqual({ PATH: "C:\\bin", TEMP: "D:\\t\\l1", TMP: "D:\\t\\l1" });
