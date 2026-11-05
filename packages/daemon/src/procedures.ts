@@ -204,6 +204,7 @@ type PoolInput = z.infer<typeof PoolInput>;
 
 const PoolTagsInput = z.object({
   limit: z.number().int().positive().max(200).default(20).describe("The number of tags in each list (default: 20)"),
+  since: z.number().int().nonnegative().optional().describe("The start of the window in ms. 0 is the start of Windows. Without it: the last hour"),
 });
 type PoolTagsInput = z.infer<typeof PoolTagsInput>;
 
@@ -438,7 +439,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },
     })
-    .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit))
+    .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit, input.since))
     .build() as AnyProcedure;
 
   const ports = createProcedure()
