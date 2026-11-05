@@ -356,6 +356,48 @@ describe("Engine paged pool tags", () => {
   });
 });
 
+describe("Engine memory reserve", () => {
+  const sampler: Sampler = {
+    memory: () => ({ totalMb: 28_000, availableMb: 3000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: () => [],
+    close: () => undefined,
+  };
+
+  it("does not grant a lease that would leave less than the setting, and keeps the setting after a restart (H60)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-reserve-"));
+    const path = join(dir, "reserve.db");
+    const engine = new Engine({ sampler, store: new Store(path), sessionsDir: "/nowhere" });
+    // 3000 MB available and the default reserve: 1500 MB fits.
+    expect(engine.status()).toMatchObject({ free: { memory: 3000 - 1024 }, reserveMb: 1024 });
+    const first = engine.request({ holder: "shop", job: "tsc", amounts: { memory: 1500 }, ttlMs: 60_000 });
+    expect(first.state).toBe("granted");
+    engine.release(first.id);
+
+    // The line of this computer is 2048 MB: the same lease would leave 1500 MB, so it waits.
+    engine.setConfig({ memoryReserveMb: 2048 });
+    expect(engine.status()).toMatchObject({ free: { memory: 3000 - 2048 }, reserveMb: 2048 });
+    const second = engine.request({ holder: "shop", job: "tsc", amounts: { memory: 1500 }, ttlMs: 60_000 });
+    expect(second.state).toBe("waiting");
+    // A lease that leaves the line whole runs.
+    const small = engine.request({ holder: "shop", job: "lint", amounts: { memory: 500 }, ttlMs: 60_000 });
+    expect(small.state).toBe("granted");
+    engine.release(small.id);
+    engine.release(second.id);
+
+    expect(() => engine.setConfig({ memoryReserveMb: 28_001 })).toThrow(/from 0 to 28000/);
+    expect(() => engine.setConfig({ memoryReserveMb: 1.5 })).toThrow(/whole number/);
+    engine.close();
+
+    const reopened = new Engine({ sampler, store: new Store(path), sessionsDir: "/nowhere" });
+    expect(reopened.config().memoryReserveMb).toBe(2048);
+    expect(reopened.status()).toMatchObject({ free: { memory: 3000 - 2048 }, reserveMb: 2048 });
+    reopened.setConfig({ memoryReserveMb: null });
+    expect(reopened.config().memoryReserveMb).toBe(1024);
+    expect(reopened.status()).toMatchObject({ reserveMb: 1024 });
+    reopened.close();
+  });
+});
+
 describe("Engine cpu", () => {
   const sampler: Sampler = {
     memory: () => ({ totalMb: 28_000, availableMb: 20_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
@@ -494,7 +536,7 @@ describe("Engine disk leases and temp folders", () => {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
       expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144 });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });
