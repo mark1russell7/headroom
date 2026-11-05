@@ -30,7 +30,7 @@ describe("the watch of the shell of a waiting client (H64)", () => {
   });
 
   it("writes a command file that gives the shell and starts the client", () => {
-    expect(commandFile("C:\repo\cli.ts")).toContain('exec node --title=headroom-cli "C:/repo/cli.ts" "$@"');
+    expect(commandFile("C:\\repo\\cli.ts")).toContain('exec node --title=headroom-cli "C:/repo/cli.ts" "$@"');
     expect(commandFile("/repo/cli.ts")).toContain('read -r HEADROOM_SHELL 2>/dev/null < "/proc/$PPID/winpid"');
     const dir = mkdtempSync(join(tmpdir(), "headroom-command-"));
     try {
