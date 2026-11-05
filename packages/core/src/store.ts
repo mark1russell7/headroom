@@ -103,8 +103,8 @@ export interface Config {
    */
   readonly rolesFile: string | null;
   /**
-   * The memory in MB that a lease does not take (H60). The default is 1024. A grant waits when it would leave less than
-   * this, so a computer with a line of its own for low memory sets the same number here, and no grant crosses that line.
+   * The memory in MB that a lease does not take (H60). The default is 1024. A grant waits when it leaves less than this.
+   * A computer with a low-memory line of its own sets the same number here, so that no grant crosses that line.
    */
   readonly memoryReserveMb: number;
   /**
