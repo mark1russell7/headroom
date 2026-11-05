@@ -336,7 +336,7 @@ export interface PoolTagRow {
   readonly growthMb: number;
 }
 
-/** The non-paged pool by tag over the last hour. */
+/** The kernel pools by tag over a window: the last hour by default, or the time since a given time (H53). */
 export interface PoolTags {
   /** The time of the last snapshot. It is `null` before the first snapshot, and on a platform with no tags. */
   readonly at: number | null;
@@ -346,6 +346,8 @@ export interface PoolTags {
   readonly growing: readonly PoolTagRow[];
   /** The tags whose paged pool grew most over the window. */
   readonly pagedGrowing: readonly { readonly tag: string; readonly pagedMb: number; readonly growthMb: number }[];
+  /** The largest tags of the paged pool, with their change over the window. */
+  readonly largestPaged: readonly { readonly tag: string; readonly pagedMb: number; readonly growthMb: number }[];
 }
 
 /** The time that an event alert stays active. */
@@ -802,7 +804,7 @@ export class Engine {
         const tags = new Map(read.map((tag) => [tag.tag, tag.nonPagedMb]));
         const paged = new Map(read.map((tag) => [tag.tag, tag.pagedMb]));
         this.#tags = [...this.#tags.filter((snapshot) => now - snapshot.at <= POOL_TAGS_KEEP_MS), { at: now, tags, paged }];
-        this.#store.savePoolTags(now, read);
+        this.#store.savePoolTags(now, read, this.#bootedAt);
       }
       this.#readDisks(now);
       this.#readNetwork(now);
@@ -1166,22 +1168,27 @@ export class Engine {
    * snapshots of the last hour. A driver that leaks shows as a tag that grows. Only Windows has tags.
    * The window starts at the start of the computer or at the last wake, so it compares no snapshots across a start or a sleep.
    */
-  poolTags(limit = 20): PoolTags {
-    const window = this.#tags.filter((snapshot) => snapshot.at >= Math.max(this.#bootedAt, this.#resumedAt));
+  poolTags(limit = 20, since?: number): PoolTags {
+    // A given time reads the store, which holds days. A window does not reach back past the start of Windows.
+    const window =
+      since === undefined
+        ? this.#tags.filter((snapshot) => snapshot.at >= Math.max(this.#bootedAt, this.#resumedAt))
+        : this.#store.poolTagsSince(Math.max(since, this.#bootedAt));
     const last = window.at(-1);
     const first = window[0];
-    if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [] };
+    if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [], largestPaged: [] };
     const rows = [...last.tags].map(([tag, mb]) => ({ tag, nonPagedMb: round(mb), growthMb: round(mb - (first.tags.get(tag) ?? 0)) }));
+    const pagedRows = [...last.paged].map(([tag, mb]) => ({ tag, pagedMb: round(mb), growthMb: round(mb - (first.paged.get(tag) ?? 0)) }));
     return {
       at: last.at,
       sinceAt: first.at,
       largest: [...rows].sort((a, b) => b.nonPagedMb - a.nonPagedMb).slice(0, limit),
       growing: rows.filter((row) => row.growthMb > 0).sort((a, b) => b.growthMb - a.growthMb).slice(0, limit),
-      pagedGrowing: [...last.paged]
-        .map(([tag, mb]) => ({ tag, pagedMb: round(mb), growthMb: round(mb - (first.paged.get(tag) ?? 0)) }))
+      pagedGrowing: pagedRows
         .filter((row) => row.growthMb > 0)
         .sort((a, b) => b.growthMb - a.growthMb)
         .slice(0, limit),
+      largestPaged: [...pagedRows].sort((a, b) => b.pagedMb - a.pagedMb).slice(0, limit),
     };
   }
 

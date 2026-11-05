@@ -201,8 +201,10 @@ export interface ResourceRow extends Measurement {
   readonly at: number;
 }
 
-/** The time that the store keeps a snapshot of the pool tags. */
+/** The time that the store keeps each snapshot of the pool tags. */
 const POOL_TAGS_KEEP_MS = 2 * 3_600_000;
+/** The time that the store keeps one snapshot of the pool tags for each hour (H53). A slow leak shows over days. */
+const POOL_TAGS_HOURLY_KEEP_MS = 7 * 24 * 3_600_000;
 
 /** One stored snapshot of the pool tags: the non-paged and the paged pool of each tag, in MB. */
 export interface PoolTagSnapshot {
@@ -549,13 +551,19 @@ export class Store {
 
   /**
    * This function writes one snapshot of the pool tags. It keeps only the tags of 1 MB or more, because most
-   * tags are small. It also removes the snapshots that are older than 2 hours, so the table stays small.
+   * tags are small. Of the snapshots older than 2 hours, it keeps the first of each hour for 7 days, so the table
+   * stays small and the growth over days stays readable (H53). It keeps the first snapshot after the start of Windows
+   * at each age, because the growth since the start is the measure of a leak. `prune` still removes old rows.
    */
-  savePoolTags(at: number, tags: readonly PoolTag[]): void {
+  savePoolTags(at: number, tags: readonly PoolTag[], bootedAt = 0): void {
     const insert = this.#db.prepare("INSERT OR REPLACE INTO pool_tags VALUES (?, ?, ?, ?)");
     this.#db.exec("BEGIN");
     try {
-      this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(at - POOL_TAGS_KEEP_MS);
+      const firstAfterBoot = "SELECT COALESCE(MIN(at), -1) FROM pool_tags WHERE at >= ?";
+      this.#db
+        .prepare(`DELETE FROM pool_tags WHERE at < ? AND at NOT IN (${firstAfterBoot}) AND at NOT IN (SELECT MIN(at) FROM pool_tags GROUP BY at / 3600000)`)
+        .run(at - POOL_TAGS_KEEP_MS, bootedAt);
+      this.#db.prepare(`DELETE FROM pool_tags WHERE at < ? AND at NOT IN (${firstAfterBoot})`).run(at - POOL_TAGS_HOURLY_KEEP_MS, bootedAt);
       for (const tag of tags) {
         if (tag.nonPagedMb + tag.pagedMb >= 1) insert.run(at, tag.tag, tag.nonPagedMb, tag.pagedMb);
       }

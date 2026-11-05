@@ -204,7 +204,7 @@ const HELP = `headroom: the memory and job broker of this computer
                headroom does not reboot the computer. Only Mark does.
                The kernel pools at the level of headroom config auto-drain start a drain with no end.
                An automatic drain holds only the heavy jobs. The light jobs start.
-  headroom pool-tags [--drivers] [--json]   (the kernel pool by tag, Windows)
+  headroom pool-tags [--since boot | --hours <n>] [--drivers] [--json]   (the kernel pools by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
   ${DOCKER_USAGE}                  (each container: its owner, memory and cores; the VM and the disk use)
@@ -959,15 +959,15 @@ async function showThermal(json: boolean): Promise<number> {
   return 0;
 }
 
-async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
+async function showPoolTags(drivers: boolean, json: boolean, since?: number): Promise<number> {
   const connection = connect();
   if (!connection) return (console.error("headroom does not run."), 1);
-  const tags = await connection.call<PoolTags>(["resources", "pooltags"], { limit: 15 });
+  const tags = await connection.call<PoolTags>(["resources", "pooltags"], since === undefined ? { limit: 15 } : { limit: 15, since });
   if (tags.at === null || tags.sinceAt === null) {
     console.log("No snapshot of the pool tags yet. The daemon reads them every 5 minutes, and only on Windows.");
     return 0;
   }
-  const named = [...tags.largest, ...tags.growing, ...tags.pagedGrowing].map((row) => row.tag);
+  const named = [...tags.largest, ...tags.growing, ...tags.pagedGrowing, ...(since === undefined ? [] : (tags.largestPaged ?? []))].map((row) => row.tag);
   const owners = drivers ? driversOf([...new Set(named)]) : new Map<string, string[]>();
   if (json) {
     console.log(JSON.stringify({ ...tags, drivers: Object.fromEntries(owners) }, null, 2));
@@ -981,7 +981,8 @@ async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
     }
   };
   const minutes = Math.round((tags.at - tags.sinceAt) / 60_000);
-  console.log(`The largest non-paged pool tags (the change over ${minutes} minutes):`);
+  const span = minutes < 120 ? `${minutes} minutes` : `${(minutes / 60).toFixed(1)} hours`;
+  console.log(`The largest non-paged pool tags (the change over ${span}):`);
   show(tags.largest);
   console.log("\nThe tags that grew most:");
   show(tags.growing);
@@ -991,6 +992,14 @@ async function showPoolTags(drivers: boolean, json: boolean): Promise<number> {
       const files = owners.get(row.tag) ?? [];
       const named = files.length === 0 ? "" : `  ${files.slice(0, 4).join(", ")}${files.length > 4 ? ` and ${files.length - 4} more` : ""}`;
       console.log(`  ${JSON.stringify(row.tag).padEnd(8)} ${`${row.pagedMb} MB`.padStart(10)} ${`+${row.growthMb} MB`.padStart(11)}${named}`);
+    }
+  }
+  if (since !== undefined && (tags.largestPaged ?? []).length > 0) {
+    console.log(`\nThe largest paged pool tags (the change over ${span}):`);
+    for (const row of (tags.largestPaged ?? []).slice(0, 8)) {
+      const files = owners.get(row.tag) ?? [];
+      const named = files.length === 0 ? "" : `  ${files.slice(0, 4).join(", ")}${files.length > 4 ? ` and ${files.length - 4} more` : ""}`;
+      console.log(`  ${JSON.stringify(row.tag).padEnd(8)} ${`${row.pagedMb} MB`.padStart(10)} ${`${row.growthMb >= 0 ? "+" : ""}${row.growthMb} MB`.padStart(11)}${named}`);
     }
   }
   if (!drivers) console.log("\nTo name the driver of each tag: headroom pool-tags --drivers");
@@ -1396,9 +1405,10 @@ async function drainCommand(argv: string[]): Promise<number> {
   if (values.cancel === true) {
     if (drain === null) console.log("No drain was planned.");
     else if (drain.auto) {
-      const under = mb(drain.auto.levelMb - AUTO_DRAIN_MARGIN_MB);
+      // The hold of a cancel ends at the level that is set when the rule reads it, not at the level of the old drain.
+      const level = (await connection.call<Config>(["config", "get"], {})).autoDrainMb ?? drain.auto.levelMb;
       console.log(`The automatic drain of ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
-      console.log(`The automatic rule starts no new drain until the kernel pools fall under ${under}, or until a reboot.`);
+      if (level > 0) console.log(`The automatic rule starts no new drain until the kernel pools fall under ${mb(level - AUTO_DRAIN_MARGIN_MB)}, or until a reboot.`);
     } else console.log(`The drain for the reboot at ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
     return 0;
   }
@@ -1483,8 +1493,12 @@ async function main(argv: string[]): Promise<number> {
     case "job":
       return jobCommand(rest, connect());
     case "pool-tags": {
-      const { values } = parseArgs({ args: rest, options: { drivers: { type: "boolean" }, json: { type: "boolean" } } });
-      return showPoolTags(values.drivers === true, values.json === true);
+      const { values } = parseArgs({ args: rest, options: { drivers: { type: "boolean" }, json: { type: "boolean" }, since: { type: "string" }, hours: { type: "string" } } });
+      if (values.since !== undefined && values.since !== "boot") return (console.error("headroom: --since takes the word boot."), 2);
+      const hours = values.hours === undefined ? undefined : Number(values.hours);
+      if (hours !== undefined && !(hours > 0)) return (console.error("headroom: --hours takes a number above 0."), 2);
+      const since = values.since === "boot" ? 0 : hours === undefined ? undefined : Math.round(Date.now() - hours * 3_600_000);
+      return showPoolTags(values.drivers === true, values.json === true, since);
     }
     case "dashboard": {
       const endpoint = connect()?.endpoint;

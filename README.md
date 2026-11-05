@@ -611,7 +611,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the test databases need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
-On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
+On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --since boot` (or `--hours <n>`) shows the growth of the tags in both pools over days: the store keeps one snapshot for each hour for 7 days, and the first snapshot after the start of Windows. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
 
 ## The plugin for Claude Code
 

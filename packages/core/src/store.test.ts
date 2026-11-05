@@ -195,11 +195,36 @@ describe("Store pool tags", () => {
     ]);
     expect(store.poolTagsSince(1500).map((snapshot) => snapshot.at)).toEqual([2000]);
 
-    // A snapshot removes the snapshots that are older than 2 hours.
-    store.savePoolTags(1000 + 2 * 3_600_000 + 1, [{ tag: "DAL3", nonPagedMb: 310, pagedMb: 0 }]);
-    expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([2000, 1000 + 2 * 3_600_000 + 1]);
     store.prune(3000);
-    expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([1000 + 2 * 3_600_000 + 1]);
+    expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([]);
+    store.close();
+  });
+
+  it("keeps each snapshot for 2 hours, the first of each hour for 7 days, and the first after the boot for longer", () => {
+    const minutes = 60_000;
+    const base = 100 * 3_600_000;
+    const bootedAt = base + 40 * minutes;
+    const store = new Store(":memory:");
+    const row = [{ tag: "File", nonPagedMb: 10, pagedMb: 0 }];
+    const ages = (): number[] => store.poolTagsSince(0).map((snapshot) => (snapshot.at - base) / minutes);
+    for (let at = 10; at <= 340; at += 30) store.savePoolTags(base + at * minutes, row, bootedAt);
+    // The cut is at 220 minutes. 40 is the first after the boot. 10, 70, 130 and 190 are the first of their hours.
+    expect(ages()).toEqual([10, 40, 70, 130, 190, 220, 250, 280, 310, 340]);
+
+    const later = 8 * 24 * 60;
+    store.savePoolTags(base + later * minutes, row, bootedAt);
+    expect(ages()).toEqual([40, later]);
+    store.close();
+  });
+
+  it("keeps the first snapshot after a boot that follows the last snapshot of the store", () => {
+    const hour = 3_600_000;
+    const store = new Store(":memory:");
+    const row = [{ tag: "File", nonPagedMb: 10, pagedMb: 0 }];
+    store.savePoolTags(10 * hour, row, 0);
+    store.savePoolTags(10 * hour + 1000, row, 10 * hour + 500);
+    store.savePoolTags(13 * hour, row, 10 * hour + 500);
+    expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([10 * hour, 10 * hour + 1000, 13 * hour]);
     store.close();
   });
 });
