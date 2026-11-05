@@ -314,6 +314,11 @@ function printStatus(status: DaemonStatus): void {
     const writers = status.writes.filter((each) => each.mbLastHour >= 10).slice(0, 5);
     console.log(`Writes (last hour): ${writers.length === 0 ? "none above 10 MB" : writers.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`);
   }
+  // H66: the owners that read most. A daemon of an older version gives no reads.
+  if (status.reads !== undefined) {
+    const readers = status.reads.filter((each) => each.mbLastHour >= 10).slice(0, 5);
+    console.log(`Reads (last hour): ${readers.length === 0 ? "none above 10 MB" : readers.map((each) => `${each.owner} ${diskSize(each.mbLastHour)}`).join(", ")}.`);
+  }
   // H23: the reserve for Mark and the capped jobs. A daemon of an older version gives no reserve.
   const cpu = cpuLine((status.resources ?? []).find((each) => each.id === "cpu"), status.cpuReserve, status.leases);
   if (cpu !== null) console.log(cpu);

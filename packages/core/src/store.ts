@@ -11,7 +11,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
-import type { CounterRow } from "./counters.ts";
+import type { CounterRow, ProcessReads } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
@@ -36,6 +36,13 @@ export interface OwnerRow extends OwnerUsage {
   readonly at: number;
   /** The MB that the owner wrote in the minute before the sample (H20). A row of an older version has none. */
   readonly writeMb?: number | undefined;
+  /** The MB that the owner read in the minute before the sample (H66). A row of an older version has none. */
+  readonly readMb?: number | undefined;
+}
+
+/** One stored process that read much in one minute (H66). */
+export interface ReaderRow extends ProcessReads {
+  readonly at: number;
 }
 
 const SCHEMA = `
@@ -55,7 +62,10 @@ CREATE TABLE IF NOT EXISTS memory (
 );
 CREATE TABLE IF NOT EXISTS owners (
   at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL,
-  private_mb INTEGER, working_mb INTEGER, processes INTEGER, write_mb REAL, PRIMARY KEY (at, owner)
+  private_mb INTEGER, working_mb INTEGER, processes INTEGER, write_mb REAL, read_mb REAL, PRIMARY KEY (at, owner)
+);
+CREATE TABLE IF NOT EXISTS readers (
+  at INTEGER NOT NULL, pid INTEGER NOT NULL, name TEXT NOT NULL, owner TEXT NOT NULL, read_mb REAL NOT NULL, PRIMARY KEY (at, pid)
 );
 CREATE TABLE IF NOT EXISTS pool_tags (
   at INTEGER NOT NULL, tag TEXT NOT NULL, nonpaged_mb REAL, paged_mb REAL, PRIMARY KEY (at, tag)
@@ -249,6 +259,8 @@ export class Store {
     // A database of an older version has no column for the writes of an owner (H20).
     const ownerColumns = this.#db.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     if (!ownerColumns.includes("write_mb")) this.#db.exec("ALTER TABLE owners ADD COLUMN write_mb REAL");
+    // A database of an older version has no column for the reads of an owner (H66).
+    if (!ownerColumns.includes("read_mb")) this.#db.exec("ALTER TABLE owners ADD COLUMN read_mb REAL");
   }
 
   /** This function writes a lease, new or changed. */
@@ -446,6 +458,8 @@ export class Store {
     load?: SessionLoad,
     resources: readonly Measurement[] = [],
     writes: ReadonlyMap<string, { readonly kind: OwnerKind; readonly mb: number }> = new Map(),
+    reads: ReadonlyMap<string, { readonly kind: OwnerKind; readonly mb: number }> = new Map(),
+    readers: readonly ProcessReads[] = [],
   ): void {
     this.#db
       .prepare(
@@ -457,15 +471,20 @@ export class Store {
         load?.processes ?? null, load?.userObjects ?? null, load?.gdiObjects ?? null,
       );
     const insert = this.#db.prepare(
-      "INSERT OR REPLACE INTO owners (at, owner, kind, private_mb, working_mb, processes, write_mb) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO owners (at, owner, kind, private_mb, working_mb, processes, write_mb, read_mb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
-    const mbOf = (owner: string): number | null => {
-      const mb = writes.get(owner)?.mb;
-      return mb === undefined ? null : Math.round(mb * 1000) / 1000;
-    };
-    for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes, mbOf(owner.owner));
+    const rounded = (mb: number | undefined): number | null => (mb === undefined ? null : Math.round(mb * 1000) / 1000);
+    const writeOf = (owner: string): number | null => rounded(writes.get(owner)?.mb);
+    const readOf = (owner: string): number | null => rounded(reads.get(owner)?.mb);
+    for (const owner of owners) insert.run(at, owner.owner, owner.kind, owner.privateMb, owner.workingMb, owner.processes, writeOf(owner.owner), readOf(owner.owner));
     const listed = new Set(owners.map((owner) => owner.owner));
-    for (const [owner, write] of writes) if (!listed.has(owner)) insert.run(at, owner, write.kind, 0, 0, 0, mbOf(owner));
+    for (const [owner, each] of [...writes, ...reads]) {
+      if (listed.has(owner)) continue;
+      listed.add(owner);
+      insert.run(at, owner, each.kind, 0, 0, 0, writeOf(owner), readOf(owner));
+    }
+    const reader = this.#db.prepare("INSERT OR REPLACE INTO readers (at, pid, name, owner, read_mb) VALUES (?, ?, ?, ?, ?)");
+    for (const each of readers) reader.run(at, each.pid, each.name, each.owner, each.mb);
     const level = this.#db.prepare("INSERT OR REPLACE INTO resource_samples VALUES (?, ?, ?, ?, ?)");
     for (const each of resources) level.run(at, each.id, each.capacity, each.used, each.free);
   }
@@ -525,7 +544,7 @@ export class Store {
     const query =
       step > 60_000
         ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, owner, MAX(kind) AS kind, AVG(private_mb) AS private_mb,
-             AVG(working_mb) AS working_mb, MAX(processes) AS processes, SUM(write_mb) AS write_mb
+             AVG(working_mb) AS working_mb, MAX(processes) AS processes, SUM(write_mb) AS write_mb, SUM(read_mb) AS read_mb
            FROM owners WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER), owner ORDER BY at, private_mb DESC`
         : "SELECT * FROM owners WHERE at >= ? ORDER BY at, private_mb DESC";
     return this.#db.prepare(query).all(since).map((row) => ({
@@ -536,6 +555,28 @@ export class Store {
       workingMb: Number(row["working_mb"]),
       processes: Number(row["processes"]),
       ...(row["write_mb"] == null ? {} : { writeMb: Number(row["write_mb"]) }),
+      ...(row["read_mb"] == null ? {} : { readMb: Number(row["read_mb"]) }),
+    }));
+  }
+
+  /** This function reads the MB that each owner read in each minute since a time, the oldest first. A minute with no reads is absent (H66). */
+  readsSince(since: number): CounterRow[] {
+    return this.#db.prepare("SELECT at, owner, kind, read_mb FROM owners WHERE at >= ? AND read_mb > 0 ORDER BY at, owner").all(since).map((row) => ({
+      at: Number(row["at"]),
+      owner: String(row["owner"]),
+      kind: String(row["kind"]) as OwnerKind,
+      amount: Number(row["read_mb"]),
+    }));
+  }
+
+  /** This function reads the processes that read much in each minute since a time, the oldest first, and the largest first in a minute (H66). */
+  readersSince(since: number): ReaderRow[] {
+    return this.#db.prepare("SELECT * FROM readers WHERE at >= ? ORDER BY at, read_mb DESC").all(since).map((row) => ({
+      at: Number(row["at"]),
+      pid: Number(row["pid"]),
+      name: String(row["name"]),
+      owner: String(row["owner"]),
+      mb: Number(row["read_mb"]),
     }));
   }
 
@@ -647,6 +688,7 @@ export class Store {
     this.#db.prepare("DELETE FROM sleeps WHERE to_at < ?").run(before);
     this.#db.prepare("DELETE FROM memory WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM owners WHERE at < ?").run(before);
+    this.#db.prepare("DELETE FROM readers WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM resource_samples WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(leasesBefore);

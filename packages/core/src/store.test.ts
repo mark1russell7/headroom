@@ -322,4 +322,30 @@ describe("Store writes of the owners", () => {
     ]);
     store.close();
   });
+
+  it("keeps the reads of each owner and the processes that read much (H66), and prune removes them", () => {
+    const store = new Store(":memory:");
+    const memory = { totalMb: 28000, availableMb: 9000, commitMb: 30000, commitLimitMb: 80000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
+    const owners = [{ owner: "session:shop", kind: "session" as const, privateMb: 800, workingMb: 700, processes: 4 }];
+    const writes = new Map([["session:shop", { kind: "session" as const, mb: 5 }]]);
+    const reads = new Map([["session:shop", { kind: "session" as const, mb: 7 }], ["other", { kind: "other" as const, mb: 2600 }]]);
+    const readers = [{ pid: 9, name: "scan.exe", owner: "other", mb: 2600 }, { pid: 4, name: "git.exe", owner: "session:shop", mb: 60 }];
+    store.saveSample(61_000, memory, owners, undefined, [], writes, reads, readers);
+    expect(store.ownersSince(0)).toEqual([
+      { at: 61_000, owner: "session:shop", kind: "session", privateMb: 800, workingMb: 700, processes: 4, writeMb: 5, readMb: 7 },
+      { at: 61_000, owner: "other", kind: "other", privateMb: 0, workingMb: 0, processes: 0, readMb: 2600 },
+    ]);
+    expect(store.readsSince(0)).toEqual([
+      { at: 61_000, owner: "other", kind: "other", amount: 2600 },
+      { at: 61_000, owner: "session:shop", kind: "session", amount: 7 },
+    ]);
+    expect(store.readersSince(0)).toEqual([
+      { at: 61_000, pid: 9, name: "scan.exe", owner: "other", mb: 2600 },
+      { at: 61_000, pid: 4, name: "git.exe", owner: "session:shop", mb: 60 },
+    ]);
+    expect(store.readersSince(61_001)).toEqual([]);
+    store.prune(62_000);
+    expect(store.readersSince(0)).toEqual([]);
+    store.close();
+  });
 });
