@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Engine, Store, type Lease, type Sampler } from "@headroom/core";
@@ -210,21 +210,33 @@ describe("the queue of detached jobs (H64)", () => {
     const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
     const leases = (): { job: string; state: string; pid: number | null }[] => (JSON.parse(headroom("status", "--json")) as { leases: { job: string; state: string; pid: number | null }[] }).leases;
     const port = String(47_000 + (process.pid % 1000));
-    const daemon = spawn(process.execPath, [cli, "serve", "--port", port, "--reserve", "1"], { env, stdio: "ignore", cwd: home });
+    // The output of the daemon goes to a file, and the ends below have limits, so a failure tells its step and does not only time out.
+    const daemonLog = join(home, "daemon.log");
+    const output = openSync(daemonLog, "a");
+    const daemon = spawn(process.execPath, [cli, "serve", "--port", port, "--reserve", "1"], { env, stdio: ["ignore", output, output], cwd: home });
+    closeSync(output);
+    const stopped = new Promise((resolve) => daemon.once("exit", resolve));
+    let step = "the daemon starts";
     try {
       for (let tries = 0; tries < 60 && readdirSync(home).every((name) => name !== "daemon.json"); tries++) await pause(500);
+      step = "the two jobs start";
       headroom("run", "--detach", "--job", "first", "--slot", "docker", "--holder", "t", "--", process.execPath, "-e", "setTimeout(()=>{},4000)");
       const second = headroom("run", "--detach", "--job", "second", "--slot", "docker", "--holder", "t", "--", process.execPath, "-e", "console.log('ran',process.env.H64_MARK)");
       expect(leases().find((each) => each.job === "second")).toMatchObject({ state: "waiting", pid: null });
       const log = /Log: (.+?)\. State/.exec(second)?.[1] ?? "";
-      for (let tries = 0; tries < 60 && leases().length > 0; tries++) await pause(500);
+      step = "the two jobs end";
+      const limit = Date.now() + 30_000;
+      while (Date.now() < limit && leases().length > 0) await pause(500);
       expect(readFileSync(log, "utf8")).toContain("ran secret-value");
+    } catch (error) {
+      const said = existsSync(daemonLog) ? readFileSync(daemonLog, "utf8").slice(-2000) : "no output";
+      throw new Error(`Step: ${step}. Daemon exit code: ${String(daemon.exitCode)}. Daemon output: ${said}`, { cause: error });
     } finally {
       daemon.kill();
-      await new Promise((resolve) => daemon.once("exit", resolve));
+      await Promise.race([stopped, pause(10_000)]);
     }
     for (const name of readdirSync(home)) {
       if (name.startsWith("headroom.db")) expect(readFileSync(join(home, name)).includes(Buffer.from("secret-value"))).toBe(false);
     }
-  }, 60_000);
+  }, 90_000);
 });
