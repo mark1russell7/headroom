@@ -111,6 +111,7 @@ import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
+import { SHELL_WATCH_MS, shellWatch } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
@@ -592,17 +593,17 @@ async function afterPlannedRestart(): Promise<Connection | null> {
   return null;
 }
 
-async function waitForGrant(start: Connection, lease: Lease, deadline: number): Promise<{ lease: Lease; connection: Connection }> {
+async function waitForGrant(start: Connection, lease: Lease, deadline: number, shellGone: () => boolean): Promise<{ lease: Lease; connection: Connection }> {
   let connection = start;
   let current = lease;
   let said = "";
-  while (current.state === "waiting" && Date.now() < deadline) {
+  while (current.state === "waiting" && Date.now() < deadline && !shellGone()) {
     if (current.reason && current.reason !== said) {
       console.error(`headroom: ${current.job} ${current.reason}`);
       said = current.reason;
     }
     try {
-      current = await connection.call<Lease>(["resources", "wait"], { id: current.id, timeoutMs: Math.max(1000, Math.min(60_000, deadline - Date.now())) });
+      current = await connection.call<Lease>(["resources", "wait"], { id: current.id, timeoutMs: Math.max(1000, Math.min(SHELL_WATCH_MS, deadline - Date.now())) });
     } catch (error) {
       if (!isRestartError(error)) throw error;
       // The new process of the daemon has a new token, and it keeps the lease.
@@ -861,7 +862,14 @@ async function run(argv: string[]): Promise<number> {
     const opt = first.spawn.source === "declared" ? "" : " --no-spawn-heavy: not.";
     console.error(`headroom: this job is ${spawnClassText(first.spawn)}, so it does not run beside a browser test.${opt}`);
   }
-  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
+  // H64: the client of a shell gives up its place when that shell ends. A detached job has no shell on purpose.
+  const shellGone = detachedClient || adopt !== undefined ? (): boolean => false : shellWatch(process.env);
+  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"), shellGone);
+  if ((lease.state === "waiting" || lease.state === "granted") && shellGone()) {
+    await latest.call(["resources", "release"], { id: lease.id, reason: "the shell of the job ended" });
+    console.error(`headroom: the shell of ${job} ended. Nothing ran.`);
+    return NOT_STARTED;
+  }
   if (lease.state === "waiting") {
     await latest.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
     console.error(`headroom: ${job} waited too long (${lease.reason ?? "no room"}). Nothing ran.`);
