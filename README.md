@@ -513,7 +513,7 @@ On Windows, `headroom run` puts the job into a job object:
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool docker 2`. The processors are different: their count is the capacity of `cpu`, and `headroom pool cpu 8` sets a lower cap.
 
-A queued job can run after the shell that started it stops. `headroom job` gives the state of a job, so a session can wait for the end of the job and read its exit code:
+A job with `--detach` can run after the shell that started it stops. A client in a Git Bash shell gives up its place in the queue when that shell ends (H64). `headroom job` gives the state of a job, so a session can wait for the end of the job and read its exit code:
 
 ```sh
 headroom run --job shop-e2e --log D:\logs\e2e.log -- pnpm e2e
@@ -553,6 +553,7 @@ Claude Code stops a background shell when the runtime gives memory pressure "cri
 - The queue, the slots, the limits, the job object, the exit record and the release are the same as for a foreground run. `--wait` still sets the longest wait in the queue, and its default is 30 minutes.
 - `--detach` needs `--job <name>`, so that the wait has a name. Without `--job`, the run stops with the exit code 2.
 - A detached job that waits is a row of the daemon, with no process (H64). The daemon starts its client at the grant. The environment of the job stays in the memory of the daemon. A crash of the daemon ends the waiting job, and `headroom job <name>` shows the reason.
+- A client in the queue gives up its place when its shell ends (H64). The command file gives the Windows process id of the shell in `HEADROOM_SHELL`. `headroom service command` writes that file. With no value, the client does not watch. A job that outlives its shell on purpose uses `--detach`.
 - The output of the client and the job goes to the file of `--log`, or to a new file `jobs/<uuid>.log` under the folder of headroom. `headroom job <name>` gives the path of the log.
 - `headroom job <name>` gives the state and the exit code of the job. The run itself gives 0 when the client starts, not the exit code of the job.
 - Without a daemon, the job runs without a lease, as a foreground run does. Then `headroom job` has no state of it, so read the log.

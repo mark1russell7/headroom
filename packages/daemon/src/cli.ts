@@ -31,8 +31,8 @@
 
 import { spawn, type StdioOptions } from "node:child_process";
 import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
-import { availableParallelism, userInfo } from "node:os";
-import { dirname, resolve } from "node:path";
+import { availableParallelism, homedir, userInfo } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   createJob,
@@ -111,6 +111,7 @@ import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
+import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
@@ -123,6 +124,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
   headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
   headroom service restart [--now] [--wait 60m] | stop | start | uninstall | status
+  headroom service command [<file>]
   headroom service restart --when-idle [--cancel]   (the daemon restarts itself when no lease waits)
   headroom mcp list | add | remove | restart | warm | config   (the MCP gateway)
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
@@ -592,17 +594,17 @@ async function afterPlannedRestart(): Promise<Connection | null> {
   return null;
 }
 
-async function waitForGrant(start: Connection, lease: Lease, deadline: number): Promise<{ lease: Lease; connection: Connection }> {
+async function waitForGrant(start: Connection, lease: Lease, deadline: number, shellGone: () => boolean): Promise<{ lease: Lease; connection: Connection }> {
   let connection = start;
   let current = lease;
   let said = "";
-  while (current.state === "waiting" && Date.now() < deadline) {
+  while (current.state === "waiting" && Date.now() < deadline && !shellGone()) {
     if (current.reason && current.reason !== said) {
       console.error(`headroom: ${current.job} ${current.reason}`);
       said = current.reason;
     }
     try {
-      current = await connection.call<Lease>(["resources", "wait"], { id: current.id, timeoutMs: Math.max(1000, Math.min(60_000, deadline - Date.now())) });
+      current = await connection.call<Lease>(["resources", "wait"], { id: current.id, timeoutMs: Math.max(1000, Math.min(SHELL_WATCH_MS, deadline - Date.now())) });
     } catch (error) {
       if (!isRestartError(error)) throw error;
       // The new process of the daemon has a new token, and it keeps the lease.
@@ -861,7 +863,14 @@ async function run(argv: string[]): Promise<number> {
     const opt = first.spawn.source === "declared" ? "" : " --no-spawn-heavy: not.";
     console.error(`headroom: this job is ${spawnClassText(first.spawn)}, so it does not run beside a browser test.${opt}`);
   }
-  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"));
+  // H64: the client of a shell gives up its place when that shell ends. A detached job has no shell on purpose.
+  const shellGone = detachedClient || adopt !== undefined ? (): boolean => false : shellWatch(process.env);
+  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"), shellGone);
+  if ((lease.state === "waiting" || lease.state === "granted") && shellGone()) {
+    await latest.call(["resources", "release"], { id: lease.id, reason: "the shell of the job ended" });
+    console.error(`headroom: the shell of ${job} ended. Nothing ran.`);
+    return NOT_STARTED;
+  }
   if (lease.state === "waiting") {
     await latest.call(["resources", "release"], { id: lease.id, reason: "the wait ended" });
     console.error(`headroom: ${job} waited too long (${lease.reason ?? "no room"}). Nothing ran.`);
@@ -1470,6 +1479,12 @@ async function main(argv: string[]): Promise<number> {
         const { values } = parseArgs({ args, options: { port: { type: "string" }, reserve: { type: "string" } } });
         return service.install([...(values.port ? ["--port", values.port] : []), ...(values.reserve ? ["--reserve", values.reserve] : [])]);
       }
+      if (action === "command") {
+        const file = args[0] ?? join(homedir(), ".local", "bin", "headroom");
+        writeCommandFile(file, join(import.meta.dirname, "cli.ts"));
+        console.log(`headroom: wrote the command file ${file}.`);
+        return 0;
+      }
       if (action === "uninstall") return service.uninstall();
       if (action === "stop") return service.stop();
       if (action === "start") return service.start();
@@ -1497,7 +1512,7 @@ async function main(argv: string[]): Promise<number> {
         });
       }
       if (action === "status") return service.status();
-      console.error("Usage: headroom service install | restart | stop | start | uninstall | status");
+      console.error("Usage: headroom service install | restart | stop | start | uninstall | status | command");
       return 2;
     }
     case "status": {
