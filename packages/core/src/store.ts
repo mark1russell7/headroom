@@ -551,8 +551,8 @@ export class Store {
 
   /**
    * This function writes one snapshot of the pool tags. It keeps only the tags of 1 MB or more, because most
-   * tags are small. Of the snapshots older than 2 hours, it keeps the first of each hour for 7 days, so the table
-   * stays small and the growth over days stays readable (H53). It keeps the first snapshot after the start of Windows
+   * tags are small. Of the snapshots older than 2 hours, it keeps the first of each hour for 7 days. Thus the table
+   * stays small, and the growth over days stays readable (H53). It keeps the first snapshot after the start of Windows
    * at each age, because the growth since the start is the measure of a leak. `prune` still removes old rows.
    */
   savePoolTags(at: number, tags: readonly PoolTag[], bootedAt = 0): void {
