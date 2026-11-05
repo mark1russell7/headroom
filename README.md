@@ -552,6 +552,7 @@ Claude Code stops a background shell when the runtime gives memory pressure "cri
 - The run starts the same client as a detached process with no window, and returns when the client has its lease. The lease can wait in the queue.
 - The queue, the slots, the limits, the job object, the exit record and the release are the same as for a foreground run. `--wait` still sets the longest wait in the queue, and its default is 30 minutes.
 - `--detach` needs `--job <name>`, so that the wait has a name. Without `--job`, the run stops with the exit code 2.
+- A detached job that waits is a row of the daemon, with no process (H64). The daemon starts its client at the grant. The environment of the job stays in the memory of the daemon. A crash of the daemon ends the waiting job, and `headroom job <name>` shows the reason.
 - The output of the client and the job goes to the file of `--log`, or to a new file `jobs/<uuid>.log` under the folder of headroom. `headroom job <name>` gives the path of the log.
 - `headroom job <name>` gives the state and the exit code of the job. The run itself gives 0 when the client starts, not the exit code of the job.
 - Without a daemon, the job runs without a lease, as a foreground run does. Then `headroom job` has no state of it, so read the log.

@@ -148,6 +148,7 @@ Documentation=https://github.com/mark1russell7/headroom
 ExecStart=${exec}
 Restart=on-failure
 RestartSec=10
+KillMode=process
 
 [Install]
 WantedBy=default.target

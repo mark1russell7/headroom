@@ -3,6 +3,7 @@
  */
 
 import type { Alerts, CancelResult, Config, ConfigChange, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
@@ -43,6 +44,25 @@ const LeaseInput = z.object({
     .describe("The hard cap of the job in cores, with --cpu N --limit (H23). The client sets it on the job object, and the status names the capped jobs."),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
+
+const DeferInput = LeaseInput.omit({ pid: true, ttlMs: true }).extend({
+  log: z.string().min(1).max(1000).describe("The absolute path of the log file of the job"),
+  start: z
+    .object({
+      args: z.array(z.string().max(32_000)).max(1000),
+      cwd: z.string().min(1).max(4000),
+      env: z.record(z.string().max(32_767), z.string().max(32_767)),
+      waitMs: z.number().int().positive(),
+    })
+    .describe("The start of the client at the grant (H64). The daemon does not write it to the store or to its log."),
+});
+type DeferInput = z.infer<typeof DeferInput>;
+
+const AdoptInput = z.object({
+  id: z.string().min(1).max(200),
+  pid: z.number().int().positive().describe("The client of the lease. The lease ends when it exits."),
+});
+type AdoptInput = z.infer<typeof AdoptInput>;
 
 const IdInput = z.object({ id: z.string().min(1).max(100).describe("The id of the lease") });
 type IdInput = z.infer<typeof IdInput>;
@@ -256,7 +276,7 @@ export interface DaemonStatus extends Status {
 }
 
 /** This function gives the procedures of headroom for one engine. `pendingRestart` gives the restart that waits for an idle queue. */
-export function resourceProcedures(engine: Engine, pendingRestart: () => PendingRestart | null = () => null): AnyProcedure[] {
+export function resourceProcedures(engine: Engine, pendingRestart: () => PendingRestart | null = () => null, deferred: DeferredStarts | null = null): AnyProcedure[] {
   const found = (lease: Lease | undefined, id: string): Lease => {
     if (!lease) throw new Error(`No lease has the id ${id}`);
     return lease;
@@ -306,6 +326,38 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         cpuCap: input.cpuCap,
       }),
     )
+    .build() as AnyProcedure;
+
+  const defer = createProcedure()
+    .path(["resources", "defer"])
+    .input(zodAdapter<DeferInput>(DeferInput))
+    .output(anything<Lease>())
+    .meta({
+      description: "Ask for a lease with no process. The daemon starts the client of the job at the grant (H64)",
+      args: ["holder", "job"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom"], destructive: false },
+    })
+    .handler(async (input: DeferInput): Promise<Lease> => {
+      if (deferred === null) throw new Error("This host has no queue of detached jobs");
+      const { start, ...request } = input;
+      const lease = engine.request(request);
+      deferred.add(lease.id, { ...start, log: input.log });
+      return engine.get(lease.id) ?? lease;
+    })
+    .build() as AnyProcedure;
+
+  const adopt = createProcedure()
+    .path(["resources", "adopt"])
+    .input(zodAdapter<AdoptInput>(AdoptInput))
+    .output(anything<Lease>())
+    .meta({
+      description: "Give a lease its client, after the daemon started the client at the grant (H64)",
+      args: ["id", "pid"],
+      output: "json",
+      effects: { reads: ["headroom"], writes: ["headroom"], destructive: false },
+    })
+    .handler(async (input: AdoptInput): Promise<Lease> => found(engine.adopt(input.id, input.pid), input.id))
     .build() as AnyProcedure;
 
   const wait = createProcedure()
@@ -563,7 +615,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     })
     .build() as AnyProcedure;
 
-  return [status, lease, wait, release, cancel, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain];
+  return [status, lease, defer, adopt, wait, release, cancel, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain];
 }
 
 const RestartWhenIdleInput = z.object({

@@ -11,10 +11,11 @@ import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@p
 import { peerHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
+import { CLIENT_TITLE, DeferredStarts, launchClient } from "./deferred.ts";
 import { dashboardFace } from "./dashboard.ts";
 import { McpGateway } from "./gateway.ts";
 import { dockerGet, serviceChecks } from "./health.ts";
-import { DAEMON_TITLE, restartFromDaemon } from "./service.ts";
+import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
 import { readSummary } from "./disk-report.ts";
 import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
 import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
@@ -112,10 +113,13 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       );
     },
   });
+  // H64: a detached job that waits is a row here, with no process. The client starts at the grant.
+  const service = serviceCommand();
+  const deferred = new DeferredStarts({ leases: engine, launch: launchClient(service.node, service.cli, CLIENT_TITLE) });
   const registry = new ProcedureRegistry();
   registerModules(registry, [
     defineModule("@headroom/daemon", [
-      ...resourceProcedures(engine, () => idle.pending()),
+      ...resourceProcedures(engine, () => idle.pending(), deferred),
       ...gatewayProcedures(engine, gateway),
       ...serviceProcedures(idle),
       ...diskProcedures(() => readSummary(diskReportPath())),
@@ -154,6 +158,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const tick = (): void => {
     try {
       engine.tick();
+      deferred.tick();
       idle.tick();
       // A read of Docker is due every 30 seconds. The reader skips the poll while a read runs.
       docker.poll();
@@ -184,6 +189,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   monitor.start();
 
   await started.life.done;
+  // H64: a planned stop gives each waiting job a client, so the job waits for the next daemon.
+  deferred.handOff();
   unwatch?.();
   clearInterval(timer);
   clearInterval(sweeper);
