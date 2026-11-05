@@ -10,11 +10,12 @@ import { mountOf, parseDisk } from "./parse.ts";
 
 /**
  * This function gives the environment of a job: the environment of this process with more variables. On Windows, the
- * names have no case, so a variable `Temp` of the parent goes before the job gets `TEMP`.
+ * names have no case, so a variable `Temp` of the parent goes before the job gets `TEMP`. A job does not get
+ * `HEADROOM_SHELL`, because this value names the shell of this client. A `headroom run` in the job has another shell or none.
  */
 export function jobEnv(more: Readonly<Record<string, string>>, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base };
-  const names = new Set(Object.keys(more).map((name) => name.toUpperCase()));
+  const names = new Set(["HEADROOM_SHELL", ...Object.keys(more).map((name) => name.toUpperCase())]);
   for (const name of Object.keys(env)) if (names.has(name.toUpperCase())) delete env[name];
   return { ...env, ...more };
 }

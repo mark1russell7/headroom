@@ -43,6 +43,22 @@ describe("the watch of the shell of a waiting client (H64)", () => {
     }
   });
 
+  it("does not give the shell to the job of a real client, so a client in the job does not watch a shell that ended", () => {
+    const home = mkdtempSync(join(tmpdir(), "headroom-job-env-"));
+    try {
+      const print = 'console.log("shell=[" + (process.env.HEADROOM_SHELL ?? "") + "]")';
+      const run = spawnSync(process.execPath, [join(import.meta.dirname, "cli.ts"), "run", "--job", "env", "--holder", "t", "--", process.execPath, "-e", print], {
+        env: { ...ENV, HEADROOM_HOME: home, HEADROOM_SHELL: "4242" },
+        encoding: "utf8",
+        cwd: home,
+        timeout: 30_000,
+      });
+      expect(run.stdout).toContain("shell=[]");
+    } finally {
+      rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    }
+  }, 60_000);
+
   it("holds through the real commands: the place goes, and the job does not start, when the shell ends", async () => {
     const home = mkdtempSync(join(tmpdir(), "headroom-shell-"));
     const cli = join(import.meta.dirname, "cli.ts");
