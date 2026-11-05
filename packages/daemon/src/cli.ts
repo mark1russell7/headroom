@@ -30,7 +30,7 @@
  */
 
 import { spawn, type StdioOptions } from "node:child_process";
-import { closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
+import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
 import { availableParallelism, userInfo } from "node:os";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -661,6 +661,7 @@ async function run(argv: string[]): Promise<number> {
       "ignore-presence": { type: "boolean" },
       detach: { type: "boolean" },
       "detached-client": { type: "boolean" },
+      adopt: { type: "string" },
     },
   });
   if (positionals.length === 0) {
@@ -735,17 +736,21 @@ async function run(argv: string[]): Promise<number> {
     }
   }
 
+  const adopt = values.adopt;
+  const detachAt = new Set(tokens.flatMap((token) => (token.kind === "option" && token.name === "detach" ? [token.index] : [])));
   // H56: the detached process is this same code, without --detach. It gives each message of the run to the log.
-  if (detach && log !== null) {
-    const detachAt = new Set(tokens.flatMap((token) => (token.kind === "option" && token.name === "detach" ? [token.index] : [])));
-    const start = await startClient(import.meta.filename, clientArgs(argv, detachAt, values.holder ?? (await holderOf()), log), log);
-    const { line, code } = detachedLine(job, log, start);
+  const startDetached = async (client: string): Promise<number> => {
+    const start = await startClient(import.meta.filename, clientArgs(argv, detachAt, values.holder ?? (await holderOf()), client), client);
+    const { line, code } = detachedLine(job, client, start);
     if (code === 0) console.log(line);
     else console.error(line);
     return code;
-  }
+  };
+  // H64: the daemon starts this path at the grant. Then this process exits, so the client is not in the tree of the daemon.
+  if (detach && log !== null && adopt !== undefined) return startDetached(log);
 
   let connection = connect() ?? (await afterPlannedRestart());
+  if (detach && log !== null && !connection) return startDetached(log);
   if (!connection) {
     const conditions = when.length > 0 || timing ? " and without its conditions" : "";
     console.error(`headroom: the daemon does not run, so the job runs without a lease${conditions}.`);
@@ -803,9 +808,28 @@ async function run(argv: string[]): Promise<number> {
     // H23: the status names the capped jobs. The job object of this process holds the cap.
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
   };
+  // H64: a detached job that waits is a row of the daemon, with no process. A daemon of an older version has no such
+  // procedure, and a refused request has its reason in the log, so the client then waits in the queue as before.
+  if (detach && log !== null) {
+    const { pid: _pid, ...withoutProcess } = request;
+    const args = ["--holder", holder, "--log", log, ...argv.filter((_, index) => !detachAt.has(index))];
+    const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
+    const deferred = await connection
+      .call<Lease>(["resources", "defer"], { ...withoutProcess, log, start: { args, cwd: process.cwd(), env, waitMs: parseTime(values.wait ?? "30m") } })
+      .catch((error: unknown) => {
+        appendFileSync(log, `headroom: the daemon did not take the queue of this job, so its client waits: ${error instanceof Error ? error.message : String(error)}\n`);
+        return null;
+      });
+    if (deferred === null) return startDetached(log);
+    const { line, code } = detachedLine(job, log, { kind: "lease", lease: deferred.id });
+    console.log(line);
+    return code;
+  }
+  const askLease = (to: Connection): Promise<Lease> =>
+    adopt === undefined ? to.call<Lease>(["resources", "lease"], request) : to.call<Lease>(["resources", "adopt"], { id: adopt, pid: process.pid });
   let first: Lease;
   try {
-    first = await connection.call<Lease>(["resources", "lease"], request);
+    first = await askLease(connection);
   } catch (error) {
     if (!isRestartError(error)) throw error;
     // The daemon can stop for a planned restart between the discovery and the request.
@@ -817,7 +841,7 @@ async function run(argv: string[]): Promise<number> {
       return (await runEnforced(positionals, enforcement, {}, sink)).code;
     }
     connection = next;
-    first = await next.call<Lease>(["resources", "lease"], request);
+    first = await askLease(next);
   }
   // H26: a session can wait on this id with `headroom job <id>`, also after its shell stops.
   console.error(leaseLine(first));

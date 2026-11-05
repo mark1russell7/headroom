@@ -927,6 +927,14 @@ export class Engine {
     return { cancelled, matches };
   }
 
+  /** This function gives a lease its process, when the daemon started its client (H64). */
+  adopt(id: string, pid: number): Lease | undefined {
+    this.#clock();
+    const lease = this.#broker.adopt(id, pid);
+    if (lease !== undefined) this.#store.saveLease(lease);
+    return lease;
+  }
+
   /** This function records a heartbeat of a lease. `processes` is the count of processes that its job started so far (H29). */
   renew(id: string, processes?: number): Lease | undefined {
     this.#clock();

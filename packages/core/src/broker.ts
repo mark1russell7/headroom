@@ -333,6 +333,14 @@ export class Broker {
     return this.#set({ ...lease, state: "cancelled", endedAt: this.#now(), reason: `cancelled by ${by} (headroom cancel)`, cancelledBy: by });
   }
 
+  /** This function gives an active lease its process (H64). The daemon started the client of a lease that had no process. */
+  adopt(id: string, pid: number): Lease | undefined {
+    const lease = this.#leases.get(id);
+    if (!lease || !isActive(lease)) return lease;
+    this.#rejoin.delete(id);
+    return this.#set({ ...lease, pid, heartbeatAt: this.#now() });
+  }
+
   /** This function records a heartbeat of an active lease. `processes` is the count of processes that its job started so far (H29). */
   renew(id: string, processes?: number): Lease | undefined {
     const lease = this.#leases.get(id);
