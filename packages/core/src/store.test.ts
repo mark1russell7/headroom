@@ -12,6 +12,16 @@ import { Store } from "./store.ts";
 const PRESENCE_SETTINGS = { presence: true, awayAfterMs: 300_000, busyWaitMs: 1_200_000, presentReserve: 2 };
 
 describe("Store", () => {
+  it("keeps the process of a lease that first had none, so a restart of the daemon still sees its client (H64)", () => {
+    const store = new Store(":memory:");
+    const broker = new Broker({ now: () => 5000, newId: () => "l1" });
+    const lease = broker.request({ holder: "shop", job: "build", amounts: { memory: 100 } });
+    store.saveLease(lease);
+    expect(store.activeLeases()[0]?.pid).toBeNull();
+    store.saveLease({ ...lease, pid: 42 });
+    expect(store.activeLeases()[0]?.pid).toBe(42);
+  });
+
   it("keeps the leases, the pools and the samples", () => {
     const store = new Store(":memory:");
     const broker = new Broker({ now: () => 5000, newId: () => "l1" });
