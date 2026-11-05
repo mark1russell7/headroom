@@ -6,7 +6,7 @@
 export { DEFAULT_ALERT_RULES, detect, diskLevel, diskSize } from "./alerts.ts";
 export type { Alert, AlertInput, AlertKind, AlertRules, AlertSeverity, DiskInput } from "./alerts.ts";
 export { counterDelta, CounterTracker, TRAIL_MS } from "./counters.ts";
-export type { Counter, CounterRow, OwnerCores, OwnerReads, OwnerWrites } from "./counters.ts";
+export type { Counter, CounterRow, OwnerCores, OwnerReads, OwnerWrites, ProcessReads } from "./counters.ts";
 export {
   accountingCpuMs,
   applyCpuControl,
@@ -453,7 +453,7 @@ export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, RECE
 export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
 export {
   MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
-export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow, Sleep } from "./store.ts";
+export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep } from "./store.ts";
 export {
   checkJobTemp,
   folderSizeMb,

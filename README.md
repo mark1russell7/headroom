@@ -55,10 +55,11 @@ The list "Memory by owner" gives the private memory and the memory in RAM of eac
 - On Windows, one read of `SystemProcessInformation` gives the memory of each process, also of a protected process. The daemon opens no process for it.
 - The memory in RAM of a process is its private working set, as the column "Memory" of Task Manager. A page that processes share is in no owner, so it is in `unattributed`.
 
-`headroom status` also gives the owners that wrote most in the last hour, the processors in use, the network, the TCP connections and the shared services:
+`headroom status` also gives the top writers and readers of the last hour, the processors in use, the network, the TCP connections and the shared services:
 
 ```text
 Writes (last hour): session:shop 31.2 GB, mcp:vex 2.1 GB.
+Reads (last hour): session:shop 12.4 GB, other 2.7 GB.
 CPU: 11.2 of 16 cores in use (2 kept for Mark). Most: session:shop 6.1, mcp:vex 2.0. Capped: shop-e2e 4 cores.
 Process starts: 1,450 a minute. Most (at least): session:client 410 (jobs 12, own commands 398, job e2e: 9,800 so far), session:organizer 120.
 Network: 1.2 MB/s in, 0.3 MB/s out.

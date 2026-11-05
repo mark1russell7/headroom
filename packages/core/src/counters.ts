@@ -31,6 +31,19 @@ export interface OwnerWrites {
   readonly mbLastHour: number;
 }
 
+/**
+ * One process that read much in one minute (H66). The file cache can fill in one minute, and the owner `other`
+ * does not name the process. A read of a file through a mapping does not count, and a process that exits between two
+ * reads loses its last change.
+ */
+export interface ProcessReads {
+  readonly pid: number;
+  readonly name: string;
+  readonly owner: string;
+  /** The MB that the process read in the minute, also from the file cache and from pipes. */
+  readonly mb: number;
+}
+
 /** The reads of one owner over the last hour (H50). */
 export type OwnerReads = OwnerWrites;
 
@@ -78,6 +91,10 @@ const CORES_MS = MINUTE_MS;
  * the minute before it.
  */
 export const TRAIL_MS: number = 11 * MINUTE_MS;
+/** A minute keeps at most this number of processes that read much (H66). */
+const READERS_LIMIT = 5;
+/** A process that read less than this number of MB in the minute is absent from the record (H66). */
+const READERS_FLOOR_MB = 50;
 /** The tracker keeps each read for the longest window. */
 const READS_KEEP_MS = Math.max(WRITES_RATE_MS, TRAIL_MS);
 /**
@@ -129,6 +146,8 @@ export class CounterTracker {
   /** The changes since the last closed minute. */
   #open: Sums = new Map();
   readonly #kinds = new Map<string, OwnerKind>();
+  /** The bytes that each process read since the last closed minute (H66). */
+  #openReaders = new Map<number, { readonly name: string; readonly owner: string; bytes: number }>();
 
   constructor(counters: readonly Counter[] = ["cpuMs", "writeBytes"]) {
     this.#counters = counters;
@@ -158,6 +177,11 @@ export class CounterTracker {
           const owner = ownerOf.get(info.pid) ?? "other";
           add(sums, counter, owner, delta);
           add(this.#open, counter, owner, delta);
+          if (counter === "readBytes") {
+            const reader = this.#openReaders.get(info.pid);
+            if (reader === undefined) this.#openReaders.set(info.pid, { name: info.name, owner, bytes: delta });
+            else reader.bytes += delta;
+          }
           this.#kinds.set(owner, kindOf.get(owner) ?? this.#kinds.get(owner) ?? "other");
           const group = counter === "cpuMs" ? groupOf.get(info.pid) : undefined;
           if (group !== undefined) groups.set(group, (groups.get(group) ?? 0) + delta);
@@ -191,6 +215,20 @@ export class CounterTracker {
     for (const each of [...this.#minutes, ...this.#reads]) for (const byOwner of each.sums.values()) for (const owner of byOwner.keys()) owners.add(owner);
     for (const owner of this.#kinds.keys()) if (!owners.has(owner)) this.#kinds.delete(owner);
     return sums;
+  }
+
+  /**
+   * This function closes the minute of the processes that read much (H66). It gives the processes that read the most, the
+   * largest first, and starts a new minute.
+   */
+  closeReaders(limit: number = READERS_LIMIT, floorMb: number = READERS_FLOOR_MB): ProcessReads[] {
+    const readers = [...this.#openReaders]
+      .map(([pid, each]) => ({ pid, name: each.name, owner: each.owner, mb: round(each.bytes / MB) }))
+      .filter((each) => each.mb >= floorMb)
+      .sort((a, b) => b.mb - a.mb || a.pid - b.pid)
+      .slice(0, limit);
+    this.#openReaders = new Map();
+    return readers;
   }
 
   /** This function adds the stored minutes of one total, so the hour continues after a restart. The rows are the oldest first. */

@@ -31,6 +31,50 @@ describe("counterDelta", () => {
   });
 });
 
+describe("CounterTracker: the processes that read much (H66)", () => {
+  const reader = (pid: number, readMb: number, name = `p${pid}.exe`): ProcessInfo => ({ ...p(pid, 0, 0), name, readBytes: readMb * MB });
+  const owners = new Map([[1, "system"], [2, "system"]]);
+  const kinds = new Map<string, OwnerKind>([["system", "system"]]);
+
+  it("names each process of one owner, the largest first, with the sum of each read of the minute", () => {
+    const tracker = new CounterTracker(["readBytes"]);
+    tracker.read(0, [reader(1, 100), reader(2, 100), reader(3, 100)], owners, kinds);
+    tracker.read(10_000, [reader(1, 1100), reader(2, 160), reader(3, 110)], owners, kinds);
+    tracker.read(20_000, [reader(1, 2700), reader(2, 170), reader(3, 110)], owners, kinds);
+    expect(tracker.closeReaders()).toEqual([
+      { pid: 1, name: "p1.exe", owner: "system", mb: 2600 },
+      { pid: 2, name: "p2.exe", owner: "system", mb: 70 },
+    ]);
+  });
+
+  it("starts a new minute at each close, and leaves out a process under the floor", () => {
+    const tracker = new CounterTracker(["readBytes"]);
+    tracker.read(0, [reader(1, 0)], owners, kinds);
+    tracker.read(10_000, [reader(1, 500)], owners, kinds);
+    expect(tracker.closeReaders().map((each) => each.mb)).toEqual([500]);
+    expect(tracker.closeReaders()).toEqual([]);
+    tracker.read(20_000, [reader(1, 549)], owners, kinds);
+    expect(tracker.closeReaders()).toEqual([]);
+  });
+
+  it("gives at most the limit, and the owner `other` to a process with no owner", () => {
+    const tracker = new CounterTracker(["readBytes"]);
+    const pids = [1, 2, 3, 4, 5, 6, 7];
+    tracker.read(0, pids.map((pid) => reader(pid, 0)), owners, kinds);
+    tracker.read(10_000, pids.map((pid) => reader(pid, 100 * pid)), owners, kinds);
+    const readers = tracker.closeReaders();
+    expect(readers.map((each) => each.pid)).toEqual([7, 6, 5, 4, 3]);
+    expect(readers[0]?.owner).toBe("other");
+  });
+
+  it("counts nothing for a tracker with no read counter", () => {
+    const tracker = new CounterTracker(["writeBytes"]);
+    tracker.read(0, [reader(1, 0)], owners, kinds);
+    tracker.read(10_000, [reader(1, 900)], owners, kinds);
+    expect(tracker.closeReaders()).toEqual([]);
+  });
+});
+
 describe("CounterTracker", () => {
   it("gives the MB of the last hour, the speed of the last 10 minutes and the cores of the last minute of each owner", () => {
     const tracker = new CounterTracker();

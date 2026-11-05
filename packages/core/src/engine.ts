@@ -198,6 +198,8 @@ export interface Status {
    * each write, also to a pipe or a device, and do not name the drive.
    */
   readonly writes: readonly OwnerWrites[];
+  /** The 10 owners that read most in the last hour (H66). The count includes the reads from the file cache and from pipes. */
+  readonly reads: readonly OwnerReads[];
   /** The TCP connections of the last read of the processes (H24), or `null` on a platform with no TCP read. */
   readonly tcp: TcpSummary | null;
   /**
@@ -608,6 +610,9 @@ export class Engine {
     // The writes of the last hour continue after a restart, so a disk alert names the owners that filled the drive.
     this.#counters.restore("writeBytes", this.#store.writesSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
     this.#writes = this.#counters.writes(this.#startedAt);
+    // H66: the reads of the last hour also continue, so a cache alert names the readers after a restart.
+    this.#counters.restore("readBytes", this.#store.readsSince(this.#startedAt - 3_600_000).map((row) => ({ ...row, amount: row.amount * MB })));
+    this.#reads = this.#counters.reads(this.#startedAt);
     // H48: the owner records continue after a restart, so an orphan keeps the owner that it had before the restart.
     this.#records.restore(this.#store.processOwners());
     const config = this.#store.config();
@@ -831,7 +836,8 @@ export class Engine {
     this.#keepAwake();
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
-      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, this.#writtenMb(now));
+      const minute = this.#closeMinute(now);
+      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, minute.written, minute.read, this.#counters.closeReaders());
       this.#recordTrends(now);
     }
     if (now - this.#prunedAt >= 3_600_000) {
@@ -1109,6 +1115,7 @@ export class Engine {
       disks: this.#disks.map((disk) => ({ mount: disk.mount, freeMb: disk.freeMb, totalMb: disk.totalMb, dropMbPerHour: this.#diskWindow(disk.mount).dropMbPerHour })),
       resources: withKinds(this.#measurements, attribution, forecasts),
       writes: this.#writes,
+      reads: this.#reads,
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
       power: this.powerStatus(),
@@ -1349,11 +1356,15 @@ export class Engine {
     return this.#broker.update(lease.id, { peakCores: cores }) ?? lease;
   }
 
-  /** This function closes the minute of the counter tracker. It gives the MB that each owner wrote in the minute, for the store. */
-  #writtenMb(now: number): Map<string, { readonly kind: OwnerKind; readonly mb: number }> {
-    const written = new Map<string, { readonly kind: OwnerKind; readonly mb: number }>();
-    for (const [owner, bytes] of this.#counters.close(now).get("writeBytes") ?? []) written.set(owner, { kind: this.#counters.kindOf(owner), mb: bytes / MB });
-    return written;
+  /** This function closes the minute of the counter tracker. It gives the MB that each owner wrote and read in the minute, for the store. */
+  #closeMinute(now: number): {
+    readonly written: Map<string, { readonly kind: OwnerKind; readonly mb: number }>;
+    readonly read: Map<string, { readonly kind: OwnerKind; readonly mb: number }>;
+  } {
+    const sums = this.#counters.close(now);
+    const inMb = (bytes: ReadonlyMap<string, number> | undefined): Map<string, { readonly kind: OwnerKind; readonly mb: number }> =>
+      new Map([...(bytes ?? [])].map(([owner, each]) => [owner, { kind: this.#counters.kindOf(owner), mb: each / MB }]));
+    return { written: inMb(sums.get("writeBytes")), read: inMb(sums.get("readBytes")) };
   }
 
   /** This function reads the free space of the fixed drives, and keeps the readings of the last hour. */
