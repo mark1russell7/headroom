@@ -62,6 +62,7 @@ import {
   rebootLines,
   CPU_AUTO_DEFAULT,
   CPU_RESERVE_DEFAULT,
+  MEMORY_RESERVE_DEFAULT_MB,
   cpuLine,
   parseWhen,
   AWAY_AFTER_DEFAULT_MS,
@@ -175,6 +176,8 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom config roles-file [<path> | --clear]
                The registry of the roles: the owners of Docker projects and of peers. The folder roles next to it holds the role files.
                It has no default. With no file, the roles are unknown, and headroom reports each container by its Docker project.
+  headroom config memory-reserve [<MB> | --clear]
+               The memory that the leases do not take. A grant waits when it would leave less. The default: ${MEMORY_RESERVE_DEFAULT_MB}.
   headroom config cpu-reserve [<cores> | --clear]
                The cores that the leases do not take, for Mark. 0: no reserve. The default: ${CPU_RESERVE_DEFAULT}.
   headroom config presence [on | off | --clear]
@@ -1085,6 +1088,11 @@ function printConfig(config: Config): void {
   // H57: these settings have no default. A daemon of an older version has no roles file, so it gives no line.
   if (config.usageFile !== undefined) console.log(usageFileLine(config.usageFile));
   if (config.rolesFile !== undefined) console.log(rolesFileLine(config.rolesFile));
+  // H60: a daemon of an older version has no setting of the memory reserve.
+  if (typeof config.memoryReserveMb === "number") {
+    const named = config.memoryReserveMb === MEMORY_RESERVE_DEFAULT_MB ? " (the default)" : "";
+    console.log(`memory-reserve: ${mb(config.memoryReserveMb)}${named}. A lease waits when its grant would leave less than this.`);
+  }
   // H23: a daemon of an older version has no CPU reserve.
   if (typeof config.cpuReserve === "number") {
     const named = config.cpuReserve === CPU_RESERVE_DEFAULT ? " (the default)" : "";
@@ -1212,6 +1220,17 @@ async function showPresence(argv: string[]): Promise<number> {
   return 0;
 }
 
+/** `headroom config memory-reserve <MB>` sets the memory that the leases do not take (H60). `--clear` gives the default. */
+async function memoryReserveConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  const reserve = value === undefined ? null : Number(value);
+  if ((value === undefined) === !clear || extra || (reserve !== null && !(Number.isInteger(reserve) && reserve >= 0))) {
+    console.error(`Usage: headroom config memory-reserve <MB>, with a whole number of 0 or more, or headroom config memory-reserve --clear (the default: ${MEMORY_RESERVE_DEFAULT_MB})`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { memoryReserveMb: reserve }));
+  return 0;
+}
+
 /** `headroom config cpu-reserve <cores>` sets the cores that the leases do not take (H23). `--clear` gives the default. */
 async function cpuReserveConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
   const reserve = value === undefined ? null : Number(value);
@@ -1295,6 +1314,7 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "battery-floor") return batteryFloorConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "usage-file") return usageFileConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "roles-file") return rolesFileConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "memory-reserve") return memoryReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "cpu-reserve") return cpuReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "presence") return presenceConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "away-after" || name === "busy-wait") return presenceTimeConfig(connection, name, value, values.clear === true, positionals.length > 2);
@@ -1302,7 +1322,7 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "auto-drain") return autoDrainConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }

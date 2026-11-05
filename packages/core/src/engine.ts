@@ -111,7 +111,7 @@ export interface EngineOptions {
   readonly sampler: Sampler;
   readonly store: Store;
   readonly now?: (() => number) | undefined;
-  /** The memory that the broker keeps free, in MB. The default is 1024. */
+  /** The memory that the broker keeps free at the start, in MB. The default is the setting `memoryReserveMb` (H60). */
   readonly reserveMb?: number | undefined;
   /** The count of logical processors: the capacity of `cpu`. The default is `os.availableParallelism()`. */
   readonly processors?: number | undefined;
@@ -256,6 +256,8 @@ export interface ConfigChange {
   readonly usageFile?: string | null | undefined;
   /** The registry of the roles (H57): an absolute path. `null` removes the setting, and the roles are then unknown. */
   readonly rolesFile?: string | null | undefined;
+  /** The memory that a lease does not take (H60): a whole number of MB from 0 to the memory of the computer. `null` gives the default of 1024. */
+  readonly memoryReserveMb?: number | null | undefined;
   /** The cores that the broker keeps for Mark (H23): a number from 0 to the count of processors. `null` gives the default of 2. */
   readonly cpuReserve?: number | null | undefined;
   /** The presence rules (H33): true for on, false for off. `null` gives the default: on. */
@@ -401,7 +403,7 @@ export class Engine {
   readonly #store: Store;
   readonly #broker: Broker;
   readonly #now: () => number;
-  readonly #reserveMb: number;
+  #reserveMb: number;
   readonly #processEveryMs: number;
   /** The snapshots of the non-paged pool by tag, in MB, of the last hour. */
   #tags: { readonly at: number; readonly tags: ReadonlyMap<string, number>; readonly paged: ReadonlyMap<string, number> }[] = [];
@@ -547,7 +549,7 @@ export class Engine {
     this.#sampler = options.sampler;
     this.#store = options.store;
     this.#now = options.now ?? Date.now;
-    this.#reserveMb = options.reserveMb ?? 1024;
+    this.#reserveMb = options.reserveMb ?? this.#store.config().memoryReserveMb;
     this.#processors = options.processors ?? availableParallelism();
     this.#processEveryMs = options.processEveryMs ?? 10_000;
     this.#recordEveryMs = options.recordEveryMs ?? 60_000;
@@ -992,6 +994,10 @@ export class Engine {
     if (typeof reserve === "number" && !(Number.isFinite(reserve) && reserve >= 0 && reserve <= this.#processors)) {
       throw new RangeError(`The CPU reserve must be a number from 0 to ${this.#processors}, the count of processors`);
     }
+    const memoryReserve = change.memoryReserveMb;
+    if (typeof memoryReserve === "number" && !(Number.isInteger(memoryReserve) && memoryReserve >= 0 && memoryReserve <= this.#memory.totalMb)) {
+      throw new RangeError(`The memory reserve must be a whole number of MB from 0 to ${this.#memory.totalMb}, the memory of the computer`);
+    }
     const presence = this.#checkPresence(change);
     const autoDrain = change.autoDrainMb;
     if (typeof autoDrain === "number" && !isAutoDrainLevel(autoDrain)) {
@@ -1009,6 +1015,10 @@ export class Engine {
     if (reserve !== undefined) {
       this.#store.setConfig("cpuReserve", reserve === null ? null : String(reserve));
       this.#cpuReserve = this.#store.config().cpuReserve;
+    }
+    if (memoryReserve !== undefined) {
+      this.#store.setConfig("memoryReserveMb", memoryReserve === null ? null : String(memoryReserve));
+      this.#reserveMb = this.#store.config().memoryReserveMb;
     }
     if (autoDrain !== undefined) {
       this.#store.setConfig("autoDrainMb", autoDrain === null ? null : String(autoDrain));

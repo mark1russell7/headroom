@@ -117,6 +117,7 @@ headroom watches the cores in use, and keeps some cores for Mark:
 - **The CPU alert.** A warning comes when the cores in use stay above 85% of the processors for 5 minutes. A critical alert comes above 95% for 5 minutes.
 - The alert names the 3 owners with the most cores, and their leased jobs. It clears after 2 minutes below its line.
 - **Runaway trees.** A process tree with no lease that uses more than 4 cores for 10 minutes gives a runaway alert. A tree is the top process of an owner and its child processes.
+- **The memory reserve.** A lease waits when its grant leaves less memory than the reserve. The default is 1 GB. A computer with a low-memory line of its own sets the same number with `headroom config memory-reserve <MB>`, so that no grant crosses the line.
 - **The reserve for Mark.** The cpu amounts of the running leases do not take the last 2 cores. `headroom config cpu-reserve <cores>` changes the count, and `0` turns the reserve off.
 - **A hard cap.** `headroom run --cpu 4 --limit` puts the job into a job object that cannot use more than 4 cores.
 - **A weight.** Without `--limit`, each job object gets the weight 5 of 9. Thus the leased jobs get equal parts of the processors when they compete.

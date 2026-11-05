@@ -451,7 +451,8 @@ export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, 
 export type { Sampler } from "./sampler.ts";
 export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, RECENT_STARTS_MS, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
 export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
-export { AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
+export {
+  MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ResourceRow, Sleep } from "./store.ts";
 export {
   checkJobTemp,

@@ -103,6 +103,11 @@ export interface Config {
    */
   readonly rolesFile: string | null;
   /**
+   * The memory in MB that a lease does not take (H60). The default is 1024. A grant waits when it would leave less than
+   * this, so a computer with a line of its own for low memory sets the same number here, and no grant crosses that line.
+   */
+  readonly memoryReserveMb: number;
+  /**
    * The cores that the broker keeps out of the counted `cpu` pool for Mark (H23). The `cpu` amounts of the granted leases
    * do not take them. The default is 2, and 0 turns the reserve off.
    */
@@ -149,6 +154,15 @@ function msOf(value: string | undefined, min: number, fallback: number): number 
 function cpuReserveOf(value: string | undefined, fallback: number = CPU_RESERVE_DEFAULT): number {
   const reserve = Number(value);
   return value !== undefined && Number.isFinite(reserve) && reserve >= 0 ? reserve : fallback;
+}
+
+/** The memory in MB that a lease does not take, by default (H60). `headroom config memory-reserve` changes it. */
+export const MEMORY_RESERVE_DEFAULT_MB = 1024;
+
+/** This function reads the setting `memoryReserveMb`. A value that is not a whole number of 0 or more gives the default. */
+function memoryReserveOf(value: string | undefined): number {
+  const reserve = Number(value);
+  return value !== undefined && value !== "" && Number.isInteger(reserve) && reserve >= 0 ? reserve : MEMORY_RESERVE_DEFAULT_MB;
 }
 
 /** This function reads the setting `batteryFloor`. A value that is not a whole number from 0 to 100 gives the default. */
@@ -306,6 +320,7 @@ export class Store {
       batteryFloor: batteryFloorOf(values.get("batteryFloor")),
       usageFile: values.get("usageFile") ?? null,
       rolesFile: values.get("rolesFile") ?? null,
+      memoryReserveMb: memoryReserveOf(values.get("memoryReserveMb")),
       cpuReserve: cpuReserveOf(values.get("cpuReserve")),
       presence: values.get("presence") !== "off",
       awayAfterMs: msOf(values.get("awayAfterMs"), AWAY_AFTER_MIN_MS, AWAY_AFTER_DEFAULT_MS),
