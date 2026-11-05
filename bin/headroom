@@ -1,7 +1,0 @@
-#!/bin/sh
-# headroom: the memory and job broker of this computer. Source: ~/git/headroom
-# H64: on Git Bash, the parent chain of the client breaks at each fork, so the client gets the Windows pid of its shell here.
-# `read` is a builtin, so this line starts no process. With no such file, the value is empty, and the client does not watch.
-read -r HEADROOM_SHELL 2>/dev/null < "/proc/$PPID/winpid"
-export HEADROOM_SHELL
-exec node --title=headroom-cli "${USERPROFILE:-$HOME}/git/headroom/packages/daemon/src/cli.ts" "$@"

@@ -1,9 +1,9 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { processExists, shellWatch } from "./shell-gone.ts";
+import { commandFile, processExists, shellWatch, writeCommandFile } from "./shell-gone.ts";
 
 const ENV = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
 
@@ -27,6 +27,20 @@ describe("the watch of the shell of a waiting client (H64)", () => {
     expect(processExists(process.pid)).toBe(true);
     const ended = spawnSync(process.execPath, ["-e", ""]).pid;
     expect(processExists(ended)).toBe(false);
+  });
+
+  it("writes a command file that gives the shell and starts the client", () => {
+    expect(commandFile("C:\repo\cli.ts")).toContain('exec node --title=headroom-cli "C:/repo/cli.ts" "$@"');
+    expect(commandFile("/repo/cli.ts")).toContain('read -r HEADROOM_SHELL 2>/dev/null < "/proc/$PPID/winpid"');
+    const dir = mkdtempSync(join(tmpdir(), "headroom-command-"));
+    try {
+      const file = join(dir, "bin", "headroom");
+      writeCommandFile(file, "/repo/cli.ts");
+      expect(readFileSync(file, "utf8")).toBe(commandFile("/repo/cli.ts"));
+      expect(readdirSync(join(dir, "bin"))).toEqual(["headroom"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("holds through the real commands: the place goes, and the job does not start, when the shell ends", async () => {

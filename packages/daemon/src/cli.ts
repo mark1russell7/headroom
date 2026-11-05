@@ -31,8 +31,8 @@
 
 import { spawn, type StdioOptions } from "node:child_process";
 import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
-import { availableParallelism, userInfo } from "node:os";
-import { dirname, resolve } from "node:path";
+import { availableParallelism, homedir, userInfo } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   createJob,
@@ -111,7 +111,7 @@ import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
 import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
-import { SHELL_WATCH_MS, shellWatch } from "./shell-gone.ts";
+import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
@@ -124,6 +124,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom serve [--port ${DEFAULT_PORT}] [--reserve 1024] [--background] [--log file]
   headroom service install [--port ${DEFAULT_PORT}] [--reserve 1024]
   headroom service restart [--now] [--wait 60m] | stop | start | uninstall | status
+  headroom service command [<file>]
   headroom service restart --when-idle [--cancel]   (the daemon restarts itself when no lease waits)
   headroom mcp list | add | remove | restart | warm | config   (the MCP gateway)
   headroom mcp warm [name...] [--timeout 120s]   (start the MCP servers before the sessions)
@@ -1478,6 +1479,12 @@ async function main(argv: string[]): Promise<number> {
         const { values } = parseArgs({ args, options: { port: { type: "string" }, reserve: { type: "string" } } });
         return service.install([...(values.port ? ["--port", values.port] : []), ...(values.reserve ? ["--reserve", values.reserve] : [])]);
       }
+      if (action === "command") {
+        const file = args[0] ?? join(homedir(), ".local", "bin", "headroom");
+        writeCommandFile(file, join(import.meta.dirname, "cli.ts"));
+        console.log(`headroom: wrote the command file ${file}.`);
+        return 0;
+      }
       if (action === "uninstall") return service.uninstall();
       if (action === "stop") return service.stop();
       if (action === "start") return service.start();
@@ -1505,7 +1512,7 @@ async function main(argv: string[]): Promise<number> {
         });
       }
       if (action === "status") return service.status();
-      console.error("Usage: headroom service install | restart | stop | start | uninstall | status");
+      console.error("Usage: headroom service install | restart | stop | start | uninstall | status | command");
       return 2;
     }
     case "status": {
