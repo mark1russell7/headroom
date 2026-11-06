@@ -211,8 +211,12 @@ export interface ResourceRow extends Measurement {
   readonly at: number;
 }
 
-/** The time that the store keeps each snapshot of the pool tags. */
-const POOL_TAGS_KEEP_MS = 2 * 3_600_000;
+/**
+ * The time that the store keeps each snapshot of the pool tags: 48 hours. A slope of a tag over a window of some hours
+ * needs each snapshot of the window, and of a window before it to compare. With a shorter time, the result of a fit
+ * changed with the time of the read.
+ */
+const POOL_TAGS_KEEP_MS = 48 * 3_600_000;
 /** The time that the store keeps one snapshot of the pool tags for each hour (H53). A slow leak shows over days. */
 const POOL_TAGS_HOURLY_KEEP_MS = 7 * 24 * 3_600_000;
 
@@ -592,7 +596,7 @@ export class Store {
 
   /**
    * This function writes one snapshot of the pool tags. It keeps only the tags of 1 MB or more, because most
-   * tags are small. Of the snapshots older than 2 hours, it keeps the first of each hour for 7 days. Thus the table
+   * tags are small. Of the snapshots older than 48 hours, it keeps the first of each hour for 7 days. Thus the table
    * stays small, and the growth over days stays readable (H53). It keeps the first snapshot after the start of Windows
    * at each age, because the growth since the start is the measure of a leak. `prune` still removes old rows.
    */

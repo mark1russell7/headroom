@@ -210,18 +210,21 @@ describe("Store pool tags", () => {
     store.close();
   });
 
-  it("keeps each snapshot for 2 hours, the first of each hour for 7 days, and the first after the boot for longer", () => {
+  it("keeps each snapshot for 48 hours, the first of each hour for 7 days, and the first after the boot for longer", () => {
     const minutes = 60_000;
     const base = 100 * 3_600_000;
     const bootedAt = base + 40 * minutes;
     const store = new Store(":memory:");
     const row = [{ tag: "File", nonPagedMb: 10, pagedMb: 0 }];
     const ages = (): number[] => store.poolTagsSince(0).map((snapshot) => (snapshot.at - base) / minutes);
-    for (let at = 10; at <= 340; at += 30) store.savePoolTags(base + at * minutes, row, bootedAt);
-    // The cut is at 220 minutes. 40 is the first after the boot. 10, 70, 130 and 190 are the first of their hours.
-    expect(ages()).toEqual([10, 40, 70, 130, 190, 220, 250, 280, 310, 340]);
+    const last = 48 * 60 + 340;
+    for (let at = 10; at <= last; at += 30) store.savePoolTags(base + at * minutes, row, bootedAt);
+    // The cut is at 340 minutes. 40 is the first after the boot. 10, 70, 130, 190, 250 and 310 are the first of their hours.
+    const window = Array.from({ length: (last - 340) / 30 + 1 }, (_, index) => 340 + index * 30);
+    expect(ages()).toEqual([10, 40, 70, 130, 190, 250, 310, ...window]);
 
-    const later = 8 * 24 * 60;
+    // Ten days after the first snapshot, each snapshot is older than the 7 days of the hourly ones.
+    const later = 10 * 24 * 60;
     store.savePoolTags(base + later * minutes, row, bootedAt);
     expect(ages()).toEqual([40, later]);
     store.close();
