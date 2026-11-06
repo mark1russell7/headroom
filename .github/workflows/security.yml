@@ -23,7 +23,7 @@ defaults:
 
 jobs:
   security:
-    uses: mark1russell7/template/.github/workflows/reusable-security.yml@b74f7b05b1c6583b52a924742f923fae3dbc60c5 # main
+    uses: mark1russell7/template/.github/workflows/reusable-security.yml@8a01259f04dce1d6a2fa351b758c6d283e9f7fc9 # main
     permissions:
       contents: read
       security-events: write
