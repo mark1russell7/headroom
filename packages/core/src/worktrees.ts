@@ -174,8 +174,8 @@ export function isInside(root: string, path: string, platform: NodeJS.Platform =
 }
 
 /**
- * This function removes the slashes and backslashes at the end of a path. It is a loop, not the expression `/[\\/]+$/`:
- * that expression takes a time of the square of the length on a path with many slashes that are not at the end.
+ * This function removes the slashes and backslashes at the end of a path. It is a loop, not the expression `/[\\/]+$/`.
+ * On a path with many slashes that are not at the end, that expression takes a time of the square of the length.
  */
 export function trimEndSlashes(path: string): string {
   let end = path.length;
