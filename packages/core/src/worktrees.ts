@@ -159,7 +159,7 @@ export interface ScanOptions {
 
 /** This function gives a key of a path for a compare: forward slashes, no slash at the end, and lower case on Windows. */
 export function pathKey(path: string, platform: NodeJS.Platform = process.platform): string {
-  const slashes = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const slashes = trimEndSlashes(path.replace(/\\/g, "/"));
   return platform === "win32" ? slashes.toLowerCase() : slashes;
 }
 
@@ -173,9 +173,19 @@ export function isInside(root: string, path: string, platform: NodeJS.Platform =
   return pathKey(path, platform).startsWith(`${pathKey(root, platform)}/`);
 }
 
+/**
+ * This function removes the slashes and backslashes at the end of a path. It is a loop, not the expression `/[\\/]+$/`:
+ * that expression takes a time of the square of the length on a path with many slashes that are not at the end.
+ */
+export function trimEndSlashes(path: string): string {
+  let end = path.length;
+  while (end > 0 && (path[end - 1] === "/" || path[end - 1] === "\\")) end -= 1;
+  return path.slice(0, end);
+}
+
 /** This function gives the last part of a path. */
 function baseName(path: string): string {
-  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? path;
+  return trimEndSlashes(path).split(/[\\/]/).pop() ?? path;
 }
 
 /** This function reads the output of `git worktree list --porcelain`. The first entry is the main checkout. */

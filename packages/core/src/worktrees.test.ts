@@ -12,6 +12,7 @@ import {
   nodeRunner,
   parsePorcelain,
   pathKey,
+  trimEndSlashes,
   refusal,
   removeWorktree,
   scanWorktrees,
@@ -545,5 +546,26 @@ describe.skipIf(!hasGit)("a real git repository", () => {
     expect(existsSync(clean)).toBe(false);
     expect(existsSync(join(dirty, "a.txt"))).toBe(true);
     expect(git(app, "branch", "--list", "clean").trim()).toMatch(/clean/);
+  });
+});
+
+describe("trimEndSlashes", () => {
+  it("removes the slashes and backslashes at the end, and keeps the others", () => {
+    expect(trimEndSlashes("a/b//")).toBe("a/b");
+    expect(trimEndSlashes(String.raw`C:\x\y\/\ `.trimEnd())).toBe(String.raw`C:\x\y`);
+    expect(trimEndSlashes("a//b")).toBe("a//b");
+    expect(trimEndSlashes("///")).toBe("");
+    expect(trimEndSlashes("")).toBe("");
+  });
+
+  it("gives the same key as before for a path with a slash at the end", () => {
+    expect(pathKey(String.raw`D:\git\x\ `.trimEnd(), "win32")).toBe("d:/git/x");
+    expect(pathKey("/home/x//", "linux")).toBe("/home/x");
+  });
+
+  // CodeQL js/polynomial-redos: the expression `/[\\/]+$/` takes a time of the square of the length on this input.
+  it("ends on many slashes that are not at the end", () => {
+    const path = `${"/".repeat(200_000)}x`;
+    expect(trimEndSlashes(path)).toBe(path);
   });
 });
