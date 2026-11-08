@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   pages:
-    uses: mark1russell7/template/.github/workflows/reusable-pages.yml@fe8b4a2e892daf3f973909a1830fde55be97ec57 # main
+    uses: mark1russell7/template/.github/workflows/reusable-pages.yml@ed0b3ebc9cd89b78c880fb7af9f6b09392a383f7 # main
     # The build job of the shared workflow gets only the read permissions. Only its deploy job,
     # which runs no code of the repository, writes to Pages.
     permissions:
