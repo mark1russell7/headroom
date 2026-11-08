@@ -120,9 +120,9 @@ export const DAEMON_LOOK_MS = 5000;
  * This function waits for a daemon that answers, until the deadline. It gives the connection, or `null` at the deadline.
  *
  * A job of the daemon queue (`--adopt`) has its lease in the daemon. When the daemon stops cleanly, it gives each waiting
- * job a client (DeferredStarts.handOff). That client must not run the job without its lease: a stop with ten waiting jobs
- * would then start all ten at once, with no memory check. Thus the client waits here for the next daemon, which keeps the
- * lease, and the job runs only after its grant.
+ * job a client (DeferredStarts.handOff). That client must not start the job without its lease. If it does, a stop with ten
+ * waiting jobs starts all ten at once, with no memory check. Thus the client waits here for the next daemon, which keeps
+ * the lease. The job starts only after its grant.
  */
 export async function waitForDaemon<C>(
   deadline: number,
