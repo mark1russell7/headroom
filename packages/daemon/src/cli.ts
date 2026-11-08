@@ -104,7 +104,7 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { diskCommand } from "./disk-cli.ts";
-import { clientArgs, detachedLine, detachedLogPath, startClient, tellParent } from "./detach.ts";
+import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, startClient, tellParent, waitForDaemon } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv } from "./holder.ts";
@@ -615,6 +615,15 @@ async function afterPlannedRestart(): Promise<Connection | null> {
   return null;
 }
 
+/** The wait of an adopted job for a daemon: the wait of the job (`--wait`, 30 minutes by default). */
+async function adoptedDaemon(wait: string | undefined): Promise<Connection | null> {
+  console.error("headroom: the daemon does not answer. The job of the queue waits for a daemon, and it does not run without its lease.");
+  return waitForDaemon(Date.now() + parseTime(wait ?? "30m"), async () => {
+    const discovery = readDiscovery();
+    return discovery && (await answers(discovery)) ? connectTo(discovery) : null;
+  });
+}
+
 async function waitForGrant(start: Connection, lease: Lease, deadline: number, shellGone: () => boolean): Promise<{ lease: Lease; connection: Connection }> {
   let connection = start;
   let current = lease;
@@ -772,8 +781,13 @@ async function run(argv: string[]): Promise<number> {
   // H64: the daemon starts this path at the grant. Then this process exits, so the client is not in the tree of the daemon.
   if (detach && log !== null && adopt !== undefined) return startDetached(log);
 
-  let connection = connect() ?? (await afterPlannedRestart());
+  let connection = connect() ?? (await afterPlannedRestart()) ?? (adopt === undefined ? null : await adoptedDaemon(values.wait));
   if (detach && log !== null && !connection) return startDetached(log);
+  // A job of the daemon queue never runs without its lease (deferred.ts handOff).
+  if (!connection && adopt !== undefined) {
+    console.error(noDaemonLine(job));
+    return NOT_STARTED;
+  }
   if (!connection) {
     const conditions = when.length > 0 || timing ? " and without its conditions" : "";
     console.error(`headroom: the daemon does not run, so the job runs without a lease${conditions}.`);
@@ -856,7 +870,11 @@ async function run(argv: string[]): Promise<number> {
   } catch (error) {
     if (!isRestartError(error)) throw error;
     // The daemon can stop for a planned restart between the discovery and the request.
-    const next = await afterPlannedRestart();
+    const next = (await afterPlannedRestart()) ?? (adopt === undefined ? null : await adoptedDaemon(values.wait));
+    if (next === null && adopt !== undefined) {
+      console.error(noDaemonLine(job));
+      return NOT_STARTED;
+    }
     if (next === null) {
       if (!isNetworkError(error)) throw error;
       console.error("headroom: the daemon does not answer, so the job runs without a lease.");

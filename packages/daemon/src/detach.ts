@@ -112,3 +112,36 @@ export function detachedLine(job: string, log: string, start: ClientStart): { re
       return { line: `headroom: the client of job ${job} did not start: ${start.reason}`, code: 1 };
   }
 }
+
+/** The pause between two looks for a daemon while an adopted job waits for one, in milliseconds. */
+export const DAEMON_LOOK_MS = 5000;
+
+/**
+ * This function waits for a daemon that answers, until the deadline. It gives the connection, or `null` at the deadline.
+ *
+ * A job of the daemon queue (`--adopt`) has its lease in the daemon. When the daemon stops cleanly, it gives each waiting
+ * job a client (DeferredStarts.handOff). That client must not start the job without its lease. If it does, a stop with ten
+ * waiting jobs starts all ten at once, with no memory check. Thus the client waits here for the next daemon, which keeps
+ * the lease. The job starts only after its grant.
+ */
+export async function waitForDaemon<C>(
+  deadline: number,
+  find: () => Promise<C | null>,
+  options: { readonly now?: () => number; readonly sleep?: (ms: number) => Promise<void>; readonly lookMs?: number } = {},
+): Promise<C | null> {
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const lookMs = options.lookMs ?? DAEMON_LOOK_MS;
+  for (;;) {
+    const found = await find();
+    if (found !== null) return found;
+    const left = deadline - now();
+    if (left <= 0) return null;
+    await sleep(Math.min(lookMs, left));
+  }
+}
+
+/** The line of an adopted job when no daemon answered before its wait ended. */
+export function noDaemonLine(job: string): string {
+  return `headroom: no daemon answered before the wait of ${job} ended, so the job did not run without its lease. Nothing ran.`;
+}

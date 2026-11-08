@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clientArgs, detachedLine } from "./detach.ts";
+import { clientArgs, detachedLine, noDaemonLine, waitForDaemon } from "./detach.ts";
 
 // The command itself, started as a user starts it. Its daemon has its own folder and port.
 const cli = join(import.meta.dirname, "cli.ts");
@@ -57,6 +57,53 @@ const freePort = (): Promise<number> =>
       server.close(() => resolve(typeof address === "object" && address !== null ? address.port : 0));
     });
   });
+
+describe("the wait of an adopted job for a daemon", () => {
+  it("gives the daemon that answers at the third look", async () => {
+    let t = 0;
+    let looks = 0;
+    const sleeps: number[] = [];
+    const found = await waitForDaemon(10_000, async () => (++looks === 3 ? "daemon" : null), {
+      now: () => t,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        t += ms;
+      },
+      lookMs: 1000,
+    });
+    expect(found).toBe("daemon");
+    expect(sleeps).toEqual([1000, 1000]);
+  });
+
+  it("gives null at the deadline, and does not sleep past it", async () => {
+    let t = 0;
+    const sleeps: number[] = [];
+    const found = await waitForDaemon(2500, async () => null, {
+      now: () => t,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        t += ms;
+      },
+      lookMs: 1000,
+    });
+    expect(found).toBeNull();
+    expect(sleeps).toEqual([1000, 1000, 500]);
+  });
+
+  it("a job of the queue with no daemon does not run, and ends with 75", async () => {
+    const home = mkdtempSync(join(tmpdir(), "headroom-adopt-"));
+    try {
+      const marker = join(home, "ran");
+      const ended = await headroom(home, ["run", "--adopt", "00000000-0000-0000-0000-000000000000", "--job", "hr-adopt", "--wait", "1s", "--", process.execPath, "-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "x")`]);
+      expect(ended.code).toBe(75);
+      expect(ended.err).toContain(noDaemonLine("hr-adopt"));
+      expect(ended.err).not.toContain("runs without a lease");
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30000);
+});
 
 describe("the arguments of a detached client", () => {
   it("removes --detach, and keeps the same word after --", () => {
