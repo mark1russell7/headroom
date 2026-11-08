@@ -59,10 +59,16 @@ export {
   WORKTREE_LOW_FREE_MB,
   WORKTREE_LOW_SPACE_EVERY_MS,
   WORKTREE_STATES,
+  WORKTREE_BATCH_MAX,
+  WORKTREE_MIN_FREE_MB,
+  WORKTREE_PAUSE_MS,
 } from "./worktrees.ts";
 export type {
   CleanAction,
+  CleanOptions,
   CleanResult,
+  CleanReason,
+  CleanStop,
   FolderMeasure,
   Orphan,
   PorcelainEntry,

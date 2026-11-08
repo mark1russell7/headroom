@@ -21,7 +21,7 @@ import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscove
 import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
-import { defaultRoots, readWorktreeRecord } from "./worktree-cli.ts";
+import { defaultRoots, readWorktreePlan, readWorktreeRecord, worktreeVersion } from "./worktree-cli.ts";
 import { launchClean, WorktreeSchedule } from "./worktree-schedule.ts";
 
 /** The default port of the daemon. */
@@ -196,8 +196,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const worktrees = new WorktreeSchedule({
     roots: () => roots,
     disks: () => engine.status().disks,
+    autoClean: () => engine.config().worktreeAutoClean,
+    version: worktreeVersion(),
     launch: launchClean(service.node, service.cli),
     record: () => readWorktreeRecord(),
+    plan: () => readWorktreePlan(),
     note: (alert, forMs) => engine.note(alert, forMs),
     endNote: (id) => engine.endNote(id),
     log,

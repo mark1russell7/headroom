@@ -47,6 +47,11 @@ export function worktreeSummaryPath(): string {
   return join(headroomHome(), "worktrees.json");
 }
 
+/** The plan of the worktree cleanup (H175): the actions of the last dry run. The daemon removes no tree before it writes one. */
+export function worktreePlanPath(): string {
+  return join(headroomHome(), "worktree-plan.json");
+}
+
 /** The log of the worktree cleanup (H175): one line for each action. */
 export function worktreeLogPath(): string {
   return join(headroomHome(), "worktree-clean.log");

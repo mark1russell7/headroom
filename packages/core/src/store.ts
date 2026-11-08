@@ -138,6 +138,11 @@ export interface Config {
    * 2 minutes, new jobs wait for a reboot. The default is 6 GB, and 0 turns the rule off.
    */
   readonly autoDrainMb: number;
+  /**
+   * The automatic worktree cleanup (H175): false by default. False: the daemon writes only the plan of the cleanup. True: the
+   * daemon also removes the trees of the plan, in batches.
+   */
+  readonly worktreeAutoClean: boolean;
 }
 
 /** The lowest level of the automatic drain that is not 0: 1 GB. The highest level: 1 TB. */
@@ -345,12 +350,13 @@ export class Store {
       busyWaitMs: msOf(values.get("busyWaitMs"), 0, BUSY_WAIT_DEFAULT_MS),
       presentReserve: cpuReserveOf(values.get("presentReserve"), PRESENT_RESERVE_DEFAULT),
       autoDrainMb: autoDrainOf(values.get("autoDrainMb")),
+      worktreeAutoClean: values.get("worktreeAutoClean") === "on",
     };
   }
 
   /**
    * This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The value of
-   * `presence` is `on` or `off`. The values of the other settings are numbers as text.
+   * `presence` and `worktreeAutoClean` is `on` or `off`. The values of the other settings are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);

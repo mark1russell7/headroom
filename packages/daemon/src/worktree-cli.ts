@@ -3,9 +3,12 @@
  *
  * - `headroom worktree list` gives the state of each worktree, with counts for each state and each repository.
  * - `headroom worktree clean` removes the trees whose work is on a remote, and the `node_modules` folders of the idle trees.
+ *   One run changes at most 20 trees, waits 5 seconds between two trees, and stops when less than 2 GB of memory is available.
+ *   A dry run writes the plan to `~/.headroom/worktree-plan.json`.
  * - `headroom worktree remove <path>` removes one tree when its work is on a remote. A session starts it after its merge.
  *
- * The command runs in its own process. The daemon starts `headroom worktree clean` each day, and when a drive is low.
+ * The command runs in its own process. The daemon starts the dry run first. It starts the real cleanup only when the setting
+ * `worktreeAutoClean` is on.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -14,6 +17,7 @@ import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
   cleanWorktrees,
+  createSampler,
   diskSize,
   findMains,
   freedLine,
@@ -24,19 +28,25 @@ import {
   samePath,
   scanWorktrees,
   summarize,
+  WORKTREE_BATCH_MAX,
+  WORKTREE_MIN_FREE_MB,
+  WORKTREE_PAUSE_MS,
   WORKTREE_STATES,
+  type CleanAction,
   type CleanResult,
+  type CleanStop,
+  type Orphan,
   type WorktreeRunner,
   type WorktreeScan,
   type WorktreeSummary,
 } from "@headroom/core";
 import { gitRootOf } from "./disk-report.ts";
 import { walk } from "./disk-walk.ts";
-import { parseTime } from "./parse.ts";
-import { headroomHome, worktreeLogPath, worktreeSummaryPath } from "./paths.ts";
+import { parseMemory, parseTime } from "./parse.ts";
+import { headroomHome, worktreeLogPath, worktreePlanPath, worktreeSummaryPath } from "./paths.ts";
 
 export const WORKTREE_USAGE =
-  "headroom worktree list [--root <folder>]... [--idle 24h] [--sizes] [--json] | clean [--dry-run] [--idle 24h] [--root <folder>]... [--json] | remove <path> [--root <folder>]...";
+  "headroom worktree list [--root <folder>]... [--idle 24h] [--sizes] [--json] | clean [--dry-run] [--max 20] [--min-free-mem 2g] [--pause 5s] [--idle 24h] [--root <folder>]... [--json] | remove <path> [--root <folder>]...";
 
 /** The outputs of the command. The tests replace them. */
 export interface WorktreeOutput {
@@ -57,9 +67,30 @@ export interface WorktreeRecord extends WorktreeSummary {
     readonly nodeModules: number;
     readonly pruned: number;
     readonly failed: number;
+    /** The trees that the run did not examine because it stopped. The daemon starts the next batch while it is more than 0. */
+    readonly remaining?: number | undefined;
+    readonly stopped?: CleanStop | null | undefined;
     readonly freeBefore: Readonly<Record<string, number>>;
     readonly freeAfter: Readonly<Record<string, number>>;
   };
+}
+
+/** The plan of the cleanup in `~/.headroom/worktree-plan.json`: the actions of a dry run, and the version that wrote it. */
+export interface WorktreePlan extends WorktreeSummary {
+  readonly version: string;
+  readonly plan: { readonly remove: number; readonly nodeModules: number; readonly prune: number; readonly skipped: number };
+  readonly actions: readonly CleanAction[];
+  readonly orphans: readonly Orphan[];
+}
+
+/** This function gives the version of the daemon package, or `unknown`. A new version writes a new plan before a removal. */
+export function worktreeVersion(): string {
+  try {
+    const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
+    return typeof manifest.version === "string" ? manifest.version : "unknown";
+  } catch {
+    return "unknown";
+  }
 }
 
 /** This function gives the default root: the real folder of `~/git`, or no root. */
@@ -98,6 +129,16 @@ export function readWorktreeRecord(path: string = worktreeSummaryPath()): Worktr
   try {
     const record = JSON.parse(readFileSync(path, "utf8")) as WorktreeRecord;
     return typeof record.clean?.at === "string" ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+/** This function reads the plan of the cleanup, or gives `null`. */
+export function readWorktreePlan(path: string = worktreePlanPath()): WorktreePlan | null {
+  try {
+    const plan = JSON.parse(readFileSync(path, "utf8")) as WorktreePlan;
+    return typeof plan.version === "string" && typeof plan.at === "string" && typeof plan.plan?.remove === "number" ? plan : null;
   } catch {
     return null;
   }
@@ -151,22 +192,54 @@ export function cleanLines(result: CleanResult, scan: WorktreeScan): string[] {
     if (action.action === "skip" || !action.ok) lines.push(`  ${action.ok ? "skipped" : "failed"}: ${action.path}: ${action.detail}`);
   }
   for (const orphan of scan.orphans) lines.push(`  orphan, kept: ${orphan.path} (last change ${timeText(orphan.newestMs)})`);
+  if (result.stopped === "max") lines.push(`The run stopped at its limit of trees. ${result.remaining} trees are for the next run.`);
+  if (result.stopped === "memory") {
+    lines.push(`The run stopped: ${result.availableMb === null ? "too little" : diskSize(result.availableMb)} memory is available. ${result.remaining} trees are for the next run.`);
+  }
   lines.push(`Free space: ${freedLine(result)}`);
   return lines;
+}
+
+/** This function counts the actions of a kind that are ok. */
+function okCount(result: CleanResult, action: CleanAction["action"]): number {
+  return result.actions.filter((each) => each.action === action && each.ok).length;
+}
+
+/** This function gives the plan of a dry run. */
+export function planOf(scan: WorktreeScan, result: CleanResult, version: string): WorktreePlan {
+  return {
+    ...summarize(scan),
+    version,
+    plan: { remove: okCount(result, "remove"), nodeModules: okCount(result, "node_modules"), prune: okCount(result, "prune"), skipped: okCount(result, "skip") },
+    actions: result.actions,
+    orphans: scan.orphans,
+  };
+}
+
+/** This function writes the plan of a dry run. A file that cannot be written does not stop the command. */
+function writePlan(plan: WorktreePlan): string | null {
+  try {
+    mkdirSync(headroomHome(), { recursive: true });
+    writeFileSync(worktreePlanPath(), `${JSON.stringify(plan, null, 2)}\n`);
+    return worktreePlanPath();
+  } catch {
+    return null;
+  }
 }
 
 /** This function writes the record and one log line for each action. A file that cannot be written does not stop the cleanup. */
 function record(scan: WorktreeScan, result: CleanResult): void {
   const summary = summarize(scan);
-  const count = (action: string): number => result.actions.filter((each) => each.action === action && each.ok).length;
   const entry: WorktreeRecord = {
     ...summary,
     clean: {
       at: new Date().toISOString(),
-      removed: count("remove"),
-      nodeModules: count("node_modules"),
-      pruned: count("prune"),
+      removed: okCount(result, "remove"),
+      nodeModules: okCount(result, "node_modules"),
+      pruned: okCount(result, "prune"),
       failed: result.actions.filter((each) => !each.ok).length,
+      remaining: result.remaining,
+      stopped: result.stopped,
       freeBefore: result.freeBefore,
       freeAfter: result.freeAfter,
     },
@@ -214,17 +287,62 @@ async function listCommand(argv: readonly string[], runner: WorktreeRunner, outp
   return 0;
 }
 
+/** This function gives the reader of the available memory: the sampler of the daemon. A failed read gives `null`. */
+export async function systemMemory(): Promise<() => number | null> {
+  try {
+    const sampler = await createSampler();
+    return () => {
+      try {
+        return sampler.memory().availableMb;
+      } catch {
+        return null;
+      }
+    };
+  } catch {
+    return () => null;
+  }
+}
+
+/** The limits of a run of `headroom worktree clean`. */
+interface BatchArgs {
+  readonly max: number;
+  readonly minFreeMb: number;
+  readonly pauseMs: number;
+}
+
+/** This function reads `--max`, `--min-free-mem` and `--pause`, or gives the message of an error. */
+function batchArgs(values: { max?: string | undefined; "min-free-mem"?: string | undefined; pause?: string | undefined }): BatchArgs | string {
+  const max = values.max === undefined ? WORKTREE_BATCH_MAX : Number(values.max);
+  if (!Number.isInteger(max) || max < 1) return `--max must be a whole number of trees, 1 or more: ${values.max}`;
+  try {
+    const minFreeMb = values["min-free-mem"] === undefined ? WORKTREE_MIN_FREE_MB : parseMemory(values["min-free-mem"]);
+    const pauseMs = values.pause === undefined ? WORKTREE_PAUSE_MS : parseTime(values.pause);
+    return { max, minFreeMb, pauseMs };
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
 /** This function gives the output of `headroom worktree clean`, and its exit code. */
-async function cleanCommand(argv: readonly string[], runner: WorktreeRunner, output: WorktreeOutput): Promise<number> {
-  const { values } = parseArgs({ args: [...argv], options: { ...SCAN_OPTIONS, "dry-run": { type: "boolean" } } });
+async function cleanCommand(argv: readonly string[], runner: WorktreeRunner, output: WorktreeOutput, memory: () => Promise<() => number | null>): Promise<number> {
+  const { values } = parseArgs({
+    args: [...argv],
+    options: { ...SCAN_OPTIONS, "dry-run": { type: "boolean" }, max: { type: "string" }, "min-free-mem": { type: "string" }, pause: { type: "string" } },
+  });
   const args = scanArgs(values);
-  if (typeof args === "string") return (output.err(`headroom worktree clean: ${args}`), 2);
+  const limits = batchArgs(values);
+  if (typeof args === "string" || typeof limits === "string") return (output.err(`headroom worktree clean: ${typeof args === "string" ? args : limits}`), 2);
   const dryRun = values["dry-run"] === true;
+  const availableMb = dryRun ? undefined : await memory();
   const scan = await scanWorktrees({ roots: args.roots, runner, idleMs: args.idleMs });
-  const result = await cleanWorktrees(scan, { runner, dryRun });
+  const result = await cleanWorktrees(scan, { runner, dryRun, ...limits, availableMb });
   if (!dryRun) record(scan, result);
+  const planPath = dryRun ? writePlan(planOf(scan, result, worktreeVersion())) : null;
   if (values.json === true) output.out(JSON.stringify({ summary: summarize(scan), ...result, orphans: scan.orphans }, null, 2));
-  else for (const line of cleanLines(result, scan)) output.out(line);
+  else {
+    for (const line of cleanLines(result, scan)) output.out(line);
+    if (planPath !== null) output.out(`The plan is in ${planPath}.`);
+  }
   return result.actions.some((action) => !action.ok) ? 1 : 0;
 }
 
@@ -267,10 +385,16 @@ async function removeCommand(argv: readonly string[], runner: WorktreeRunner, ou
 }
 
 /** This function gives the output of `headroom worktree list|clean|remove`, and its exit code. */
-export async function worktreeCommand(argv: readonly string[], output: WorktreeOutput = CONSOLE, runner: WorktreeRunner = systemRunner(), cwd: string = process.cwd()): Promise<number> {
+export async function worktreeCommand(
+  argv: readonly string[],
+  output: WorktreeOutput = CONSOLE,
+  runner: WorktreeRunner = systemRunner(),
+  cwd: string = process.cwd(),
+  memory: () => Promise<() => number | null> = systemMemory,
+): Promise<number> {
   const [action, ...rest] = argv;
   if (action === "list") return listCommand(rest, runner, output);
-  if (action === "clean") return cleanCommand(rest, runner, output);
+  if (action === "clean") return cleanCommand(rest, runner, output, memory);
   if (action === "remove") return removeCommand(rest, runner, output, cwd);
   output.err(`Usage: ${WORKTREE_USAGE}`);
   return 2;

@@ -589,10 +589,46 @@ export interface CleanAction {
   readonly detail: string;
 }
 
+/** The most trees that one run of the cleanup changes: 20. */
+export const WORKTREE_BATCH_MAX = 20;
+
+/** The run of the cleanup stops before a tree when less memory than this is available: 2 GB, in MB. */
+export const WORKTREE_MIN_FREE_MB = 2048;
+
+/** The pause between two trees that the cleanup changes: 5 seconds. */
+export const WORKTREE_PAUSE_MS = 5000;
+
+/** The options of a cleanup. */
+export interface CleanOptions {
+  readonly runner: WorktreeRunner;
+  /** True: the run changes nothing and gives the whole plan. The limits below apply only to a run that is not a dry run. */
+  readonly dryRun: boolean;
+  readonly platform?: NodeJS.Platform | undefined;
+  /** The most trees that the run changes. The default is 20. */
+  readonly max?: number | undefined;
+  /** The run stops before a tree when less memory than this is available, in MB. The default is 2048. 0 turns the check off. */
+  readonly minFreeMb?: number | undefined;
+  /** This function gives the available memory in MB, or `null` when it cannot read it. Without it, the run does no memory check. */
+  readonly availableMb?: (() => number | null) | undefined;
+  /** The pause between two trees that the run changes, in ms. The default is 5000. */
+  readonly pauseMs?: number | undefined;
+  /** This function waits. The tests replace it. */
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
+}
+
+/** The reason that a run stopped before the end: `max` (the batch is full) or `memory` (too little memory is available). */
+export type CleanStop = "max" | "memory";
+
 /** The result of a cleanup. */
 export interface CleanResult {
   readonly dryRun: boolean;
   readonly actions: readonly CleanAction[];
+  /** The reason that the run stopped before the end, or `null` when it examined each tree. */
+  readonly stopped: CleanStop | null;
+  /** The trees that the run did not examine because it stopped. The next run examines them. */
+  readonly remaining: number;
+  /** The available memory in MB at the stop for memory, else `null`. */
+  readonly availableMb: number | null;
   /** The free space of each drive of the roots before and after the cleanup, in MB. */
   readonly freeBefore: Readonly<Record<string, number>>;
   readonly freeAfter: Readonly<Record<string, number>>;
@@ -622,12 +658,42 @@ export function freeSpace(roots: readonly string[], runner: WorktreeRunner): Rec
  * - `removable`: `removeWorktree`, which examines the tree again first.
  * - `broken`: `git worktree prune` in its main checkout.
  * - An orphan: no action at any time.
+ *
+ * A run that is not a dry run changes at most `max` trees. It waits `pauseMs` between two trees that it changes. Before
+ * each tree, it reads the available memory, and it stops when the memory is less than `minFreeMb`. A refusal or a tree
+ * with no work does not count. The result gives the count of the trees that the run did not examine.
  */
-export async function cleanWorktrees(scan: WorktreeScan, options: { runner: WorktreeRunner; dryRun: boolean; platform?: NodeJS.Platform | undefined }): Promise<CleanResult> {
+export async function cleanWorktrees(scan: WorktreeScan, options: CleanOptions): Promise<CleanResult> {
   const context: SafetyContext = { roots: scan.roots, mains: scan.mains, runner: options.runner, platform: options.platform };
+  const limited = !options.dryRun;
+  const max = options.max ?? WORKTREE_BATCH_MAX;
+  const minFreeMb = options.minFreeMb ?? WORKTREE_MIN_FREE_MB;
+  const pauseMs = options.pauseMs ?? WORKTREE_PAUSE_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
   const freeBefore = freeSpace(scan.roots, options.runner);
   const actions: CleanAction[] = [];
   const pruned = new Set<string>();
+  let changed = 0;
+  let stopped: CleanStop | null = null;
+  let remaining = 0;
+  let availableMb: number | null = null;
+  /** This function gives true when the run can change one more tree. It pauses after a change, then reads the memory. */
+  const proceed = async (): Promise<boolean> => {
+    if (!limited) return true;
+    if (stopped !== null) return false;
+    if (changed >= max) {
+      stopped = "max";
+      return false;
+    }
+    if (changed > 0 && pauseMs > 0) await sleep(pauseMs);
+    const available = minFreeMb > 0 ? (options.availableMb?.() ?? null) : null;
+    if (available !== null && available < minFreeMb) {
+      stopped = "memory";
+      availableMb = available;
+      return false;
+    }
+    return true;
+  };
   for (const tree of scan.trees) {
     const base = { path: tree.path, repo: tree.repo, state: tree.state };
     if (tree.state === "active") continue;
@@ -637,13 +703,22 @@ export async function cleanWorktrees(scan: WorktreeScan, options: { runner: Work
     }
     if (tree.state === "broken") {
       if (pruned.has(tree.main)) continue;
+      if (!(await proceed())) {
+        remaining += 1;
+        continue;
+      }
       pruned.add(tree.main);
       if (options.dryRun) {
         actions.push({ ...base, path: tree.main, action: "prune", ok: true, detail: "git worktree prune (dry run)" });
         continue;
       }
       const result = await options.runner.git(["-C", tree.main, "worktree", "prune"]);
+      changed += 1;
       actions.push({ ...base, path: tree.main, action: "prune", ok: result.code === 0, detail: result.code === 0 ? "git worktree prune" : `git worktree prune failed: ${result.stderr.trim()}` });
+      continue;
+    }
+    if (stopped !== null) {
+      remaining += 1;
       continue;
     }
     if (tree.state === "keep") {
@@ -654,15 +729,26 @@ export async function cleanWorktrees(scan: WorktreeScan, options: { runner: Work
         actions.push({ ...base, action: unsafe === null ? "node_modules" : "skip", ok: true, detail: unsafe ?? `delete ${folders.length} node_modules (dry run). Kept: ${tree.reasons.join(", ")}` });
         continue;
       }
+      if (!(await proceed())) {
+        remaining += 1;
+        continue;
+      }
       const result = await removeNodeModules(tree.path, context);
+      if (result.refused === null) changed += 1;
       const detail = result.refused ?? `deleted ${result.removed.length} node_modules${result.failed.length > 0 ? `, ${result.failed.length} failed` : ""}. Kept: ${tree.reasons.join(", ")}`;
       actions.push({ ...base, action: result.refused === null ? "node_modules" : "skip", ok: result.refused === null && result.failed.length === 0, detail });
       continue;
     }
+    if (!(await proceed())) {
+      remaining += 1;
+      continue;
+    }
     const result = await removeWorktree(tree.path, { ...context, main: tree.main, dryRun: options.dryRun });
+    if (result.refused === null && !options.dryRun) changed += 1;
     actions.push({ ...base, action: result.refused === null ? "remove" : "skip", ok: result.ok, detail: result.refused ?? result.steps.join(" ") });
   }
-  return { dryRun: options.dryRun, actions, freeBefore, freeAfter: options.dryRun ? freeBefore : freeSpace(scan.roots, options.runner) };
+  const freeAfter = options.dryRun ? freeBefore : freeSpace(scan.roots, options.runner);
+  return { dryRun: options.dryRun, actions, stopped, remaining, availableMb, freeBefore, freeAfter };
 }
 
 /** The counts of one repository. */
@@ -737,11 +823,16 @@ export const WORKTREE_CLEAN_EVERY_MS: number = 24 * 3_600_000;
 /** The shortest time between two cleanups for low free space: 1 hour. */
 export const WORKTREE_LOW_SPACE_EVERY_MS = 3_600_000;
 
+/** The reason of a cleanup of the daemon. `batch`: the last run stopped before the end, so the next batch starts. */
+export type CleanReason = "daily" | "low-space" | "batch";
+
 /**
- * This function tells if the daemon starts a cleanup. It gives `daily` 24 hours after the last cleanup.
- * It gives `low-space` when a drive of a root has less than 20 GB free, 1 hour or more after the last cleanup. Else it gives `null`.
+ * This function tells if the daemon starts a cleanup. It gives `batch` when the last run left trees. It gives `daily`
+ * 24 hours after the last cleanup. It gives `low-space` when a drive of a root has less than 20 GB free, 1 hour or more
+ * after the last cleanup. Else it gives `null`.
  */
-export function cleanDue(now: number, lastAt: number | null, lowSpace: boolean): "daily" | "low-space" | null {
+export function cleanDue(now: number, lastAt: number | null, lowSpace: boolean, more: boolean = false): CleanReason | null {
+  if (more) return "batch";
   if (lastAt === null || now - lastAt >= WORKTREE_CLEAN_EVERY_MS) return "daily";
   if (lowSpace && now - lastAt >= WORKTREE_LOW_SPACE_EVERY_MS) return "low-space";
   return null;

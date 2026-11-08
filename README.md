@@ -312,8 +312,8 @@ On Windows, `git worktree remove` fails partway with "Filename too long". The pa
 ```sh
 headroom worktree list                     # the state of each worktree, with counts for each repository
 headroom worktree list --sizes             # also the size of node_modules
-headroom worktree clean --dry-run          # what the cleanup does
-headroom worktree clean                    # do it
+headroom worktree clean --dry-run          # the plan of the cleanup, also in ~/.headroom/worktree-plan.json
+headroom worktree clean                    # one batch: at most 20 trees
 headroom worktree remove <path>            # remove one tree after its merge
 ```
 
@@ -357,7 +357,21 @@ The rules of safety, with a test for each:
 - It does not wait for the idle time.
 - Start it from a folder outside the tree. Windows cannot delete a folder in use.
 
-The daemon starts `headroom worktree clean` in a child process one time each 24 hours. It also starts it when a drive of a root has less than 20 GB free, at most one time each hour.
+A deletion fills the file cache of the system, and so it takes memory. Thus the cleanup works in batches:
+
+- One run changes at most 20 trees. `--max` sets a different count.
+- It waits 5 seconds between two trees. `--pause` sets a different time.
+- Before each tree, it reads the available memory, as the daemon does. When less than 2 GB is available, the run stops. `--min-free-mem` sets a different level, and `0` turns the check off.
+- A refusal, and a tree with no work, do not count.
+- A dry run changes nothing, and shows the whole plan. The limits do not apply to it.
+
+The daemon writes a plan before it removes a tree:
+
+1. The first run after each start of the daemon is a dry run. It writes the plan to `~/.headroom/worktree-plan.json`, with the version of the daemon. The note `worktree:plan` gives its counts.
+2. The setting `worktreeAutoClean` is off by default. While it is off, the daemon only writes a new plan, one time each 24 hours.
+3. Read the plan. Then start the removals with `headroom config worktree-auto-clean on`.
+4. While the setting is on, the daemon starts `headroom worktree clean` in a child process one time each 24 hours. It also starts it when a drive of a root has less than 20 GB free, at most one time each hour.
+5. When a run stops before the end, the next check of the daemon, 5 minutes later, starts the next batch. This continues until the cleanup has no more trees.
 
 - The cleanup writes its counts to `~/.headroom/worktrees.json`, and one line for each action to `~/.headroom/worktree-clean.log`.
 - When more than 100 trees are `keep`, the alert `worktree:keep` names the 3 repositories with the most.

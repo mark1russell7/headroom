@@ -272,6 +272,8 @@ export interface ConfigChange {
   readonly presentReserve?: number | null | undefined;
   /** The level of the automatic drain in MB (H34): 0 for off, or 1 GB to 1 TB. `null` gives the default of 6 GB. */
   readonly autoDrainMb?: number | null | undefined;
+  /** The automatic worktree cleanup (H175): true for on, false for off. `null` gives the default: off. */
+  readonly worktreeAutoClean?: boolean | null | undefined;
 }
 
 /** This function gives the presence rules from the settings (H33). */
@@ -1019,6 +1021,8 @@ export class Engine {
     if (typeof autoDrain === "number" && !isAutoDrainLevel(autoDrain)) {
       throw new RangeError(`The level of the automatic drain must be 0 (off) or a whole number of MB from ${AUTO_DRAIN_MIN_MB} to ${AUTO_DRAIN_MAX_MB}`);
     }
+    const autoClean = change.worktreeAutoClean;
+    if (autoClean !== undefined && autoClean !== null && typeof autoClean !== "boolean") throw new RangeError("The automatic worktree cleanup must be true, false or null");
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -1043,6 +1047,7 @@ export class Engine {
       this.#setAutoHold(null);
       this.#autoHighSince = null;
     }
+    if (autoClean !== undefined) this.#store.setConfig("worktreeAutoClean", autoClean === null ? null : autoClean ? "on" : "off");
     if (presence) {
       if (change.presence !== undefined) this.#store.setConfig("presence", change.presence === null ? null : change.presence ? "on" : "off");
       if (change.awayAfterMs !== undefined) this.#store.setConfig("awayAfterMs", change.awayAfterMs === null ? null : String(change.awayAfterMs));

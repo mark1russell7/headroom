@@ -384,7 +384,7 @@ describe("cleanWorktrees", () => {
   it("removes a removable tree, deletes only node_modules of a keep tree, prunes each main once, and leaves the rest", async () => {
     const fake = build();
     const scan = await scanWorktrees(options(fake));
-    const result = await cleanWorktrees(scan, { runner: fake, dryRun: false, platform: "linux" });
+    const result = await cleanWorktrees(scan, { runner: fake, dryRun: false, platform: "linux", pauseMs: 0 });
     expect(fake.exists(`${ROOT}/app-wt/done`)).toBe(false);
     expect(fake.exists(`${ROOT}/app-wt/dirty/src/a.ts`)).toBe(true);
     expect(fake.exists(`${ROOT}/app-wt/dirty/node_modules`)).toBe(false);
@@ -399,7 +399,7 @@ describe("cleanWorktrees", () => {
     const fake = build();
     const scan = await scanWorktrees(options(fake));
     expect(scan.orphans).toHaveLength(2);
-    await cleanWorktrees(scan, { runner: fake, dryRun: false, platform: "linux" });
+    await cleanWorktrees(scan, { runner: fake, dryRun: false, platform: "linux", pauseMs: 0 });
     for (const orphan of [`${ROOT}/app-a13-packing`, `${ROOT}/app-wt/left`]) {
       expect(fake.exists(`${orphan}/src/work.ts`)).toBe(true);
       expect(fake.exists(`${orphan}/node_modules/z.js`)).toBe(true);
@@ -414,6 +414,62 @@ describe("cleanWorktrees", () => {
     expect(fake.removed).toEqual([]);
     expect(fake.order).toEqual([]);
     expect(result.actions.map((action) => action.action).sort()).toEqual(["node_modules", "prune", "remove", "skip"]);
+  });
+});
+
+describe("cleanWorktrees in batches", () => {
+  const trees = (count: number): Fake => {
+    const fake = new Fake().repo(
+      "app",
+      Array.from({ length: count }, (_, index) => ({ path: `${ROOT}/app-wt/t${index}`, branch: `t${index}` })),
+    );
+    for (let index = 0; index < count; index++) fake.add(`${ROOT}/app-wt/t${index}/node_modules/x.js`);
+    return fake;
+  };
+  const left = (fake: Fake, count: number): number => Array.from({ length: count }, (_, index) => `${ROOT}/app-wt/t${index}`).filter((path) => fake.exists(path)).length;
+
+  it("changes at most max trees in a run, pauses between two trees, and the next runs take the rest", async () => {
+    const fake = trees(5);
+    const pauses: number[] = [];
+    const sleep = async (ms: number): Promise<void> => void pauses.push(ms);
+    const run = async () => cleanWorktrees(await scanWorktrees(options(fake)), { runner: fake, dryRun: false, platform: "linux", max: 2, pauseMs: 5000, sleep });
+    const first = await run();
+    expect(first.stopped).toBe("max");
+    expect(first.remaining).toBe(3);
+    expect(first.actions.filter((action) => action.action === "remove" && action.ok)).toHaveLength(2);
+    expect(left(fake, 5)).toBe(3);
+    expect(pauses).toEqual([5000]);
+    expect((await run()).remaining).toBe(1);
+    const last = await run();
+    expect(last.stopped).toBeNull();
+    expect(last.remaining).toBe(0);
+    expect(left(fake, 5)).toBe(0);
+    expect(fake.forced()).toBe(false);
+  });
+
+  it("stops before a tree when less memory than the floor is available, and changes nothing more", async () => {
+    const fake = trees(4);
+    const readings = [3000, 2500, 1500, 3000];
+    const availableMb = (): number | null => readings.shift() ?? null;
+    const result = await cleanWorktrees(await scanWorktrees(options(fake)), { runner: fake, dryRun: false, platform: "linux", minFreeMb: 2048, availableMb, pauseMs: 0 });
+    expect(result.stopped).toBe("memory");
+    expect(result.availableMb).toBe(1500);
+    expect(result.remaining).toBe(2);
+    expect(left(fake, 4)).toBe(2);
+    expect(readings).toEqual([3000]);
+  });
+
+  it("changes nothing when the memory is under the floor at the start, and a dry run gives the whole plan", async () => {
+    const fake = trees(3);
+    const low = await cleanWorktrees(await scanWorktrees(options(fake)), { runner: fake, dryRun: false, platform: "linux", availableMb: () => 900, pauseMs: 0 });
+    expect(low.stopped).toBe("memory");
+    expect(low.remaining).toBe(3);
+    expect(fake.removed).toEqual([]);
+    expect(fake.order).toEqual([]);
+    const plan = await cleanWorktrees(await scanWorktrees(options(fake)), { runner: fake, dryRun: true, platform: "linux", max: 1, availableMb: () => 900 });
+    expect(plan.stopped).toBeNull();
+    expect(plan.actions.filter((action) => action.action === "remove")).toHaveLength(3);
+    expect(fake.removed).toEqual([]);
   });
 });
 
@@ -435,6 +491,7 @@ describe("summarize, keepAlert and cleanDue", () => {
     expect(cleanDue(NOW, NOW - 30 * 60_000, true)).toBeNull();
     expect(cleanDue(NOW, NOW - 61 * 60_000, true)).toBe("low-space");
     expect(cleanDue(NOW, NOW - 61 * 60_000, false)).toBeNull();
+    expect(cleanDue(NOW, NOW - 5 * 60_000, false, true)).toBe("batch");
   });
 });
 
