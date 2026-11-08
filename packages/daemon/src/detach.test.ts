@@ -158,6 +158,19 @@ describe("headroom run --detach without a daemon", () => {
     });
     expect(text.match(/one line/g)).toHaveLength(1);
   });
+
+  // 2026-11-08: Git Bash sh wrote nothing to the log handle of the client, which can append only. The exit code stayed.
+  it("writes the output and the errors of sh -c to the log, each line once", { timeout: 30000 }, async () => {
+    const log = join(home, "sh.log");
+    const ended = await headroom(home, ["run", "--detach", "--job", "sh", "--log", log, "--", "sh", "-c", "echo probe-out; echo probe-err 1>&2; exit 3"]);
+    expect(ended.code).toBe(0);
+    const text = await until(async () => {
+      const read = readFileSync(log, "utf8");
+      return read.includes("probe-out") && read.includes("probe-err") ? read : undefined;
+    });
+    expect(text.match(/probe-out/g)).toHaveLength(1);
+    expect(text.match(/probe-err/g)).toHaveLength(1);
+  });
 });
 
 describe("headroom run --detach with a daemon", () => {

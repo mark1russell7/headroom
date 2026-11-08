@@ -401,6 +401,8 @@ const LOG_DRAIN_MS = 2000;
  * This function runs a command, and gives its exit code and its exit. `env` adds variables to the environment of the
  * command. With a log file, the output and the errors of the command go to the console and to the end of the file.
  * With `hidden`, a console program opens no window. A detached client has no console, so Windows otherwise opens one for each program (H56).
+ * A hidden command also writes through pipes, and this process copies them to its own output, the log of the detached client.
+ * The log handle of the client can append only, and the programs of Git Bash (sh, bash, sed) write nothing to such a handle.
  */
 function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}, log: string | null = null, hidden: boolean = false): Promise<CommandEnd> {
   return new Promise((resolve) => {
@@ -408,7 +410,8 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
     if (!file) return resolve({ code: 2, exit: { code: null, signal: null } });
     const sink = log === null ? null : createWriteStream(log, { flags: "a" });
     sink?.on("error", (error) => console.error(`headroom: the log file ${log ?? ""} failed: ${error.message}`));
-    const stdio: StdioOptions = sink === null ? "inherit" : ["inherit", "pipe", "pipe"];
+    const relay = sink !== null || hidden;
+    const stdio: StdioOptions = relay ? ["inherit", "pipe", "pipe"] : "inherit";
     const options = { stdio, env: jobEnv(env), windowsHide: hidden };
     // On Windows, a program starts directly. A .cmd file, such as npm, starts in cmd with each argument escaped.
     const win = process.platform === "win32" ? windowsCommand(command, { env: options.env }) : null;
@@ -421,11 +424,11 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
       sink.once("close", () => resolve(end));
       sink.end();
     };
-    if (sink !== null) {
+    if (relay) {
       for (const [from, to] of [[child.stdout, process.stdout], [child.stderr, process.stderr]] as const) {
         from?.on("data", (chunk: Buffer) => {
           to.write(chunk);
-          if (!done) sink.write(chunk);
+          if (sink !== null && !done) sink.write(chunk);
         });
       }
     }
@@ -435,7 +438,7 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
     });
     child.on("exit", (code, signal) => {
       const end: CommandEnd = { code: code ?? (signal ? 1 : 0), exit: { code, signal } };
-      if (sink === null) return finish(end);
+      if (!relay) return finish(end);
       const timer = setTimeout(() => finish(end), LOG_DRAIN_MS);
       child.on("close", () => {
         clearTimeout(timer);
@@ -706,7 +709,7 @@ async function run(argv: string[]): Promise<number> {
     console.error("headroom run --detach needs --job <name>, for the wait with headroom job <name>. Example: headroom run --detach --job tests --mem 2g -- pnpm test");
     return 2;
   }
-  // H56: the output of a detached client is already the log file, so the job writes to it directly, and a line does not come two times.
+  // H56: the output of a detached client is already the log file. The job writes through pipes to the client, which copies them to that output, so a line does not come two times.
   const detachedClient = values["detached-client"] === true;
   const started = detachedClient ? tellParent : (): void => undefined;
   // H31: the conditions of the job. A wrong condition stops the run here, with the list of the known conditions.
