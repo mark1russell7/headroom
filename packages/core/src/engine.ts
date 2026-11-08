@@ -1994,4 +1994,9 @@ export class Engine {
     this.#events.set(alert.id, { alert, until: now + forMs });
     this.#alerts.set(alert.id, { ...alert, since });
   }
+
+  /** This function ends an event alert of `note` before its time. The next check of the alerts moves it to the ended alerts. */
+  endNote(id: string): void {
+    this.#events.delete(id);
+  }
 }

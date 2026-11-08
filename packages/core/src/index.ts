@@ -33,6 +33,48 @@ export {
 export type { CpuControl, CpuRateBinding, TrailPoint, TreeUse } from "./cpu.ts";
 export { largeFileDirs, largeFiles } from "./disks.ts";
 export type { LargeFile } from "./disks.ts";
+export {
+  classifyWorktree,
+  cleanDue,
+  cleanWorktrees,
+  findMains,
+  findNodeModules,
+  freedLine,
+  freeSpace,
+  isInside,
+  keepAlert,
+  nodeRunner,
+  parsePorcelain,
+  pathKey,
+  refusal,
+  removeNodeModules,
+  removeWorktree,
+  samePath,
+  scanWorktrees,
+  summarize,
+  WORKTREE_CLEAN_EVERY_MS,
+  WORKTREE_IDLE_MS,
+  WORKTREE_KEEP_ALERT,
+  WORKTREE_KEEP_ALERT_ID,
+  WORKTREE_LOW_FREE_MB,
+  WORKTREE_LOW_SPACE_EVERY_MS,
+  WORKTREE_STATES,
+} from "./worktrees.ts";
+export type {
+  CleanAction,
+  CleanResult,
+  FolderMeasure,
+  Orphan,
+  PorcelainEntry,
+  RemoveResult,
+  RepoCounts,
+  Worktree,
+  WorktreeCountState,
+  WorktreeRunner,
+  WorktreeScan,
+  WorktreeState,
+  WorktreeSummary,
+} from "./worktrees.ts";
 export { Broker, isActive, NO_REJOIN_REASON, processIsAlive } from "./broker.ts";
 export type { BrokerOptions, Capacity, JobExit, Lease, LeaseMeasures, LeaseRequest, LeaseState } from "./broker.ts";
 export {

@@ -21,6 +21,8 @@ import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscove
 import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
+import { defaultRoots, readWorktreeRecord } from "./worktree-cli.ts";
+import { launchClean, WorktreeSchedule } from "./worktree-schedule.ts";
 
 /** The default port of the daemon. */
 export const DEFAULT_PORT = 4730;
@@ -30,6 +32,9 @@ const SLEEP_GAP_MS = 60_000;
 
 /** The time between two sweeps of the temp folders of the ended leases (H19). */
 const SWEEP_EVERY_MS = 10 * 60_000;
+
+/** The time between two checks of the schedule of the worktree cleanup (H175). The first check comes after this time too. */
+const WORKTREE_CHECK_MS = 5 * 60_000;
 
 /** The options of `serve()`. */
 export interface ServeOptions {
@@ -186,6 +191,24 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   };
   sweep();
   const sweeper = setInterval(sweep, SWEEP_EVERY_MS);
+  // H175: the worktree cleanup runs in a child process each day, and early when a drive of a root is low.
+  const roots = defaultRoots();
+  const worktrees = new WorktreeSchedule({
+    roots: () => roots,
+    disks: () => engine.status().disks,
+    launch: launchClean(service.node, service.cli),
+    record: () => readWorktreeRecord(),
+    note: (alert, forMs) => engine.note(alert, forMs),
+    endNote: (id) => engine.endNote(id),
+    log,
+  });
+  const worktreeTimer = setInterval(() => {
+    try {
+      worktrees.tick();
+    } catch (error) {
+      log(`The check of the worktree cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, WORKTREE_CHECK_MS);
   monitor.start();
 
   await started.life.done;
@@ -194,6 +217,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   unwatch?.();
   clearInterval(timer);
   clearInterval(sweeper);
+  clearInterval(worktreeTimer);
   monitor.stop();
   engine.close();
   removeDiscovery();

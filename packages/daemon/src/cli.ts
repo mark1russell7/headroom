@@ -21,6 +21,7 @@
  * - `headroom docker [--json]`: each container with its owner, its memory and its cores, the VM and the disk use of Docker (H38).
  * - `headroom disk report [--drive C:] [--deep] [--json]`: what uses the space of each drive (H21).
  * - `headroom disk clean [--apply] [--json]`: a dry run of the safe cleanup. With `--apply`, it deletes only disposable data (H21).
+ * - `headroom worktree list | clean [--dry-run] | remove <path>`: the git worktrees of the sessions, and a safe removal (H175).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
@@ -113,6 +114,7 @@ import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
+import { worktreeCommand } from "./worktree-cli.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
@@ -216,6 +218,14 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom disk clean [--apply] [--json]
                A dry run. --apply deletes only the temp folders of ended jobs, old trace files and,
                when safe, the unused pnpm packages. Each other large place goes to Mark.
+  headroom worktree list [--root <folder>]... [--idle 24h] [--sizes] [--json]
+               The git worktrees under each root (default: the real folder of ~/git), with counts
+               for each state and repository: active, removable, keep, broken and orphan.
+  headroom worktree clean [--dry-run] [--idle 24h] [--root <folder>]... [--json]
+               Removes each idle tree whose work is on a remote. Deletes only node_modules of a kept tree.
+               Prunes the broken trees. It never deletes a main checkout or an orphan.
+  headroom worktree remove <path> [--root <folder>]...
+               Removes one tree after its merge. It refuses changes and commits that are not on a remote (exit 1).
   headroom peer <localPort> <remotePort> [--json]
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
@@ -1607,6 +1617,8 @@ async function main(argv: string[]): Promise<number> {
       return dockerCommand(rest, connect());
     case "disk":
       return diskCommand(rest, connect());
+    case "worktree":
+      return worktreeCommand(rest);
     case "peer":
       return showPeer(rest);
     case "config":

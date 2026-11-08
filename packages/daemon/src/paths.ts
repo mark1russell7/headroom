@@ -42,6 +42,16 @@ export function diskCleanLogPath(): string {
   return join(headroomHome(), "disk-clean.log");
 }
 
+/** The summary of the last worktree cleanup (H175). `headroom worktree clean` writes it, and the daemon reads it. */
+export function worktreeSummaryPath(): string {
+  return join(headroomHome(), "worktrees.json");
+}
+
+/** The log of the worktree cleanup (H175): one line for each action. */
+export function worktreeLogPath(): string {
+  return join(headroomHome(), "worktree-clean.log");
+}
+
 /** The key of the dashboard. Only this user can read it. `headroom dashboard` puts it in the URL of the page. */
 export function dashboardKeyPath(): string {
   return join(headroomHome(), "dashboard.key");
