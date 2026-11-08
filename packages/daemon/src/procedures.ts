@@ -207,6 +207,11 @@ const ConfigSetInput = z.object({
     .describe(
       "The level of the automatic drain in MB of the two kernel pools together (H34). At or above it for 2 minutes, new jobs wait for a reboot. 0 turns it off. null gives the default: 6144.",
     ),
+  worktreeAutoClean: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe("The automatic worktree cleanup (H175). false: the daemon writes only the plan. true: it also removes the trees of the plan, in batches. null gives the default: false."),
 }).strict();
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -566,7 +571,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34).",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -588,6 +593,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           busyWaitMs: input.busyWaitMs,
           presentReserve: input.presentReserve,
           autoDrainMb: input.autoDrainMb,
+          worktreeAutoClean: input.worktreeAutoClean,
         };
         return engine.setConfig(change);
       },

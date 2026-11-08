@@ -303,6 +303,79 @@ headroom disk clean --apply              # delete it, and log each delete
 - `~/.headroom/disk-clean.log` gets one line for each delete: the time, the kind, the size and the path.
 - The disk alert and the disk forecast alert end with the hint `Run headroom disk report to see what uses the space.`
 
+### The git worktrees of the sessions (H175)
+
+Agent sessions make a git worktree for each task. Each worktree has its own `node_modules`, from 0.15 GB to 0.35 GB. On 2026-11-08, 654 worktrees filled a drive of 195 GB.
+
+On Windows, `git worktree remove` fails partway with "Filename too long". The paths in `node_modules/.pnpm` are longer than 260 characters. `fs.rmSync` deletes them with no error. `headroom worktree` keeps the worktrees cheap, and removes them safely.
+
+```sh
+headroom worktree list                     # the state of each worktree, with counts for each repository
+headroom worktree list --sizes             # also the size of node_modules
+headroom worktree clean --dry-run          # the plan of the cleanup, also in ~/.headroom/worktree-plan.json
+headroom worktree clean                    # one batch: at most 20 trees
+headroom worktree remove <path>            # remove one tree after its merge
+```
+
+- The default root is the real folder of `~/git`. `--root <folder>` sets a different root. You can give more than one.
+- For each main checkout directly under a root, `git worktree list --porcelain` gives its worktrees. These can be in any folder.
+- A tree is idle when its top entries, its git `HEAD` and its git `index` did not change in 24 hours. `--idle` sets a different time. `node_modules` does not count.
+
+Each linked worktree has one state:
+
+| State | The condition | What `clean` does |
+|---|---|---|
+| `active` | A change in the idle time. | Nothing. |
+| `removable` | Idle, no changes, and each commit is on a remote. A removal loses nothing. | It deletes each `node_modules` folder, then starts `git worktree remove`. |
+| `keep` | Idle, with changes or commits that are not on a remote, or locked. | It deletes only the `node_modules` folders. The owner decides about the rest. |
+| `broken` | git marks it prunable, or its folder does not exist. | `git worktree prune` in its main checkout. |
+| `orphan` | A folder `<repo>-*` next to a main checkout, or in a `<repo>-*wt` folder, with files, that git does not list. | Nothing. Only its owner decides. |
+
+- The changes come from `git status --porcelain --untracked-files=normal`. The ignored files, for example `node_modules`, do not count.
+- The commits that are not on a remote come from `git rev-list --count HEAD --not --remotes`.
+- When git cannot give a fact, the tree is `keep`.
+- The removal keeps the local branch.
+
+The steps of a removal:
+
+1. The removal examines the tree again. It refuses a tree with changes, with commits that are not on a remote, or with a lock.
+2. It finds each `node_modules` folder in the tree, also in each package of a workspace. The search does not go into a `node_modules` folder, and does not follow a link or a junction.
+3. It deletes each of these folders that git ignores, with `fs.rmSync`.
+4. It starts `git worktree remove` with no `--force`. Thus git refuses a tree with changes.
+5. When git fails and still lists the tree, the removal stops. When git does not list the tree, the removal deletes the rest of the folder. Step 1 examined the tree before the removal started.
+
+The rules of safety, with a test for each:
+
+- No step removes a main checkout, or a folder that holds one.
+- No step acts on a path outside the roots.
+- No step uses `--force` with `git worktree remove`.
+- No step deletes an orphan. `list` and `clean` show its size and the time of its last change.
+
+`headroom worktree remove <path>` is the command for a session after its merge. Use it in place of `rm -rf` or `git worktree remove --force`.
+
+- It refuses with exit code 1 a tree with changes, with commits that are not on a remote, or with a lock. Then it changes nothing.
+- It does not wait for the idle time.
+- Start it from a folder outside the tree. Windows cannot delete a folder in use.
+
+A deletion fills the file cache of the system, and so it takes memory. Thus the cleanup works in batches:
+
+- One run changes at most 20 trees. `--max` sets a different count.
+- It waits 5 seconds between two trees. `--pause` sets a different time.
+- Before each tree, it reads the available memory, as the daemon does. When less than 2 GB is available, the run stops. `--min-free-mem` sets a different level, and `0` turns the check off.
+- A refusal, and a tree with no work, do not count.
+- A dry run changes nothing, and shows the whole plan. The limits do not apply to it.
+
+The daemon writes a plan before it removes a tree:
+
+1. The first run after each start of the daemon is a dry run. It writes the plan to `~/.headroom/worktree-plan.json`, with the version of the daemon. The note `worktree:plan` gives its counts.
+2. The setting `worktreeAutoClean` is off by default. While it is off, the daemon only writes a new plan, one time each 24 hours.
+3. Read the plan. Then start the removals with `headroom config worktree-auto-clean on`.
+4. While the setting is on, the daemon starts `headroom worktree clean` in a child process one time each 24 hours. It also starts it when a drive of a root has less than 20 GB free, at most one time each hour.
+5. When a run stops before the end, the next check of the daemon, 5 minutes later, starts the next batch. This continues until the cleanup has no more trees.
+
+- The cleanup writes its counts to `~/.headroom/worktrees.json`, and one line for each action to `~/.headroom/worktree-clean.log`.
+- When more than 100 trees are `keep`, the alert `worktree:keep` names the 3 repositories with the most.
+
 ### Heat and throttling (H35)
 
 When heat or a power limit slows the CPU, timing tests and benchmarks give wrong numbers. Such jobs wait for a cool CPU, and headroom names the owners that make the heat.

@@ -15,12 +15,14 @@
  * - `headroom config [job-temp <folder>] [health <name> <url>] [spawn-heavy <n>] [battery-floor <pct>] [usage-file <path>] [roles-file <path>] [cpu-reserve <cores>]`: show or change the settings.
  * - `headroom config [presence on|off] [away-after <time>] [busy-wait <time>] [present-reserve <cores>]`: the presence rules (H33).
  * - `headroom config auto-drain <size>|off`: the level of the kernel pools that starts an automatic drain (H34).
+ * - `headroom config worktree-auto-clean on|off`: the removals of the daemon worktree cleanup (H175).
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
  * - `headroom docker [--json]`: each container with its owner, its memory and its cores, the VM and the disk use of Docker (H38).
  * - `headroom disk report [--drive C:] [--deep] [--json]`: what uses the space of each drive (H21).
  * - `headroom disk clean [--apply] [--json]`: a dry run of the safe cleanup. With `--apply`, it deletes only disposable data (H21).
+ * - `headroom worktree list | clean [--dry-run] | remove <path>`: the git worktrees of the sessions, and a safe removal (H175).
  * - `headroom services [--json]`: the health of Docker, the MCP servers of the gateway and the configured URLs (H27).
  * - `headroom peer <localPort> <remotePort> [--json]`: the process, the session and the role at the other end of a loopback connection (H46).
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
@@ -113,6 +115,7 @@ import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
+import { worktreeCommand } from "./worktree-cli.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
@@ -193,6 +196,9 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom config auto-drain [<size> | off | --clear]
                When the two kernel pools stay at or above this size for 2 minutes, an automatic drain
                starts: new jobs wait for a reboot. off: no automatic drain. The default: ${mb(AUTO_DRAIN_DEFAULT_MB)}.
+  headroom config worktree-auto-clean [on | off | --clear]
+               on: the daemon removes the worktrees of its plan, in batches. off (the default): it writes
+               only the plan to ~/.headroom/worktree-plan.json.
   headroom presence [--json]                (Mark at the laptop: present, busy or away, and the history)
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
@@ -216,6 +222,16 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom disk clean [--apply] [--json]
                A dry run. --apply deletes only the temp folders of ended jobs, old trace files and,
                when safe, the unused pnpm packages. Each other large place goes to Mark.
+  headroom worktree list [--root <folder>]... [--idle 24h] [--sizes] [--json]
+               The git worktrees under each root (default: the real folder of ~/git), with counts
+               for each state and repository: active, removable, keep, broken and orphan.
+  headroom worktree clean [--dry-run] [--max 20] [--min-free-mem 2g] [--pause 5s] [--idle 24h] [--root <folder>]... [--json]
+               Removes each idle tree whose work is on a remote. Deletes only node_modules of a kept tree.
+               Prunes the broken trees. It does not delete a main checkout or an orphan. A run changes at most
+               --max trees, waits --pause between two trees, and stops when less memory than --min-free-mem
+               is available. --dry-run writes the plan to ~/.headroom/worktree-plan.json.
+  headroom worktree remove <path> [--root <folder>]...
+               Removes one tree after its merge. It refuses changes and commits that are not on a remote (exit 1).
   headroom peer <localPort> <remotePort> [--json]
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
@@ -1177,6 +1193,24 @@ function printConfig(config: Config): void {
         : `auto-drain: ${mb(config.autoDrainMb)}${byDefault(config.autoDrainMb, AUTO_DRAIN_DEFAULT_MB)}. When the kernel pools stay at or above it for 2 minutes, new jobs wait for a reboot.`,
     );
   }
+  // H175: a daemon of an older version has no automatic worktree cleanup.
+  if (typeof config.worktreeAutoClean === "boolean") {
+    console.log(
+      config.worktreeAutoClean
+        ? "worktree-auto-clean: on. The daemon removes the worktrees of its plan, in batches."
+        : "worktree-auto-clean: off (the default). The daemon writes only the plan to ~/.headroom/worktree-plan.json.",
+    );
+  }
+}
+
+/** `headroom config worktree-auto-clean on|off` sets the removals of the daemon worktree cleanup (H175). `--clear` gives the default: off. */
+async function worktreeAutoCleanConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra || (value !== undefined && value !== "on" && value !== "off")) {
+    console.error("Usage: headroom config worktree-auto-clean on, headroom config worktree-auto-clean off, or headroom config worktree-auto-clean --clear (the default: off)");
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { worktreeAutoClean: value === undefined ? null : value === "on" }));
+  return 0;
 }
 
 /** `headroom config auto-drain <size>|off` sets the level of the automatic drain (H34). `--clear` gives the default. */
@@ -1367,9 +1401,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "away-after" || name === "busy-wait") return presenceTimeConfig(connection, name, value, values.clear === true, positionals.length > 2);
   if (name === "present-reserve") return presentReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "auto-drain") return autoDrainConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "worktree-auto-clean" || name === "worktrees.autoClean") return worktreeAutoCleanConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }
@@ -1607,6 +1642,8 @@ async function main(argv: string[]): Promise<number> {
       return dockerCommand(rest, connect());
     case "disk":
       return diskCommand(rest, connect());
+    case "worktree":
+      return worktreeCommand(rest);
     case "peer":
       return showPeer(rest);
     case "config":

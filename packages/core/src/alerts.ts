@@ -85,7 +85,8 @@ export type AlertKind =
   | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain"
   | "handles"
   | "cache"
-  | "docker";
+  | "docker"
+  | "worktree";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
