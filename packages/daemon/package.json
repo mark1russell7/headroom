@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@headroom/core": "workspace:*",
+    "@mark1russell7/text": "^0.0.2",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@procedures/client": "^0.48.0",
     "@procedures/peer": "^0.48.0",

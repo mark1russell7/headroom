@@ -8,6 +8,7 @@ import "./style.css";
 import { BURST, KINDS, MACHINES, machineOf, START } from "./catalog.ts";
 import { Simulation, type Row, type View } from "./sim.ts";
 import { timelineOf } from "./timeline.ts";
+import { escapeAttribute as escape } from "@mark1russell7/text";
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const element = document.getElementById(id);
@@ -15,7 +16,6 @@ const $ = <T extends HTMLElement>(id: string): T => {
   return element as T;
 };
 
-const escape = (text: string): string => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 const gbText = (mb: number): string => `${(Math.max(0, mb) / 1024).toFixed(1)} GB`;
 const cores = (n: number): string => `${n} ${n === 1 ? "core" : "cores"}`;
 
