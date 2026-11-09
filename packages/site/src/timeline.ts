@@ -4,6 +4,7 @@
  */
 
 import type { Row, View } from "./sim.ts";
+import { escapeAttribute as escape } from "@mark1russell7/text";
 
 /** The length of the window of the timeline, in simulated seconds. */
 export const WINDOW_SECONDS = 180;
@@ -43,8 +44,6 @@ export function lanesOf(view: View): Row[] {
   const { start } = windowOf(view.now);
   return view.all.filter((row) => (row.endedAt ?? view.now) >= start).slice(-MAX_LANES);
 }
-
-const escape = (text: string): string => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 /** This function gives the HTML of the timeline of a view. */
 export function timelineOf(view: View): string {

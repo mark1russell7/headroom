@@ -19,6 +19,7 @@ import { killTree } from "./gateway.ts";
 import { headroomHome, logPath, readDiscovery, takePlannedStop, writePlannedStop } from "./paths.ts";
 import type { DaemonStatus } from "./procedures.ts";
 import type { IdleRestartState, PendingRestart } from "./restart.ts";
+import { escapeAttribute as xml } from "@mark1russell7/text";
 
 /**
  * The title of the daemon process. The command line of the daemon contains it. Thus a search can find
@@ -60,10 +61,6 @@ export function windowsArg(arg: string): string {
     slashes = 0;
   }
   return `${quoted}${"\\".repeat(slashes * 2)}"`;
-}
-
-function xml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /**
