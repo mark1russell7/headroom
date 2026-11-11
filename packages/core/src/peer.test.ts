@@ -18,7 +18,7 @@ const rows = (pid: number, address: string = "127.0.0.1", client: number = CLIEN
 
 const ROLES: Role[] = [
   { id: "headroom", status: "active", sessionId: "19f84d12-aaaa", sessionName: "headroom" },
-  { id: "strategist", status: "active", sessionId: "13a01f2a-bbbb", sessionName: "strategies" },
+  { id: "reviewer", status: "active", sessionId: "13a01f2a-bbbb", sessionName: "reviews" },
   { id: "lab", status: "parked", sessionId: null, sessionName: null },
   { id: "assistant-client", status: "retired", sessionId: "9e129985-cccc", sessionName: "assistant-client" },
 ];
@@ -214,10 +214,10 @@ describe("PeerResolver", () => {
   });
 
   it("reads the session files again for a session that is younger than the last read, one time until the next read", () => {
-    const fresh = [{ pid: 10, name: "strategies", sessionId: "13a01f2a-bbbb", status: null, cwd: null }];
+    const fresh = [{ pid: 10, name: "reviews", sessionId: "13a01f2a-bbbb", status: null, cwd: null }];
     const { sources, calls } = fake({ sessions: [], freshSessions: fresh });
     const resolver = new PeerResolver(sources);
-    expect(resolver.resolve(input)).toMatchObject({ session: "strategies", sessionId: "13a01f2a-bbbb", role: "strategist" });
+    expect(resolver.resolve(input)).toMatchObject({ session: "reviews", sessionId: "13a01f2a-bbbb", role: "reviewer" });
     resolver.resolve(input);
     expect(calls.freshSessions).toBe(1);
   });
@@ -239,7 +239,7 @@ describe("PeerResolver", () => {
 describe("roleOf", () => {
   it("matches the session ID first, then the session name, then the role ID", () => {
     expect(roleOf({ sessionId: "19f84d12-aaaa", name: "renamed" }, ROLES)).toBe("headroom");
-    expect(roleOf({ sessionId: "other", name: "strategies" }, ROLES)).toBe("strategist");
+    expect(roleOf({ sessionId: "other", name: "reviews" }, ROLES)).toBe("reviewer");
     expect(roleOf({ sessionId: "", name: "lab" }, ROLES)).toBe("lab");
     expect(roleOf({ sessionId: "other", name: "nobody" }, ROLES)).toBeUndefined();
   });
