@@ -150,7 +150,7 @@ export function mergeRoles(registry: readonly Role[], files: readonly Role[]): R
  * This function gives the role of a session. The registry ties each role to one session. A retired role does not match.
  *
  * 1. The role with the ID of the session wins.
- * 2. Then the role with the name of the session as its session name wins. The role `strategist` has the session name `strategies`.
+ * 2. Then the role with the name of the session as its session name wins. The role `reviewer` has the session name `reviews`.
  * 3. Then the role with the name of the session as its ID wins. A parked role has no session name.
  */
 export function roleOf(session: Pick<SessionInfo, "sessionId" | "name">, roles: readonly Role[]): string | undefined {
