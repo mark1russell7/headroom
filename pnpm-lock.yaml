@@ -171,7 +171,7 @@ importers:
         version: 0.5.4
       '@mark1russell7/conventions':
         specifier: ^0.41.0
-        version: 0.41.0
+        version: 0.41.1
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
@@ -225,14 +225,14 @@ importers:
         specifier: ^1.32.1
         version: 1.32.2(zod@4.6.7)
       '@procedures/client':
-        specifier: ^0.54.1
-        version: 0.54.1(express@5.3.0)
+        specifier: ^0.55.0
+        version: 0.55.0(express@5.3.0)
       '@procedures/peer':
-        specifier: ^0.54.1
-        version: 0.54.1(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
+        specifier: ^0.55.0
+        version: 0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
       '@procedures/server':
-        specifier: ^0.54.1
-        version: 0.54.1(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
+        specifier: ^0.55.0
+        version: 0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -581,15 +581,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@mark1russell7/algebra@0.8.0':
-    resolution: {integrity: sha512-kCNLkjbjF+zzVLPO8wBwsoxCal9v60sPpp0H6DqKxfbJM4C4o7FqU2x68gOhzp7zsiNN9PSkQqolrAJDy/4uWw==}
-    engines: {node: '>=22.19'}
-    peerDependencies:
-      zod: ^4.1.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
-
   '@mark1russell7/algebra@0.8.4':
     resolution: {integrity: sha512-jNwuJZWGUrjaowNJ0WCk6+cIIBXot3DQ8W2Rs4vMeYhDHhyU+gnqY35jcAwG5ZjzCgfM1AICA4eHquc1p10ZGw==}
     engines: {node: '>=22.19'}
@@ -604,15 +595,15 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/coeval@0.26.1':
-    resolution: {integrity: sha512-fzWgtsl3xpoOwmB5u/ZqEDPQIG6hIkXN3qSZc8uoN2Rv54OrqrMLw5Bgr9gedqIWhfHnT0+61EgkmRkoVg539Q==}
+  '@mark1russell7/coeval@0.29.0':
+    resolution: {integrity: sha512-Z+CEqmOKxyGrGwdKTuBQmzb0fHTcPY3gUA9RS2H6GF/mKFPEuIUIkrN65P7NgSMpb2J0owoduFWINh04RxFRkg==}
 
   '@mark1russell7/collections@0.10.0':
     resolution: {integrity: sha512-WsLRfrej6msQLVqcS17x6KODic8bLf/IuOF2tD04NNbOhWKYCQi0xAEGBCy/TtthxRvRa6Yti2fcpeIQbX/nCA==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/conventions@0.41.0':
-    resolution: {integrity: sha512-Dko7OFFLIX2MqXzleltTKE44e1EzUo6RHF870623wrkSHfHkn7mjy703FFnDcG/tP+/s9avgm++6Lz0rGC8l9A==}
+  '@mark1russell7/conventions@0.41.1':
+    resolution: {integrity: sha512-FFBoKGXCzW1HFnF4kd0XjOguh1hGxMk4e6N4lK4uvfkLho7AD9ZahVa5e3QStO/vGDb5ZcnsJRkBvFkMB6hB1A==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -629,24 +620,6 @@ packages:
   '@mark1russell7/optional@1.2.0':
     resolution: {integrity: sha512-vS5jF21WC/VApRv4p8afRZahcMl9cuNp03LxbVngY9nYkzq+S7Oit6ksySt2baML+tp46UF60sxnHxn1jlwtTg==}
     engines: {node: '>=22.12'}
-
-  '@mark1russell7/quantity@0.2.0':
-    resolution: {integrity: sha512-pE2OganjbhstZgoeLVu5YRVQq6bOnV/5T4GYuJhIu0+PF77+DwpfrIZonhNNfEZHz/P4ioiwFowbIwxPq9VkSA==}
-    engines: {node: '>=22.19'}
-    peerDependencies:
-      zod: ^4.1.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
-
-  '@mark1russell7/quantity@0.3.0':
-    resolution: {integrity: sha512-psfyKmVrOz5ynHgr2ED7WM5Pa/XVy6DR28jCaSGY42gvV0CJEq7HJRpV6sgkvWx8s3Et7evJWR56aG5tjCHZIw==}
-    engines: {node: '>=22.19'}
-    peerDependencies:
-      zod: ^4.1.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
 
   '@mark1russell7/quantity@0.3.5':
     resolution: {integrity: sha512-RCwaYZjMH3mVbnhLIW/xz2Enz4ekUBOY80g20pb4nhk9I1U9eDXd/eMxmkvN+/szFYjpzTRQp7Skq7zk2DVxzA==}
@@ -744,8 +717,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.54.1':
-    resolution: {integrity: sha512-nlO3CRri2pNac2OrNQGszcqCyjvSTSTLFfYRvS/u2yUUtxGS0+ZK4Uj+lsqOnzV96yIM4CwySOLRkOS9zgpH8Q==}
+  '@procedures/client@0.55.0':
+    resolution: {integrity: sha512-+JU/TDgY9umJtX0XFR7X4v8pHRdseBGm7fSWRGJ7hoXkqBcQVszMP7OCZWdhNkK2rfUvBscrWTHCN0O8DaZYYw==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -753,16 +726,16 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.54.1':
-    resolution: {integrity: sha512-3xBWIDg7PzeveQzuh34CeHFK/z+XLkXJJUuGB+hhyZdjZdWAk6oiHZmgQ1R/QyPkoU6Y3X5CSVR/6PjFRUKfMg==}
+  '@procedures/peer@0.55.0':
+    resolution: {integrity: sha512-VckDSR/27RJcCbXZuLFY+SJO2WN545R6tz3psyCPB/EsIiB2o+142CBlss7WIleakTXkrwIq84D78ie6AnKZug==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.54.1':
-    resolution: {integrity: sha512-yvG+NK3HPqfo4pYu1Bn2WzW01Eqpr+EBEEjsoiqNRi7IR7+1BabnEVhI0y4/eR5USZt3qoZYMMa57GgEKl+gBw==}
+  '@procedures/server@0.55.0':
+    resolution: {integrity: sha512-YoaduxsQgGCZYaov/IAa/E671zKBO5Ra0geI+SZkudI6pykRwta4vjgKleIqMtlU1XBln7cWV7TLqjhEay3eqA==}
     engines: {node: '>=22'}
     hasBin: true
     peerDependencies:
-      '@procedures/fs': ^0.54.1
+      '@procedures/fs': ^0.55.0
     peerDependenciesMeta:
       '@procedures/fs':
         optional: true
@@ -1950,12 +1923,6 @@ snapshots:
   '@koromix/koffi-win32-x64@3.3.5':
     optional: true
 
-  '@mark1russell7/algebra@0.8.0(zod@4.6.7)':
-    dependencies:
-      '@mark1russell7/quantity': 0.2.0(zod@4.6.7)
-    optionalDependencies:
-      zod: 4.6.7
-
   '@mark1russell7/algebra@0.8.4(zod@4.6.7)':
     dependencies:
       '@mark1russell7/quantity': 0.3.5(zod@4.6.7)
@@ -1964,11 +1931,14 @@ snapshots:
 
   '@mark1russell7/api-report@0.5.4':
     dependencies:
-      '@mark1russell7/conventions': 0.41.0
+      '@mark1russell7/conventions': 0.41.1
 
-  '@mark1russell7/coeval@0.26.1':
+  '@mark1russell7/coeval@0.29.0(zod@4.6.7)':
     dependencies:
+      '@mark1russell7/collections': 0.10.0(zod@4.6.7)
       '@mark1russell7/rigor-generators': 0.1.14
+    transitivePeerDependencies:
+      - zod
 
   '@mark1russell7/collections@0.10.0(zod@4.6.7)':
     dependencies:
@@ -1978,7 +1948,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@mark1russell7/conventions@0.41.0':
+  '@mark1russell7/conventions@0.41.1':
     dependencies:
       yaml: 2.9.1
 
@@ -1987,16 +1957,6 @@ snapshots:
   '@mark1russell7/files@0.0.2': {}
 
   '@mark1russell7/optional@1.2.0': {}
-
-  '@mark1russell7/quantity@0.2.0(zod@4.6.7)':
-    optionalDependencies:
-      zod: 4.6.7
-
-  '@mark1russell7/quantity@0.3.0(zod@4.6.7)':
-    dependencies:
-      '@mark1russell7/rational': 0.1.2
-    optionalDependencies:
-      zod: 4.6.7
 
   '@mark1russell7/quantity@0.3.5(zod@4.6.7)':
     dependencies:
@@ -2023,7 +1983,7 @@ snapshots:
       '@mark1russell7/algebra': 0.8.4(zod@4.6.7)
       '@mark1russell7/collections': 0.10.0(zod@4.6.7)
       '@mark1russell7/quantity': 0.3.5(zod@4.6.7)
-      '@mark1russell7/rigor-generators': 0.1.5
+      '@mark1russell7/rigor-generators': 0.1.14
       '@mark1russell7/text': 0.0.2
     optionalDependencies:
       '@opentelemetry/api': 1.10.0
@@ -2070,12 +2030,12 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.54.1(express@5.3.0)':
+  '@procedures/client@0.55.0(express@5.3.0)':
     dependencies:
-      '@mark1russell7/algebra': 0.8.0(zod@4.6.7)
-      '@mark1russell7/coeval': 0.26.1
+      '@mark1russell7/algebra': 0.8.4(zod@4.6.7)
+      '@mark1russell7/coeval': 0.29.0(zod@4.6.7)
       '@mark1russell7/collections': 0.10.0(zod@4.6.7)
-      '@mark1russell7/quantity': 0.3.0(zod@4.6.7)
+      '@mark1russell7/quantity': 0.3.5(zod@4.6.7)
       '@mark1russell7/service': 0.8.6(@opentelemetry/api@1.10.0)(ws@8.22.0)(zod@4.6.7)
       '@opentelemetry/api': 1.10.0
       '@types/ws': 8.18.2
@@ -2092,11 +2052,11 @@ snapshots:
       - pg
       - utf-8-validate
 
-  '@procedures/peer@0.54.1(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
+  '@procedures/peer@0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
     dependencies:
       '@mark1russell7/files': 0.0.2
       '@mark1russell7/service': 0.8.6(@opentelemetry/api@1.10.0)(ws@8.22.0)(zod@4.6.7)
-      '@procedures/client': 0.54.1(express@5.3.0)
+      '@procedures/client': 0.55.0(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@grpc/grpc-js'
@@ -2110,11 +2070,11 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@procedures/server@0.54.1(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
+  '@procedures/server@0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
     dependencies:
       '@mark1russell7/service': 0.8.6(@opentelemetry/api@1.10.0)(ws@8.22.0)(zod@4.6.7)
-      '@procedures/client': 0.54.1(express@5.3.0)
-      '@procedures/peer': 0.54.1(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
+      '@procedures/client': 0.55.0(express@5.3.0)
+      '@procedures/peer': 0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@grpc/grpc-js'
