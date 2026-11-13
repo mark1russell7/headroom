@@ -125,6 +125,17 @@ export interface LeaseMeasures {
   readonly unmet?: UnmetCondition | undefined;
 }
 
+/**
+ * The reservation of a first request after its long wait (H178). `startAt` is its expected start, or `null` when no end
+ * of a granted lease lets it start. `extra` is the room at that start that it does not need: a later request that fits
+ * in it cannot delay the first request.
+ */
+interface Hold {
+  readonly head: Lease;
+  readonly startAt: number | null;
+  readonly extra: Record<string, number> | null;
+}
+
 /** The capacity at one time. */
 export interface Capacity {
   /** The total physical memory, in MB. */
@@ -154,8 +165,23 @@ export interface BrokerOptions {
   readonly reserveMb?: number | undefined;
   /** A waiting request gains 1 of priority for each period of this length. The default is 1 minute. */
   readonly agingMs?: number | undefined;
-  /** After this wait, smaller requests no longer go before the first request. The default is 10 minutes. */
+  /**
+   * After this wait, the first request keeps its place: a later request goes before it only when it cannot delay its
+   * start (H178). The default is 10 minutes.
+   */
   readonly headWaitMs?: number | undefined;
+  /**
+   * This function gives the expected run time of the job of a lease in ms, or `null` when no run is known (H178). The
+   * engine takes it from the last runs of the job. The default knows no run. Then a later request goes before a first
+   * request that waited past `headWaitMs` only in the room that the first request does not need.
+   */
+  readonly runMs?: ((lease: Lease) => number | null) | undefined;
+  /**
+   * When no end of a granted lease lets the first request start, its start is not known: the room is held outside the
+   * leases (H178). Then a later request goes first only when its expected run time is at most this time. The default
+   * is 10 minutes.
+   */
+  readonly backfillMs?: number | undefined;
   /** The heartbeat limit of a lease without a process. The default is 5 minutes. */
   readonly defaultTtlMs?: number | undefined;
   /**
@@ -221,6 +247,8 @@ export class Broker {
   readonly #reserveMb: number;
   readonly #agingMs: number;
   readonly #headWaitMs: number;
+  readonly #runMs: (lease: Lease) => number | null;
+  readonly #backfillMs: number;
   readonly #defaultTtlMs: number;
   readonly #conflict: (lease: Lease, other: Lease) => string | null;
   readonly #groupConflict: (lease: Lease, granted: readonly Lease[], before: readonly Lease[]) => string | null;
@@ -242,6 +270,8 @@ export class Broker {
     this.#reserveMb = options.reserveMb ?? 1024;
     this.#agingMs = options.agingMs ?? 60_000;
     this.#headWaitMs = options.headWaitMs ?? 600_000;
+    this.#runMs = options.runMs ?? (() => null);
+    this.#backfillMs = options.backfillMs ?? 600_000;
     this.#defaultTtlMs = options.defaultTtlMs ?? 300_000;
     this.#conflict = options.conflict ?? (() => null);
     this.#groupConflict = options.groupConflict ?? (() => null);
@@ -457,6 +487,8 @@ export class Broker {
     const before: Lease[] = [];
     // The place of a lease in the queue. A lease that waits for a condition has no place (H31).
     let place = 0;
+    // H178: the reservation of the first request after its long wait. A later request goes first only when it cannot delay it.
+    let hold: Hold | null = null;
     for (const waitingLease of waiting) {
       let lease = waitingLease;
       const never = this.#neverFits(lease, capacity);
@@ -476,7 +508,7 @@ export class Broker {
       if (this.#held.delete(lease.id)) lease = this.#set({ ...lease, conditionsMetAt: now });
       const index = place;
       place += 1;
-      const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before);
+      const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before) ?? (hold === null ? null : this.#delays(lease, hold, now));
       if (short === null) {
         for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? 0) - amount;
         const next = this.#set({ ...lease, state: "granted", grantedAt: now, reason: null });
@@ -486,8 +518,8 @@ export class Broker {
       }
       before.push(lease);
       if (lease.reason !== short || lease !== waitingLease) changed.push(this.#set({ ...lease, reason: short }));
-      // The first request keeps its place: after a long wait, no smaller request goes before it.
-      if (index === 0 && now - lease.requestedAt > this.#headWaitMs) break;
+      // The first request keeps its place after a long wait: from now on, a later request goes first only when it cannot delay it.
+      if (index === 0 && now - lease.requestedAt > this.#headWaitMs) hold = this.#holdFor(lease, capacity, free, granted, now);
     }
     return changed;
   }
@@ -529,6 +561,61 @@ export class Broker {
       if (reason !== null) return reason;
     }
     return this.#groupConflict(lease, granted, before);
+  }
+
+  /**
+   * This function gives the reservation of a first request that waited past `headWaitMs` (H178). The granted leases end
+   * in the order of their expected end, and each end gives its room back. The start of the request is the first end after
+   * which it fits and has no conflict. The extra room is the room at that start that the request does not need. When no
+   * end lets the request start, the room is held outside the leases, and the start is not known.
+   */
+  #holdFor(head: Lease, capacity: Capacity, free: Record<string, number>, granted: readonly Lease[], now: number): Hold {
+    const room = { ...free };
+    const left = [...granted];
+    const ends = granted.map((lease) => ({ lease, at: this.#endOfRun(lease, now) })).sort((a, b) => a.at - b.at);
+    for (const { lease, at } of ends) {
+      for (const [id, amount] of Object.entries(lease.amounts)) {
+        // A measured room gets back the use of the job and the part of the amount that the job did not use.
+        const back = this.#room(id, capacity).mode === "measured" ? Math.max(amount, this.#used(lease, id)) : amount;
+        room[id] = (room[id] ?? 0) + back;
+      }
+      left.splice(left.indexOf(lease), 1);
+      if (this.#shortOf(head, room) === null && this.#conflictOf(head, left, []) === null) {
+        const extra = Object.fromEntries(Object.entries(room).map(([id, value]) => [id, value - (head.amounts[id] ?? 0)]));
+        return { head, startAt: at, extra };
+      }
+    }
+    return { head, startAt: null, extra: null };
+  }
+
+  /**
+   * This function gives the expected end of the job of a granted lease. A lease with no known run time can end at any
+   * time. Thus its expected end is the time of the tick. So the expected start of the first request does not come later
+   * than the facts tell.
+   */
+  #endOfRun(lease: Lease, now: number): number {
+    const run = this.#runMs(lease);
+    return run === null || lease.grantedAt === null ? now : Math.max(now, lease.grantedAt + run);
+  }
+
+  /**
+   * This function tells why a lease that fits at this time cannot go before the first request of a hold (H178). It gives
+   * `null` when the lease can go. The lease can go when its expected end comes before the start of the first request.
+   * When that start is not known, the lease can go when its expected run time is at most `backfillMs`. A lease with no
+   * known run time has no end. A lease that fits in the extra room of the hold can also go, and it takes that room.
+   */
+  #delays(lease: Lease, hold: Hold, now: number): string | null {
+    const run = this.#runMs(lease);
+    const end = run === null ? Number.POSITIVE_INFINITY : now + run;
+    if (end <= (hold.startAt ?? now + this.#backfillMs)) return null;
+    const extra = hold.extra;
+    if (extra !== null && Object.entries(lease.amounts).every(([id, amount]) => amount <= (extra[id] ?? 0))) {
+      for (const [id, amount] of Object.entries(lease.amounts)) extra[id] = (extra[id] ?? 0) - amount;
+      return null;
+    }
+    const first = `waits for the first request (${hold.head.job})`;
+    if (run === null) return `${first}: the run time of this job is not known`;
+    return `${first}: its run of ${Math.ceil(run / 60_000)} min would delay that request`;
   }
 
   /** This function tells which amount does not fit at this time, or gives `null` when all fit. */

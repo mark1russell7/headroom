@@ -3,7 +3,7 @@ import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
 import { Broker, NO_REJOIN_REASON, type Capacity, type Lease } from "./broker.ts";
 import { rooms } from "./resources.ts";
 
-function setup(options: { alive?: Set<number>; used?: number } = {}) {
+function setup(options: { alive?: Set<number>; used?: number; runMs?: Record<string, number> } = {}) {
   let now = 1_000_000;
   let next = 0;
   const broker = new Broker({
@@ -14,6 +14,8 @@ function setup(options: { alive?: Set<number>; used?: number } = {}) {
     reserveMb: 1000,
     agingMs: 60_000,
     headWaitMs: 600_000,
+    runMs: (lease) => options.runMs?.[lease.job] ?? null,
+    backfillMs: 600_000,
     defaultTtlMs: 300_000,
   });
   return { broker, advance: (ms: number) => (now += ms) };
@@ -102,6 +104,64 @@ describe("Broker", () => {
     const later = broker.request({ holder: "vex", job: "test 2", amounts: { memory: 100 } });
     broker.tick(cap(3000));
     expect(broker.get(later.id)?.state).toBe("waiting");
+  });
+
+  describe("after the long wait of the first request (H178)", () => {
+    const MIN = 60_000;
+
+    it("lets a short job go first when no end of a granted lease lets the first request start", () => {
+      const { broker, advance } = setup({ runMs: { quick: 5 * MIN, slow: 20 * MIN } });
+      const small = broker.request({ holder: "vex", job: "test", amounts: { memory: 500 }, pid: 7 });
+      broker.tick(cap(3000));
+      // The room of the first request is held outside the leases: the end of `small` gives it 2000 of 4000.
+      const big = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 8 });
+      broker.tick(cap(3000));
+      advance(700_000);
+      const quick = broker.request({ holder: "lag", job: "quick", amounts: { memory: 100 } });
+      const slow = broker.request({ holder: "lag", job: "slow", amounts: { memory: 100 } });
+      const unknown = broker.request({ holder: "lag", job: "new", amounts: { memory: 100 } });
+      broker.tick(cap(3000));
+      expect(broker.get(small.id)?.state).toBe("granted");
+      expect(broker.get(big.id)?.state).toBe("waiting");
+      expect(broker.get(quick.id)?.state).toBe("granted");
+      expect(broker.get(slow.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 20 min would delay that request" });
+      expect(broker.get(unknown.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): the run time of this job is not known" });
+    });
+
+    it("lets a job go first when it ends before the expected start of the first request, or fits in the room that it does not need", () => {
+      const { broker, advance } = setup({ runMs: { build: 30 * MIN, long: 60 * MIN, short: 10 * MIN, tiny: 60 * MIN } });
+      const build = broker.request({ holder: "graph", job: "build", amounts: { memory: 5000 }, pid: 7 });
+      broker.tick(cap(8000));
+      expect(broker.get(build.id)?.state).toBe("granted");
+      // Free now: 8000 - 1000 - 5000 = 2000. At the end of `build` in 30 minutes: 7000, so 1000 more than `gate` needs.
+      const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 6000 }, pid: 8 });
+      broker.tick(cap(8000));
+      advance(700_000);
+      const long = broker.request({ holder: "lag", job: "long", amounts: { memory: 1500 } });
+      const short = broker.request({ holder: "lag", job: "short", amounts: { memory: 1500 } });
+      const tiny = broker.request({ holder: "lag", job: "tiny", amounts: { memory: 400 } });
+      broker.tick(cap(8000));
+      expect(broker.get(gate.id)?.state).toBe("waiting");
+      // It fits now, but it runs past the start of `gate` and needs more than the 1000 that `gate` leaves.
+      expect(broker.get(long.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 60 min would delay that request" });
+      // It ends 10 minutes from now, before the end of `build`.
+      expect(broker.get(short.id)?.state).toBe("granted");
+      // It runs past the start of `gate`, but it fits in the 1000 that `gate` leaves.
+      expect(broker.get(tiny.id)?.state).toBe("granted");
+    });
+
+    it("takes the end of a granted lease with no known run time as now, so a later job cannot pass by its time", () => {
+      const { broker, advance } = setup({ runMs: { short: 1 * MIN } });
+      broker.request({ holder: "graph", job: "build", amounts: { memory: 5000 }, pid: 7 });
+      broker.tick(cap(8000));
+      const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 6000 }, pid: 8 });
+      broker.tick(cap(8000));
+      advance(700_000);
+      const short = broker.request({ holder: "lag", job: "short", amounts: { memory: 1500 } });
+      broker.tick(cap(8000));
+      expect(broker.get(gate.id)?.state).toBe("waiting");
+      expect(broker.get(short.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 1 min would delay that request" });
+    });
   });
 
   it("ends a lease when its process exits", () => {

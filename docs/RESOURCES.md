@@ -298,6 +298,14 @@ The broker then has one rule for each id, with no name of a kind in it:
 - The engine gives the spawn rule of H47: a spawn-heavy lease and a lease with the slot `browser` do not run at the same time.
 - `BrokerOptions.groupConflict(lease, granted, before)` examines all the other leases together, after the pairs. The engine gives the sum of the start rates of H47.
 
+**The hold of the first request (H178).** After `headWaitMs` (10 minutes), the first request keeps its place. Before H178, no later request went before it. When the first request needed room that other processes held, the whole queue stopped. On 2026-11-13, no lease started for more than one hour, and 15 leases waited behind one. With H178, a later request goes first only when it cannot delay the first request. This is the backfill rule of EASY scheduling: a job can pass the reserved job when the start of the reserved job does not move.
+
+- `BrokerOptions.runMs(lease)` gives the expected run time of a job, or `null`. The engine gives the 90th percentile of the last 20 runs of the job with an exit code (`Store.runTimesOf`). The runs of the same holder come first. The engine keeps each value for one minute.
+- The hold: the granted leases end in the order of their expected end, and each end gives its room back. A measured room gets back the larger of the amount and the use of the job. The expected start of the first request is the first end after which it fits and has no conflict. The extra room is the room at that start that the first request does not need.
+- A later request that fits at this time goes first in two cases. Its expected end is at or before that start, or it fits in the extra room. In the second case, it takes that part of the extra room.
+- When no end lets the first request start, the start is not known. A later request goes first only when its expected run is at most `backfillMs` (10 minutes). So the first request starts at most `backfillMs` after its room comes back.
+- Each estimate errs toward the first request. A granted lease with no known run time can end at any time, so its expected end is the time of the tick. A later request with no known run time has no end. Thus it goes first only in the extra room.
+
 **Conditions (H31).** Some leases wait for a fact, not for an amount. `BrokerOptions.condition(lease)` gives the reason of the wait, or `null`. The broker has no name of a condition in it.
 
 - The broker examines the conditions first, then the amounts, then the conflicts.
