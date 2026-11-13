@@ -132,6 +132,7 @@ describe("Broker", () => {
       const { broker, advance } = setup({ runMs: { build: 30 * MIN, long: 60 * MIN, short: 10 * MIN, tiny: 60 * MIN } });
       const build = broker.request({ holder: "graph", job: "build", amounts: { memory: 5000 }, pid: 7 });
       broker.tick(cap(8000));
+      expect(broker.get(build.id)?.state).toBe("granted");
       // Free now: 8000 - 1000 - 5000 = 2000. At the end of `build` in 30 minutes: 7000, so 1000 more than `gate` needs.
       const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 6000 }, pid: 8 });
       broker.tick(cap(8000));
