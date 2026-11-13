@@ -168,10 +168,10 @@ importers:
     devDependencies:
       '@mark1russell7/api-report':
         specifier: ^0.5.0
-        version: 0.5.5
+        version: 0.5.6
       '@mark1russell7/conventions':
         specifier: ^0.41.0
-        version: 0.41.4
+        version: 0.41.5
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
@@ -264,7 +264,7 @@ importers:
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@mark1russell7/site-pages':
         specifier: ^0.4.3
-        version: 0.4.7
+        version: 0.4.8
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.6
@@ -590,8 +590,8 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/api-report@0.5.5':
-    resolution: {integrity: sha512-bFL4eTYao6y4+NrlQOw0aasGSEjQ3DwForkEfb/Ol1nU70dxJOc5sXkW9puci+jg5FCHHbAyyyADrpOMD7crSA==}
+  '@mark1russell7/api-report@0.5.6':
+    resolution: {integrity: sha512-WgMnxnLhm7UoZL8aaosuAk8eik69SyhgoJ6y5rSwwX4A4v9kr98/DV+uGZE6B0XsO0oCg6cg57DhPMQKapKyrw==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -602,8 +602,8 @@ packages:
     resolution: {integrity: sha512-WsLRfrej6msQLVqcS17x6KODic8bLf/IuOF2tD04NNbOhWKYCQi0xAEGBCy/TtthxRvRa6Yti2fcpeIQbX/nCA==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/conventions@0.41.4':
-    resolution: {integrity: sha512-FcyqVT2gDgKxKDvr7A9sbYSPUxf0fYVDcjAoUnIGdYoJFHP5W08Jph2T3KgYJoDINPJOten+oQ/AOP97hE0iiQ==}
+  '@mark1russell7/conventions@0.41.5':
+    resolution: {integrity: sha512-utYAEou/70qKRpukES+mYKZ+KxNpjOd9yyyM6sdQS0+geurjQ7YTlW0ov2CbjnTK8HVSkf1OHRo+SnIBD3fYmA==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -672,8 +672,8 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/site-pages@0.4.7':
-    resolution: {integrity: sha512-NvqfZQAPKRDvrfzw3lTA/ialYSaanDhayjLN3RvwufZ1t/JtelzZxc+3lR4zf8N52sy2skVCocmIKLTJT/TGPg==}
+  '@mark1russell7/site-pages@0.4.8':
+    resolution: {integrity: sha512-uN7SV7VxrsMyH7/cPOUClFOnJhw24S2+qVaMIoNK+7AtJe3FB4l5qN2NowKAYvYgLcDpY4gUBlw9meJ6/Gq2pQ==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -1925,9 +1925,9 @@ snapshots:
     optionalDependencies:
       zod: 4.6.7
 
-  '@mark1russell7/api-report@0.5.5':
+  '@mark1russell7/api-report@0.5.6':
     dependencies:
-      '@mark1russell7/conventions': 0.41.4
+      '@mark1russell7/conventions': 0.41.5
 
   '@mark1russell7/coeval@0.29.0(zod@4.6.7)':
     dependencies:
@@ -1944,7 +1944,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@mark1russell7/conventions@0.41.4':
+  '@mark1russell7/conventions@0.41.5':
     dependencies:
       yaml: 2.9.1
 
@@ -1980,7 +1980,7 @@ snapshots:
       ws: 8.22.0
       zod: 4.6.7
 
-  '@mark1russell7/site-pages@0.4.7':
+  '@mark1russell7/site-pages@0.4.8':
     dependencies:
       '@mark1russell7/rigor-statistics': 0.1.27
 
