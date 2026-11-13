@@ -364,6 +364,8 @@ const POOL_TAGS_KEEP_MS = 60 * 60_000;
 const DISK_KEEP_MS = 60 * 60_000;
 /** The shortest time that the store keeps an ended lease, for `headroom job` (H26). With a shorter retention, the leases stay this long. */
 const LEASE_KEEP_MS = 7 * 24 * 3_600_000;
+/** H178: the engine keeps the expected run time of a job for this time. Thus a tick reads the store at most one time a minute for each job. */
+const RUN_TIME_KEEP_MS = 60_000;
 /** A window shorter than this counts as this long, so one short write does not give a large speed. */
 const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
@@ -408,6 +410,8 @@ export class Engine {
   readonly #sampler: Sampler;
   readonly #store: Store;
   readonly #broker: Broker;
+  /** H178: the expected run time of each job and holder, with the time of the read. */
+  readonly #runTimes = new Map<string, { readonly at: number; readonly ms: number | null }>();
   readonly #now: () => number;
   #reserveMb: number;
   readonly #processEveryMs: number;
@@ -581,6 +585,8 @@ export class Engine {
       },
       // H47: a spawn-heavy lease and a lease with the slot browser do not run at the same time.
       conflict: spawnConflict,
+      // H178: the expected run time of a job, for the reservation of a first request after its long wait.
+      runMs: (lease) => this.#runMs(lease),
       // H47: beside a browser test, the sum of the start rates of the other leases stays at or below the limit.
       groupConflict: (lease, granted, before) => startsSumConflict(lease, granted, before, (each) => this.#startRate(each), this.#conditionFacts().spawnHeavy),
       // H31: a lease waits until each of its conditions holds, and a heavy lease waits on a low battery.
@@ -887,6 +893,23 @@ export class Engine {
     const p90 = percentile90(peaks);
     if (p90 === null) return { memoryMb: null, runs: 0, peakMb: null, ...cpu };
     return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(Math.max(...peaks)), ...cpu };
+  }
+
+  /**
+   * This function gives the expected run time of the job of a lease in ms (H178). It is the 90th percentile of the last 20
+   * runs of the job with an exit code. The runs of the same holder come first, as in `suggest`. Without a run, it gives
+   * `null`. The engine keeps each value for one minute.
+   */
+  #runMs(lease: Lease): number | null {
+    const key = JSON.stringify([lease.holder, lease.job]);
+    const now = this.#now();
+    const kept = this.#runTimes.get(key);
+    if (kept !== undefined && now - kept.at < RUN_TIME_KEEP_MS) return kept.ms;
+    const own = this.#store.runTimesOf(lease.job, lease.holder);
+    const ms = percentile90(own.length > 0 ? own : this.#store.runTimesOf(lease.job));
+    if (this.#runTimes.size >= 500) for (const [k, v] of this.#runTimes) if (now - v.at >= RUN_TIME_KEEP_MS) this.#runTimes.delete(k);
+    this.#runTimes.set(key, { at: now, ms });
+    return ms;
   }
 
   /**

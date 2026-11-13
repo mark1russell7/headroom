@@ -38,6 +38,13 @@ headroom run --mem 2g -- pnpm test
 headroom run --slot docker --mem 1g -- docker compose up -d mongo
 ```
 
+**The queue (H178).** The leases wait in the order of their priority. A waiting lease gains 1 of priority each minute. A smaller lease that fits can go before a larger first lease, until the first lease waited 10 minutes. After that wait, a later lease goes first only when it cannot delay the start of the first lease:
+
+- The expected run time of a job is the 90th percentile of its last 20 runs with an exit code. The runs of the same holder come first. A job with no such run has no expected run time.
+- When the ends of the granted leases give the first lease its room, the broker knows its expected start. A later lease goes first when its expected run ends before that start. It also goes first when it fits in the room that the first lease does not need.
+- When no end of a granted lease gives the first lease its room, other processes hold that room, and the start is not known. Then a later lease goes first only when its expected run is at most 10 minutes. Thus the first lease starts at most 10 minutes after the room comes back.
+- A later lease that waits for the first lease tells it in `headroom status`, for example `waits for the first request (pnpm build): its run of 25 min would delay that request`.
+
 See the memory, the free space of the drives, the free amounts, the leases and the memory of each owner:
 
 ```sh

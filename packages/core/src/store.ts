@@ -404,6 +404,18 @@ export class Store {
     return rows.map((row) => Number(row["peak_mb"]));
   }
 
+  /**
+   * This function reads the run times in ms of the last runs of a job that ended with an exit code, the newest first (H178).
+   * A run that a signal stopped has no exit code, so its short time does not count. With a holder, only the runs of that holder.
+   */
+  runTimesOf(job: string, holder?: string, limit = 20): number[] {
+    const ran = "SELECT ended_at - granted_at AS ran_ms FROM leases WHERE job = ? AND exit_code IS NOT NULL AND granted_at IS NOT NULL AND ended_at IS NOT NULL";
+    const rows = holder === undefined
+      ? this.#db.prepare(`${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, limit)
+      : this.#db.prepare(`${ran} AND holder = ? ORDER BY ended_at DESC LIMIT ?`).all(job, holder, limit);
+    return rows.map((row) => Number(row["ran_ms"]));
+  }
+
   /** This function reads the peak cores of the last runs of a job that ended, the newest first (H23). With a holder, only the runs of that holder. */
   corePeaksOf(job: string, holder?: string, limit = 20): number[] {
     const ran = "SELECT peak_cores FROM leases WHERE job = ? AND peak_cores IS NOT NULL AND ended_at IS NOT NULL";
