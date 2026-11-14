@@ -118,6 +118,26 @@ describe("Engine suggest", () => {
     engine.close();
   });
 
+  it("keeps the run times of the jobs that ended with an exit code, the runs of the holder first (H178)", () => {
+    let now = 1_000_000;
+    const store = new Store(":memory:");
+    const engine = new Engine({ sampler, store, sessionsDir: "/nowhere", now: () => now });
+    const run = (holder: string, ranMs: number, exit = { code: 0 as number | null, signal: null as string | null }) => {
+      const lease = engine.request({ holder, job: "pnpm install", amounts: { memory: 100 }, ttlMs: 600_000 });
+      now += ranMs;
+      engine.release(lease.id, "the job ended", 200, undefined, exit);
+    };
+    run("shop", 40_000);
+    run("shop", 50_000, { code: 1, signal: null });
+    // A signal stopped this run, so its short time does not tell the run time of the job.
+    run("shop", 1_000, { code: null, signal: "SIGTERM" });
+    run("vex", 300_000);
+    expect(store.runTimesOf("pnpm install", "shop")).toEqual([50_000, 40_000]);
+    expect(store.runTimesOf("pnpm install")).toEqual([300_000, 50_000, 40_000]);
+    expect(store.runTimesOf("pnpm install", "lag")).toEqual([]);
+    engine.close();
+  });
+
   it("keeps the peak of a lease in the store, and adds the column to an older database", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-store-"));
     const path = join(dir, "old.db");
