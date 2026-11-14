@@ -226,13 +226,13 @@ importers:
         version: 1.32.2(zod@4.6.7)
       '@procedures/client':
         specifier: ^0.55.0
-        version: 0.55.0(express@5.3.0)
+        version: 0.55.2(express@5.3.0)
       '@procedures/peer':
         specifier: ^0.55.0
-        version: 0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
+        version: 0.55.2(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
       '@procedures/server':
         specifier: ^0.55.0
-        version: 0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
+        version: 0.55.2(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -713,8 +713,8 @@ packages:
   '@oxc-project/types@0.154.0':
     resolution: {integrity: sha512-KYOUGQFlLWR+s4QMV2Q9ko38TZm7EdO87Qm7rvZLqk/webse/cDjtyxKhg/47l0byCbs/k46LT8qc4PKjAikzA==}
 
-  '@procedures/client@0.55.0':
-    resolution: {integrity: sha512-+JU/TDgY9umJtX0XFR7X4v8pHRdseBGm7fSWRGJ7hoXkqBcQVszMP7OCZWdhNkK2rfUvBscrWTHCN0O8DaZYYw==}
+  '@procedures/client@0.55.2':
+    resolution: {integrity: sha512-yzT4KH/WZe9yx8YICr83jE+UYZJFuzFwmsEYGx32hxRKCTgrx6xKg9RE9laxJMeKiXS9DQNq/33Zjx1ku7Em3Q==}
     engines: {node: '>=22'}
     peerDependencies:
       express: ^4.0.0 || ^5.0.0
@@ -722,16 +722,16 @@ packages:
       express:
         optional: true
 
-  '@procedures/peer@0.55.0':
-    resolution: {integrity: sha512-VckDSR/27RJcCbXZuLFY+SJO2WN545R6tz3psyCPB/EsIiB2o+142CBlss7WIleakTXkrwIq84D78ie6AnKZug==}
+  '@procedures/peer@0.55.2':
+    resolution: {integrity: sha512-TT02PnDe0BhSeRpxzRokWkaVVNN8LtjFN5BCdxRPTJljq5GU3b/bINDfToLleG1VlkLbCXbC7rcg3vemqQvesg==}
     engines: {node: '>=22'}
 
-  '@procedures/server@0.55.0':
-    resolution: {integrity: sha512-YoaduxsQgGCZYaov/IAa/E671zKBO5Ra0geI+SZkudI6pykRwta4vjgKleIqMtlU1XBln7cWV7TLqjhEay3eqA==}
+  '@procedures/server@0.55.2':
+    resolution: {integrity: sha512-qDKcF9HUOsAua8k2jn4rgZSuGyVcayLNJ/1SnyR2sqjxxHFUCb8pSgalIeockmOKnOxzHfUfitXv6qHtUSpc2w==}
     engines: {node: '>=22'}
     hasBin: true
     peerDependencies:
-      '@procedures/fs': ^0.55.0
+      '@procedures/fs': ^0.55.2
     peerDependenciesMeta:
       '@procedures/fs':
         optional: true
@@ -2022,7 +2022,7 @@ snapshots:
 
   '@oxc-project/types@0.154.0': {}
 
-  '@procedures/client@0.55.0(express@5.3.0)':
+  '@procedures/client@0.55.2(express@5.3.0)':
     dependencies:
       '@mark1russell7/algebra': 0.8.4(zod@4.6.7)
       '@mark1russell7/coeval': 0.29.0(zod@4.6.7)
@@ -2044,11 +2044,11 @@ snapshots:
       - pg
       - utf-8-validate
 
-  '@procedures/peer@0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
+  '@procedures/peer@0.55.2(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
     dependencies:
       '@mark1russell7/files': 0.0.2
       '@mark1russell7/service': 0.8.6(@opentelemetry/api@1.10.0)(ws@8.22.0)(zod@4.6.7)
-      '@procedures/client': 0.55.0(express@5.3.0)
+      '@procedures/client': 0.55.2(express@5.3.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@grpc/grpc-js'
@@ -2062,11 +2062,11 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@procedures/server@0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
+  '@procedures/server@0.55.2(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)':
     dependencies:
       '@mark1russell7/service': 0.8.6(@opentelemetry/api@1.10.0)(ws@8.22.0)(zod@4.6.7)
-      '@procedures/client': 0.55.0(express@5.3.0)
-      '@procedures/peer': 0.55.0(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
+      '@procedures/client': 0.55.2(express@5.3.0)
+      '@procedures/peer': 0.55.2(@opentelemetry/api@1.10.0)(express@5.3.0)(ws@8.22.0)
       zod: 4.6.7
     transitivePeerDependencies:
       - '@grpc/grpc-js'
