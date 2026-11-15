@@ -81,7 +81,10 @@ export interface ShadowView {
   readonly minMb: number;
   readonly minMs: number;
   readonly readers: readonly string[];
-  /** True when the sampler reads the kind of the standard output. When it is false, the writer rule does not apply. */
+  /**
+   * True when the sampler read the kind of the standard output of each row. When it is false, the writer rule did not
+   * read the standard output of all the rows: the sampler has no such read, or the read of a row failed (`unknown`).
+   */
   readonly stdoutKnown: boolean;
   /** The rows, the newest last match first. */
   readonly rows: readonly ShadowRow[];
@@ -108,8 +111,9 @@ export type ReapAction = "stopped" | "asked" | "needs-owner";
  * - `ended`: the process ended, or a new process has its ID, before the stop. headroom also stops nothing when it cannot
  *   read the start of the live process, or when the read of the processes has no start of the process.
  * - `failed`: the stop of an own process failed.
+ * - `headroom`: the process is the headroom daemon, or the client of an active lease of `headroom run`.
  */
-export type ReapOutcome = ReapAction | "not-found" | "not-orphan" | "session" | "ended" | "failed";
+export type ReapOutcome = ReapAction | "not-found" | "not-orphan" | "session" | "headroom" | "ended" | "failed";
 
 /** One row of the reap log (H183): a stop, a request to a session, or a process that needs the owner of the machine. */
 export interface ReapEntry {
@@ -205,8 +209,8 @@ export function reapCandidate(info: ProcessInfo, record: ProcessRecord, now: num
 /**
  * This function lists the processes whose parent is proven gone (H183), the most private memory first. A process with no
  * record is not in the list, because no record proves its owner. By default the list has only the processes of a session.
- * `all` also lists the orphans that no session started. The process of a session (`sessionPids`) and a `claude` program
- * are not in the list.
+ * `all` also lists the orphans that no session started. The processes of `sessionPids` and a `claude` program are not in
+ * the list. The engine gives the processes of the sessions, the daemon and the clients of the active leases.
  */
 export function reapCandidates(
   processes: readonly ProcessInfo[],

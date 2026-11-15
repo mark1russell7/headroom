@@ -1288,8 +1288,9 @@ H183 gives the sessions a tool and a record. It stops no process by a rule.
 - Each row has the process ID, the private memory, the age, the session and the command line. The text shortens a long command line, and it keeps the start and the end.
 - By default, the list has only the processes of a session. `--all` also lists the orphans that no session started.
 - The process of a session is not in the list. `headroom reap` does not stop a session. A read of the session files can skip a file that Claude Code writes at that time. Thus the list and the stop also keep out each process named `claude` or `claude.exe`, and each live process that a session file named at an earlier read of the daemon.
+- The daemon and the client of each active lease are not in the list, and `headroom reap` does not stop them. The result is `headroom`. The parent of a client of `headroom run --detach` can end while its job runs, so the client can look like an orphan. `headroom release <id>` ends a lease.
 
-**`headroom reap <pid>`.** The CLI finds the session of the caller. `HEADROOM_HOLDER` is a free label, so `headroom reap` does not use it.
+**`headroom reap <pid>`.** A process ID has only the digits 0 to 9. The CLI refuses `0x10` and `1e3`. The CLI finds the session of the caller. `HEADROOM_HOLDER` is a free label, so `headroom reap` does not use it.
 
 - First the variables of Claude Code: `CLAUDE_CODE_SESSION_ID`, then `CLAUDE_PID`. A process ID can be in use again, so the ID of the session comes first. The process of the session must run, with the start of its session file (`procStart`). A `CLAUDE_PID` whose session file has another session ID is a process ID that is in use again, so it names no session.
 - Then the process tree. Each parent must start at or before its child (H29). An unknown start stops the walk.
@@ -1300,6 +1301,7 @@ The daemon finds the running session of the record. When the record and the sess
 - Before the stop, the daemon reads the start of the live process. It must be the start of the last read and the start of the record. A new process with the same ID has a different start, so the daemon does not stop it. The result is `ended`.
 - When the daemon cannot compare the starts, it stops nothing, and the result is `ended`. This occurs when the sampler cannot read the start of a live process, when the process ended, or when the last read has no start of the process. The sampler of Linux reads the start from the field 22 of `/proc/<pid>/stat`, after the start of the computer.
 - **A process of another session that runs**: the daemon does not stop it. It writes a request to the reap log and adds the alert `reap:<pid>:<start>` for 24 hours. The alert ends when the process ends.
+- The reap log in the store keeps each request. At its first read of the processes, a daemon that starts again reads the requests of the last 24 hours. It shows again the alert of each request whose process runs, with the time of the request.
 - **A process of a session that ended, or of no session**: the daemon does not stop it, also when the caller has the name of that session. The record and the alert say that the process needs the owner of the machine.
 - headroom has no path that sends a notice to one session. The CLI prints the text of the request, and the alert shows it in `headroom alerts` and on the dashboard.
 - The daemon trusts the session that the CLI sends. A local caller can stop its own processes with the tools of the system, so the check prevents a mistake, not an attack.
@@ -1309,10 +1311,10 @@ The daemon finds the running session of the record. When the record and the sess
 - Its parent is proven gone (H182).
 - Its program is of the reader class: `grep`, `rg`, `sort`, `findstr` or `cat`.
 - Its command line names a transcript or a scratchpad folder of a session: a path under `.claude/projects`, or a `scratchpad` folder under a `claude` folder.
-- It held more than 500 MB of private memory for more than 30 minutes. A read below the line starts the time again. A restart of the daemon and a sleep of the computer also start it again.
+- It held more than 500 MB of private memory for more than 30 minutes. A read below the line starts the time again. A restart of the daemon and a sleep of the computer also start it again. The row of a process keeps the start of its last period above the line.
 - It is not a writer. A process whose standard output is a file is a writer. `sort -o <file>` is also a writer.
 
-**The writer test on Windows.** On Linux, the daemon reads the link `/proc/<pid>/fd/1`, and a path is a file. On Windows, the kind of the standard output of another process needs its table of handles. The daemon has no such read yet, so the kind is `unknown`, and only `sort -o` shows a writer. An automatic mode must not stop a process with the kind `unknown` until this read exists.
+**The writer test on Windows.** On Linux, the daemon reads the link `/proc/<pid>/fd/1`, and a path is a file. On Windows, the kind of the standard output of another process needs its table of handles. The daemon has no such read yet, so the kind is `unknown`, and only `sort -o` shows a writer. On Linux, a failed read of the link also gives `unknown`, for example for a process of another user. `headroom reap --shadow` then says that the writer test did not read the standard output of each process. An automatic mode must not stop a process with the kind `unknown` until this read exists.
 
 **The setting `reapAuto`.** `headroom config reap-auto on|off` sets it, and off is the default. In this version, on stops no process. The code of an automatic stop is not written. A later version turns the automatic mode on only after 7 days of shadow log with no wrong case. The setting can turn it off.
 

@@ -740,7 +740,8 @@ export class Store {
 
   /**
    * This function writes the matches of one sample to the shadow log (H183). A process has one row. Each match adds one to
-   * its count of samples, and keeps its last memory and its peak.
+   * its count of samples, and keeps its last memory and its peak. A match also writes the start of its period above the
+   * line, because a read below the line starts a new period.
    */
   saveShadow(at: number, matches: readonly ShadowMatch[]): void {
     if (matches.length === 0) return;
@@ -749,7 +750,8 @@ export class Store {
         `INSERT INTO reap_shadow (pid, created, name, first_at, last_at, above_since, samples, private_mb, peak_mb, owner, session, session_id, command, stdout)
          VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (pid, created) DO UPDATE SET last_at = excluded.last_at, samples = samples + 1, private_mb = excluded.private_mb,
-           peak_mb = max(peak_mb, excluded.private_mb), session = excluded.session, session_id = excluded.session_id, stdout = excluded.stdout`,
+           peak_mb = max(peak_mb, excluded.private_mb), above_since = excluded.above_since, session = excluded.session, session_id = excluded.session_id,
+           stdout = excluded.stdout`,
       );
       for (const each of matches) {
         upsert.run(each.pid, each.created, each.name, at, at, each.aboveSince, each.privateMb, each.privateMb, each.owner, each.session, each.sessionId, each.command, each.stdout);
@@ -790,24 +792,18 @@ export class Store {
 
   /** This function reads the reap log (H183), the newest first, at most `REAP_ROWS_MAX` rows. */
   reapLog(): ReapEntry[] {
-    const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+    return this.#db.prepare("SELECT * FROM reap_log ORDER BY at DESC, id DESC LIMIT ?").all(REAP_ROWS_MAX).map(reapEntry);
+  }
+
+  /**
+   * This function reads the requests of the reap log at or after a time (H183): the rows with the action `asked` or
+   * `needs-owner`, the newest first. A restart of the daemon reads them to show the alerts of the requests again.
+   */
+  reapRequests(since: number): ReapEntry[] {
     return this.#db
-      .prepare("SELECT * FROM reap_log ORDER BY at DESC, id DESC LIMIT ?")
-      .all(REAP_ROWS_MAX)
-      .map((row) => ({
-        at: Number(row["at"]),
-        pid: Number(row["pid"]),
-        created: Number(row["created"]),
-        name: String(row["name"]),
-        session: text(row["session"]),
-        sessionId: text(row["session_id"]),
-        by: text(row["by_name"]),
-        byId: text(row["by_id"]),
-        action: String(row["action"]) as ReapAction,
-        privateMb: Number(row["private_mb"]),
-        command: text(row["command"]),
-        result: String(row["result"]),
-      }));
+      .prepare("SELECT * FROM reap_log WHERE at >= ? AND action IN ('asked', 'needs-owner') ORDER BY at DESC, id DESC")
+      .all(since)
+      .map(reapEntry);
   }
 
   /**
@@ -831,6 +827,25 @@ export class Store {
   close(): void {
     this.#db.close();
   }
+}
+
+/** This function gives the entry of one row of the reap log (H183). */
+function reapEntry(row: Record<string, unknown>): ReapEntry {
+  const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+  return {
+    at: Number(row["at"]),
+    pid: Number(row["pid"]),
+    created: Number(row["created"]),
+    name: String(row["name"]),
+    session: text(row["session"]),
+    sessionId: text(row["session_id"]),
+    by: text(row["by_name"]),
+    byId: text(row["by_id"]),
+    action: String(row["action"]) as ReapAction,
+    privateMb: Number(row["private_mb"]),
+    command: text(row["command"]),
+    result: String(row["result"]),
+  };
 }
 
 function toLease(row: Record<string, unknown>): Lease {

@@ -582,6 +582,8 @@ export class Engine {
   readonly #shadow = new ShadowTracker();
   /** The ids of the active alerts of reap requests, with the key of their process (H183). The alert ends when its process ends. */
   readonly #reapNotes = new Map<string, string>();
+  /** True after the first read of the processes read the requests of the reap log back (H183). */
+  #reapNotesRead = false;
   /**
    * The keys (`processKey()`) of the live processes that a session file named at a read of this daemon (H183). A read can
    * skip a session file that Claude Code writes at that time. The key keeps the process of the session out of `headroom reap`.
@@ -833,6 +835,7 @@ export class Engine {
       // H183: the shadow log of the automatic reap rule. No rule stops a process in this version.
       const shadow = this.#shadow.sample(now, this.#processes, (info) => this.#records.get(info), (pid) => this.#sampler.stdoutKind?.(pid) ?? "unknown");
       this.#store.saveShadow(now, shadow);
+      if (!this.#reapNotesRead) this.#readReapNotes(now);
       this.#endReapNotes();
       // H38: the containers of Docker get their part of the owner `docker`. The rest is `docker (VM)`. The processes of
       // Docker keep the owner `docker`, so the kinds keep it too.
@@ -1063,10 +1066,22 @@ export class Engine {
 
   /**
    * This function lists the processes whose parent is proven gone (H183), from the last read of the processes. By default
-   * the list has only the processes of a session. `all` also lists the orphans that no session started.
+   * the list has only the processes of a session. `all` also lists the orphans that no session started. The processes of
+   * the sessions, the daemon and the clients of the active leases are not in the list.
    */
   reapList(all = false): ReapCandidate[] {
-    return reapCandidates(this.#processes, (info) => this.#records.get(info), this.#now(), all, this.#sessionPids());
+    return reapCandidates(this.#processes, (info) => this.#records.get(info), this.#now(), all, new Set([...this.#sessionPids(), ...this.#headroomPids()]));
+  }
+
+  /**
+   * This function gives the process IDs that `headroom reap` does not stop because they belong to headroom (H183): the
+   * daemon, and the client of each active lease. The parent of a client of `headroom run --detach` can end while the job
+   * runs, so the client can look like an orphan. `headroom release <id>` ends a lease.
+   */
+  #headroomPids(): ReadonlySet<number> {
+    const pids = new Set([process.pid]);
+    for (const lease of this.#broker.leases()) if (isActive(lease) && lease.pid !== null) pids.add(lease.pid);
+    return pids;
   }
 
   /**
@@ -1113,6 +1128,10 @@ export class Engine {
     // the earlier reads also keep the process of a session out.
     if (isSessionProgram(info.name) || this.#sessionKeys.has(processKey(info))) {
       return { pid, outcome: "session", process: null, message: `${info.name} (pid ${pid}) is a Claude Code program or the process of a session. headroom reap does not stop a session.`, notice: null };
+    }
+    if (this.#headroomPids().has(pid)) {
+      const what = pid === process.pid ? "the headroom daemon" : "the client of an active lease of headroom run. headroom release <id> ends the lease";
+      return { pid, outcome: "headroom", process: null, message: `${info.name} (pid ${pid}) is ${what}. headroom reap does not stop it.`, notice: null };
     }
     const byPid = new Map(this.#processes.map((each) => [each.pid, each]));
     const record = this.#records.get(info);
@@ -1168,6 +1187,25 @@ export class Engine {
     return { pid, outcome: action, process: target, message, notice };
   }
 
+  /**
+   * This function shows again the alert of each reap request of the last `REAP_NOTICE_MS` whose process runs (H183). The
+   * reap log in the store keeps the requests, so a restart of the daemon does not lose their alerts. Each alert keeps the
+   * time of its request.
+   */
+  #readReapNotes(now: number): void {
+    this.#reapNotesRead = true;
+    const live = new Set(this.#processes.map((info) => processKey(info)));
+    for (const entry of this.#store.reapRequests(now - REAP_NOTICE_MS)) {
+      const key = `${entry.pid}:${entry.created}`;
+      const id = `reap:${key}`;
+      if (!live.has(key) || this.#reapNotes.has(id)) continue;
+      const alert: Omit<Alert, "since"> = { id, kind: "reap", subject: `${entry.name} (${entry.pid})`, pid: entry.pid, mb: entry.privateMb, message: entry.result, severity: "warning" };
+      this.#events.set(id, { alert, until: entry.at + REAP_NOTICE_MS });
+      this.#alerts.set(id, { ...alert, since: entry.at });
+      this.#reapNotes.set(id, key);
+    }
+  }
+
   /** This function ends the alert of each reap request whose process ended (H183). */
   #endReapNotes(): void {
     if (this.#reapNotes.size === 0) return;
@@ -1181,13 +1219,14 @@ export class Engine {
 
   /** This function gives the shadow log of the automatic reap rule, with the rule and the setting `reapAuto` (H183). */
   reapShadow(): ShadowView {
+    const rows = this.#store.reapShadow();
     return {
       auto: this.#store.config().reapAuto,
       minMb: SHADOW_MIN_MB,
       minMs: SHADOW_MIN_MS,
       readers: [...READER_PROGRAMS],
-      stdoutKnown: this.#sampler.stdoutKind !== undefined,
-      rows: this.#store.reapShadow(),
+      stdoutKnown: this.#sampler.stdoutKind !== undefined && rows.every((row) => row.stdout !== "unknown"),
+      rows,
     };
   }
 

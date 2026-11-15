@@ -243,10 +243,10 @@ describe("Engine reap (H183)", () => {
   });
 
   /** This function makes an engine that reads the processes while the shell runs, and again after the shell ended. */
-  const start = (sampler: Sampler = makeSampler(), stopProcess: (pid: number) => void = (pid) => stops.push(pid)): Engine => {
+  const start = (sampler: Sampler = makeSampler(), stopProcess: (pid: number) => void = (pid) => stops.push(pid), store: Store = new Store(":memory:")): Engine => {
     now = T0;
     shell = true;
-    const made = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: sessions, stopProcess });
+    const made = new Engine({ sampler, store, now: () => now, sessionsDir: sessions, stopProcess });
     made.tick();
     // The shell ends, and grep.exe stays.
     shell = false;
@@ -256,9 +256,9 @@ describe("Engine reap (H183)", () => {
   };
 
   /** This function closes the engine of `beforeEach` and makes a new one. */
-  const restart = (sampler?: Sampler, stopProcess?: (pid: number) => void): void => {
+  const restart = (sampler?: Sampler, stopProcess?: (pid: number) => void, store?: Store): void => {
     engine.close();
-    engine = start(sampler, stopProcess);
+    engine = start(sampler, stopProcess, store);
   };
 
   beforeEach(() => {
@@ -480,5 +480,68 @@ describe("Engine reap (H183)", () => {
     expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
     expect(engine.reap(27900, KESTREL)).toMatchObject({ outcome: "session" });
     expect(stops).toEqual([]);
+  });
+
+  it("does not list or stop the client of an active lease of headroom run", () => {
+    // A client of headroom run --detach whose shell ended. The lease ends when its process ends, so the test uses a live
+    // process ID: the parent of this test process.
+    extra = [node(process.ppid, 200, "node.exe", T0 - 2 * HOUR, 700)];
+    restart();
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308, process.ppid]);
+    engine.request({ holder: "kestrel", job: "pnpm test", amounts: { memory: 100 }, pid: process.ppid });
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
+    expect(engine.reap(process.ppid, KESTREL)).toMatchObject({ outcome: "headroom" });
+    expect(stops).toEqual([]);
+    expect(engine.reapLog()).toEqual([]);
+  });
+
+  it("does not list or stop the daemon", () => {
+    // The daemon is this test process. Its parent ended, so it is an orphan of the session kestrel.
+    extra = [node(process.pid, 200, "node.exe", T0 - 2 * HOUR, 400)];
+    restart();
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
+    expect(engine.reap(process.pid, KESTREL)).toMatchObject({ outcome: "headroom" });
+    expect(stops).toEqual([]);
+  });
+
+  it("keeps the caveat of the writer test when the read of a standard output fails", () => {
+    // The sampler has the read, but the read of the link of grep.exe fails: the process belongs to another user.
+    restart({ ...makeSampler(), stdoutKind: () => "unknown" });
+    now = T0 + SHADOW_MIN_MS + MIN;
+    engine.tick();
+    expect(engine.reapShadow()).toMatchObject({ stdoutKnown: false, rows: [{ pid: 27308, stdout: "unknown" }] });
+  });
+
+  it("starts a new period above the line in the shadow log after a read below the line", () => {
+    now = T0 + SHADOW_MIN_MS + MIN;
+    engine.tick();
+    expect(engine.reapShadow().rows).toMatchObject([{ pid: 27308, aboveSince: T0 }]);
+    // grep.exe goes below the line for one read, then above it again.
+    grep = node(27308, 200, "grep.exe", T0 - 3.5 * HOUR, 100);
+    now += 10_000;
+    engine.tick();
+    grep = node(27308, 200, "grep.exe", T0 - 3.5 * HOUR, 1536);
+    now += 10_000;
+    engine.tick();
+    const again = now;
+    now += SHADOW_MIN_MS + MIN;
+    engine.tick();
+    expect(engine.reapShadow().rows).toMatchObject([{ pid: 27308, aboveSince: again, samples: 2 }]);
+  });
+
+  it("shows the alert of a reap request again after a restart of the daemon, until the process ends", () => {
+    const file = join(dir, "headroom.db");
+    restart(undefined, undefined, new Store(file));
+    expect(engine.reap(27308, OTTER).outcome).toBe("asked");
+    const at = now;
+    restart(undefined, undefined, new Store(file));
+    const alert = engine.alerts().active.find((each) => each.kind === "reap");
+    expect(alert).toMatchObject({ id: `reap:27308:${T0 - 3.5 * HOUR}`, since: at, pid: 27308, mb: 1536, severity: "warning" });
+    expect(alert?.message).toContain("The session otter asks the session kestrel to stop it with: headroom reap 27308");
+    // The process ends: the alert ends.
+    grep = null;
+    now += 10_000;
+    engine.tick();
+    expect(engine.alerts().active.some((each) => each.kind === "reap")).toBe(false);
   });
 });

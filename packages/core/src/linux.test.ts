@@ -46,4 +46,14 @@ describe("the Linux sampler with a fixture of /proc", () => {
     writeFileSync(join(root, "stat"), "cpu  1 2 3\n");
     expect(sampler.processStart?.(4242)).toBeUndefined();
   });
+
+  it("gives unknown when the read of the standard output fails, so the caveat of the writer test stays (H183)", () => {
+    const sampler = linuxSampler(root, root);
+    // No folder fd: the process ended, or it belongs to another user.
+    expect(sampler.stdoutKind?.(4242)).toBe("unknown");
+    // fd/1 is not a link, so readlink fails.
+    mkdirSync(join(root, "4242", "fd"));
+    writeFileSync(join(root, "4242", "fd", "1"), "");
+    expect(sampler.stdoutKind?.(4242)).toBe("unknown");
+  });
 });

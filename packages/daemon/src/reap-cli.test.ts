@@ -68,6 +68,13 @@ describe("headroom reap (H183)", () => {
     expect(errors.at(-1)).toContain("headroom does not run");
   });
 
+  it("refuses a process ID that is not only digits: Number() reads 0x10 as 16 and 1e3 as 1000", async () => {
+    for (const argv of [["0x10"], ["1e3"], ["+12"], ["12.0"], ["0b11"], ["99999999999999999999"]]) {
+      expect(await reapCommand(argv, connection, KESTREL, io())).toBe(2);
+    }
+    expect(calls).toEqual([]);
+  });
+
   it("lists the orphans and marks the processes of the caller", async () => {
     answer = [GREP, { ...GREP, pid: 27400, privateMb: 600, session: "otter", sessionId: "9a2d-otter" }];
     expect(await reapCommand([], connection, KESTREL, io())).toBe(0);
@@ -104,7 +111,7 @@ describe("headroom reap (H183)", () => {
     const result = (outcome: ReapResult["outcome"]): ReapResult => ({ ...ASKED, outcome, notice: null });
     expect(reapExit(result("stopped"))).toBe(0);
     expect(reapExit(result("needs-owner"))).toBe(0);
-    for (const outcome of ["not-orphan", "session", "ended", "failed"] as const) expect(reapExit(result(outcome))).toBe(1);
+    for (const outcome of ["not-orphan", "session", "headroom", "ended", "failed"] as const) expect(reapExit(result(outcome))).toBe(1);
   });
 
   it("shows the shadow log with its rule, and says when the writer test reads only the arguments", async () => {

@@ -236,6 +236,50 @@ describe("Store", () => {
   });
 });
 
+describe("Store reap tables (H183)", () => {
+  /** A match of the shadow log: a made-up grep.exe of the session kestrel. */
+  const match = (pid: number, aboveSince: number) =>
+    ({ pid, created: 1000, name: "grep.exe", privateMb: 600, ageMs: 0, owner: "session:kestrel", session: "kestrel", sessionId: null, command: null, aboveSince, stdout: "pipe" }) as const;
+  /** A row of the reap log. */
+  const entry = (at: number, action: "stopped" | "asked" | "needs-owner") =>
+    ({ at, pid: 7, created: 1000, name: "grep.exe", session: "kestrel", sessionId: null, by: "otter", byId: null, action, privateMb: 600, command: null, result: "the text" }) as const;
+
+  it("gives the requests of the reap log at or after a time, the newest first", () => {
+    const store = new Store(":memory:");
+    store.saveReap(entry(1000, "asked"));
+    store.saveReap(entry(2000, "stopped"));
+    store.saveReap(entry(3000, "needs-owner"));
+    expect(store.reapRequests(0).map((row) => [row.at, row.action])).toEqual([[3000, "needs-owner"], [1000, "asked"]]);
+    expect(store.reapRequests(1001).map((row) => row.at)).toEqual([3000]);
+    store.close();
+  });
+
+  it("starts a new period above the line when a match has a new start of the period", () => {
+    const store = new Store(":memory:");
+    store.saveShadow(5000, [match(1, 1000)]);
+    store.saveShadow(9000, [match(1, 7000)]);
+    expect(store.reapShadow()).toMatchObject([{ pid: 1, firstAt: 5000, lastAt: 9000, aboveSince: 7000, samples: 2 }]);
+    store.close();
+  });
+
+  it("removes the rows of the shadow log and of the reap log before the third time, by default the time of the leases", () => {
+    const store = new Store(":memory:");
+    store.saveShadow(1000, [match(1, 1000)]);
+    store.saveShadow(5000, [match(2, 5000)]);
+    store.saveReap(entry(1000, "asked"));
+    store.saveReap(entry(5000, "asked"));
+    // The samples go before 9000. The leases and, by default, the reap rows go before 3000.
+    store.prune(9000, 3000);
+    expect(store.reapShadow().map((row) => row.pid)).toEqual([2]);
+    expect(store.reapLog().map((row) => row.at)).toEqual([5000]);
+    // The third time decides for the reap tables.
+    store.prune(0, 0, 6000);
+    expect(store.reapShadow()).toEqual([]);
+    expect(store.reapLog()).toEqual([]);
+    store.close();
+  });
+});
+
 describe("Store pool tags", () => {
   it("keeps the snapshots of the tags of 1 MB or more, grouped by time", () => {
     const store = new Store(":memory:");

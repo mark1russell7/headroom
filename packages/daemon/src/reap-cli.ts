@@ -65,7 +65,9 @@ export function shadowLines(view: ShadowView): string[] {
     `The rule: a reader (${view.readers.join(", ")}) whose parent is proven gone, whose command names a transcript or a scratchpad`,
     `folder of a session, and that holds more than ${diskSize(view.minMb)} of private memory for more than ${spanText(view.minMs / 60_000)}. A writer is not in the log.`,
   ];
-  if (!view.stdoutKnown) lines.push("This computer gives no kind of the standard output, so the writer test reads only the arguments (sort -o).");
+  if (!view.stdoutKnown) {
+    lines.push("The kind of the standard output is not known for each process (stdout unknown). For such a process, the writer test reads only the arguments (sort -o).");
+  }
   if (view.rows.length === 0) return [...lines, "The shadow log is empty."];
   lines.push(`${view.rows.length} ${view.rows.length === 1 ? "process" : "processes"} in the shadow log, the newest first:`);
   for (const row of view.rows) {
@@ -96,7 +98,8 @@ export function reapExit(result: ReapResult): number {
 /**
  * This function runs `headroom reap`. `caller` is the session of the caller, or `null`. It gives 0 for a list, a stop, a
  * request or a record. It gives 3 when no process has the ID. It gives 1 for a process whose parent is not proven gone, for
- * a failed stop, or when the daemon does not run. It gives 2 for a wrong use.
+ * a process of a session or of headroom, for a failed stop, or when the daemon does not run. It gives 2 for a wrong use. A
+ * process ID has only the digits 0 to 9, so `0x10` and `1e3` are a wrong use.
  */
 export async function reapCommand(argv: readonly string[], connection: Connection | null, caller: SessionRef | null, io: ReapOutput = CONSOLE): Promise<number> {
   let parsed: ReturnType<typeof parse>;
@@ -109,8 +112,8 @@ export async function reapCommand(argv: readonly string[], connection: Connectio
   const { values, positionals } = parsed;
   const [target] = positionals;
   const modes = [target !== undefined, values.shadow === true, values.log === true].filter(Boolean).length;
-  const pid = target === undefined ? 0 : Number(target);
-  if (positionals.length > 1 || modes > 1 || (target !== undefined && (!Number.isInteger(pid) || pid <= 0)) || (values.all === true && modes > 0)) {
+  const pid = target === undefined ? 0 : /^\d+$/.test(target) ? Number(target) : Number.NaN;
+  if (positionals.length > 1 || modes > 1 || (target !== undefined && (!Number.isSafeInteger(pid) || pid <= 0)) || (values.all === true && modes > 0)) {
     io.err(`Usage: ${REAP_USAGE}`);
     return 2;
   }

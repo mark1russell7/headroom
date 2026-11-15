@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, detect } from "./alerts.ts";
-import { COMMAND_CUT, COMMAND_MAX, commandText, OwnerRecords, ownerText, RECORD_AFTER_MS, shortCommand, type ProcessRecord, type RecordChanges } from "./orphans.ts";
+import { COMMAND_CUT, COMMAND_MAX, commandText, keepEnds, OwnerRecords, ownerText, RECORD_AFTER_MS, shortCommand, type ProcessRecord, type RecordChanges } from "./orphans.ts";
 import { attribute, baseOwner, isOrphan, processKey } from "./owners.ts";
 import { Store } from "./store.ts";
 import type { ProcessInfo, SessionInfo } from "./types.ts";
@@ -50,6 +50,36 @@ describe("shortCommand (H48)", () => {
     expect(shortCommand("/usr/bin/find / -name x")).toBe("find / -name x");
     expect(shortCommand("node")).toBe("node");
     expect(shortCommand(`node ${"x".repeat(300)}`)).toHaveLength(305);
+  });
+});
+
+describe("keepEnds (H182)", () => {
+  /** A half of a pair of UTF-16 code units with no other half. */
+  const LONE_HALF = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  /** One character that is a pair of UTF-16 code units: U+1F600. */
+  const PAIR = "\u{1F600}";
+
+  it("cuts before a pair at the start, and after a pair at the end", () => {
+    const text = `ab${PAIR}${"c".repeat(40)}${PAIR}yz`;
+    // The head of 3 ends inside the first pair, so the start keeps 2 characters and the end keeps the last pair.
+    expect(keepEnds(text, 11, 3)).toBe(`ab${COMMAND_CUT}${PAIR}yz`);
+    // The end starts inside the last pair, so the end keeps only "yz".
+    expect(keepEnds(text, 10, 2)).toBe(`ab${COMMAND_CUT}yz`);
+  });
+
+  it("does not cut a pair of UTF-16 code units for each length and each head", () => {
+    // With a letter first or last, the pairs start at odd and at even positions.
+    for (const text of [PAIR.repeat(30), `a${PAIR.repeat(30)}`, `${PAIR.repeat(30)}z`]) {
+      for (let max = COMMAND_CUT.length; max <= 40; max += 1) {
+        for (let head = 0; head <= max; head += 1) {
+          const cut = keepEnds(text, max, head);
+          expect(cut).not.toMatch(LONE_HALF);
+          expect(cut.length).toBeLessThanOrEqual(max);
+          const [first = "", last = ""] = cut.split(COMMAND_CUT);
+          expect(text.startsWith(first) && text.endsWith(last)).toBe(true);
+        }
+      }
+    }
   });
 });
 
