@@ -171,7 +171,7 @@ importers:
         version: 0.5.6
       '@mark1russell7/conventions':
         specifier: ^0.41.0
-        version: 0.41.5
+        version: 0.41.10
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
@@ -197,8 +197,8 @@ importers:
   packages/core:
     dependencies:
       '@mark1russell7/sqlite':
-        specifier: ^0.2.5
-        version: 0.2.5
+        specifier: ^0.3.1
+        version: 0.3.1
       koffi:
         specifier: ^3.3.3
         version: 3.3.5
@@ -605,8 +605,8 @@ packages:
     resolution: {integrity: sha512-WsLRfrej6msQLVqcS17x6KODic8bLf/IuOF2tD04NNbOhWKYCQi0xAEGBCy/TtthxRvRa6Yti2fcpeIQbX/nCA==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/conventions@0.41.5':
-    resolution: {integrity: sha512-utYAEou/70qKRpukES+mYKZ+KxNpjOd9yyyM6sdQS0+geurjQ7YTlW0ov2CbjnTK8HVSkf1OHRo+SnIBD3fYmA==}
+  '@mark1russell7/conventions@0.41.10':
+    resolution: {integrity: sha512-OD4i/u7PI2U1VORHfQLnkk52MIytd/q8NaqHGVet+V6X/FhekBu9qfMrM1NcnSmZEpTLFx5VvA1WwcW12K0pPQ==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -680,8 +680,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/sqlite@0.2.5':
-    resolution: {integrity: sha512-T1FFG3dhupWaBFJn6oU7g5JaG5T8O0Cu4QZFu32qK7LoECzYPcWLg4/o/Hb8rsg3GmWYIK757YDnRnv8cbzrVA==}
+  '@mark1russell7/sqlite@0.3.1':
+    resolution: {integrity: sha512-kOuPaXdzSwaXm15YefDgU0eMyLyUR4zvJYLiR9NwUAok6vabh5fnr3U+5XKhnXnQE7GUaFTGkcOAShrN1Jv2pw==}
     engines: {node: '>=22.16'}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
@@ -1934,7 +1934,7 @@ snapshots:
 
   '@mark1russell7/api-report@0.5.6':
     dependencies:
-      '@mark1russell7/conventions': 0.41.5
+      '@mark1russell7/conventions': 0.41.10
 
   '@mark1russell7/coeval@0.29.0(zod@4.6.7)':
     dependencies:
@@ -1951,7 +1951,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@mark1russell7/conventions@0.41.5':
+  '@mark1russell7/conventions@0.41.10':
     dependencies:
       yaml: 2.9.1
 
@@ -1991,7 +1991,7 @@ snapshots:
     dependencies:
       '@mark1russell7/rigor-statistics': 0.1.27
 
-  '@mark1russell7/sqlite@0.2.5': {}
+  '@mark1russell7/sqlite@0.3.1': {}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:
