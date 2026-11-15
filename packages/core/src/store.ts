@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS process_owners (
 
 /**
  * The steps of the schema (@mark1russell7/sqlite). The user_version of a file is the count of its steps. Each change
- * of the schema is a new step at the end. Never change a step that a file can have.
+ * of the schema is a new step at the end. Do not change a step that a file can have.
  */
 const MIGRATIONS: readonly Migration[] = [
   // The baseline. A file of a version before the migrations has the user_version 0 and the tables of its version. The
