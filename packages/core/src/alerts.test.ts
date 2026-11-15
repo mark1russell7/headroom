@@ -66,7 +66,7 @@ describe("detect", () => {
   it("warns about a drive with little free space", () => {
     const alerts = detect({ ...input([], {}), disks: [{ mount: "D:", freeMb: 12_600, totalMb: 200_000 }] });
     expect(alerts).toEqual([
-      { id: "disk:D:", kind: "disk", subject: "drive D:", pid: null, mb: 12_600, severity: "warning", message: "Drive D: has 12.3 GB free of 195 GB. Run `headroom disk report` to see what uses the space." },
+      { id: "disk:D:", kind: "disk", subject: "drive D:", pid: null, mb: 12_600, severity: "warning", rule: "level", message: "Drive D: has 12.3 GB free of 195 GB. Run `headroom disk report` to see what uses the space." },
     ]);
   });
 
@@ -91,7 +91,7 @@ describe("detect", () => {
     const alerts = detect({ ...input([], {}), disks, writes });
     expect(alerts).toStrictEqual([
       {
-        id: "disk:C:", kind: "disk", subject: "drive C:", pid: null, mb: 4300, severity: "critical",
+        id: "disk:C:", kind: "disk", subject: "drive C:", pid: null, mb: 4300, severity: "critical", rule: "level",
         message: "Drive C: has 4.2 GB free of 952 GB, 38.1 GB less than one hour ago. Most writes in the last hour: session:shop 31.2 GB, mcp:vex 2.1 GB, docker 400 MB. Run `headroom disk report` to see what uses the space.",
       },
     ]);
@@ -108,16 +108,29 @@ describe("detect", () => {
     expect(diskLevel({ mount: "E:", freeMb: 1000, totalMb: 30_720 })).toBe("critical");
   });
 
+  it("names the rule of a pool alert, so a pool above its limit differs from a pool that grows fast (H180)", () => {
+    const pool = (kernelNonpagedMb: number, poolHourAgoMb: number) =>
+      detect({ ...input([], {}), memory: { ...memory, kernelNonpagedMb }, poolHourAgoMb }).find((alert) => alert.id === "pool");
+    // 800 MB more in one hour, below the limit of 3072 MB: the growth rule.
+    expect(pool(1800, 1000)).toMatchObject({ rule: "growth", mb: 1800 });
+    // Above the limit and growing: the level rule goes first, and the alert keeps the id `pool`.
+    expect(pool(3500, 2800)).toMatchObject({ rule: "level", mb: 3500 });
+    // Above the limit with no growth: the level rule.
+    expect(pool(3500, 3500)).toMatchObject({ rule: "level", mb: 3500 });
+    // Below the limit with little growth: no alert.
+    expect(pool(1800, 1700)).toBeUndefined();
+  });
+
   it("gives each alert of before with the same fields, and no severity outside the disk alerts", () => {
     const low = { ...memory, availableMb: 400.4, commitMb: 75_000, kernelNonpagedMb: 3500, kernelPagedMb: 4600 };
     const alerts = detect({ ...input([], {}), memory: low, poolHourAgoMb: 2800, pagedHourAgoMb: 4700, load: { processes: 1240, userObjects: null, gdiObjects: null } });
     expect(alerts).toStrictEqual([
-      { id: "memory", kind: "memory", subject: "memory", pid: null, mb: 400, message: "Only 400 MB of memory is available" },
-      { id: "commit", kind: "commit", subject: "commit", pid: null, mb: 75_000, message: "The commit charge is 73.2 GB of its limit 78.1 GB" },
-      { id: "pool", kind: "pool", subject: "non-paged pool", pid: null, mb: 3500, message: "The non-paged kernel pool is 3.4 GB, 700 MB more than one hour ago. A driver can leak it." },
-      { id: "pool:paged", kind: "pool", subject: "paged pool", pid: null, mb: 4600, message: "The paged kernel pool is 4.5 GB. A file system filter can leak it." },
+      { id: "memory", kind: "memory", subject: "memory", pid: null, mb: 400, rule: "level", message: "Only 400 MB of memory is available" },
+      { id: "commit", kind: "commit", subject: "commit", pid: null, mb: 75_000, rule: "level", message: "The commit charge is 73.2 GB of its limit 78.1 GB" },
+      { id: "pool", kind: "pool", subject: "non-paged pool", pid: null, mb: 3500, rule: "level", message: "The non-paged kernel pool is 3.4 GB, 700 MB more than one hour ago. A driver can leak it." },
+      { id: "pool:paged", kind: "pool", subject: "paged pool", pid: null, mb: 4600, rule: "level", message: "The paged kernel pool is 4.5 GB. A file system filter can leak it." },
       {
-        id: "desktop", kind: "desktop", subject: "session", pid: null, mb: 0,
+        id: "desktop", kind: "desktop", subject: "session", pid: null, mb: 0, rule: "level",
         message: "1240 processes run in this session. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.",
       },
     ]);
@@ -127,15 +140,15 @@ describe("detect", () => {
     const lines = { ...DEFAULT_ALERT_RULES, availableMb: 3072, availableCriticalMb: 2048 };
     const at = (availableMb: number) => detect({ ...input([], {}), memory: { ...memory, availableMb } }, lines).filter((each) => each.kind === "memory");
     expect(at(3500)).toEqual([]);
-    expect(at(2500)).toStrictEqual([{ id: "memory", kind: "memory", subject: "memory", pid: null, mb: 2500, severity: "warning", message: "Only 2500 MB of memory is available" }]);
+    expect(at(2500)).toStrictEqual([{ id: "memory", kind: "memory", subject: "memory", pid: null, mb: 2500, severity: "warning", rule: "level", message: "Only 2500 MB of memory is available" }]);
     expect(at(1800)[0]?.severity).toBe("critical");
   });
 
   it("gives one alert for each process: a large orphan with no lease is a runaway", () => {
     const alerts = detect(input([p(7, 99, "grep.exe", 6000)], { 7: ["other", "other"] }));
-    expect(alerts).toStrictEqual([{ id: "runaway:7", kind: "runaway", subject: "grep.exe (7)", pid: 7, mb: 6000, message: "grep.exe (7) of other (orphan) holds 5.9 GB with no lease" }]);
+    expect(alerts).toStrictEqual([{ id: "runaway:7", kind: "runaway", subject: "grep.exe (7)", pid: 7, mb: 6000, rule: "outlier", message: "grep.exe (7) of other (orphan) holds 5.9 GB with no lease" }]);
     const orphan = detect(input([p(7, 99, "grep.exe", 2000)], { 7: ["other", "other"] }));
-    expect(orphan[0]).toStrictEqual({ id: "orphan:7", kind: "orphan", subject: "grep.exe (7)", pid: 7, mb: 2000, message: "grep.exe (7) holds 2.0 GB, and its parent (99) stopped" });
+    expect(orphan[0]).toStrictEqual({ id: "orphan:7", kind: "orphan", subject: "grep.exe (7)", pid: 7, mb: 2000, rule: "outlier", message: "grep.exe (7) holds 2.0 GB, and its parent (99) stopped" });
   });
 
   describe("ports", () => {
@@ -157,7 +170,7 @@ describe("detect", () => {
       const alerts = detect(input([], owners, { tcp: tcp({ 1: 300, 2: 100, 3: 150, 4: 50, 5: 20 }, 190) }));
       expect(alerts).toStrictEqual([
         {
-          id: "ports:tcp", kind: "ports", subject: "TCP ports", pid: null, mb: 0, severity: "warning",
+          id: "ports:tcp", kind: "ports", subject: "TCP ports", pid: null, mb: 0, severity: "warning", rule: "level",
           message:
             "810 of 1000 dynamic TCP ports are in use (81%), 190 of them in TIME_WAIT. Most connections: session:shop 400, mcp:vex 150, docker 50." +
             " When no dynamic port is free, new connections fail.",
@@ -385,6 +398,7 @@ describe("runaway process trees (H23)", () => {
         subject: "node.exe (10)",
         pid: 10,
         mb: 0,
+        rule: "outlier",
         message: "node.exe (10) of session:shop and its 1 child process use 6 cores with no lease, above 4 cores for 10 minutes. Run such work with headroom run --cpu.",
       },
     ]);
@@ -415,7 +429,7 @@ describe("cache alerts (H50)", () => {
     const alerts = detect({ ...input([], {}), memory: full, reads, writes });
     expect(alerts.map((alert) => alert.id)).toEqual(["memory", "cache"]);
     expect(alerts[1]).toStrictEqual({
-      id: "cache", kind: "cache", subject: "cache", pid: null, mb: 10_342, severity: "critical",
+      id: "cache", kind: "cache", subject: "cache", pid: null, mb: 10_342, severity: "critical", rule: "check",
       message:
         "The system file cache holds 10.1 GB, and only 1.0 GB of memory is available. Windows does not count these pages as available memory, " +
         "and it trims them slowly. Most reads in the last hour: system:search 50.8 GB, session:shop 1.2 GB. Most writes in the last hour: " +

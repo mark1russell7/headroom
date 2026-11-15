@@ -49,6 +49,7 @@ describe("the handles alert (H48)", () => {
         pid: 27056,
         mb: 0,
         severity: "critical",
+        rule: "trail",
         message:
           "find.exe (pid 27056) holds 1,313,105 handles, +40,000 a minute. It started 44 min ago. Owner: session:server-stack tools (orphan, parent ended)." +
           " Command: find / -name WIRE-PROTOCOL.md -path *procedures*. The owner stops it by its pid.",

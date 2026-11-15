@@ -104,9 +104,19 @@ export interface Alert {
   readonly message: string;
   /** The level of the alert. Without it, the kind gives the level. */
   readonly severity?: AlertSeverity | undefined;
+  /**
+   * The type of the rule of a resource kind that started the alert (H180): `level`, `growth`, `health`, `check`, `outlier` or
+   * `trail`. One alert id can have more than one rule: the pool alert `pool` has a level rule and a growth rule. So a reader
+   * can tell a pool above its limit from a pool that grows fast. Without it, the alert does not come from a rule of a
+   * resource kind, for example the Docker alerts.
+   */
+  readonly rule?: RuleType | undefined;
   /** The time of the first sample that showed the condition. */
   readonly since: number;
 }
+
+/** The type of a rule of a resource kind (H180). */
+export type RuleType = Rule["type"];
 
 /** The limits of the alerts. */
 export interface AlertRules {
@@ -453,7 +463,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
       for (const rule of each) {
         if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, byPid)) continue;
         const text = rule.text({ process: info, owner, amount, orphan: isOrphan(info, byPid) });
-        alerts.push({ id: `${rule.alert}:${info.pid}`, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
+        alerts.push({ id: `${rule.alert}:${info.pid}`, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, rule: rule.type, message: text.message });
         return true;
       }
       return false;
@@ -475,7 +485,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         const id = rule.alertId?.(String(tree.pid)) ?? `${rule.alert}:${tree.pid}`;
         if (!treeAbove(rule, tree.trail, endOf(tree.trail), activeLevel.has(id))) continue;
         const text = rule.text({ process: info, owner, amount: tree.trail.at(-1)?.value ?? 0, processes: tree.processes, orphan: isOrphan(info, byPid) });
-        alerts.push({ id, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, message: text.message });
+        alerts.push({ id, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, rule: rule.type, message: text.message });
       }
     }
   }
@@ -493,7 +503,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         if (level === null) continue;
         const owner = input.ownerOf.get(pid) ?? "other";
         const text = rule.text({ process: info, owner, orphan: isOrphan(info, byPid), record: input.recordOf?.(info), trail, level, at });
-        alerts.push({ id, kind: rule.alert, subject: text.subject, pid, mb: text.mb, ...(rule.severity === true ? { severity: level } : {}), message: text.message });
+        alerts.push({ id, kind: rule.alert, subject: text.subject, pid, mb: text.mb, ...(rule.severity === true ? { severity: level } : {}), rule: rule.type, message: text.message });
       }
     }
   }
@@ -526,7 +536,7 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         ids.add(id);
         const text = rule.text({ measurement, change, readings, owners, level });
         const severity = rule.severity === true ? { severity: level } : {};
-        alerts.push({ id, kind: rule.alert, subject: text.subject, pid: null, mb: text.mb, ...severity, message: text.message });
+        alerts.push({ id, kind: rule.alert, subject: text.subject, pid: null, mb: text.mb, ...severity, rule: rule.type, message: text.message });
       }
     }
   }

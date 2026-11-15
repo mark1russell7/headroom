@@ -450,6 +450,7 @@ Steps 1 to 4 shipped in #29, #30 and #31. The code in `packages/core/src/resourc
 - `Readings` has `processors`, the count of logical processors, and `granted`, the sum of the granted amounts of each id.
 - `cpu` is counted, with the count of processors as its capacity. H23 keeps it counted and adds a reserve of 2 cores for Mark.
 - `detect()` gives at most one alert for each process, and one alert for each alert id. The first rule wins.
+- `Alert.rule` gives the type of the rule that started the alert (H180): `level`, `growth`, `health`, `check`, `outlier` or `trail`. The id `pool` has a level rule and a growth rule, and the level rule goes first. So `rule` tells a pool above `poolMb` from a pool that grows more than `poolGrowthMb` in one hour. A Docker alert comes from no rule of a resource kind, and has no `rule`.
 - `explain()` has no implementation yet. The engine still adds the pool tags and the large files to the messages.
 
 ### What steps 5 and 6 changed
