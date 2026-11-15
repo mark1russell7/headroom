@@ -96,6 +96,8 @@ import {
   type Lease,
   type Peer,
   type PoolTags,
+  type ProcessInfo,
+  type Sampler,
   type SessionRef,
   type Status,
   type Suggestion,
@@ -110,7 +112,7 @@ import { diskCommand } from "./disk-cli.ts";
 import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, startClient, tellParent, waitForDaemon } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
-import { sessionFromEnv, sessionRefFromEnv } from "./holder.ts";
+import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
 import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
@@ -285,25 +287,27 @@ async function sessionHolder(): Promise<string | null> {
  * This function finds the Claude Code session that started this process, with the ID of its session file (H183). It reads
  * the variables of Claude Code, then the process tree. It gives `null` when it finds no session. `HEADROOM_HOLDER` is a free label, so `headroom reap`
  * does not use it.
+ *
+ * The variables name the session ID first. The process of the session must run with the start of its session file. The
+ * walk up the tree checks the start of each parent (H29), so a process ID that is in use again does not name a session.
  */
 async function callerSession(): Promise<SessionRef | null> {
+  let sampler: Sampler | undefined;
   try {
     const known = readSessions();
-    const named = sessionRefFromEnv(process.env, known);
-    if (named) return named;
-    const sampler = await createSampler();
-    const byPid = new Map(sampler.processes().map((info) => [info.pid, info]));
-    const sessions = new Map(known.map((session) => [session.pid, session]));
-    const seen = new Set<number>();
-    for (let pid = process.ppid; pid > 0 && !seen.has(pid); pid = byPid.get(pid)?.ppid ?? 0) {
-      seen.add(pid);
-      const session = sessions.get(pid);
-      if (session !== undefined && session.name !== "") return { name: session.name, id: session.sessionId };
-    }
+    const read = await createSampler();
+    sampler = read;
+    // The read of all the processes is slower than the read of one start, so it happens only when a step needs it.
+    let tree: ProcessInfo[] | undefined;
+    const processes = (): ProcessInfo[] => (tree ??= read.processes());
+    const startOf = (pid: number): number | undefined => (read.processStart === undefined ? processes().find((info) => info.pid === pid)?.startedAt : read.processStart(pid));
+    return sessionRefFromEnv(process.env, known, startOf) ?? sessionRefFromTree(process.pid, processes(), known) ?? null;
   } catch {
     // The process tree is not readable, so no session is known.
+    return null;
+  } finally {
+    sampler?.close();
   }
-  return null;
 }
 
 function mb(value: number): string {

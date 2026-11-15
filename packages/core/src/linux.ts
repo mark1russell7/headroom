@@ -65,6 +65,12 @@ export function parseStat(text: string): StatLine | null {
   };
 }
 
+/** This function tells if the text of `/proc/<pid>/stat` is of an ended process: the state `Z` (a zombie) or `X` (dead). */
+function isEnded(text: string): boolean {
+  const state = text.slice(text.lastIndexOf(")") + 2).split(" ")[0];
+  return state === "Z" || state === "X";
+}
+
 /** The clock ticks in one second. Linux uses 100 on almost each computer. */
 const CLOCK_TICKS = 100;
 
@@ -157,6 +163,23 @@ export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
     }
   }
 
+  /**
+   * This function reads the start of a live process (H183), as `processes()` reads it: the field 22 of `/proc/<pid>/stat`
+   * after the start of the computer. A process that ended, a zombie, and a computer with no start give `undefined`.
+   */
+  function processStart(pid: number): number | undefined {
+    try {
+      const bootAt = parseBootTime(readFileSync(`${root}/stat`, "utf8"));
+      const text = readFileSync(`${root}/${pid}/stat`, "utf8");
+      const stat = parseStat(text);
+      if (bootAt === undefined || stat?.startTicks === undefined || isEnded(text)) return undefined;
+      return bootAt + (stat.startTicks * 1000) / CLOCK_TICKS;
+    } catch {
+      // The process ended.
+      return undefined;
+    }
+  }
+
   /** This function reads the kind of the standard output of a process from the link `/proc/<pid>/fd/1` (H183). */
   function stdoutKind(pid: number): StdoutKind {
     try {
@@ -167,7 +190,7 @@ export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
     }
   }
 
-  return { memory, processes, commandLine, stdoutKind, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
+  return { memory, processes, commandLine, processStart, stdoutKind, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
 }
 
 /** The default dynamic port range of Linux: the ports 32768 to 60999. */

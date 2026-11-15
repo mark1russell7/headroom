@@ -29,6 +29,7 @@ import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./ne
 import { attribute, isOrphan, processKey, readSessions, sessionsDir, treeMb, unattributedMb, type SessionRef } from "./owners.ts";
 import { OwnerRecords } from "./orphans.ts";
 import {
+  isSessionProgram,
   liveSession,
   REAP_KEEP_MS,
   REAP_NOTICE_MS,
@@ -46,7 +47,7 @@ import {
   type ShadowView,
 } from "./reap.ts";
 import { HandleTracker, handleStatus, type HandleStatus } from "./handles.ts";
-import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
+import { PeerResolver, RoleBook, sameStart, type Peer, type PeerInput } from "./peer.ts";
 import { fitTrend, forecastFrom, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
 import {
   DISK_HINT,
@@ -581,6 +582,11 @@ export class Engine {
   readonly #shadow = new ShadowTracker();
   /** The ids of the active alerts of reap requests, with the key of their process (H183). The alert ends when its process ends. */
   readonly #reapNotes = new Map<string, string>();
+  /**
+   * The keys (`processKey()`) of the live processes that a session file named at a read of this daemon (H183). A read can
+   * skip a session file that Claude Code writes at that time. The key keeps the process of the session out of `headroom reap`.
+   */
+  readonly #sessionKeys = new Set<string>();
   /** The stop of one process for `headroom reap <pid>` (H183). */
   readonly #stopProcess: (pid: number) => void;
   /** The role registry: `resources.peer` (H46) and the owners of the containers (H38) read it. */
@@ -818,6 +824,7 @@ export class Engine {
       this.#previous = this.#processes;
       this.#processes = this.#sampler.processes();
       this.#sessions = readSessions(this.#sessionsDir);
+      this.#rememberSessions();
       // H48: an orphan gets the owner of its record, with the label `(orphan)`.
       // H182: the records also keep the parent, its start and the session of each process.
       const { owners, ownerOf, sessionOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
@@ -1062,9 +1069,28 @@ export class Engine {
     return reapCandidates(this.#processes, (info) => this.#records.get(info), this.#now(), all, this.#sessionPids());
   }
 
-  /** This function gives the process IDs of the sessions at the last read of the session files (H183). */
+  /**
+   * This function gives the process IDs of the sessions (H183): the sessions of the last read of the session files, and
+   * each live process that a session file named at an earlier read.
+   */
   #sessionPids(): ReadonlySet<number> {
-    return new Set(this.#sessions.map((session) => session.pid));
+    const pids = new Set(this.#sessions.map((session) => session.pid));
+    for (const info of this.#processes) if (this.#sessionKeys.has(processKey(info))) pids.add(info.pid);
+    return pids;
+  }
+
+  /**
+   * This function keeps the key of each live process that a session file names, with the same start (H183). It forgets the
+   * keys of the ended processes.
+   */
+  #rememberSessions(): void {
+    const byPid = new Map(this.#processes.map((info) => [info.pid, info]));
+    for (const session of this.#sessions) {
+      const info = byPid.get(session.pid);
+      if (info !== undefined && sameStart(info.startedAt, session.startedAt)) this.#sessionKeys.add(processKey(info));
+    }
+    const live = new Set(this.#processes.map((info) => processKey(info)));
+    for (const key of this.#sessionKeys) if (!live.has(key)) this.#sessionKeys.delete(key);
   }
 
   /**
@@ -1083,12 +1109,18 @@ export class Engine {
     if (session !== undefined) {
       return { pid, outcome: "session", process: null, message: `${info.name} (pid ${pid}) is the process of the session ${session.name}. headroom reap does not stop a session.`, notice: null };
     }
+    // A read of the session files can skip a file that Claude Code writes at that time. Thus the name of the program and
+    // the earlier reads also keep the process of a session out.
+    if (isSessionProgram(info.name) || this.#sessionKeys.has(processKey(info))) {
+      return { pid, outcome: "session", process: null, message: `${info.name} (pid ${pid}) is a Claude Code program or the process of a session. headroom reap does not stop a session.`, notice: null };
+    }
     const byPid = new Map(this.#processes.map((each) => [each.pid, each]));
     const record = this.#records.get(info);
     if (record === undefined || !isOrphan(info, byPid, record)) {
       return { pid, outcome: "not-orphan", process: null, message: `The parent of ${info.name} (pid ${pid}) is not proven gone, so headroom does not reap it.`, notice: null };
     }
     const target = reapCandidate(info, record, now);
+    // Only the running session of the record can get a stop, and only when it is the caller.
     const step = reapStep(record, caller, liveSession(record, this.#sessions, this.#processes));
     const entry = {
       at: now,
@@ -1103,13 +1135,15 @@ export class Engine {
       command: record.command,
     };
     if (step === "stop") {
-      // A new process can have the ID after the last read. The start of the live process decides.
-      const verify = this.#sampler.processStart;
-      if (verify !== undefined) {
-        const start = verify(pid);
-        if (start === undefined || (info.startedAt !== undefined && Math.abs(start - info.startedAt) > 1)) {
-          return { pid, outcome: "ended", process: target, message: `${info.name} (pid ${pid}) ended before the stop. Nothing was stopped.`, notice: null };
-        }
+      // A new process can have the ID after the last read. The start of the live process decides. It must be the start of
+      // the read and the start of the record. With no start to compare, headroom stops nothing.
+      const start = this.#sampler.processStart?.(pid);
+      if (start === undefined || info.startedAt === undefined || record.created <= 0) {
+        const why = this.#sampler.processStart === undefined ? "This computer gives no start of a live process" : start === undefined ? "The process ended, or its start is not readable" : "The read of the processes has no start of the process";
+        return { pid, outcome: "ended", process: target, message: `${why}, so headroom cannot prove that ${info.name} (pid ${pid}) is the same process. Nothing was stopped.`, notice: null };
+      }
+      if (Math.abs(start - info.startedAt) > 1 || Math.abs(start - record.created) > 1) {
+        return { pid, outcome: "ended", process: target, message: `${info.name} (pid ${pid}) ended before the stop. Nothing was stopped.`, notice: null };
       }
       try {
         this.#stopProcess(pid);

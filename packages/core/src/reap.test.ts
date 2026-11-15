@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Engine } from "./engine.ts";
 import type { ProcessRecord } from "./orphans.ts";
 import {
+  liveSession,
   namesSessionFiles,
   ownSession,
   reapCandidates,
@@ -157,14 +158,39 @@ describe("the candidates of headroom reap (H183)", () => {
     expect(ownSession(kestrel, OTTER)).toBe(false);
     // The IDs decide over the names.
     expect(ownSession(kestrel, { name: "kestrel", id: "0000-other" })).toBe(false);
-    // A record of an older version has no ID: the names decide.
+    // A record of an older version has no ID. When the caller has an ID, the names do not prove the session: a new
+    // session can have the name of an ended session.
     expect(ownSession({ session: "kestrel", sessionId: null }, OTTER)).toBe(false);
-    expect(ownSession({ session: "kestrel", sessionId: null }, { name: "kestrel", id: "6f1c-kestrel" })).toBe(true);
+    expect(ownSession({ session: "kestrel", sessionId: null }, { name: "kestrel", id: "6f1c-kestrel" })).toBe(false);
+    // Only when the caller has no ID either, the names decide.
+    expect(ownSession({ session: "kestrel", sessionId: null }, { name: "kestrel", id: "" })).toBe(true);
     expect(ownSession(kestrel, null)).toBe(false);
     expect(reapStep(kestrel, KESTREL, live)).toBe("stop");
     expect(reapStep(kestrel, OTTER, live)).toBe("ask");
     expect(reapStep(kestrel, OTTER, undefined)).toBe("needs-owner");
     expect(reapStep(kestrel, null, live)).toBe("ask");
+  });
+
+  it("stops only when the running session of the record is the caller (H183)", () => {
+    const kestrel = record(27308, T0, GREP_COMMAND);
+    // The session kestrel ended. A caller with its name and its ID gets no stop: the process needs the owner of the machine.
+    expect(reapStep(kestrel, KESTREL, undefined)).toBe("needs-owner");
+  });
+
+  it("finds the running session of a record with no ID only when the session started before the process (H183)", () => {
+    const older = { session: "kestrel", sessionId: null, created: T0 - 3 * HOUR };
+    const processes = [node(100, 4, "claude.exe", T0 - 5 * HOUR), node(120, 4, "claude.exe", T0 - HOUR)];
+    const first = { pid: 100, name: "kestrel", sessionId: "6f1c-kestrel", status: null, cwd: null };
+    const restarted = { pid: 120, name: "kestrel", sessionId: "7e3a-kestrel", status: null, cwd: null };
+    // The session that ran before the process can be its session.
+    expect(liveSession(older, [first], processes)?.pid).toBe(100);
+    // A new session with the same name started after the process, so it is not the session of the process.
+    expect(liveSession(older, [restarted], processes)).toBeUndefined();
+    expect(reapStep(older, { name: "kestrel", id: "7e3a-kestrel" }, liveSession(older, [restarted], processes))).toBe("needs-owner");
+    // A record with no start cannot prove the order.
+    expect(liveSession({ ...older, created: 0 }, [first], processes)).toBeUndefined();
+    // The ID of a record decides with no order of the starts.
+    expect(liveSession({ session: "kestrel", sessionId: "7e3a-kestrel", created: T0 - 3 * HOUR }, [restarted], processes)?.pid).toBe(120);
   });
 
   it("gives the text of a request with the memory, the age and the end of the command line", () => {
@@ -184,6 +210,13 @@ describe("Engine reap (H183)", () => {
   let now: number;
   let shell: boolean;
   let kestrelRuns: boolean;
+  /** The name of the process of the session kestrel. On Linux a session can run as `node`. */
+  let kestrelName: string;
+  /** The terminal 50 is the parent of the process of the session kestrel. */
+  let terminal: boolean;
+  /** A new session with the name kestrel: the process 120 that started after grep.exe. */
+  let restarted: boolean;
+  let extra: ProcessInfo[];
   let grep: ProcessInfo | null;
   let liveStart: (pid: number) => number | undefined;
   let stops: number[];
@@ -191,11 +224,42 @@ describe("Engine reap (H183)", () => {
 
   const list = (): ProcessInfo[] => [
     node(4, 0, "System", 0),
-    ...(kestrelRuns ? [node(100, 4, "claude.exe", T0 - 5 * HOUR)] : []),
+    ...(terminal ? [node(50, 4, "WindowsTerminal.exe", T0 - 6 * HOUR)] : []),
+    ...(kestrelRuns ? [node(100, 50, kestrelName, T0 - 5 * HOUR)] : []),
     node(110, 4, "claude.exe", T0 - HOUR),
+    ...(restarted ? [node(120, 4, "claude.exe", T0 + 5_000)] : []),
     ...(shell ? [node(200, 100, "bash.exe", T0 - 3.5 * HOUR - MIN)] : []),
     ...(grep === null ? [] : [grep]),
+    ...extra,
   ];
+
+  const makeSampler = (withStart = true): Sampler => ({
+    memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: list,
+    commandLine: (pid) => (pid === 27308 ? GREP_LINE : null),
+    ...(withStart ? { processStart: (pid: number) => liveStart(pid) } : {}),
+    stdoutKind: () => "pipe",
+    close: () => undefined,
+  });
+
+  /** This function makes an engine that reads the processes while the shell runs, and again after the shell ended. */
+  const start = (sampler: Sampler = makeSampler(), stopProcess: (pid: number) => void = (pid) => stops.push(pid)): Engine => {
+    now = T0;
+    shell = true;
+    const made = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: sessions, stopProcess });
+    made.tick();
+    // The shell ends, and grep.exe stays.
+    shell = false;
+    now += 10_000;
+    made.tick();
+    return made;
+  };
+
+  /** This function closes the engine of `beforeEach` and makes a new one. */
+  const restart = (sampler?: Sampler, stopProcess?: (pid: number) => void): void => {
+    engine.close();
+    engine = start(sampler, stopProcess);
+  };
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "headroom-reap-"));
@@ -203,27 +267,16 @@ describe("Engine reap (H183)", () => {
     mkdirSync(sessions);
     writeFileSync(join(sessions, "kestrel.json"), JSON.stringify({ pid: 100, name: "kestrel", sessionId: "6f1c-kestrel" }));
     writeFileSync(join(sessions, "otter.json"), JSON.stringify({ pid: 110, name: "otter", sessionId: "9a2d-otter" }));
-    now = T0;
-    shell = true;
     kestrelRuns = true;
+    kestrelName = "claude.exe";
+    terminal = true;
+    restarted = false;
+    extra = [];
     // The real case: grep.exe over a transcript, 1.5 GB private, 3.5 hours old.
     grep = node(27308, 200, "grep.exe", T0 - 3.5 * HOUR, 1536);
     liveStart = (pid) => list().find((each) => each.pid === pid)?.startedAt;
     stops = [];
-    const sampler: Sampler = {
-      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
-      processes: list,
-      commandLine: (pid) => (pid === 27308 ? GREP_LINE : null),
-      processStart: (pid) => liveStart(pid),
-      stdoutKind: () => "pipe",
-      close: () => undefined,
-    };
-    engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: sessions, stopProcess: (pid) => stops.push(pid) });
-    engine.tick();
-    // The shell ends, and grep.exe stays.
-    shell = false;
-    now += 10_000;
-    engine.tick();
+    engine = start();
   });
 
   afterEach(() => {
@@ -331,5 +384,101 @@ describe("Engine reap (H183)", () => {
     expect(engine.reap(4242, KESTREL)).toMatchObject({ outcome: "not-found" });
     expect(engine.reap(100, KESTREL)).toMatchObject({ outcome: "session" });
     expect(engine.reapLog()).toEqual([]);
+  });
+
+  it("stops nothing when the sampler cannot read the start of a live process", () => {
+    restart(makeSampler(false));
+    expect(engine.reap(27308, KESTREL)).toMatchObject({ outcome: "ended" });
+    expect(stops).toEqual([]);
+    expect(engine.reapLog()).toEqual([]);
+  });
+
+  it("stops nothing when the live start is unknown", () => {
+    liveStart = () => undefined;
+    expect(engine.reap(27308, KESTREL)).toMatchObject({ outcome: "ended" });
+    expect(stops).toEqual([]);
+  });
+
+  it("stops nothing when the read has no start of the process", () => {
+    // The read gives no start of grep.exe, but the live process has one. No known start can prove that it is the same process.
+    grep = { pid: 27308, ppid: 200, name: "grep.exe", privateMb: 1536, workingMb: 1536 };
+    liveStart = (pid) => (pid === 27308 ? T0 - 3.5 * HOUR : list().find((each) => each.pid === pid)?.startedAt);
+    restart();
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
+    expect(engine.reap(27308, KESTREL)).toMatchObject({ outcome: "ended" });
+    expect(stops).toEqual([]);
+  });
+
+  it("writes a failed stop to the reap log", () => {
+    restart(undefined, () => {
+      throw new Error("access denied");
+    });
+    const result = engine.reap(27308, KESTREL);
+    expect(result).toMatchObject({ outcome: "failed", notice: null });
+    expect(result.message).toContain("access denied");
+    expect(engine.reapLog()).toMatchObject([{ pid: 27308, action: "stopped", by: "kestrel", result: "failed: access denied" }]);
+  });
+
+  it("does not stop for a caller whose session no longer runs", () => {
+    kestrelRuns = false;
+    now += 10_000;
+    engine.tick();
+    expect(engine.reap(27308, KESTREL)).toMatchObject({ outcome: "needs-owner" });
+    expect(stops).toEqual([]);
+  });
+
+  it("does not stop an orphan of an ended session for a new session with the same name", () => {
+    // A session file of an older version has no ID, so the record of grep.exe has the session name only.
+    writeFileSync(join(sessions, "kestrel.json"), JSON.stringify({ pid: 100, name: "kestrel" }));
+    restart();
+    expect(engine.reapList()).toMatchObject([{ pid: 27308, session: "kestrel", sessionId: null }]);
+    // The session kestrel ends. A new session with the same name and a new ID starts.
+    kestrelRuns = false;
+    restarted = true;
+    writeFileSync(join(sessions, "kestrel.json"), JSON.stringify({ pid: 120, name: "kestrel", sessionId: "7e3a-kestrel" }));
+    now += 10_000;
+    engine.tick();
+    expect(engine.reap(27308, { name: "kestrel", id: "7e3a-kestrel" })).toMatchObject({ outcome: "needs-owner" });
+    expect(stops).toEqual([]);
+  });
+
+  it("does not stop the process of a session when its session file is not readable at one read", () => {
+    // The terminal of the session kestrel ends, so the process of the session is an orphan.
+    terminal = false;
+    now += 10_000;
+    engine.tick();
+    expect(engine.reapList()).toEqual([expect.objectContaining({ pid: 27308 })]);
+    // Claude Code writes the session file again, and the read finds half of it.
+    writeFileSync(join(sessions, "kestrel.json"), "{");
+    now += 10_000;
+    engine.tick();
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
+    expect(engine.reap(100, KESTREL)).toMatchObject({ outcome: "session" });
+    expect(engine.reap(100, OTTER)).toMatchObject({ outcome: "session" });
+    expect(stops).toEqual([]);
+    expect(engine.reapLog()).toEqual([]);
+  });
+
+  it("does not stop a session that runs as node when its session file is not readable at one read", () => {
+    kestrelName = "node";
+    restart();
+    terminal = false;
+    now += 10_000;
+    engine.tick();
+    writeFileSync(join(sessions, "kestrel.json"), "{");
+    now += 10_000;
+    engine.tick();
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
+    expect(engine.reap(100, KESTREL)).toMatchObject({ outcome: "session" });
+    expect(stops).toEqual([]);
+  });
+
+  it("does not stop a process named claude", () => {
+    // A claude.exe that a shell of the session started. Its shell ended.
+    extra = [node(27900, 200, "claude.exe", T0 - 2 * HOUR, 300)];
+    restart();
+    expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
+    expect(engine.reap(27900, KESTREL)).toMatchObject({ outcome: "session" });
+    expect(stops).toEqual([]);
   });
 });

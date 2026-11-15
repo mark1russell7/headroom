@@ -104,8 +104,9 @@ export type ReapAction = "stopped" | "asked" | "needs-owner";
  *
  * - `not-found`: no process has the ID.
  * - `not-orphan`: the parent of the process is not proven gone.
- * - `session`: the process is the process of a session. `headroom reap` does not stop a session.
- * - `ended`: the process ended, or a new process has its ID, before the stop.
+ * - `session`: the process is the process of a session, or a `claude` program. `headroom reap` does not stop a session.
+ * - `ended`: the process ended, or a new process has its ID, before the stop. headroom also stops nothing when it cannot
+ *   read the start of the live process, or when the read of the processes has no start of the process.
  * - `failed`: the stop of an own process failed.
  */
 export type ReapOutcome = ReapAction | "not-found" | "not-orphan" | "session" | "ended" | "failed";
@@ -138,6 +139,14 @@ export interface ReapResult {
   readonly message: string;
   /** The text of the request to the owner, for `asked` and `needs-owner`. */
   readonly notice: string | null;
+}
+
+/**
+ * This function tells if a program is a Claude Code program (H183): `claude` or `claude.exe`. `headroom reap` does not
+ * list or stop such a process, also when a read of the session files misses its session.
+ */
+export function isSessionProgram(name: string): boolean {
+  return programName(name) === "claude";
 }
 
 /** This function tells if a program is of the reader class (H183): grep, rg, sort, findstr or cat. */
@@ -196,7 +205,8 @@ export function reapCandidate(info: ProcessInfo, record: ProcessRecord, now: num
 /**
  * This function lists the processes whose parent is proven gone (H183), the most private memory first. A process with no
  * record is not in the list, because no record proves its owner. By default the list has only the processes of a session.
- * `all` also lists the orphans that no session started. The process of a session (`sessionPids`) is not in the list.
+ * `all` also lists the orphans that no session started. The process of a session (`sessionPids`) and a `claude` program
+ * are not in the list.
  */
 export function reapCandidates(
   processes: readonly ProcessInfo[],
@@ -208,7 +218,7 @@ export function reapCandidates(
   const byPid = new Map(processes.map((info) => [info.pid, info]));
   const list: ReapCandidate[] = [];
   for (const info of processes) {
-    if (info.pid === 0 || sessionPids.has(info.pid)) continue;
+    if (info.pid === 0 || sessionPids.has(info.pid) || isSessionProgram(info.name)) continue;
     const record = recordOf(info);
     if (record === undefined || !isOrphan(info, byPid, record)) continue;
     if (!all && record.session === null) continue;
@@ -218,37 +228,54 @@ export function reapCandidates(
 }
 
 /**
- * This function tells if a process belongs to a session (H183). When the record and the caller have the ID of a session,
- * the IDs decide. Otherwise the names decide.
+ * This function tells if a process belongs to the session of the caller (H183). When the record and the caller have the
+ * ID of a session, the IDs decide. When only the caller has an ID, the record does not prove the session: a new session
+ * can have the name of a session that ended. Only when the caller has no ID, the names decide.
  */
 export function ownSession(record: Pick<ProcessRecord, "session" | "sessionId">, caller: SessionRef | null): boolean {
   if (caller === null || record.session === null) return false;
   if (record.sessionId !== null && caller.id !== "") return record.sessionId === caller.id;
+  if (caller.id !== "") return false;
   return caller.name !== "" && record.session === caller.name;
+}
+
+/** This function tells if a running session is the session of the caller (H183): by the IDs, else by the names. */
+function isCaller(session: SessionInfo, caller: SessionRef): boolean {
+  if (session.sessionId !== "" && caller.id !== "") return session.sessionId === caller.id;
+  return caller.name !== "" && session.name === caller.name;
 }
 
 /**
  * This function finds the running session of a record (H183). A session runs when its session file names a live process
  * with the same start. An unknown start matches each start.
+ *
+ * When the record and the session file have an ID, the IDs decide. Otherwise the names decide, and the process of the
+ * session must have started at or before the process of the record. A session that started later is a new session with
+ * the name of a session that ended. A record or a process with no start cannot prove the order, so it has no session.
  */
 export function liveSession(
-  record: Pick<ProcessRecord, "session" | "sessionId">,
+  record: Pick<ProcessRecord, "session" | "sessionId" | "created">,
   sessions: readonly SessionInfo[],
   processes: readonly ProcessInfo[],
 ): SessionInfo | undefined {
   if (record.session === null) return undefined;
   const byPid = new Map(processes.map((info) => [info.pid, info]));
   return sessions.find((session) => {
-    const same = record.sessionId !== null && session.sessionId !== "" ? session.sessionId === record.sessionId : session.name === record.session;
     const info = byPid.get(session.pid);
-    return same && info !== undefined && sameStart(info.startedAt, session.startedAt);
+    if (info === undefined || !sameStart(info.startedAt, session.startedAt)) return false;
+    if (record.sessionId !== null && session.sessionId !== "") return session.sessionId === record.sessionId;
+    return session.name === record.session && record.created > 0 && info.startedAt !== undefined && info.startedAt <= record.created + 1;
   });
 }
 
-/** This function gives the step of `headroom reap <pid>` for a proven orphan (H183). */
+/**
+ * This function gives the step of `headroom reap <pid>` for a proven orphan (H183). `owner` is the running session of the
+ * record (`liveSession()`). Only when that session is the session of the caller, the step is a stop.
+ */
 export function reapStep(record: Pick<ProcessRecord, "session" | "sessionId">, caller: SessionRef | null, owner: SessionInfo | undefined): ReapStep {
-  if (ownSession(record, caller)) return "stop";
-  return owner === undefined ? "needs-owner" : "ask";
+  if (owner === undefined) return "needs-owner";
+  if (caller !== null && isCaller(owner, caller) && (ownSession(record, caller) || record.sessionId === null)) return "stop";
+  return "ask";
 }
 
 /**

@@ -176,9 +176,10 @@ export type { ProcessRecord, RecordChanges } from "./orphans.ts";
 export { gainAt, gainPerMinute, HANDLE_HOLDERS_SHOWN, HandleTracker, handleStatus, handlesLines, handlesText, HANDLES_FLOOR, HANDLES_TRAIL_MS } from "./handles.ts";
 export type { HandleHolder, HandleStatus } from "./handles.ts";
 export type { Attribution, KeptOwner, OwnerRule, ParentRecord, SessionRef } from "./owners.ts";
-export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, sameStart } from "./peer.ts";
+export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, sameStart, startedFirst } from "./peer.ts";
 export {
   isReader,
+  isSessionProgram,
   liveSession,
   namesSessionFiles,
   ownSession,
