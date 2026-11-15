@@ -17,7 +17,7 @@
     "vitest": "^5.0.3"
   },
   "dependencies": {
-    "@mark1russell7/sqlite": "^0.2.5",
+    "@mark1russell7/sqlite": "^0.3.1",
     "koffi": "^3.3.3"
   }
 }
