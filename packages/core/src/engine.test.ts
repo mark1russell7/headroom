@@ -895,7 +895,7 @@ describe("Engine handles and orphans (H48)", () => {
     try {
       const sessions = join(dir, "sessions");
       mkdirSync(sessions);
-      writeFileSync(join(sessions, "s1.json"), JSON.stringify({ pid: 11, name: "server-stack tools", sessionId: "s1" }));
+      writeFileSync(join(sessions, "s1.json"), JSON.stringify({ pid: 11, name: "harbor-crane tools", sessionId: "s1" }));
       let now = 1_800_000_000_000;
       const start = now;
       const node = (pid: number, ppid: number, name: string, startedAt: number, handles: number): ProcessInfo => ({ pid, ppid, name, privateMb: 10, workingMb: 10, startedAt, handles });
@@ -925,11 +925,11 @@ describe("Engine handles and orphans (H48)", () => {
         first.tick();
       }
       const status = first.status();
-      expect(status.owners.find((each) => each.owner === "session:server-stack tools (orphan)")).toMatchObject({ kind: "other", processes: 1 });
+      expect(status.owners.find((each) => each.owner === "session:harbor-crane tools (orphan)")).toMatchObject({ kind: "other", processes: 1 });
       expect(status.handles).toMatchObject({ total: 12_000 + 900 + 54_000, warning: 100_000 });
       expect(status.resources.find((each) => each.id === "handles")).toMatchObject({ kind: "handles", unit: "count", used: 66_900 });
       expect(first.alerts().active.find((each) => each.kind === "handles")?.message).toBe(
-        "find.exe (pid 13) holds 54,000 handles, +24,000 a minute. It started 2 min ago. Owner: session:server-stack tools (orphan, parent ended)." +
+        "find.exe (pid 13) holds 54,000 handles, +24,000 a minute. It started 2 min ago. Owner: session:harbor-crane tools (orphan, parent ended)." +
           " Command: find / -name WIRE-PROTOCOL.md -path *procedures*. The owner stops it by its pid.",
       );
       first.close();
@@ -939,7 +939,7 @@ describe("Engine handles and orphans (H48)", () => {
       now += 60_000;
       const second = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: sessions });
       second.tick();
-      expect(second.status().owners.some((each) => each.owner === "session:server-stack tools (orphan)")).toBe(true);
+      expect(second.status().owners.some((each) => each.owner === "session:harbor-crane tools (orphan)")).toBe(true);
       expect(second.alerts().active.find((each) => each.kind === "handles")).toMatchObject({ id: "runaway:handles:13", severity: "critical" });
       // find.exe ends: the alert ends, and the store loses its record.
       found = false;

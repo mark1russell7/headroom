@@ -15,7 +15,7 @@ const p = (pid: number, ppid: number, name: string, handles?: number, startedAt 
 // find.exe (27056) is an orphan: its parent bash.exe (900) ended. The record keeps the session as its owner.
 const find = p(27056, 900, "find.exe", 1_313_105);
 const record: ProcessRecord = {
-  pid: 27056, created: find.startedAt ?? 0, ppid: 900, parentCreated: 1_300_000, owner: "session:server-stack tools", session: "server-stack tools", sessionId: null,
+  pid: 27056, created: find.startedAt ?? 0, ppid: 900, parentCreated: 1_300_000, owner: "session:harbor-crane tools", session: "harbor-crane tools", sessionId: null,
   command: "find / -name WIRE-PROTOCOL.md -path *procedures*", firstSeen: T0 - 44 * MIN,
 };
 
@@ -28,8 +28,8 @@ function handleAlerts(values: readonly number[], active: AlertInput["active"] = 
   return detect({
     memory,
     processes,
-    ownerOf: new Map([[27056, "session:server-stack tools (orphan)"]]),
-    kindOf: new Map([["session:server-stack tools (orphan)", "other"]]),
+    ownerOf: new Map([[27056, "session:harbor-crane tools (orphan)"]]),
+    kindOf: new Map([["session:harbor-crane tools (orphan)", "other"]]),
     leases: [],
     at: T0,
     handles: [{ pid: 27056, trail: trailOf(values, T0, stepMs) }],
@@ -52,7 +52,7 @@ describe("the handles alert (H48)", () => {
         severity: "critical",
         rule: "trail",
         message:
-          "find.exe (pid 27056) holds 1,313,105 handles, +40,000 a minute. It started 44 min ago. Owner: session:server-stack tools (orphan, parent ended)." +
+          "find.exe (pid 27056) holds 1,313,105 handles, +40,000 a minute. It started 44 min ago. Owner: session:harbor-crane tools (orphan, parent ended)." +
           " Command: find / -name WIRE-PROTOCOL.md -path *procedures*. The owner stops it by its pid.",
       },
     ]);
@@ -94,7 +94,7 @@ describe("the handles alert (H48)", () => {
     expect(handleAlerts([600_000, 600_000], critical, { processes: [] })).toEqual([]);
     const child = { ...find, ppid: 1 };
     const [alert] = handleAlerts([200_000, 200_000], [], { processes: [p(1, 0, "bash.exe", 10), child], recordOf: () => undefined });
-    expect(alert?.message).toBe("find.exe (pid 27056) holds 200,000 handles. It started 44 min ago. Owner: session:server-stack tools (orphan). The owner stops it by its pid.");
+    expect(alert?.message).toBe("find.exe (pid 27056) holds 200,000 handles. It started 44 min ago. Owner: session:harbor-crane tools (orphan). The owner stops it by its pid.");
   });
 });
 
@@ -135,10 +135,10 @@ describe("the handles of the computer (H48)", () => {
   it("names the top 3 processes in headroom status only when one is above the warning line", () => {
     const quiet = handleStatus(processes, new Map(), () => undefined, DEFAULT_ALERT_RULES.handlesWarn);
     expect(handlesLines(quiet)).toEqual(["Handles: 26,087 in all."]);
-    const loud = handleStatus([...processes, find], new Map([[27056, "session:server-stack tools (orphan)"]]), (info) => (info.pid === 27056 ? record : undefined), DEFAULT_ALERT_RULES.handlesWarn);
+    const loud = handleStatus([...processes, find], new Map([[27056, "session:harbor-crane tools (orphan)"]]), (info) => (info.pid === 27056 ? record : undefined), DEFAULT_ALERT_RULES.handlesWarn);
     expect(handlesLines(loud)).toEqual([
       "Handles: 1,339,192 in all. Most handles:",
-      "  find.exe (27056)          1,313,105  session:server-stack tools (orphan, parent ended)  find / -name WIRE-PROTOCOL.md -path *procedures*",
+      "  find.exe (27056)          1,313,105  session:harbor-crane tools (orphan, parent ended)  find / -name WIRE-PROTOCOL.md -path *procedures*",
       "  System (4)                   12,558  other",
       "  explorer.exe (30)             7,466  other (orphan, parent ended)",
     ]);
