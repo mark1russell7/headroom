@@ -225,7 +225,7 @@ The alerts of today go onto the rules with no change to their ids, kinds, messag
 
 | Alert of today | Kind | Rule |
 |---|---|---|
-| `memory` | `memory` | Level on free: below 1024 MB. |
+| `memory` | `memory` | Level on free: below 1024 MB. A critical level below `availableCriticalMb`, when it is above 0 (H179). |
 | `cache` | `memory` | Check (H50): the system file cache at 4096 MB or more, with less than 6144 MB available. Critical below 1024 MB available. Clear below 3072 MB of cache, or above 8192 MB available. |
 | `commit` | `commit` | Level on used: above 90% of the commit limit. |
 | `pool` | `pool` (`pool:nonpaged`) | Level on used: above 3072 MB. Growth of used: more than 500 MB in one hour. |
@@ -239,6 +239,12 @@ The alerts of today go onto the rules with no change to their ids, kinds, messag
 
 - The pool tags, the new large files and the top writers come from `explain()`. Thus `detect()` adds no special text for a kind.
 - `AlertRules` keeps its fields. They become the defaults of the rules, so a test that sets `diskWarnMb` continues to work.
+
+**The setting `alerts` (H179).** The setting `alerts` in the table `settings` keeps the limits that differ from the base limits, as JSON. The base limits are `EngineOptions.alertRules`, or `DEFAULT_ALERT_RULES`, and each check of an order uses them with the stored limits. `changeAlertRules()` applies a change: a number sets a limit, and `null` gives one limit its base value. It refuses an unknown name, a number below 0, a ratio above 1, a percent above 100, and a warning past its critical limit. The pairs are `availableMb` and `availableCriticalMb`, `diskWarnMb` and `diskCriticalMb`, `batteryWarnMinutes` and `batteryCriticalMinutes`, the two CPU ratios, the two port ratios and the two handle counts.
+
+**The read of the setting (H179).** `alertRulesOf()` reads the stored text. It skips a name that is not a limit, and a bad text gives no differences, so a bad setting cannot stop the daemon. The engine keeps the merged limits and uses them at its next check, in the alerts, the forecasts and the reboot budget.
+
+**The critical level of the memory (H179).** `availableCriticalMb` gives the level rule of `memory` a critical limit. Its default is 0, and 0 adds no level and no forecast target. With a critical limit, the rule also gives its level in `severity`. Without one, the memory alert keeps its fields of before.
 
 ### 4. Admit
 

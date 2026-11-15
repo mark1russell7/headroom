@@ -9,6 +9,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { addMissingColumns, migrate, openDatabase, transaction, type Migration } from "@mark1russell7/sqlite";
+import { alertRulesOf, type AlertRules } from "./alerts.ts";
 import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow, ProcessReads } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
@@ -167,6 +168,11 @@ export interface Config {
    * daemon also removes the trees of the plan, in batches.
    */
   readonly worktreeAutoClean: boolean;
+  /**
+   * The alert limits that differ from the defaults (H179), by the names of `AlertRules`. A computer with its own lines (for
+   * example a hold of the jobs below 2 GB of available memory) sets them here. The default is no differences.
+   */
+  readonly alerts: Readonly<Partial<AlertRules>>;
 }
 
 /** The lowest level of the automatic drain that is not 0: 1 GB. The highest level: 1 TB. */
@@ -344,11 +350,12 @@ export class Store {
       presentReserve: cpuReserveOf(values.get("presentReserve"), PRESENT_RESERVE_DEFAULT),
       autoDrainMb: autoDrainOf(values.get("autoDrainMb")),
       worktreeAutoClean: values.get("worktreeAutoClean") === "on",
+      alerts: alertRulesOf(values.get("alerts")),
     };
   }
 
   /**
-   * This function sets one setting. `null` removes it. The value of `health` is the JSON text of its object. The value of
+   * This function sets one setting. `null` removes it. The value of `health` and `alerts` is the JSON text of its object. The value of
    * `presence` and `worktreeAutoClean` is `on` or `off`. The values of the other settings are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {

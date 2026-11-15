@@ -114,8 +114,10 @@ export interface AlertRules {
   readonly runawayMb: number;
   /** An orphan above this size, in MB, starts an alert. The default is 1024. */
   readonly orphanMb: number;
-  /** Less available memory than this, in MB, starts an alert. The default is 1024. */
+  /** Less available memory than this, in MB, starts a memory warning. The default is 1024. */
   readonly availableMb: number;
+  /** Less available memory than this, in MB, starts a critical memory alert (H179). The default is 0: no critical level. */
+  readonly availableCriticalMb: number;
   /** A system file cache of this size or more, in MB, starts a cache alert when little memory is available (H50). The default is 4096. */
   readonly cacheMb: number;
   /** A large system file cache with less available memory than this, in MB, starts a cache warning (H50). The default is 6144. */
@@ -201,6 +203,7 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   runawayMb: 4096,
   orphanMb: 1024,
   availableMb: 1024,
+  availableCriticalMb: 0,
   cacheMb: 4096,
   cacheAvailableMb: 6144,
   commitRatio: 0.9,
@@ -241,6 +244,67 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   dockerBuildCacheMb: 20_480,
   dockerUnusedImagesMb: 10_240,
 };
+
+/**
+ * The pairs of limits with an order (H179). A warning comes before its critical level. For an amount that is free, the
+ * warning limit is the larger one. For an amount in use, the warning limit is the smaller one.
+ */
+const ALERT_RULE_ORDER: readonly (readonly [warning: keyof AlertRules, critical: keyof AlertRules, on: "free" | "used"])[] = [
+  ["availableMb", "availableCriticalMb", "free"],
+  ["diskWarnMb", "diskCriticalMb", "free"],
+  ["batteryWarnMinutes", "batteryCriticalMinutes", "free"],
+  ["cpuWarnRatio", "cpuCriticalRatio", "used"],
+  ["portsWarnRatio", "portsCriticalRatio", "used"],
+  ["handlesWarn", "handlesCritical", "used"],
+];
+
+/** A change of the alert limits (H179). A number sets a limit, and `null` gives the default of the limit back. */
+export type AlertRulesChange = { readonly [K in keyof AlertRules]?: number | null | undefined };
+
+/**
+ * This function applies a change to the stored alert limits (H179), and gives the new set. `base` gives each other limit.
+ * Each limit must be a value of 0 or more. A ratio is at most 1, and a percent is at most 100. A warning must not go
+ * past its critical level. With an unknown name or a bad number, it gives a `RangeError` and changes nothing.
+ */
+export function changeAlertRules(current: Partial<AlertRules>, change: unknown, base: AlertRules = DEFAULT_ALERT_RULES): Partial<AlertRules> {
+  if (typeof change !== "object" || change === null || Array.isArray(change)) throw new RangeError("A change of the alert limits must be an object of names and numbers");
+  const next: Record<string, number> = { ...current };
+  for (const [name, value] of Object.entries(change)) {
+    if (!Object.hasOwn(base, name)) throw new RangeError(`${name} is not an alert limit. The limits are: ${Object.keys(base).join(", ")}`);
+    if (value === null || value === undefined) {
+      delete next[name];
+      continue;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new RangeError(`The alert limit ${name} must be a value of 0 or more`);
+    if (name.endsWith("Ratio") && value > 1) throw new RangeError(`The alert limit ${name} is a part of the whole: a number from 0 to 1`);
+    if (name.endsWith("Percent") && value > 100) throw new RangeError(`The alert limit ${name} is a percent: a number from 0 to 100`);
+    next[name] = value;
+  }
+  const merged: AlertRules = { ...base, ...next };
+  for (const [warning, critical, on] of ALERT_RULE_ORDER) {
+    // A critical limit of 0 on an amount that is free turns the critical level off.
+    if (on === "free" ? merged[warning] >= merged[critical] : merged[warning] <= merged[critical]) continue;
+    const word = on === "free" ? "at least" : "at most";
+    throw new RangeError(`The warning limit ${warning} (${merged[warning]}) must be ${word} its critical limit ${critical} (${merged[critical]})`);
+  }
+  return next as Partial<AlertRules>;
+}
+
+/**
+ * This function reads the stored alert limits (H179): the JSON text of the setting `alerts`. It skips a name that is not
+ * a limit of `base`, for example a limit that a later version removed. A text that is not a valid set gives no
+ * differences, so a bad setting cannot stop the daemon. The daemon then uses the base limits.
+ */
+export function alertRulesOf(text: string | undefined, base: AlertRules = DEFAULT_ALERT_RULES): Partial<AlertRules> {
+  if (text === undefined) return {};
+  try {
+    const stored: unknown = JSON.parse(text);
+    if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return {};
+    return changeAlertRules({}, Object.fromEntries(Object.entries(stored).filter(([name]) => Object.hasOwn(base, name))), base);
+  } catch {
+    return {};
+  }
+}
 
 /** One fixed drive, with the free space that it lost over the last hour. */
 export interface DiskInput extends DiskSpace {

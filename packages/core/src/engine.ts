@@ -3,7 +3,7 @@
  * calls `tick()` every few seconds, and after each request and each release.
  */
 
-import { DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type DiskInput } from "./alerts.ts";
+import { changeAlertRules, DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type AlertRulesChange, type DiskInput } from "./alerts.ts";
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { conditionWait, localClock, nextUnmet, USAGE_UNSET, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
@@ -115,7 +115,7 @@ export interface EngineOptions {
   readonly reserveMb?: number | undefined;
   /** The count of logical processors: the capacity of `cpu`. The default is `os.availableParallelism()`. */
   readonly processors?: number | undefined;
-  /** The limits of the alerts. The default is `DEFAULT_ALERT_RULES`. */
+  /** The base limits of the alerts. The default is `DEFAULT_ALERT_RULES`. The setting `alerts` changes them (H179). */
   readonly alertRules?: AlertRules | undefined;
   /** The time between two reads of the process list. The default is 10 seconds. */
   readonly processEveryMs?: number | undefined;
@@ -274,6 +274,11 @@ export interface ConfigChange {
   readonly autoDrainMb?: number | null | undefined;
   /** The automatic worktree cleanup (H175): true for on, false for off. `null` gives the default: off. */
   readonly worktreeAutoClean?: boolean | null | undefined;
+  /**
+   * A change of the alert limits (H179), merged into the stored differences. A number sets a limit, and `null` gives the
+   * base value of one limit back. `null` for the whole change removes all the differences.
+   */
+  readonly alerts?: AlertRulesChange | null | undefined;
 }
 
 /** This function gives the presence rules from the settings (H33). */
@@ -478,7 +483,9 @@ export class Engine {
   readonly #largeFiles: (mounts: readonly string[]) => readonly LargeFile[];
   /** The last search for large files: its time, the drives of its alerts, and the files. */
   #files: { readonly at: number; readonly mounts: string; readonly list: readonly LargeFile[] } | null = null;
-  readonly #alertRules: AlertRules;
+  /** The base limits of the alerts, and the limits with the stored differences (H179). */
+  readonly #baseAlertRules: AlertRules;
+  #alertRules: AlertRules;
   readonly #alerts = new Map<string, Alert>();
   #ended: EndedAlert[] = [];
   /** The event alerts, with the time when each one ends. */
@@ -567,7 +574,8 @@ export class Engine {
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#servers = options.servers ?? (() => new Map());
     this.#services = options.services ?? (() => []);
-    this.#alertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
+    this.#baseAlertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
+    this.#alertRules = this.#rulesWith(this.#store.config().alerts);
     this.#largeFiles = options.largeFiles ?? ((mounts) => largeFiles(largeFileDirs(mounts), this.#now() - FILES_SINCE_MS));
     this.#sleepGapMs = options.sleepGapMs ?? Number.POSITIVE_INFINITY;
     this.#startedAt = this.#now();
@@ -1017,10 +1025,11 @@ export class Engine {
 
   /**
    * This function changes the settings. `null` removes a setting. It refuses a temp root that is not an absolute folder, and
-   * a URL of `health` that is not http or https. It also refuses a limit of `spawnHeavy` that is not a whole number above 0.
-   * With an error, it changes no setting.
+   * a URL of `health` that is not http or https. It also refuses a limit of `spawnHeavy` that is not a whole number above 0,
+   * and a bad change of the alert limits (`changeAlertRules`). With an error, it changes no setting.
    */
   setConfig(change: ConfigChange): Config {
+    const alerts = change.alerts === undefined || change.alerts === null ? change.alerts : changeAlertRules(this.#store.config().alerts, change.alerts, this.#baseAlertRules);
     const jobTemp = change.jobTemp === undefined || change.jobTemp === null ? change.jobTemp : checkJobTemp(change.jobTemp);
     const health = change.health === undefined || change.health === null ? change.health : JSON.stringify(checkHealth(change.health));
     const limit = change.spawnHeavy;
@@ -1071,6 +1080,11 @@ export class Engine {
       this.#autoHighSince = null;
     }
     if (autoClean !== undefined) this.#store.setConfig("worktreeAutoClean", autoClean === null ? null : autoClean ? "on" : "off");
+    if (alerts !== undefined) {
+      // H179: an empty set is no setting. The next sample examines the new limits.
+      this.#store.setConfig("alerts", alerts === null || Object.keys(alerts).length === 0 ? null : JSON.stringify(alerts));
+      this.#alertRules = this.#rulesWith(this.#store.config().alerts);
+    }
     if (presence) {
       if (change.presence !== undefined) this.#store.setConfig("presence", change.presence === null ? null : change.presence ? "on" : "off");
       if (change.awayAfterMs !== undefined) this.#store.setConfig("awayAfterMs", change.awayAfterMs === null ? null : String(change.awayAfterMs));
@@ -1087,6 +1101,16 @@ export class Engine {
       this.#persist(this.#broker.tick(this.capacity()));
     }
     return this.#store.config();
+  }
+
+  /** This function gives the limits of the alerts (H179): the base limits with the stored differences. */
+  alertRules(): AlertRules {
+    return this.#alertRules;
+  }
+
+  /** This function gives the base limits with the differences `alerts` (H179). */
+  #rulesWith(alerts: Partial<AlertRules>): AlertRules {
+    return { ...this.#baseAlertRules, ...alerts };
   }
 
   /** This function gives the health of each service after the last round of checks (H27). */

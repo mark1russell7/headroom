@@ -3,8 +3,8 @@
  * It uses no package of the client, so other programs can embed it.
  */
 
-export { DEFAULT_ALERT_RULES, detect, diskLevel, diskSize } from "./alerts.ts";
-export type { Alert, AlertInput, AlertKind, AlertRules, AlertSeverity, DiskInput } from "./alerts.ts";
+export { alertRulesOf, changeAlertRules, DEFAULT_ALERT_RULES, detect, diskLevel, diskSize } from "./alerts.ts";
+export type { Alert, AlertInput, AlertKind, AlertRules, AlertRulesChange, AlertSeverity, DiskInput } from "./alerts.ts";
 export { counterDelta, CounterTracker, TRAIL_MS } from "./counters.ts";
 export type { Counter, CounterRow, OwnerCores, OwnerReads, OwnerWrites, ProcessReads } from "./counters.ts";
 export {

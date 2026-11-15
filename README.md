@@ -278,6 +278,24 @@ headroom tells the time until each resource reaches a limit, so the sessions act
 - A pool alert names the owners with the most process starts and the pool tags that grow. A commit alert names the owners with the most private memory.
 - An active forecast alert ends past 1.25 times its horizon, so a small change of the rate does not end it and start it again.
 
+### The alert limits (H179)
+
+Each limit of the alerts has a default, for example 1 GB of available memory. A computer with its own lines sets them in the store:
+
+```sh
+headroom config alerts availableMb 3072          # a memory warning below 3 GB available
+headroom config alerts availableCriticalMb 2048  # a critical memory alert below 2 GB available
+headroom config alerts diskWarnMb 15360          # a disk warning below 15 GB free
+headroom config alerts availableCriticalMb --clear
+headroom config alerts                           # the limits that differ from the defaults
+headroom config alerts --clear                   # all the defaults again
+```
+
+- The names are the fields of `AlertRules`. A limit is a value of 0 or more. A ratio is at most 1, and a percent is at most 100.
+- A warning must not go past its critical limit. For a free amount, the warning limit is the larger one.
+- The memory alert has no critical level by default. With `availableCriticalMb`, the memory alert gives its level in `severity`, and the forecast gets a second target.
+- The next read of the processes, 10 seconds or less later, uses the new limits.
+
 ### What uses the space, and a safe cleanup (H21)
 
 `headroom disk report` shows what uses the space of each drive. `headroom disk clean` removes only the data that is disposable by definition. All other data goes to Mark.

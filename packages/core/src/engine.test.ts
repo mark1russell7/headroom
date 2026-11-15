@@ -556,7 +556,7 @@ describe("Engine disk leases and temp folders", () => {
       const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
       expect(() => engine.setConfig({ jobTemp: "relative\\tmp" })).toThrow(/absolute path/);
       expect(engine.sweepJobTemp()).toEqual([]);
-      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false });
+      expect(engine.setConfig({ jobTemp: root })).toEqual({ jobTemp: root, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
       const ended = engine.request({ holder: "a", job: "test", amounts: {}, ttlMs: 60_000 });
       const active = engine.request({ holder: "b", job: "test", amounts: {}, ttlMs: 60_000 });
       engine.release(ended.id, "the job ended", null, { tempMb: 0 });
@@ -953,5 +953,58 @@ describe("Engine handles and orphans (H48)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Engine alert limits as a setting (H179)", () => {
+  let availableMb = 1800;
+  let now = 1_000_000;
+  /** One read of the process list, and with it the check of the alerts: the reads come each 10 seconds. */
+  const read = (engine: Engine): void => {
+    now += 11_000;
+    engine.tick();
+  };
+  const sampler: Sampler = {
+    memory: () => ({ totalMb: 28_000, availableMb, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+    processes: () => [],
+    close: () => undefined,
+  };
+  const memoryAlert = (engine: Engine) => engine.alerts().active.find((each) => each.id === "memory");
+
+  it("uses the stored limits at the next tick, keeps them after a restart, and refuses a bad change", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-alert-limits-"));
+    const path = join(dir, "limits.db");
+    const engine = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    read(engine);
+    // 1800 MB is above the default line of 1024 MB.
+    expect(memoryAlert(engine)).toBeUndefined();
+    expect(engine.config().alerts).toEqual({});
+
+    const config = engine.setConfig({ alerts: { availableMb: 3072, availableCriticalMb: 2048 } });
+    expect(config.alerts).toEqual({ availableMb: 3072, availableCriticalMb: 2048 });
+    expect(engine.alertRules()).toMatchObject({ availableMb: 3072, availableCriticalMb: 2048, poolMb: DEFAULT_ALERT_RULES.poolMb });
+    read(engine);
+    expect(memoryAlert(engine)).toMatchObject({ kind: "memory", severity: "critical", message: "Only 1800 MB of memory is available" });
+
+    // A bad change gives an error and keeps the stored limits.
+    expect(() => engine.setConfig({ alerts: { availableCriticalMb: 4096 } })).toThrow(/at least its critical limit/);
+    expect(() => engine.setConfig({ alerts: { notALimit: 1 } as never })).toThrow(/not an alert limit/);
+    expect(engine.config().alerts).toEqual({ availableMb: 3072, availableCriticalMb: 2048 });
+    engine.close();
+
+    availableMb = 2500;
+    const reopened = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+    expect(reopened.config().alerts).toEqual({ availableMb: 3072, availableCriticalMb: 2048 });
+    read(reopened);
+    expect(memoryAlert(reopened)?.severity).toBe("warning");
+    // null for one limit gives its default. The order check uses the merged limits, so the critical limit goes first.
+    expect(reopened.setConfig({ alerts: { availableCriticalMb: null } }).alerts).toEqual({ availableMb: 3072 });
+    // null for the whole change removes the setting.
+    expect(reopened.setConfig({ alerts: null }).alerts).toEqual({});
+    expect(reopened.alertRules()).toEqual(DEFAULT_ALERT_RULES);
+    read(reopened);
+    expect(memoryAlert(reopened)).toBeUndefined();
+    reopened.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
+import { alertRulesOf, changeAlertRules, DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import { cacheLevel } from "./resources.ts";
 import type { ServiceHealth } from "./services.ts";
@@ -121,6 +121,14 @@ describe("detect", () => {
         message: "1240 processes run in this session. With this many, a new process can stop at its start with 0xC0000142, because the desktop heap runs out.",
       },
     ]);
+  });
+
+  it("gives the memory alert a level when a critical limit is set (H179)", () => {
+    const lines = { ...DEFAULT_ALERT_RULES, availableMb: 3072, availableCriticalMb: 2048 };
+    const at = (availableMb: number) => detect({ ...input([], {}), memory: { ...memory, availableMb } }, lines).filter((each) => each.kind === "memory");
+    expect(at(3500)).toEqual([]);
+    expect(at(2500)).toStrictEqual([{ id: "memory", kind: "memory", subject: "memory", pid: null, mb: 2500, severity: "warning", message: "Only 2500 MB of memory is available" }]);
+    expect(at(1800)[0]?.severity).toBe("critical");
   });
 
   it("gives one alert for each process: a large orphan with no lease is a runaway", () => {
@@ -432,5 +440,50 @@ describe("cache alerts (H50)", () => {
     expect(cacheLevel(at(7000, 5000), limits, "warning")).toBe("warning");
     expect(cacheLevel(at(8200, 5000), limits, "warning")).toBeNull();
     expect(cacheLevel(at(900, 5000), limits, "warning")).toBe("critical");
+  });
+});
+
+describe("the stored alert limits (H179)", () => {
+  it("sets a limit, gives one limit its default with null, and keeps the other differences", () => {
+    const first = changeAlertRules({}, { availableMb: 3072, availableCriticalMb: 2048 });
+    expect(first).toEqual({ availableMb: 3072, availableCriticalMb: 2048 });
+    expect(changeAlertRules(first, { diskWarnMb: 15_360, diskCriticalMb: 10_240 })).toEqual({ ...first, diskWarnMb: 15_360, diskCriticalMb: 10_240 });
+    expect(changeAlertRules(first, { availableCriticalMb: null })).toEqual({ availableMb: 3072 });
+    // A ratio and a part of a core are not whole numbers.
+    expect(changeAlertRules({}, { cpuWarnRatio: 0.8, runawayCores: 2.5 })).toEqual({ cpuWarnRatio: 0.8, runawayCores: 2.5 });
+  });
+
+  it("refuses a bad change and changes nothing", () => {
+    const current = { availableMb: 3072 };
+    expect(() => changeAlertRules(current, "3072")).toThrow(/must be an object/);
+    expect(() => changeAlertRules(current, [3072])).toThrow(/must be an object/);
+    expect(() => changeAlertRules(current, { availableGb: 3 })).toThrow(/availableGb is not an alert limit/);
+    expect(() => changeAlertRules(current, { poolMb: -1 })).toThrow(/0 or more/);
+    expect(() => changeAlertRules(current, { poolMb: Number.NaN })).toThrow(/0 or more/);
+    expect(() => changeAlertRules(current, { poolMb: "3072" })).toThrow(/0 or more/);
+    expect(() => changeAlertRules(current, { commitRatio: 1.2 })).toThrow(/from 0 to 1/);
+    expect(() => changeAlertRules(current, { batteryCriticalPercent: 120 })).toThrow(/from 0 to 100/);
+    expect(current).toEqual({ availableMb: 3072 });
+  });
+
+  it("refuses a warning past its critical limit, with the merged values", () => {
+    // Free amounts: the warning is the larger limit.
+    expect(() => changeAlertRules({}, { availableCriticalMb: 2048 })).toThrow("The warning limit availableMb (1024) must be at least its critical limit availableCriticalMb (2048)");
+    expect(() => changeAlertRules({}, { diskWarnMb: 4096 })).toThrow(/diskWarnMb \(4096\) must be at least its critical limit diskCriticalMb \(5120\)/);
+    // Amounts in use: the warning is the smaller limit.
+    expect(() => changeAlertRules({}, { cpuWarnRatio: 0.99 })).toThrow(/cpuWarnRatio \(0.99\) must be at most its critical limit cpuCriticalRatio \(0.95\)/);
+    expect(() => changeAlertRules({}, { handlesCritical: 50_000 })).toThrow(/handlesWarn/);
+    // The base of the engine gives the other limit.
+    expect(changeAlertRules({}, { availableCriticalMb: 2048 }, { ...DEFAULT_ALERT_RULES, availableMb: 4096 })).toEqual({ availableCriticalMb: 2048 });
+  });
+
+  it("reads the stored text, skips an unknown name, and gives no differences for a bad text", () => {
+    expect(alertRulesOf(undefined)).toEqual({});
+    expect(alertRulesOf('{"availableMb":3072,"availableCriticalMb":2048}')).toEqual({ availableMb: 3072, availableCriticalMb: 2048 });
+    expect(alertRulesOf('{"availableMb":3072,"oldLimitMb":5}')).toEqual({ availableMb: 3072 });
+    expect(alertRulesOf("{not json")).toEqual({});
+    expect(alertRulesOf("[1,2]")).toEqual({});
+    expect(alertRulesOf("null")).toEqual({});
+    expect(alertRulesOf('{"availableCriticalMb":2048}')).toEqual({});
   });
 });

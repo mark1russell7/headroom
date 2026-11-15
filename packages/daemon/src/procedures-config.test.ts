@@ -41,6 +41,18 @@ describe("the procedure config.set", () => {
     each.close();
   });
 
+  it("carries a change of the alert limits to the engine, and refuses an unknown limit at the schema (H179)", async () => {
+    const each = engine();
+    const procedures = resourceProcedures(each);
+    expect((await configSet(procedures, { alerts: { availableMb: 3072, availableCriticalMb: 2048 } })).alerts).toEqual({ availableMb: 3072, availableCriticalMb: 2048 });
+    expect(each.alertRules().availableCriticalMb).toBe(2048);
+    expect((await configSet(procedures, { alerts: { availableCriticalMb: null } })).alerts).toEqual({ availableMb: 3072 });
+    await expect(configSet(procedures, { alerts: { availableGb: 3 } })).rejects.toThrow();
+    await expect(configSet(procedures, { alerts: { poolMb: -1 } })).rejects.toThrow();
+    expect((await configSet(procedures, { alerts: null })).alerts).toEqual({});
+    each.close();
+  });
+
   it("refuses a setting that it does not know, so that a setting is not dropped with no error", async () => {
     const each = engine();
     await expect(configSet(resourceProcedures(each), { noSuchSetting: 1 })).rejects.toThrow();

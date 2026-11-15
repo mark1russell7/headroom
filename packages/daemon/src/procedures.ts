@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import type { Alerts, CancelResult, Config, ConfigChange, DrainStatus, Engine, History, JobState, JobUsage, Lease, Peer, PoolTags, ServiceHealth, Status, Suggestion, TcpPorts } from "@headroom/core";
+import { DEFAULT_ALERT_RULES, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ServiceHealth, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -112,6 +112,14 @@ const JobInput = z.object({
 });
 type JobInput = z.infer<typeof JobInput>;
 
+/** One alert limit in a change (H179): a value of 0 or more, or `null` for the default. The engine checks the rest. */
+const alertLimit = z.number().min(0).nullable().optional();
+
+/** A change of the alert limits (H179), with one field for each name of `AlertRules`. */
+const AlertsChangeInput = z
+  .object(Object.fromEntries(Object.keys(DEFAULT_ALERT_RULES).map((name) => [name, alertLimit])) as Record<keyof AlertRules, typeof alertLimit>)
+  .strict();
+
 const ConfigSetInput = z.object({
   jobTemp: z
     .string()
@@ -212,6 +220,11 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The automatic worktree cleanup (H175). false: the daemon writes only the plan. true: it also removes the trees of the plan, in batches. null gives the default: false."),
+  alerts: AlertsChangeInput.nullable()
+    .optional()
+    .describe(
+      "A change of the alert limits (H179), by the names of AlertRules, for example availableCriticalMb. A number sets a limit, and null gives the default of one limit. null for the whole object gives all the defaults.",
+    ),
 }).strict();
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
 
@@ -571,7 +584,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175).",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175). alerts: the alert limits that differ from the defaults (H179).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -594,6 +607,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           presentReserve: input.presentReserve,
           autoDrainMb: input.autoDrainMb,
           worktreeAutoClean: input.worktreeAutoClean,
+          alerts: input.alerts,
         };
         return engine.setConfig(change);
       },
