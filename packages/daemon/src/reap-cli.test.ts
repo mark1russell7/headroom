@@ -4,7 +4,7 @@ import type { Connection } from "./client.ts";
 import { NO_PROCESS, reapCommand, reapExit, reapListLines, reapLogLines, shadowLines, type ReapOutput } from "./reap-cli.ts";
 
 const T0 = 1_800_000_000_000;
-const COMMAND = "grep -c tool_use C:\\Users\\dana\\.claude\\projects\\D--work-kestrel\\2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl";
+const COMMAND = "grep -c tool_use C:\\Users\\<you>\\.claude\\projects\\D--work-kestrel\\2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl";
 const KESTREL = { name: "kestrel", id: "6f1c-kestrel" };
 const OTTER = { name: "otter", id: "9a2d-otter" };
 

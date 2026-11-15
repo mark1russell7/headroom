@@ -227,7 +227,7 @@ describe("the process table proves ownership (H182)", () => {
   });
 
   it("keeps the last path of a command line of 4 KB, in the record, in the store and in the text of an alert", () => {
-    const transcript = "C:\\Users\\dana\\.claude\\projects\\D--work-kestrel\\2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl";
+    const transcript = "C:\\Users\\<you>\\.claude\\projects\\D--work-kestrel\\2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl";
     const program = '"C:\\Program Files\\Git\\usr\\bin\\grep.exe"';
     const line = `${program} -n ${"-e pattern ".repeat(370)}${transcript}`;
     expect(line.length).toBeGreaterThan(4096);

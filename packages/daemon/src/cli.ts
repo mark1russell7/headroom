@@ -282,8 +282,8 @@ async function sessionHolder(): Promise<string | null> {
 }
 
 /**
- * This function finds the Claude Code session that started this process, with the ID of its session file (H183), or gives
- * `null`: by the variables of Claude Code, then by the process tree. `HEADROOM_HOLDER` is a free label, so `headroom reap`
+ * This function finds the Claude Code session that started this process, with the ID of its session file (H183). It reads
+ * the variables of Claude Code, then the process tree. It gives `null` when it finds no session. `HEADROOM_HOLDER` is a free label, so `headroom reap`
  * does not use it.
  */
 async function callerSession(): Promise<SessionRef | null> {

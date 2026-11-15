@@ -24,7 +24,7 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const T0 = 1_800_000_000_000;
 /** A transcript of a session, with made-up names. */
-const TRANSCRIPT = "C:\\Users\\dana\\.claude\\projects\\D--work-kestrel\\2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl";
+const TRANSCRIPT = "C:\\Users\\<you>\\.claude\\projects\\D--work-kestrel\\2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl";
 const GREP_LINE = `"C:\\Program Files\\Git\\usr\\bin\\grep.exe" -c "tool_use" ${TRANSCRIPT}`;
 const GREP_COMMAND = `grep -c "tool_use" ${TRANSCRIPT}`;
 const KESTREL = { name: "kestrel", id: "6f1c-kestrel" };
@@ -42,8 +42,8 @@ function record(pid: number, created: number, command: string | null, parentCrea
 describe("the rule of the shadow log (H183)", () => {
   it("finds a transcript or a scratchpad folder of a session in a command line", () => {
     expect(namesSessionFiles(GREP_COMMAND)).toBe(true);
-    expect(namesSessionFiles("rg -n x /home/dana/.claude/projects/-work-kestrel/")).toBe(true);
-    expect(namesSessionFiles("cat C:\\Users\\dana\\AppData\\Local\\Temp\\claude\\0a1b\\5c6d\\scratchpad\\out.txt")).toBe(true);
+    expect(namesSessionFiles("rg -n x ~/.claude/projects/-work-kestrel/")).toBe(true);
+    expect(namesSessionFiles("cat C:\\Users\\<you>\\AppData\\Local\\Temp\\claude\\0a1b\\5c6d\\scratchpad\\out.txt")).toBe(true);
     expect(namesSessionFiles("grep -r x D:\\work\\kestrel\\src")).toBe(false);
     expect(namesSessionFiles("grep -r x D:\\work\\scratchpad")).toBe(false);
   });
@@ -62,7 +62,7 @@ describe("the rule of the shadow log (H183)", () => {
       "socket:[40214]": "socket",
       "/dev/null": "null",
       "/dev/pts/3": "terminal",
-      "/home/dana/out.txt": "file",
+      "/srv/data/out.txt": "file",
       "/tmp/out.txt (deleted)": "file",
       "anon_inode:[eventfd]": "unknown",
       "/dev/sda1": "unknown",
