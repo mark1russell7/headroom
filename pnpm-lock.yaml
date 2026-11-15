@@ -196,6 +196,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@mark1russell7/sqlite':
+        specifier: ^0.2.5
+        version: 0.2.5
       koffi:
         specifier: ^3.3.3
         version: 3.3.5
@@ -676,6 +679,10 @@ packages:
     resolution: {integrity: sha512-uN7SV7VxrsMyH7/cPOUClFOnJhw24S2+qVaMIoNK+7AtJe3FB4l5qN2NowKAYvYgLcDpY4gUBlw9meJ6/Gq2pQ==}
     engines: {node: '>=22'}
     hasBin: true
+
+  '@mark1russell7/sqlite@0.2.5':
+    resolution: {integrity: sha512-T1FFG3dhupWaBFJn6oU7g5JaG5T8O0Cu4QZFu32qK7LoECzYPcWLg4/o/Hb8rsg3GmWYIK757YDnRnv8cbzrVA==}
+    engines: {node: '>=22.16'}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     resolution: {gitHosted: true, integrity: sha512-HDxumpWNUeciZKaXbAGFPyoOTrt0trj7L3/koNvWnTN/vEuF0gYzqVJdsgfTQ9bE/DhSxfNMRxtrh4KYnbbimA==, tarball: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7}
@@ -1983,6 +1990,8 @@ snapshots:
   '@mark1russell7/site-pages@0.4.8':
     dependencies:
       '@mark1russell7/rigor-statistics': 0.1.27
+
+  '@mark1russell7/sqlite@0.2.5': {}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:

@@ -7,9 +7,8 @@
  * It also keeps the owner record of each live process that is older than one minute (H48).
  */
 
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "node:sqlite";
+import { addMissingColumns, migrate, openDatabase, transaction, type Migration } from "@mark1russell7/sqlite";
 import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow, ProcessReads } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
@@ -79,6 +78,31 @@ CREATE TABLE IF NOT EXISTS process_owners (
   pid INTEGER NOT NULL, created INTEGER NOT NULL, owner TEXT NOT NULL, command TEXT, first_seen INTEGER NOT NULL, PRIMARY KEY (pid, created)
 );
 `;
+
+/**
+ * The steps of the schema (@mark1russell7/sqlite). The user_version of a file is the count of its steps. Each change
+ * of the schema is a new step at the end. Do not change a step that a file can have.
+ */
+const MIGRATIONS: readonly Migration[] = [
+  // The baseline. A file of a version before the migrations has the user_version 0 and the tables of its version. The
+  // step makes the tables that are not there and adds the columns that an older version did not have.
+  (db) => {
+    db.exec(SCHEMA);
+    addMissingColumns(db, "leases", {
+      peak_mb: "REAL", usage: "TEXT", // the peak memory and the use of a lease
+      exit_code: "INTEGER", signal: "TEXT", log: "TEXT", // the exit and the log of a job (H26)
+      processes: "INTEGER", // the processes that a job started (H29)
+      peak_starts_per_min: "REAL", spawn: "TEXT", // the peak starts and the spawn class of a job (H47)
+      conditions: "TEXT", conditions_met_at: "INTEGER", unmet: "TEXT", // the conditions of a lease (H31)
+      cpu_cap: "REAL", peak_cores: "REAL", // the CPU cap and the peak cores of a lease (H23)
+      peak_gpu_mb: "REAL", // the peak GPU memory of a lease (H36)
+      cancelled_by: "TEXT", // who cancelled a waiting lease (headroom cancel)
+    });
+    db.exec("CREATE INDEX IF NOT EXISTS leases_job ON leases (job, requested_at)");
+    addMissingColumns(db, "memory", { processes: "INTEGER", user_objects: "INTEGER", gdi_objects: "INTEGER" });
+    addMissingColumns(db, "owners", { write_mb: "REAL", read_mb: "REAL" }); // the writes (H20) and the reads (H66) of an owner
+  },
+];
 
 /** One sleep of the computer (H30): its start and its end, in milliseconds since the epoch. The history has no samples in it. */
 export type Sleep = readonly [from: number, to: number];
@@ -237,39 +261,8 @@ export class Store {
   readonly #db: DatabaseSync;
 
   constructor(path: string) {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.#db = new DatabaseSync(path);
-    this.#db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
-    this.#db.exec(SCHEMA);
-    // A database of an older version has no column for the peak memory of a lease.
-    const columns = this.#db.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
-    if (!columns.includes("peak_mb")) this.#db.exec("ALTER TABLE leases ADD COLUMN peak_mb REAL");
-    if (!columns.includes("usage")) this.#db.exec("ALTER TABLE leases ADD COLUMN usage TEXT");
-    // A database of an older version has no columns for the exit and the log of a job (H26).
-    // A database of an older version has no column for the processes that a job started (H29).
-    // A database of an older version has no columns for the peak starts and the spawn class of a job (H47).
-    // A database of an older version has no columns for the conditions of a lease (H31).
-    // A database of an older version has no columns for the CPU cap and the peak cores of a lease (H23).
-    // A database of an older version has no column for the peak GPU memory of a lease (H36).
-    // A database of an older version has no column for who cancelled a waiting lease (`headroom cancel`).
-    const added = [
-      ["exit_code", "INTEGER"], ["signal", "TEXT"], ["log", "TEXT"], ["processes", "INTEGER"], ["peak_starts_per_min", "REAL"], ["spawn", "TEXT"],
-      ["conditions", "TEXT"], ["conditions_met_at", "INTEGER"], ["unmet", "TEXT"], ["cpu_cap", "REAL"], ["peak_cores", "REAL"], ["peak_gpu_mb", "REAL"],
-      ["cancelled_by", "TEXT"],
-    ] as const;
-    for (const [column, type] of added) {
-      if (!columns.includes(column)) this.#db.exec(`ALTER TABLE leases ADD COLUMN ${column} ${type}`);
-    }
-    this.#db.exec("CREATE INDEX IF NOT EXISTS leases_job ON leases (job, requested_at)");
-    const memoryColumns = this.#db.prepare("PRAGMA table_info(memory)").all().map((row) => String(row["name"]));
-    for (const column of ["processes", "user_objects", "gdi_objects"]) {
-      if (!memoryColumns.includes(column)) this.#db.exec(`ALTER TABLE memory ADD COLUMN ${column} INTEGER`);
-    }
-    // A database of an older version has no column for the writes of an owner (H20).
-    const ownerColumns = this.#db.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
-    if (!ownerColumns.includes("write_mb")) this.#db.exec("ALTER TABLE owners ADD COLUMN write_mb REAL");
-    // A database of an older version has no column for the reads of an owner (H66).
-    if (!ownerColumns.includes("read_mb")) this.#db.exec("ALTER TABLE owners ADD COLUMN read_mb REAL");
+    this.#db = openDatabase(path, { synchronous: "NORMAL", busyTimeoutMs: 5000, makeFolder: true });
+    migrate(this.#db, MIGRATIONS, { name: "headroom" });
   }
 
   /** This function writes a lease, new or changed. */
@@ -620,8 +613,7 @@ export class Store {
    */
   savePoolTags(at: number, tags: readonly PoolTag[], bootedAt = 0): void {
     const insert = this.#db.prepare("INSERT OR REPLACE INTO pool_tags VALUES (?, ?, ?, ?)");
-    this.#db.exec("BEGIN");
-    try {
+    transaction(this.#db, () => {
       const firstAfterBoot = "SELECT COALESCE(MIN(at), -1) FROM pool_tags WHERE at >= ?";
       this.#db
         .prepare(`DELETE FROM pool_tags WHERE at < ? AND at NOT IN (${firstAfterBoot}) AND at NOT IN (SELECT MIN(at) FROM pool_tags GROUP BY at / 3600000)`)
@@ -630,11 +622,7 @@ export class Store {
       for (const tag of tags) {
         if (tag.nonPagedMb + tag.pagedMb >= 1) insert.run(at, tag.tag, tag.nonPagedMb, tag.pagedMb);
       }
-      this.#db.exec("COMMIT");
-    } catch (error) {
-      this.#db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   /** This function reads the snapshots of the pool tags since a time, the oldest first. */
@@ -687,19 +675,14 @@ export class Store {
    */
   saveProcessOwners(changes: RecordChanges): void {
     if (changes.save.length === 0 && changes.ended.length === 0) return;
-    this.#db.exec("BEGIN");
-    try {
+    transaction(this.#db, () => {
       if (changes.ended.length > 0) {
         const keys = JSON.stringify(changes.ended.map((record) => `${record.pid}:${record.created}`));
         this.#db.prepare("DELETE FROM process_owners WHERE pid || ':' || created IN (SELECT value FROM json_each(?))").run(keys);
       }
       const insert = this.#db.prepare("INSERT OR REPLACE INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)");
       for (const record of changes.save) insert.run(record.pid, record.created, record.owner, record.command, record.firstSeen);
-      this.#db.exec("COMMIT");
-    } catch (error) {
-      this.#db.exec("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   /**
