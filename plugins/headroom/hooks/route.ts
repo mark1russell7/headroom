@@ -10,6 +10,8 @@
  * - The rating reads the command words of each part of the line, not the text (H55). The text of a quoted string or of
  *   a comment does not count, unless the part is a shell that runs its argument (`bash -c`). A text reader (`grep`,
  *   `cat`, `echo`) is not heavy, whatever its arguments say.
+ * - The body of a here-document is text when its program only writes text (`cat > a.md <<'EOF'`, `gh pr create
+ *   --body-file -`) and the shell does not run a part of it. A body that a shell reads (`bash <<'EOF'`) stays in the rating.
  *
  * It uses no package, and it gives up after 1 second, so a session does not wait for it. Node starts this file
  * directly, so it uses only the types that Node can remove.
@@ -62,6 +64,35 @@ const SEPARATOR = /&&|\|\||;|\||\r?\n|(?<!>)&(?!>)/g;
 /** The start of a part before its program: brackets, the words of a shell loop or test, and variables (`CI=1`). */
 const LEAD = /^\s*(?:[({!]\s*|(?:if|then|elif|else|while|until|do)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/;
 
+/**
+ * The programs that only take the body of a here-document as text: the text readers, `tee`, `git` (`commit -F -`) and
+ * `gh` (`--body-file -`). A shell or another interpreter runs its body, so its body stays in the rating.
+ */
+const TEXT_SINKS: ReadonlySet<string> = new Set([...READERS, "tee", "git", "gh"]);
+
+/** The operator of a here-document and its delimiter: `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"` or `<<\EOF`. */
+const HEREDOC = /<<(-?)[ \t]*(?:'([^'\n]*)'|"([^"\n]*)"|(\\?)([A-Za-z0-9_.-]+))/y;
+
+/** The operator of a here-document. Its body starts after the end of the line of the operator. */
+interface Heredoc {
+  /** The length of the operator with its delimiter. */
+  readonly length: number;
+  readonly delimiter: string;
+  /** The delimiter is quoted (`'EOF'`, `"EOF"`, `\EOF`), so the shell does not expand the body. */
+  readonly quoted: boolean;
+  /** `<<-`: the shell removes the tabs at the start of each line of the body and of the delimiter line. */
+  readonly tabs: boolean;
+}
+
+/** A here-document of the current line, with the part that holds its operator. */
+interface Waiting {
+  readonly heredoc: Heredoc;
+  /** The start of the part that holds the operator. */
+  readonly from: number;
+  /** The program of that part, in lower case. */
+  readonly owner: string;
+}
+
 /** One part of a command line. `text` has the same length as `raw`, without the text of quoted strings and comments. */
 interface Part {
   readonly start: number;
@@ -69,12 +100,105 @@ interface Part {
   readonly text: string;
 }
 
-/** This function finds the closing quote of the string at `open`, or gives -1. A double quoted string can hold an escaped quote. */
+/** This function reads the operator of a here-document at `at`, or gives null. A here-string (`<<<`) is not one. */
+function heredocAt(command: string, at: number): Heredoc | null {
+  if (command[at] !== "<" || command[at + 1] !== "<" || command[at + 2] === "<" || command[at - 1] === "<") return null;
+  HEREDOC.lastIndex = at;
+  const operator = HEREDOC.exec(command);
+  if (operator === null) return null;
+  return {
+    length: operator[0].length,
+    delimiter: operator[2] ?? operator[3] ?? operator[5] ?? "",
+    quoted: operator[2] !== undefined || operator[3] !== undefined || operator[4] === "\\",
+    tabs: operator[1] === "-",
+  };
+}
+
+/**
+ * This function finds the closing quote of the string at `open`, or gives -1. A double quoted string can hold an escaped quote.
+ * It can also hold a command substitution with a here-document (`"$(cat <<'EOF'` … `EOF` … `)"`). A quote in its body does not
+ * close the string. Thus the search goes over the body to the line of its delimiter.
+ */
 function closingQuote(command: string, open: number): number {
   const quote = command[open];
+  let substitution = false;
+  const waiting: Heredoc[] = [];
   for (let at = open + 1; at < command.length; at++) {
     if (command[at] === quote) return at;
-    if (quote === '"' && command[at] === "\\") at++;
+    if (quote !== '"') continue;
+    if (command[at] === "\\") {
+      at++;
+      continue;
+    }
+    if (command[at] === "$" && command[at + 1] === "(") substitution = true;
+    const heredoc = substitution ? heredocAt(command, at) : null;
+    if (heredoc !== null) {
+      waiting.push(heredoc);
+      at += heredoc.length - 1;
+    } else if (command[at] === "\n" && waiting.length > 0) {
+      let stop = at + 1;
+      for (const each of waiting.splice(0)) {
+        const close = bodyEnd(command, stop, each);
+        if (close < 0) return -1;
+        stop = close + 1;
+      }
+      // The next step reads the end of the line of the last delimiter.
+      at = stop - 2;
+    }
+  }
+  return -1;
+}
+
+/** This function gives the start of the part that holds the position `at`. `text` is the line without its quoted strings. */
+function partStart(text: string, at: number): number {
+  let start = 0;
+  for (const match of text.slice(0, at).matchAll(SEPARATOR)) start = (match.index ?? 0) + match[0].length;
+  return start;
+}
+
+/** This function gives the program of the part from `start` to `end`: its first word after the lead, in lower case. */
+function programAt(command: string, text: string, start: number, end: number): string {
+  const lead = LEAD.exec(text.slice(start, end))?.[0].length ?? 0;
+  const word = /"[^"]*"|'[^']*'|\S+/.exec(command.slice(start + lead, end))?.[0] ?? "";
+  return programName(word.replace(/^["']|["']$/g, ""));
+}
+
+/**
+ * This function tells if each program that gets the output of the part at `from` through a pipe is in `TEXT_SINKS`.
+ * `to` is the end of the line. Thus `cat <<'EOF' | tee a.md` passes, and `cat <<'EOF' | bash` does not.
+ */
+function pipesToText(command: string, text: string, from: number, to: number): boolean {
+  const separators = [...text.slice(from, to).matchAll(SEPARATOR)];
+  for (const [index, separator] of separators.entries()) {
+    if (separator[0] !== "|") return true;
+    const start = from + (separator.index ?? 0) + 1;
+    const after = separators[index + 1];
+    const end = after === undefined ? to : from + (after.index ?? 0);
+    if (!TEXT_SINKS.has(programAt(command, text, start, end))) return false;
+  }
+  return true;
+}
+
+/** This function tells if the position `at` is in an arithmetic expression `((…))` of its part, where `<<` is a shift. */
+function inArithmetic(text: string, from: number, at: number): boolean {
+  const before = text.slice(from, at);
+  return (before.match(/\(\(/g)?.length ?? 0) > (before.match(/\)\)/g)?.length ?? 0);
+}
+
+/**
+ * This function gives the end of the body of a here-document that starts at `start`: the end of its delimiter line, before
+ * the newline. It gives -1 when no line closes the body.
+ */
+function bodyEnd(command: string, start: number, heredoc: Heredoc): number {
+  let line = start;
+  while (line <= command.length) {
+    const newline = command.indexOf("\n", line);
+    const end = newline < 0 ? command.length : newline;
+    let text = command.slice(line, end).replace(/\r$/, "");
+    if (heredoc.tabs) text = text.replace(/^\t+/, "");
+    if (text === heredoc.delimiter) return end;
+    if (newline < 0) return -1;
+    line = newline + 1;
   }
   return -1;
 }
@@ -83,15 +207,63 @@ function closingQuote(command: string, open: number): number {
  * This function gives a command line of the same length, without the text of quoted strings and comments. Thus each
  * position stays the same. A quote with no closing quote stays as text, so a heavy command cannot hide behind it.
  * A comment goes too, because an apostrophe in a comment does not start a string.
+ *
+ * The body of a here-document goes too, with its delimiter line, when the body is only text. These are the conditions:
+ * - Its program is one of `TEXT_SINKS`, and a pipe sends its output only to `TEXT_SINKS`.
+ * - A line closes it.
+ * - The shell does not run a part of it: a quoted delimiter, or no `$(` and no backquote in it.
+ *
+ * The body then becomes one blank stretch with no newline, so it gives no part of its own. Each other body stays in the
+ * rating, as before.
  */
 function withoutText(command: string): string {
   let out = "";
   let at = 0;
+  let waiting: Waiting[] = [];
   while (at < command.length) {
     const char = command[at] ?? "";
     const next = command[at + 1] ?? "";
     const closing = char === '"' || char === "'" ? closingQuote(command, at) : -1;
     let end = at + 1;
+    const heredoc = heredocAt(command, at);
+    const from = heredoc === null ? 0 : partStart(out, at);
+    if (heredoc !== null && !inArithmetic(out, from, at)) {
+      waiting.push({ heredoc, from, owner: programAt(command, out, from, at) });
+      end = at + heredoc.length;
+      out += command.slice(at, end);
+      at = end;
+      continue;
+    }
+    if (char === "\n" && waiting.length > 0) {
+      // The bodies start after this newline, one after the other.
+      const line = at;
+      out += char;
+      at = end;
+      let blank = true;
+      let stop = at;
+      const spans: [number, number][] = [];
+      for (const each of waiting) {
+        const close = bodyEnd(command, stop, each.heredoc);
+        const body = close < 0 ? "" : command.slice(stop, close);
+        const text = TEXT_SINKS.has(each.owner) && pipesToText(command, out, each.from, line);
+        if (close < 0 || !text || (!each.heredoc.quoted && /\$\(|`/.test(body))) {
+          blank = false;
+          break;
+        }
+        spans.push([stop, close]);
+        stop = close + 1;
+      }
+      waiting = [];
+      if (blank) {
+        for (const [index, [from, to]] of spans.entries()) {
+          out += " ".repeat(to - from);
+          // The newline between two bodies stays blank too, so the bodies give no part.
+          if (index < spans.length - 1) out += " ";
+        }
+        at = spans.at(-1)?.[1] ?? at;
+      }
+      continue;
+    }
     if (char === "#" && /^\s?$/.test(command[at - 1] ?? "")) {
       const newline = command.indexOf("\n", at);
       end = newline < 0 ? command.length : newline;
@@ -163,6 +335,8 @@ function runsArgument(words: readonly string[]): boolean {
 
 /** This function rates one part of a line. */
 function isHeavyPart(part: Part): boolean {
+  // A part with no command text (a comment, or the body of a here-document of text) runs nothing.
+  if (part.text.trim() === "") return false;
   const words = wordsOf(part);
   if (readsText(words)) return false;
   const text = runsArgument(words) ? part.raw : part.text;

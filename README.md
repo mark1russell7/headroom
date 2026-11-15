@@ -722,6 +722,7 @@ The plugin `headroom` has a hook for the Bash and PowerShell tools. When a sessi
 - The hook does not approve a command. The session sends the new form, and the permission rules of the user apply to it.
 - The hook reads the command words of each part of the line, not the text (H55). The text of a quoted string or of a comment does not count, so `git commit -m "fix vitest"` is light. A shell that runs its argument is different: `bash -c "pnpm test"` is heavy. `sh -c`, `powershell -Command`, `pwsh -Command` and `cmd /c` are the same.
 - A text reader is light, whatever its arguments say. The text readers are `grep`, `rg`, `git grep`, `sed`, `cat`, `echo`, `head`, `tail`, `ls`, `Select-String` and `Get-Content`.
+- The body of a here-document is text when its program only takes text (`cat > a.md <<'EOF'`, `gh pr create --body-file - <<'EOF'`, `git commit -F -`) and the shell runs no part of it (H181). A body that a shell reads stays in the rating: `bash <<'EOF'` and `cat <<'EOF' | bash` are heavy when the body is heavy.
 - Without a daemon, or for a light command, the hook does nothing. It adds approximately 65 ms to each command.
 
 To turn it on in Claude Code: `/plugin marketplace add C:\Users\<you>\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
