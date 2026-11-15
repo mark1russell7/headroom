@@ -86,7 +86,8 @@ export type AlertKind =
   | "handles"
   | "cache"
   | "docker"
-  | "worktree";
+  | "worktree"
+  | "reap";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";

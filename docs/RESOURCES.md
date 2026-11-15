@@ -1277,6 +1277,46 @@ H48 shipped in one change. These parts are as built:
 
 `headroom status` gives the sum of the handles, for example `Handles: 200,020 in all`. When one process is above 100,000 handles, it also names the 3 processes with the most handles. Each one has its owner and its command line. `Status.handles` gives the same data.
 
+### H183: headroom reap and the shadow log
+
+**The incident.** On 2026-11-15, a `grep.exe` read the transcript of a session. Its parent shell ended, and the process stayed. It held 1.5 GB of private memory for 3.5 hours. No session knew that the process was its process, and no rule of headroom stopped it.
+
+H183 gives the sessions a tool and a record. It stops no process by a rule.
+
+**`headroom reap`.** The list has each process whose parent is proven gone by the rule of H182. A process with no record is not in the list, because no record proves its owner.
+
+- Each row has the process ID, the private memory, the age, the session and the command line. The text shortens a long command line, and it keeps the start and the end.
+- By default, the list has only the processes of a session. `--all` also lists the orphans that no session started.
+- The process of a session is not in the list. `headroom reap` does not stop a session.
+
+**`headroom reap <pid>`.** The CLI finds the session of the caller: the variables `CLAUDE_PID` and `CLAUDE_CODE_SESSION_ID`, then the process tree. `HEADROOM_HOLDER` is a free label, so `headroom reap` does not use it.
+
+- **A process of the session that asks**: the daemon stops it and writes the stop to the reap log. When the record and the caller have the ID of a session, the IDs decide. Otherwise the names decide.
+- Before the stop, the daemon reads the start of the live process. A new process with the same ID has a different start, so the daemon does not stop it. The result is `ended`.
+- **A process of another session that runs**: the daemon does not stop it. It writes a request to the reap log and adds the alert `reap:<pid>:<start>` for 24 hours. The alert ends when the process ends.
+- **A process of a session that ended, or of no session**: the daemon does not stop it. The record and the alert say that the process needs the owner of the machine.
+- headroom has no path that sends a notice to one session. The CLI prints the text of the request, and the alert shows it in `headroom alerts` and on the dashboard.
+- The daemon trusts the session that the CLI sends. A local caller can stop its own processes with the tools of the system, so the check prevents a mistake, not an attack.
+
+**The shadow log.** At each read of the processes, the daemon records each process that the automatic rule stops in a later version. A process matches when all of these are true:
+
+- Its parent is proven gone (H182).
+- Its program is of the reader class: `grep`, `rg`, `sort`, `findstr` or `cat`.
+- Its command line names a transcript or a scratchpad folder of a session: a path under `.claude/projects`, or a `scratchpad` folder under a `claude` folder.
+- It held more than 500 MB of private memory for more than 30 minutes. A read below the line starts the time again. A restart of the daemon and a sleep of the computer also start it again.
+- It is not a writer. A process whose standard output is a file is a writer. `sort -o <file>` is also a writer.
+
+**The writer test on Windows.** On Linux, the daemon reads the link `/proc/<pid>/fd/1`, and a path is a file. On Windows, the kind of the standard output of another process needs its table of handles. The daemon has no such read yet, so the kind is `unknown`, and only `sort -o` shows a writer. An automatic mode must not stop a process with the kind `unknown` until this read exists.
+
+**The setting `reapAuto`.** `headroom config reap-auto on|off` sets it, and off is the default. In this version, on stops no process. The code of an automatic stop is not written. A later version turns the automatic mode on only after 7 days of shadow log with no wrong case. The setting can turn it off.
+
+**The tables.** The step 3 of the store adds two tables. The store keeps their rows for 30 days, or for the history of the samples when it is longer.
+
+- `reap_shadow` has one row for each process of the shadow log, by its process ID and its start. A row has the first and the last match and the count of the matches. It also has the private memory at the last match, its peak, the session, the command line and the kind of the standard output.
+- `reap_log` has one row for each stop and each request: the time, the process, its session, the session that asked, the action and the result.
+
+**The views.** `headroom reap --shadow` gives the rule and the rows of the shadow log. `headroom reap --log` gives the stops and the requests. `--json` gives the data of each view.
+
 ### H38: Docker inside
 
 Docker Desktop keeps the containers in the WSL 2 VM. Windows shows the VM as one process, `vmmemWSL`, with the owner `docker`. H38 asks the Docker engine for each container and gives each container to the session of its compose project. H38 shipped in one change. These parts are as built:

@@ -26,8 +26,25 @@ import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, MIN_ID_PREFIX, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
-import { attribute, readSessions, sessionsDir, treeMb, unattributedMb } from "./owners.ts";
+import { attribute, isOrphan, processKey, readSessions, sessionsDir, treeMb, unattributedMb, type SessionRef } from "./owners.ts";
 import { OwnerRecords } from "./orphans.ts";
+import {
+  liveSession,
+  REAP_KEEP_MS,
+  REAP_NOTICE_MS,
+  reapCandidate,
+  reapCandidates,
+  reapNotice,
+  reapStep,
+  READER_PROGRAMS,
+  SHADOW_MIN_MB,
+  SHADOW_MIN_MS,
+  ShadowTracker,
+  type ReapCandidate,
+  type ReapEntry,
+  type ReapResult,
+  type ShadowView,
+} from "./reap.ts";
 import { HandleTracker, handleStatus, type HandleStatus } from "./handles.ts";
 import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
 import { fitTrend, forecastFrom, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
@@ -155,6 +172,11 @@ export interface EngineOptions {
   readonly docker?: (() => DockerRead | undefined) | undefined;
   /** This function gives the file of the resume plan and the time of its last write (H34), or `null` without a file. */
   readonly resumePlan?: (() => ResumePlanFile | null) | undefined;
+  /**
+   * This function stops one process for `headroom reap <pid>` (H183). Only a process of the session that asks gets a stop.
+   * The default is `process.kill(pid)`. The tests give a fake.
+   */
+  readonly stopProcess?: ((pid: number) => void) | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -274,6 +296,8 @@ export interface ConfigChange {
   readonly autoDrainMb?: number | null | undefined;
   /** The automatic worktree cleanup (H175): true for on, false for off. `null` gives the default: off. */
   readonly worktreeAutoClean?: boolean | null | undefined;
+  /** The automatic reap (H183): true for on, false for off. `null` gives the default: off. In this version, on stops no process. */
+  readonly reapAuto?: boolean | null | undefined;
   /**
    * A change of the alert limits (H179), merged into the stored differences. A number sets a limit, and `null` gives the
    * base value of one limit back. `null` for the whole change removes all the differences.
@@ -553,6 +577,12 @@ export class Engine {
   readonly #records = new OwnerRecords();
   /** The handles of each process with many handles over the last 7 minutes (H48). */
   readonly #handles = new HandleTracker();
+  /** The tracker of the shadow log of the automatic reap rule (H183). */
+  readonly #shadow = new ShadowTracker();
+  /** The ids of the active alerts of reap requests, with the key of their process (H183). The alert ends when its process ends. */
+  readonly #reapNotes = new Map<string, string>();
+  /** The stop of one process for `headroom reap <pid>` (H183). */
+  readonly #stopProcess: (pid: number) => void;
   /** The role registry: `resources.peer` (H46) and the owners of the containers (H38) read it. */
   readonly #roles: RoleBook;
   /** The source of the reads of the Docker engine (H38), the owners of the containers, and the last read with its owners. */
@@ -582,6 +612,7 @@ export class Engine {
     this.#roles = new RoleBook(options.rolesFile ?? this.#store.config().rolesFile);
     this.#peers = this.#peerResolver(this.#roles);
     this.#dockerSource = options.docker ?? (() => undefined);
+    this.#stopProcess = options.stopProcess ?? ((pid) => process.kill(pid));
     this.#usage = new UsageReader(options.readUsage);
     this.#broker = new Broker({
       now: this.#now,
@@ -792,6 +823,10 @@ export class Engine {
       const { owners, ownerOf, sessionOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
       this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#sampler.commandLine?.(pid) ?? null, sessionOf));
       this.#handles.read(now, this.#processes);
+      // H183: the shadow log of the automatic reap rule. No rule stops a process in this version.
+      const shadow = this.#shadow.sample(now, this.#processes, (info) => this.#records.get(info), (pid) => this.#sampler.stdoutKind?.(pid) ?? "unknown");
+      this.#store.saveShadow(now, shadow);
+      this.#endReapNotes();
       // H38: the containers of Docker get their part of the owner `docker`. The rest is `docker (VM)`. The processes of
       // Docker keep the owner `docker`, so the kinds keep it too.
       const docker = this.#readDocker();
@@ -859,7 +894,7 @@ export class Engine {
     }
     if (now - this.#prunedAt >= 3_600_000) {
       this.#prunedAt = now;
-      this.#store.prune(now - this.#retentionMs, now - Math.max(this.#retentionMs, LEASE_KEEP_MS));
+      this.#store.prune(now - this.#retentionMs, now - Math.max(this.#retentionMs, LEASE_KEEP_MS), now - Math.max(this.#retentionMs, REAP_KEEP_MS));
       this.#broker.forget(now - 3_600_000);
     }
     return changed;
@@ -1019,6 +1054,114 @@ export class Engine {
     this.#persist(this.#broker.tick(this.capacity()));
   }
 
+  /**
+   * This function lists the processes whose parent is proven gone (H183), from the last read of the processes. By default
+   * the list has only the processes of a session. `all` also lists the orphans that no session started.
+   */
+  reapList(all = false): ReapCandidate[] {
+    return reapCandidates(this.#processes, (info) => this.#records.get(info), this.#now(), all, this.#sessionPids());
+  }
+
+  /** This function gives the process IDs of the sessions at the last read of the session files (H183). */
+  #sessionPids(): ReadonlySet<number> {
+    return new Set(this.#sessions.map((session) => session.pid));
+  }
+
+  /**
+   * This function handles `headroom reap <pid>` (H183). `caller` is the session that asks, or `null`.
+   *
+   * - Only a process whose parent is proven gone (H182) gets a step.
+   * - A process of the session of the caller gets a stop and a row in the reap log.
+   * - For a process of another session that runs, it records a request and shows it as an alert. It does not stop it.
+   * - For a process of no running session, it records that the process needs the owner of the machine.
+   */
+  reap(pid: number, caller: SessionRef | null): ReapResult {
+    const now = this.#now();
+    const info = this.#processes.find((each) => each.pid === pid && each.pid !== 0);
+    if (info === undefined) return { pid, outcome: "not-found", process: null, message: `No process has the ID ${pid} at the last read.`, notice: null };
+    const session = this.#sessions.find((each) => each.pid === pid);
+    if (session !== undefined) {
+      return { pid, outcome: "session", process: null, message: `${info.name} (pid ${pid}) is the process of the session ${session.name}. headroom reap does not stop a session.`, notice: null };
+    }
+    const byPid = new Map(this.#processes.map((each) => [each.pid, each]));
+    const record = this.#records.get(info);
+    if (record === undefined || !isOrphan(info, byPid, record)) {
+      return { pid, outcome: "not-orphan", process: null, message: `The parent of ${info.name} (pid ${pid}) is not proven gone, so headroom does not reap it.`, notice: null };
+    }
+    const target = reapCandidate(info, record, now);
+    const step = reapStep(record, caller, liveSession(record, this.#sessions, this.#processes));
+    const entry = {
+      at: now,
+      pid,
+      created: record.created,
+      name: info.name,
+      session: record.session,
+      sessionId: record.sessionId,
+      by: caller?.name ?? null,
+      byId: caller === null || caller.id === "" ? null : caller.id,
+      privateMb: target.privateMb,
+      command: record.command,
+    };
+    if (step === "stop") {
+      // A new process can have the ID after the last read. The start of the live process decides.
+      const verify = this.#sampler.processStart;
+      if (verify !== undefined) {
+        const start = verify(pid);
+        if (start === undefined || (info.startedAt !== undefined && Math.abs(start - info.startedAt) > 1)) {
+          return { pid, outcome: "ended", process: target, message: `${info.name} (pid ${pid}) ended before the stop. Nothing was stopped.`, notice: null };
+        }
+      }
+      try {
+        this.#stopProcess(pid);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.#store.saveReap({ ...entry, action: "stopped", result: `failed: ${reason}` });
+        return { pid, outcome: "failed", process: target, message: `The stop of ${info.name} (pid ${pid}) failed: ${reason}`, notice: null };
+      }
+      this.#store.saveReap({ ...entry, action: "stopped", result: "ok" });
+      return { pid, outcome: "stopped", process: target, message: `Stopped ${info.name} (pid ${pid}) of the session ${record.session ?? ""}.`, notice: null };
+    }
+    const notice = reapNotice(target, step, caller);
+    const action = step === "ask" ? "asked" : "needs-owner";
+    this.#store.saveReap({ ...entry, action, result: notice });
+    const id = `reap:${processKey(info)}`;
+    this.note({ id, kind: "reap", subject: `${info.name} (${pid})`, pid, mb: target.privateMb, message: notice, severity: "warning" }, REAP_NOTICE_MS);
+    this.#reapNotes.set(id, processKey(info));
+    const message =
+      step === "ask"
+        ? `${info.name} (pid ${pid}) belongs to the session ${record.session ?? ""}. headroom does not stop the process of another session. It recorded the request and shows it in headroom alerts.`
+        : `No running session owns ${info.name} (pid ${pid}), so it needs the owner of the machine. headroom recorded it and shows it in headroom alerts.`;
+    return { pid, outcome: action, process: target, message, notice };
+  }
+
+  /** This function ends the alert of each reap request whose process ended (H183). */
+  #endReapNotes(): void {
+    if (this.#reapNotes.size === 0) return;
+    const live = new Set(this.#processes.map((info) => processKey(info)));
+    for (const [id, key] of this.#reapNotes) {
+      if (live.has(key)) continue;
+      this.endNote(id);
+      this.#reapNotes.delete(id);
+    }
+  }
+
+  /** This function gives the shadow log of the automatic reap rule, with the rule and the setting `reapAuto` (H183). */
+  reapShadow(): ShadowView {
+    return {
+      auto: this.#store.config().reapAuto,
+      minMb: SHADOW_MIN_MB,
+      minMs: SHADOW_MIN_MS,
+      readers: [...READER_PROGRAMS],
+      stdoutKnown: this.#sampler.stdoutKind !== undefined,
+      rows: this.#store.reapShadow(),
+    };
+  }
+
+  /** This function gives the reap log (H183): the stops, the requests and the processes that need the owner of the machine. */
+  reapLog(): ReapEntry[] {
+    return this.#store.reapLog();
+  }
+
   /** This function gives the settings, for example the temp root of the jobs. */
   config(): Config {
     return this.#store.config();
@@ -1056,6 +1199,8 @@ export class Engine {
     }
     const autoClean = change.worktreeAutoClean;
     if (autoClean !== undefined && autoClean !== null && typeof autoClean !== "boolean") throw new RangeError("The automatic worktree cleanup must be true, false or null");
+    const reapAuto = change.reapAuto;
+    if (reapAuto !== undefined && reapAuto !== null && typeof reapAuto !== "boolean") throw new RangeError("The automatic reap must be true, false or null");
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -1081,6 +1226,7 @@ export class Engine {
       this.#autoHighSince = null;
     }
     if (autoClean !== undefined) this.#store.setConfig("worktreeAutoClean", autoClean === null ? null : autoClean ? "on" : "off");
+    if (reapAuto !== undefined) this.#store.setConfig("reapAuto", reapAuto === null ? null : reapAuto ? "on" : "off");
     if (alerts !== undefined) {
       // H179: an empty set is no setting. The next sample examines the new limits.
       this.#store.setConfig("alerts", alerts === null || Object.keys(alerts).length === 0 ? null : JSON.stringify(alerts));
@@ -1651,6 +1797,8 @@ export class Engine {
     // H34: the times of the automatic drain do not span the sleep.
     this.#autoHighSince = null;
     this.#autoLowSince = null;
+    // H183: the time of a reader above the line of the shadow log does not span the sleep.
+    this.#shadow.clear();
     this.#resumedAt = to;
     this.#lastSleep = { from, to };
     // The next tick reads the whole computer again.

@@ -58,4 +58,15 @@ describe("the procedure config.set", () => {
     await expect(configSet(resourceProcedures(each), { noSuchSetting: 1 })).rejects.toThrow();
     each.close();
   });
+
+  it("carries the setting of the automatic reap to the engine, with off as the default (H183)", async () => {
+    const each = engine();
+    const procedures = resourceProcedures(each);
+    expect(each.reapShadow().auto).toBe(false);
+    expect((await configSet(procedures, { reapAuto: true })).reapAuto).toBe(true);
+    expect(each.reapShadow().auto).toBe(true);
+    expect((await configSet(procedures, { reapAuto: null })).reapAuto).toBe(false);
+    await expect(configSet(procedures, { reapAuto: "on" })).rejects.toThrow();
+    each.close();
+  });
 });

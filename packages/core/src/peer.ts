@@ -295,7 +295,7 @@ export function isLoopback(address: string): boolean {
 }
 
 /** This function tells if two starts are the same start. An unknown start matches each start. */
-function sameStart(a: number | undefined, b: number | undefined): boolean {
+export function sameStart(a: number | undefined, b: number | undefined): boolean {
   return a === undefined || b === undefined || Math.abs(a - b) <= 1;
 }
 

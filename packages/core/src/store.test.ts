@@ -48,11 +48,11 @@ describe("Store", () => {
 
   it("keeps the settings, and the usage of an ended lease", () => {
     const store = new Store(":memory:");
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
     store.setConfig("jobTemp", "D:\\headroom\\tmp");
-    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
     store.setConfig("jobTemp", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
 
     // H27: the setting health. Without it, the list is empty, so the monitor checks no URL (H57).
     store.setConfig("health", JSON.stringify({ "local-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
@@ -68,7 +68,7 @@ describe("Store", () => {
     store.setConfig("alerts", "not json");
     expect(store.config().alerts).toEqual({});
     store.setConfig("alerts", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
     // H47: the limit of a spawn-heavy job. A value that is not a number above 0 gives the default.
     store.setConfig("spawnHeavy", "1200");
     expect(store.config().spawnHeavy).toBe(1200);
@@ -125,24 +125,26 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 2, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 3, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
     expect(leases).toEqual(expect.arrayContaining(["peak_mb", "usage", "exit_code", "processes", "conditions", "cpu_cap", "peak_gpu_mb", "cancelled_by"]));
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leases_job'").get()).toEqual({ name: "leases_job" });
+    // H183: step 3 makes the tables of the shadow log and of the reap log.
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'reap_%' ORDER BY name").all()).toEqual([{ name: "reap_log" }, { name: "reap_shadow" }]);
     expect(read.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
     again.close();
   });
 

@@ -2,9 +2,10 @@
  * The sampler of Linux and WSL. It reads `/proc`, so it starts no process.
  */
 
-import { existsSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, statfsSync, statSync } from "node:fs";
 import { homedir, uptime } from "node:os";
 import { parseNetDev, parsePortRange, parseProcTcp } from "./network.ts";
+import { stdoutKindOf, type StdoutKind } from "./reap.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, ProcessInfo, SystemMemory, TcpTable } from "./types.ts";
 
@@ -156,7 +157,17 @@ export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
     }
   }
 
-  return { memory, processes, commandLine, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
+  /** This function reads the kind of the standard output of a process from the link `/proc/<pid>/fd/1` (H183). */
+  function stdoutKind(pid: number): StdoutKind {
+    try {
+      return stdoutKindOf(readlinkSync(`${root}/${pid}/fd/1`));
+    } catch {
+      // The process ended, or it belongs to another user.
+      return "unknown";
+    }
+  }
+
+  return { memory, processes, commandLine, stdoutKind, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
 }
 
 /** The default dynamic port range of Linux: the ports 32768 to 60999. */
