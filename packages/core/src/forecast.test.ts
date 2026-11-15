@@ -126,12 +126,15 @@ describe("forecastTargets", () => {
     // On a drive of 50 GB, the limits are 20% and 5% of its size.
     expect(forecastTargets(disk(30_000, 51_200), DEFAULT_ALERT_RULES).map((each) => each.amount)).toEqual([10_240, 2560, 0]);
     const memory = { totalMb: 28_000, availableMb: 8000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 };
-    const byId = new Map(
-      measure({
-        at: 0, memory, processes: [], previous: [], disks: [], load: { processes: 10, userObjects: null, gdiObjects: null }, processors: 16, pools: { browser: 1 }, granted: {},
-        tcp: { dynamic: { first: 49_152, count: 16_384 }, connections: [] }, cores: [],
-      }).map((each) => [each.id, forecastTargets(each, DEFAULT_ALERT_RULES)]),
-    );
+    const measured = measure({
+      at: 0, memory, processes: [], previous: [], disks: [], load: { processes: 10, userObjects: null, gdiObjects: null }, processors: 16, pools: { browser: 1 }, granted: {},
+      tcp: { dynamic: { first: 49_152, count: 16_384 }, connections: [] }, cores: [],
+    });
+    const byId = new Map(measured.map((each) => [each.id, forecastTargets(each, DEFAULT_ALERT_RULES)]));
+    // H179: a critical limit of the memory adds a second target.
+    const lines = { ...DEFAULT_ALERT_RULES, availableMb: 3072, availableCriticalMb: 2048 };
+    const memoryTargets = measured.filter((each) => each.id === "memory").flatMap((each) => forecastTargets(each, lines));
+    expect(memoryTargets).toEqual([{ on: "free", amount: 3072, name: "warning" }, { on: "free", amount: 2048, name: "critical" }]);
     expect(byId.get("pool:nonpaged")).toEqual([{ on: "used", amount: 3072, name: "warning" }]);
     expect(byId.get("pool:paged")).toEqual([{ on: "used", amount: 4096, name: "warning" }]);
     expect(byId.get("commit")).toEqual([{ on: "used", amount: 72_000, name: "warning" }]);

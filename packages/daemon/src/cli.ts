@@ -118,6 +118,7 @@ import { windowsCommand } from "./winshell.ts";
 import { worktreeCommand } from "./worktree-cli.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
+import { ALERTS_USAGE, alertsChange, alertsLines } from "./alerts-cli.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
 import { leaseRow, problemLines, rolesFileLine, SET_ROLES_FILE, usageFileLine } from "./status-lines.ts";
 import * as service from "./service.ts";
@@ -1222,6 +1223,8 @@ function printConfig(config: Config): void {
         : "worktree-auto-clean: off (the default). The daemon writes only the plan to ~/.headroom/worktree-plan.json.",
     );
   }
+  // H179: a daemon of an older version has no setting alerts.
+  if (config.alerts !== undefined) for (const line of alertsLines(config.alerts)) console.log(line);
 }
 
 /** `headroom config worktree-auto-clean on|off` sets the removals of the daemon worktree cleanup (H175). `--clear` gives the default: off. */
@@ -1412,6 +1415,14 @@ async function configCommand(argv: string[]): Promise<number> {
     else printConfig(await connection.call<Config>(["config", "set"], { health }));
     return 0;
   }
+  if (name === "alerts") {
+    const [, limit, number] = positionals;
+    const change = positionals.length > 3 ? undefined : alertsChange(limit, number, values.clear === true);
+    if (change === undefined) return (console.error(ALERTS_USAGE), 2);
+    if (change === "show") for (const line of alertsLines((await connection.call<Config>(["config", "get"], {})).alerts ?? {})) console.log(line);
+    else printConfig(await connection.call<Config>(["config", "set"], { alerts: change }));
+    return 0;
+  }
   if (name === "spawn-heavy") return spawnHeavyConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "battery-floor") return batteryFloorConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "usage-file") return usageFileConfig(connection, value, values.clear === true, positionals.length > 2);
@@ -1425,7 +1436,7 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "worktree-auto-clean" || name === "worktrees.autoClean") return worktreeAutoCleanConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }

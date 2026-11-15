@@ -729,6 +729,9 @@ const MEMORY_RESOURCE: Resource = {
         alert: "memory",
         on: "free",
         warning: { amount: limits.availableMb },
+        // H179: a critical limit of 0 is no level and gives no forecast target. With no critical level, the alert keeps
+        // its fields of before: no severity.
+        ...(limits.availableCriticalMb > 0 ? { critical: { amount: limits.availableCriticalMb }, severity: true } : {}),
         text: ({ measurement }) => {
           const free = Math.round(measurement.free ?? 0);
           return { subject: "memory", mb: free, message: `Only ${free} MB of memory is available` };
