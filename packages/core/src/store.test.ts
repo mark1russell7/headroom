@@ -119,6 +119,47 @@ describe("Store", () => {
     store.close();
   });
 
+  it("adopts a file of a version before the migrations once: user_version 1, and a second open changes nothing", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
+    old.close();
+    new Store(path).close();
+    const read = new DatabaseSync(path);
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
+    expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
+    const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
+    expect(leases).toEqual(expect.arrayContaining(["peak_mb", "usage", "exit_code", "processes", "conditions", "cpu_cap", "peak_gpu_mb", "cancelled_by"]));
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leases_job'").get()).toEqual({ name: "leases_job" });
+    expect(read.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
+    read.close();
+    new Store(path).close();
+    const again = new DatabaseSync(path);
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    again.close();
+  });
+
+  it("refuses a file of a newer version of headroom", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-newer-")), "new.db");
+    const newer = new DatabaseSync(path);
+    newer.exec("PRAGMA user_version = 2");
+    newer.close();
+    expect(() => new Store(path)).toThrow(/headroom/);
+  });
+
+  it("makes the folder of a new file, and a store in memory has the same schema", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-folder-")), "a", "b", "headroom.db");
+    const store = new Store(path);
+    store.saveLease(new Broker({ now: () => 1000, newId: () => "l1", isAlive: () => true }).request({ holder: "shop", job: "build", amounts: {} }));
+    expect(store.lease("l1")).toMatchObject({ id: "l1", job: "build" });
+    store.close();
+    const memory = new Store(":memory:");
+    memory.saveLease(new Broker({ now: () => 1000, newId: () => "l2", isAlive: () => true }).request({ holder: "shop", job: "test", amounts: {} }));
+    expect(memory.lease("l2")).toMatchObject({ id: "l2", job: "test" });
+    memory.close();
+  });
+
   it("adds the columns of the exit and the log to an older table of leases, and keeps its rows", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-leases-")), "old.db");
     const old = new DatabaseSync(path);
