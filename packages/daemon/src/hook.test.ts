@@ -116,6 +116,17 @@ const FALSE_CASES = [
   "if grep -q vitest a.txt; then echo vitest; fi",
   // A line that continues on the next line stays one part.
   "echo a \\\n  vitest",
+  // The body of a here-document that a text program reads (11-15: a PR body that named vitest was refused).
+  "cat > a.md <<'MSG'\n- `vitest related` on two files\npnpm test passes\nMSG",
+  'gh pr create --title t --body-file - <<"EOF"\npnpm test\nvitest run\nEOF',
+  "git commit -F - <<-'EOF'\n\tvitest run\n\tEOF",
+  "cat <<EOF > a.md\npnpm test passes\nEOF",
+  "cat <<\\EOF > a.md\n`vitest run`\nEOF",
+  "cat <<'A' <<'B'\nvitest\nA\npnpm test\nB",
+  "cat > a.md <<'MSG'\r\nvitest run\r\nMSG\r\ngit status",
+  "cat <<'EOF' | tee a.md\nvitest run\nEOF",
+  // A here-document in a command substitution: a quote in its body does not close the string.
+  "git commit -m \"$(cat <<'EOF'\nthe \"vitest\nvitest run\nEOF\n)\"",
 ];
 
 /** The commands that stay heavy. */
@@ -146,6 +157,24 @@ const HEAVY_CASES = [
   "# do not stop, it's a gate\npnpm test\n# it's the end",
   // A program that is not a text reader keeps its unquoted words.
   "git log --grep vitest",
+  // A here-document: a heavy part on the line of the operator or after the body counts.
+  "cat <<'MSG' > a.md && pnpm test\nbody\nMSG",
+  "cat > a.md <<'MSG'\nbody\nMSG\npnpm test",
+  // A shell or an interpreter reads its body as commands.
+  "bash <<'EOF'\npnpm test\nEOF",
+  "sh -s <<EOF\nvitest run\nEOF",
+  // An unquoted delimiter: the shell runs each substitution in the body.
+  "cat <<EOF\n$(pnpm test)\nEOF",
+  "cat <<EOF\n`vitest run`\nEOF",
+  // A pipe takes the body to a shell.
+  "cat <<'EOF' | bash\npnpm test\nEOF",
+  "cat <<'EOF' | tee a.sh | sh\nvitest run\nEOF",
+  // A body that no line closes stays in the rating.
+  "cat <<'MSG'\nvitest run",
+  "git commit -m \"$(cat <<'EOF'\nthe \"vitest\nEOF\n)\" && pnpm test",
+  // A shift in arithmetic and a here-string are not here-documents.
+  "echo $((1 << 2))\npnpm test\n2",
+  "cat <<< x\npnpm test",
 ];
 
 describe("the rating of a command line (H55)", () => {
@@ -176,5 +205,6 @@ describe("the lease form of a command line", () => {
     expect(leased('grep vitest a.txt | bash -c "pnpm test"')).toBe('grep vitest a.txt | headroom run --mem auto -- bash -c "pnpm test"');
     expect(leased('NAME="a b" pnpm test 2>&1 | tail -5')).toBe('NAME="a b" headroom run --mem auto -- pnpm test 2>&1 | tail -5');
     expect(leased("(cd app && pnpm test)")).toBe("(cd app && headroom run --mem auto -- pnpm test)");
+    expect(leased("cat > a.md <<'MSG'\nvitest run\nMSG\npnpm test")).toBe("cat > a.md <<'MSG'\nvitest run\nMSG\nheadroom run --mem auto -- pnpm test");
   });
 });
