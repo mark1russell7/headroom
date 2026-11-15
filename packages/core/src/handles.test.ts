@@ -15,7 +15,8 @@ const p = (pid: number, ppid: number, name: string, handles?: number, startedAt 
 // find.exe (27056) is an orphan: its parent bash.exe (900) ended. The record keeps the session as its owner.
 const find = p(27056, 900, "find.exe", 1_313_105);
 const record: ProcessRecord = {
-  pid: 27056, created: find.startedAt ?? 0, owner: "session:server-stack tools", command: "find / -name WIRE-PROTOCOL.md -path *procedures*", firstSeen: T0 - 44 * MIN,
+  pid: 27056, created: find.startedAt ?? 0, ppid: 900, parentCreated: 1_300_000, owner: "session:server-stack tools", session: "server-stack tools", sessionId: null,
+  command: "find / -name WIRE-PROTOCOL.md -path *procedures*", firstSeen: T0 - 44 * MIN,
 };
 
 /** This function gives a trail with one point each minute, the last at `at`. */

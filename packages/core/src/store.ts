@@ -103,6 +103,13 @@ const MIGRATIONS: readonly Migration[] = [
     addMissingColumns(db, "memory", { processes: "INTEGER", user_objects: "INTEGER", gdi_objects: "INTEGER" });
     addMissingColumns(db, "owners", { write_mb: "REAL", read_mb: "REAL" }); // the writes (H20) and the reads (H66) of an owner
   },
+  // H182: the parent ID, the start of the parent and the session of each owner record. An older record gets the name of
+  // its session from its owner `session:<name>`, because the owner came from the same session file. Its parent stays 0
+  // until the next read while the parent runs.
+  (db) => {
+    addMissingColumns(db, "process_owners", { ppid: "INTEGER", parent_created: "INTEGER", session: "TEXT", session_id: "TEXT" });
+    db.exec("UPDATE process_owners SET session = substr(owner, 9) WHERE session IS NULL AND owner LIKE 'session:%'");
+  },
 ];
 
 /** One sleep of the computer (H30): its start and its end, in milliseconds since the epoch. The history has no samples in it. */
@@ -662,16 +669,21 @@ export class Store {
       .map((row) => [Number(row["from_at"]), Number(row["to_at"])] as const);
   }
 
-  /** This function reads the owner records of the processes (H48), at most 4096. */
+  /** This function reads the owner records of the processes (H48), at most 4096. A record of an older version has the parent 0 (H182). */
   processOwners(): ProcessRecord[] {
+    const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
     return this.#db
-      .prepare("SELECT pid, created, owner, command, first_seen FROM process_owners LIMIT ?")
+      .prepare("SELECT pid, created, ppid, parent_created, owner, session, session_id, command, first_seen FROM process_owners LIMIT ?")
       .all(RECORDS_MAX)
       .map((row) => ({
         pid: Number(row["pid"]),
         created: Number(row["created"]),
+        ppid: Number(row["ppid"] ?? 0),
+        parentCreated: Number(row["parent_created"] ?? 0),
         owner: String(row["owner"]),
-        command: row["command"] === null || row["command"] === undefined ? null : String(row["command"]),
+        session: text(row["session"]),
+        sessionId: text(row["session_id"]),
+        command: text(row["command"]),
         firstSeen: Number(row["first_seen"]),
       }));
   }
@@ -687,8 +699,12 @@ export class Store {
         const keys = JSON.stringify(changes.ended.map((record) => `${record.pid}:${record.created}`));
         this.#db.prepare("DELETE FROM process_owners WHERE pid || ':' || created IN (SELECT value FROM json_each(?))").run(keys);
       }
-      const insert = this.#db.prepare("INSERT OR REPLACE INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)");
-      for (const record of changes.save) insert.run(record.pid, record.created, record.owner, record.command, record.firstSeen);
+      const insert = this.#db.prepare(
+        "INSERT OR REPLACE INTO process_owners (pid, created, ppid, parent_created, owner, session, session_id, command, first_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const record of changes.save) {
+        insert.run(record.pid, record.created, record.ppid, record.parentCreated, record.owner, record.session, record.sessionId, record.command, record.firstSeen);
+      }
     });
   }
 

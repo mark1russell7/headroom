@@ -788,8 +788,9 @@ export class Engine {
       this.#processes = this.#sampler.processes();
       this.#sessions = readSessions(this.#sessionsDir);
       // H48: an orphan gets the owner of its record, with the label `(orphan)`.
-      const { owners, ownerOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
-      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#sampler.commandLine?.(pid) ?? null));
+      // H182: the records also keep the parent, its start and the session of each process.
+      const { owners, ownerOf, sessionOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
+      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#sampler.commandLine?.(pid) ?? null, sessionOf));
       this.#handles.read(now, this.#processes);
       // H38: the containers of Docker get their part of the owner `docker`. The rest is `docker (VM)`. The processes of
       // Docker keep the owner `docker`, so the kinds keep it too.

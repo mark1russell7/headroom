@@ -197,7 +197,7 @@ On 2026-10-25, the available memory fell two times while no job used much memory
 - **The owners.** `system:search` and `system:defender` show the work of the indexer and the scanner in the lists of owners.
 - **The jobs.** Run jobs that read many files (a wide grep, a build of many repos) with `headroom run --slot files`. Only one job holds the slot `files` at a time.
 - headroom does not trim the cache. A trim needs a privilege that the daemon does not have. `docs/RESOURCES.md` gives the commands for an admin shell.
-- **The owner records.** At the first read of a process, the daemon records its owner, its command line (200 characters) and its start. The record keeps the owner after the parent ends.
+- **The owner records.** At the first read of a process, the daemon records its owner, its full command line and its start. It also records its parent with the start of the parent, and its session. The record keeps the owner after the parent ends.
 - An orphan shows as `<owner> (orphan)`, with the owner of its record, in the owners of `headroom status`, of the dashboard and of each resource. The runaway alerts of the memory and the CPU (H23) add `(orphan)` to the owner of each orphan, also `other (orphan)`.
 - The store keeps the records of the processes that live for more than one minute. Thus a restart of the daemon keeps the owners of the orphans. The record of an ended process goes away at the next read.
 - `headroom status` gives the sum of the handles, for example `Handles: 200,020 in all`. When one process is above 100,000 handles, it also names the 3 processes with the most handles.

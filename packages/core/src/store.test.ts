@@ -125,14 +125,14 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 1, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 2, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
@@ -142,14 +142,14 @@ describe("Store", () => {
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 2 });
     again.close();
   });
 
   it("refuses a file of a newer version of headroom", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-newer-")), "new.db");
     const newer = new DatabaseSync(path);
-    newer.exec("PRAGMA user_version = 2");
+    newer.exec("PRAGMA user_version = 99");
     newer.close();
     expect(() => new Store(path)).toThrow(/headroom/);
   });

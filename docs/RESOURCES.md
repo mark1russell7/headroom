@@ -1254,14 +1254,17 @@ H48 shipped in one change. These parts are as built:
 
 **The owner records.** `OwnerRecords` in `orphans.ts` keeps one record for each live process, by its process ID and its start:
 
-- At the first read of a process, the record gets the owner, the command line and the time of the read. The command line has the name of the program with no folder, cut to 200 characters.
-- While the parent is alive, the record follows the owner, for example when the file of a new session appears. After the parent ends, the record keeps its owner.
+- At the first read of a process, the record gets the owner, the command line and the time of the read. The command line has the name of the program with no folder.
+- The record keeps the full command line up to 8,192 characters (H182). A longer line keeps its first 1,024 characters, the mark ` ... ` and its end, so its last path stays. The text of an alert shows at most 200 characters: the start, the mark and the end.
+- The record also keeps the parent ID and the start of the parent at the first read (H182). A process with the ID of the parent and a different start is a new process, so the parent is gone. This rule also holds when the read has no start of the child. On Linux, a new parent ID (init or a subreaper) also shows that the parent ended.
+- The record keeps the session of the process as a field of its own (H182). The session file of the `claude.exe` ancestor gives its name and its ID. A process with no session ancestor has no session.
+- While the parent is alive, the record follows the owner and the session, for example when the file of a new session appears. After the parent ends, the record keeps its owner and its session. The children of an orphan get the session of its record.
 - `attribute()` reads the records. When the search up the tree stops at an orphan, the record of the orphan gives its owner. A different owner wins, with the label `(orphan)` and the kind `other`.
 - Thus `find.exe` is `session:server-stack tools (orphan)` in the owners of `headroom status`, of the dashboard and of each resource. The runaway alerts of the memory and the CPU (H23) add `(orphan)` to the owner of each orphan, also with no record: `other (orphan)`. The children of an orphan get the same owner.
 - The kind `other` keeps the rules of a session out. The tree of a session starts below its process, but no process of the session is above an orphan. The alert `orphan` (memory) also examines the orphans of a session.
 - A record with the owner `other`, or with the owner that the tree gives, adds no label. Thus `explorer.exe`, an orphan from the start of Windows, stays `system`.
 
-**The table `process_owners`.** The store keeps `(pid, created, owner, command, first_seen)` for each record of a process that is one minute old.
+**The table `process_owners`.** The store keeps `(pid, created, ppid, parent_created, owner, session, session_id, command, first_seen)` for each record of a process that is one minute old. The step 2 of the store adds the columns `ppid`, `parent_created`, `session` and `session_id` (H182). An older row gets its session from the owner `session:<name>`, and its parent at the next read while the parent runs.
 
 - At its start, the daemon reads the table. Thus a restart keeps the owners of the orphans.
 - At each read of the processes, one statement removes the rows of the ended processes, and new rows go in one transaction. A read with no change writes nothing.
