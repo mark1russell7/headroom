@@ -125,14 +125,14 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 3, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 4, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
@@ -140,11 +140,13 @@ describe("Store", () => {
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leases_job'").get()).toEqual({ name: "leases_job" });
     // H183: step 3 makes the tables of the shadow log and of the reap log.
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'reap_%' ORDER BY name").all()).toEqual([{ name: "reap_log" }, { name: "reap_shadow" }]);
+    // H78: step 4 makes the table of the keys and its index for the ladder.
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lease_keys%' ORDER BY name").all()).toEqual([{ name: "lease_keys" }, { name: "lease_keys_ladder" }]);
     expect(read.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
     again.close();
   });
 

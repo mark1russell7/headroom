@@ -104,7 +104,8 @@ import {
 } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
-import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
+import { learnSpawn, leaseRate, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
+import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
 import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
@@ -326,12 +327,14 @@ export interface EndedAlert extends Alert {
 
 /** A memory amount and a CPU amount for a job, from the peaks of its last runs. */
 export interface Suggestion {
-  /** The amount in MB, or `null` when no run of the job has a peak. */
+  /** The amount in MB, or `null` when no rung of the ladder has a run with a peak (H78). */
   readonly memoryMb: number | null;
   /** The number of runs that the amount uses. */
   readonly runs: number;
   /** The highest peak of those runs in MB. */
   readonly peakMb: number | null;
+  /** The rung of the ladder that gave the amount (H78). A daemon of an older version gives none. */
+  readonly rung?: Rung | undefined;
   /** The cores of `--cpu auto` (H23), or `null` when no run of the job has peak cores. */
   readonly cores: number | null;
   /** The number of runs that the cores use. */
@@ -398,18 +401,8 @@ const LEASE_KEEP_MS = 7 * 24 * 3_600_000;
 /** H178: the engine keeps the expected run time of a job for this time. Thus a tick reads the store at most one time a minute for each job. */
 const RUN_TIME_KEEP_MS = 60_000;
 
-/** The source of an expected run time (H184). It is the runs of the job by the holder, of the job, of its size class or of each job. */
-export type RunSource = "own" | "job" | "size" | "all";
-
-/** An expected run time and its source (H184). */
-export interface RunEstimate {
-  /** The 90th percentile of the run times of the source, in ms, or `null` when no run is known. */
-  readonly ms: number | null;
-  /** The source of the time, or `null` when no run is known. */
-  readonly from: RunSource | null;
-  /** The count of runs of the source. */
-  readonly runs: number;
-}
+/** The most keys of leases that the engine keeps for the expected run time (H78). The store keeps each key. */
+const KEYS_KEPT = 2000;
 /** A window shorter than this counts as this long, so one short write does not give a large speed. */
 const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
@@ -456,6 +449,8 @@ export class Engine {
   readonly #broker: Broker;
   /** H178: the expected run time of each job and holder, with the time of the read. */
   readonly #runTimes = new Map<string, { readonly at: number; readonly ms: number | null }>();
+  /** H78: the key of each lease, or `null` for a lease with no key. */
+  readonly #keys = new Map<string, JobKey | null>();
   readonly #now: () => number;
   #reserveMb: number;
   readonly #processEveryMs: number;
@@ -924,11 +919,16 @@ export class Engine {
     return changed;
   }
 
-  /** This function adds a request and grants it at once when it fits. The past runs of its job give its spawn class (H47). */
+  /**
+   * This function adds a request and grants it at once when it fits. The past runs of its job give its spawn class (H47).
+   * A request with a key writes the key and the predictions of its lease to the store (H78).
+   */
   request(request: LeaseRequest): Lease {
     this.#readPresence(this.#clock());
     const lease = this.#broker.request(request, this.spawnClass(request.job, request.holder, request.spawnHeavy));
     this.#persist([lease]);
+    // H78: the key and the predictions of the lease come before the first tick, so its expected run time uses the key.
+    if (request.key !== undefined && request.key !== null) this.#saveKey(lease, request.key);
     this.#persist(this.#broker.tick(this.capacity()));
     return this.#broker.get(lease.id) ?? lease;
   }
@@ -947,55 +947,107 @@ export class Engine {
   }
 
   /**
-   * This function gives a memory amount for a job from the peaks of its last runs. The amount is the 90th percentile
-   * and 25% more, rounded up to 64 MB. It prefers the runs of the same holder. Without a run, it gives `null`.
-   * The cores of `--cpu auto` use the same rule on the peak cores, up to a whole core and the cores that leases can get (H23).
+   * This function gives a memory amount for a job (H78). The amount comes from the first rung of the ladder of
+   * `predictMemory` with a run. The rungs are the job, its key, its repo, a fit over the repos, then its kind. Without
+   * a key, only the runs of the job count, as before H78. Without a run, the amount is `null`.
+   * The cores of `--cpu auto` use the rule of before H78 on the peak cores of the job. The amount rounds up to a whole
+   * core, and stays at most the cores that leases can get (H23).
    */
-  suggest(job: string, holder?: string): Suggestion {
-    const own = holder === undefined ? [] : this.#store.peaksOf(job, holder);
-    const peaks = own.length > 0 ? own : this.#store.peaksOf(job);
+  suggest(job: string, holder?: string, key?: JobKey | null): Suggestion {
     const ownCores = holder === undefined ? [] : this.#store.corePeaksOf(job, holder);
     const corePeaks = ownCores.length > 0 ? ownCores : this.#store.corePeaksOf(job);
     const cores = suggestCores(corePeaks, this.#leasableCores());
     const cpu = { cores, coreRuns: cores === null ? 0 : corePeaks.length, peakCores: cores === null ? null : Math.max(...corePeaks) };
-    const p90 = percentile90(peaks);
-    if (p90 === null) return { memoryMb: null, runs: 0, peakMb: null, ...cpu };
-    return { memoryMb: Math.max(256, Math.ceil((p90 * 1.25) / 64) * 64), runs: peaks.length, peakMb: Math.round(Math.max(...peaks)), ...cpu };
+    const memory = this.predictMemory(job, holder, key ?? null);
+    return { memoryMb: memory.mb, runs: memory.runs, peakMb: memory.peakMb, rung: memory.rung, ...cpu };
+  }
+
+  /** This function gives the memory prediction of a job from the ladder of H78, with the reads of the store. */
+  predictMemory(job: string, holder: string | undefined, key: JobKey | null): MemoryPrediction {
+    return predictMemory(this.#peakReads(job, holder, key), key);
   }
 
   /**
-   * This function gives the expected run time of a job in ms, and the runs that give it (H178, H184). It is the 90th
+   * This function gives the reads of the memory ladder from the store (H78). The rung `job` keeps the runs of the same
+   * repo, and the runs with no key. Without a key, the other rungs have no runs.
+   */
+  #peakReads(job: string, holder: string | undefined, key: JobKey | null): PeakReads {
+    const repo = key?.repo ?? null;
+    return {
+      own: () => (holder === undefined ? [] : this.#store.peaksOf(job, holder, PEAK_RUNS, repo)),
+      job: () => this.#store.peaksOf(job, undefined, PEAK_RUNS, repo),
+      key: () => (key === null ? [] : this.#store.keyedPeaks(key, "key")),
+      repo: () => (key === null ? [] : this.#store.keyedPeaks(key, "repo")),
+      sized: () => (key === null ? [] : this.#store.sizedPeaks(key.kind, key.warm)),
+      kind: () => (key === null ? [] : this.#store.keyedPeaks(key, "kind")),
+    };
+  }
+
+  /**
+   * This function gives the expected run time of a job in ms, and the runs that give it (H178, H184, H78). It is the 90th
    * percentile of the last runs with an exit code. It comes from the first of these sources with a run:
    * - `own`: the last 20 runs of the job by the holder, as in `suggest`
    * - `job`: the last 20 runs of the job
+   * - `key`: the last 20 runs of the same key (H78)
+   * - `repo`: the last 20 runs of the same kind, repo, filter and warm state (H78)
    * - `size`: the last 50 runs of the size class of its memory (`Store.runTimesOfSize`)
    * - `all`: the last 50 runs of each job
-   * Most jobs have a new name. Thus the base rate of its class gives the run time of a new job.
+   * Most jobs have a new name. Thus the key and then the base rate of its class give the run time of a new job.
    */
-  runEstimate(job: string, holder: string, amounts: Lease["amounts"]): RunEstimate {
-    const sources: readonly (readonly [RunSource, () => number[]])[] = [
-      ["own", () => this.#store.runTimesOf(job, holder)],
-      ["job", () => this.#store.runTimesOf(job)],
-      ["size", () => this.#store.runTimesOfSize(amounts["memory"] ?? 0)],
-      ["all", () => this.#store.runTimesOfSize()],
-    ];
-    for (const [from, read] of sources) {
-      const runs = read();
-      if (runs.length > 0) return { ms: percentile90(runs), from, runs: runs.length };
-    }
-    return { ms: null, from: null, runs: 0 };
+  runEstimate(job: string, holder: string, amounts: Lease["amounts"], key: JobKey | null = null): RunEstimate {
+    const repo = key?.repo ?? null;
+    return predictRunMs({
+      own: () => this.#store.runTimesOf(job, holder, PEAK_RUNS, repo),
+      job: () => this.#store.runTimesOf(job, undefined, PEAK_RUNS, repo),
+      key: () => (key === null || key.repo === null ? [] : this.#store.keyedRunTimes(key, "key")),
+      repo: () => (key === null || key.repo === null ? [] : this.#store.keyedRunTimes(key, "repo")),
+      size: () => this.#store.runTimesOfSize(amounts["memory"] ?? 0),
+      all: () => this.#store.runTimesOfSize(),
+    });
   }
 
   /** This function gives the expected run time of the job of a lease in ms, from `runEstimate`. The engine keeps each value for one minute. */
   #runMs(lease: Lease): number | null {
-    const key = JSON.stringify([lease.holder, lease.job, lease.amounts["memory"] ?? 0]);
+    const jobKey = this.#keyOf(lease.id);
+    const key = JSON.stringify([lease.holder, lease.job, lease.amounts["memory"] ?? 0, jobKey]);
     const now = this.#now();
     const kept = this.#runTimes.get(key);
     if (kept !== undefined && now - kept.at < RUN_TIME_KEEP_MS) return kept.ms;
-    const ms = this.runEstimate(lease.job, lease.holder, lease.amounts).ms;
+    const ms = this.runEstimate(lease.job, lease.holder, lease.amounts, jobKey).ms;
     if (this.#runTimes.size >= 500) for (const [k, v] of this.#runTimes) if (now - v.at >= RUN_TIME_KEEP_MS) this.#runTimes.delete(k);
     this.#runTimes.set(key, { at: now, ms });
     return ms;
+  }
+
+  /** This function gives the key of a lease (H78), from the request or from the store after a restart. A lease of an older client has none. */
+  #keyOf(id: string): JobKey | null {
+    const kept = this.#keys.get(id);
+    if (kept !== undefined) return kept;
+    const key = this.#store.leaseKey(id);
+    this.#rememberKey(id, key);
+    return key;
+  }
+
+  /** This function keeps the key of a lease. Above `KEYS_KEPT` keys, it forgets the keys of the leases that ended. */
+  #rememberKey(id: string, key: JobKey | null): void {
+    if (this.#keys.size >= KEYS_KEPT) {
+      for (const each of this.#keys.keys()) {
+        const lease = this.#broker.get(each);
+        if (lease === undefined || !isActive(lease)) this.#keys.delete(each);
+      }
+    }
+    this.#keys.set(id, key);
+  }
+
+  /**
+   * This function writes the key of a new lease and the predictions at its request (H78): the memory and the run time.
+   * `headroom report leases` compares them with the peak and the run time at the end.
+   */
+  #saveKey(lease: Lease, key: JobKey): void {
+    const memory = this.predictMemory(lease.job, lease.holder, key);
+    const run = this.runEstimate(lease.job, lease.holder, lease.amounts, key);
+    this.#store.saveLeaseKey(lease.id, key, memory, run);
+    this.#rememberKey(lease.id, key);
   }
 
   /**

@@ -129,7 +129,7 @@ headroom watches the cores in use, and keeps some cores for Mark:
 - **The reserve for Mark.** The cpu amounts of the running leases do not take the last 2 cores. `headroom config cpu-reserve <cores>` changes the count, and `0` turns the reserve off.
 - **A hard cap.** `headroom run --cpu 4 --limit` puts the job into a job object that cannot use more than 4 cores.
 - **A weight.** Without `--limit`, each job object gets the weight 5 of 9. Thus the leased jobs get equal parts of the processors when they compete.
-- **`--cpu auto`** gives the cores from the peak cores of the last runs of the job, with the rule of `--mem auto`. A job with no run gets 2 cores.
+- **`--cpu auto`** gives the cores from the peak cores of the last 20 runs of the job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 2 cores.
 - `headroom job` names the peak cores and the cap of a job, for example `peak 3.5 cores, capped at 4 cores`.
 
 The alerts use the reads of the processor times that the daemon already makes each 10 seconds. The 1-minute average at each read gives the time above a line.
@@ -159,7 +159,7 @@ On 2026-10-24, the Playwright browsers of shop did not start three times, with `
 A spawn-heavy job and a browser test do not run at the same time:
 
 - **The peak.** The lease keeps the highest starts in one minute of its job, over a window of 30 seconds. The counts come from the job object, every 30 seconds and at the release.
-- **The past runs.** A job name is spawn-heavy when the peak of its past runs is above the limit. The rule is the rule of `--mem auto`: the 90th percentile of the last 20 runs, the runs of the same holder first.
+- **The past runs.** A job name is spawn-heavy when the peak of its past runs is above the limit. The peak is the 90th percentile of the last 20 runs. The runs of the same holder come first.
 - **The limit.** The default is 600 starts in one minute. `headroom config spawn-heavy 900` changes it. `headroom config spawn-heavy --clear` sets the default again.
 - **A new job.** A job with no past runs is normal. When its own peak goes above the limit, it becomes spawn-heavy at once, and each later browser test waits for it.
 - **A quiet job.** A job stops being spawn-heavy when no 30-second window of its last 5 minutes is above the limit. So one burst at the start of a server does not hold the browser tests for the whole run of the server. A new burst makes the job spawn-heavy again. A job with `--spawn-heavy` keeps its class.
@@ -628,7 +628,7 @@ On Windows, `headroom run` puts the job into a job object:
 - The rating reads each part of the line (H55). For `vitest` and `jest`, the word `e2e` is a filter word, so it gives no slot. The exceptions are `--browser`, and a `--project` or `--config` that names `e2e`. Another unit test run that starts a browser from its own code takes the slot with `--slot browser`.
 - A spawn-heavy job does not run beside a browser test (H47). `--spawn-heavy` and `--no-spawn-heavy` set the class of the job.
 - `--when ac,usage<80` makes the job wait for its conditions, and `--timing` makes it wait for AC power (H31). On a low battery, a heavy job waits. `--battery-ok` starts it.
-- `--mem auto` sizes the lease from the peaks of the last runs of the same job: the 90th percentile and 25% more. The runs of the same holder come first. A job with no run gets 1 GB.
+- `--mem auto` sizes the lease from the peaks of past runs (H78). It reads the runs of the same job, else of its key, its repository, a fit on the count of packages, or its kind. A job with no run of its kind gets 1 GB. See [The memory of `--mem auto`](#the-memory-of---mem-auto-h78).
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool docker 2`. The processors are different: their count is the capacity of `cpu`, and `headroom pool cpu 8` sets a lower cap.
 
@@ -733,6 +733,52 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
 On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --since boot` (or `--hours <n>`) shows the growth of the tags in both pools over days. The store keeps one snapshot for each hour for 7 days. It also keeps the first snapshot after the start of Windows. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
+
+### The memory of `--mem auto` (H78)
+
+`--mem auto` asks for the memory that the job used in its past runs. Before H78, the name of the job was the only key. Most jobs have a new name. Thus in the 7 days before 2026-11-16, 41% of the leases asked for the default of 1 GB. A request was approximately 2 times the peak.
+
+From H78, `headroom run` sends a typed key with the request. The client makes the key from the command and from the files of its folder. It reads only files: it starts no process, not git either.
+
+| Field | Where it comes from |
+| --- | --- |
+| `kind` | The command: `install`, `test`, `typecheck`, `build`, `lint`, `browser` or `other`. A browser run is the run that takes the slot `browser`. A job name of one word gives the kind from its words, for example `h78-typecheck`. |
+| `repo` | The git folder above the folder of the command. A worktree gives its main repository. |
+| `lock` | The first 16 hex characters of the SHA-256 of the nearest lockfile. |
+| `filter` | The `--filter` values of pnpm or the `--workspace` values of npm, else the folder of the package. |
+| `warm` | True when `node_modules` is next to the lockfile. |
+| `packages` | The count of the packages of the lockfile. |
+| `command` | The command with no absolute paths, temporary folders or hex ids. |
+
+The daemon goes down a ladder, and takes the first rung with runs:
+
+1. `job`: the runs of the same job in the same repository. The runs of the same holder come first.
+2. `key`: the runs of the same kind, repository, lockfile, filter and warm state.
+3. `repo`: the same, with another lockfile.
+4. `fit`: the runs of the same kind and warm state in each repository. A least-squares line of the log of the peak on the log of the count of packages gives the amount. The amount adds the 90th percentile of the residuals. The fit needs 10 runs or more.
+5. `kind`: the last 50 runs of the same kind.
+6. `none`: no run. The client asks for 1 GB.
+
+At each rung but `fit`, the amount is the 90th percentile of the peaks, 10% more and 128 MB more. The amount rounds up to 64 MB, and is at least 256 MB. The rungs `job`, `key` and `repo` read the last 20 runs. The line of the run names the rung and the count of runs:
+
+```text
+headroom: --mem auto gives 832 MB, at the rung key: the peaks of 2 runs of the same key (kind, repository, lockfile and package) (the highest 600 MB).
+headroom: --mem auto gives 1.0 GB: no read, because no run of this job, its key or its kind (test) has a peak yet.
+```
+
+- The core does not read the command. It compares only the fields of the key.
+- A daemon of before H78 ignores the key. A client of before H78 sends no key, and its runs stay at the rung `job`.
+- Step 4 of the store adds the table `lease_keys`. Each lease with a key writes its key, and the amount and the run time that the ladder gave at its request.
+- The expected run time of H178 and H184 also uses the key. It reads the runs of the job first, then of its key, of its repository and of its size class.
+
+**The report.** `headroom report leases [--days 7] [--json]` opens the store read-only and needs no daemon. It gives four measures:
+
+- the share of the leases with a measured or fitted amount (the rungs `job`, `key`, `repo` and `fit`)
+- the sum of the requests over the sum of the peaks
+- the share of the leases with a peak over their request
+- the 90th percentile of the wait of the install leases, from the request to the grant
+
+It gives them for the leases as they ran, and for a walk-forward replay: each request sees only the runs that ended before it. The replay compares the rule of before H78 with the ladder, over a grid of amount rules. There are two gates. The upper end of the 95% Wilson interval of the over share is at most 5%. The sum of the requests is at most 1.5 times the sum of the peaks. The report chooses the rule with the lowest ratio that holds both gates. When no rule holds both, it chooses the rule with the lowest ratio that holds the over gate. A lease of before H78 has no key. Thus the report takes its kind from its job text, and the replay can test only the rungs `job` and `kind`.
 
 ## The plugin for Claude Code
 

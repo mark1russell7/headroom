@@ -30,6 +30,7 @@
  * - `headroom cancel <id> | --job <name> [--holder <h>] [--all]`: take a waiting lease off the queue. Its job does not start.
  * - `headroom reap [--all] | <pid> | --shadow | --log`: the processes whose parent is proven gone, and a stop of a process of the own session (H183).
  * - `headroom config reap-auto on|off`: the setting of a later automatic reap. In this version it stops no process (H183).
+ * - `headroom report leases [--days 7] [--json]`: how well the leases ask for the memory of their jobs, with a walk-forward replay of the rule (H78).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -117,13 +118,15 @@ import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
-import { dashboardKey, readDiscovery, readPlannedStop } from "./paths.ts";
+import { dashboardKey, databasePath, readDiscovery, readPlannedStop } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
 import { worktreeCommand } from "./worktree-cli.ts";
 import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
+import { keyOfRun, memoryAutoLine } from "./job-key.ts";
+import { AUTO_DEFAULT_MB, leaseReportLines, readLeaseReport, REPORT_USAGE } from "./lease-report.ts";
 import { ALERTS_USAGE, alertsChange, alertsLines } from "./alerts-cli.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
 import { leaseRow, problemLines, rolesFileLine, SET_ROLES_FILE, usageFileLine } from "./status-lines.ts";
@@ -145,6 +148,9 @@ const HELP = `headroom: the memory and job broker of this computer
                [--battery-ok] [--during-drain] [--ignore-presence] [--detach] -- <command> [args...]
                --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
                Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
+               --mem auto: the peaks of the last runs. The first rung with runs gives them: this job, its key
+               (kind, repository, lockfile and package), its repository, a fit on the count of packages, its kind.
+               With no run: ${AUTO_DEFAULT_MB} MB, and the line says "no read". headroom report leases gives the measures.
                --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
                The leases do not take the last ${CPU_RESERVE_DEFAULT} cores: headroom config cpu-reserve changes them.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
@@ -246,6 +252,10 @@ const HELP = `headroom: the memory and job broker of this computer
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
   headroom history [--minutes 60] [--json]
+  ${REPORT_USAGE}
+               How well the leases ask for the memory of their jobs: the share with a measured or fitted amount,
+               the request sum over the peak sum, the share over the request, and the wait of the installs.
+               A walk-forward replay compares the rule of before H78 with the ladder. It reads the store only.
   headroom pool <name> <capacity>
   headroom release <id>
   ${CANCEL_USAGE}
@@ -483,8 +493,6 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
 }
 
 /** This function waits until the lease is no longer waiting. When the daemon restarts, it connects again and continues to wait. */
-/** The amount of `--mem auto` for a job with no run that has a peak, in MB. */
-const AUTO_DEFAULT_MB = 1024;
 
 /** How `headroom run` holds its job: a job object, and a memory limit and a CPU cap with --limit (H23). */
 interface Enforcement extends LimitOptions {
@@ -842,16 +850,17 @@ async function run(argv: string[]): Promise<number> {
   }
   Object.assign(amounts, disks);
   const holder = values.holder ?? (await holderOf());
-  // --mem auto and --cpu auto: the peaks of the last runs of this job give the amounts.
+  // H78: the typed key of the job, from the command and the files of its folder. The daemon matches its fields. Each
+  // lease with a key writes it to the store, so a later job with a new name finds the runs of the same key.
+  const key = keyOfRun(positionals, process.cwd());
+  // --mem auto and --cpu auto: the peaks of the last runs of this job, or of its key, give the amounts.
   const suggestion =
-    values.mem === "auto" || values.cpu === "auto" ? await connection.call<Suggestion>(["resources", "suggest"], { job, holder }).catch(() => null) : null;
+    values.mem === "auto" || values.cpu === "auto"
+      ? await connection.call<Suggestion>(["resources", "suggest"], { job, holder, ...(key === null ? {} : { key }) }).catch(() => null)
+      : null;
   if (values.mem === "auto") {
     amounts["memory"] = suggestion?.memoryMb ?? AUTO_DEFAULT_MB;
-    console.error(
-      suggestion?.memoryMb
-        ? `headroom: --mem auto gives ${mb(amounts["memory"])}, from the peaks of ${suggestion.runs} ${suggestion.runs === 1 ? "run" : "runs"} (the highest ${mb(suggestion.peakMb ?? 0)}).`
-        : `headroom: --mem auto gives ${mb(AUTO_DEFAULT_MB)}, because no run of this job has a peak yet.`,
-    );
+    console.error(memoryAutoLine(suggestion, key, AUTO_DEFAULT_MB, mb));
   }
   // H23: a daemon of an older version gives no cores.
   if (values.cpu === "auto") {
@@ -881,6 +890,7 @@ async function run(argv: string[]): Promise<number> {
     ...(ignorePresence ? { ignorePresence } : {}),
     // H23: the status names the capped jobs. The job object of this process holds the cap.
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
+    ...(key === null ? {} : { key }),
   };
   // H64: a detached job that waits is a row of the daemon, with no process. A daemon of an older version has no such
   // procedure, and a refused request has its reason in the log, so the client then waits in the queue as before.
@@ -1689,6 +1699,14 @@ async function main(argv: string[]): Promise<number> {
     case "thermal": {
       const { values } = parseArgs({ args: rest, options: { json: { type: "boolean" } } });
       return showThermal(values.json === true);
+    }
+    case "report": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { days: { type: "string" }, json: { type: "boolean" } } });
+      const days = Number(values.days ?? 7);
+      if (positionals[0] !== "leases" || positionals.length !== 1 || !(days > 0)) return (console.error(`Usage: ${REPORT_USAGE}`), 2);
+      const report = readLeaseReport(databasePath(), days, Date.now());
+      console.log(values.json === true ? JSON.stringify(report, null, 2) : leaseReportLines(report).join("\n"));
+      return 0;
     }
     case "history": {
       const { values } = parseArgs({ args: rest, options: { minutes: { type: "string" }, json: { type: "boolean" } } });

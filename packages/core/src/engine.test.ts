@@ -80,15 +80,15 @@ describe("Engine suggest", () => {
 
   it("sizes a job from the peaks of its last runs, the runs of the same holder first", () => {
     const engine = new Engine({ sampler, store: new Store(":memory:"), sessionsDir: "/nowhere" });
-    expect(engine.suggest("pnpm test", "shop")).toEqual({ memoryMb: null, runs: 0, peakMb: null, cores: null, coreRuns: 0, peakCores: null });
+    expect(engine.suggest("pnpm test", "shop")).toEqual({ memoryMb: null, runs: 0, peakMb: null, rung: "none", cores: null, coreRuns: 0, peakCores: null });
     const run = (holder: string, peakMb: number) => {
       const lease = engine.request({ holder, job: "pnpm test", amounts: { memory: 512 }, ttlMs: 60_000 });
       engine.release(lease.id, "the job ended", peakMb);
     };
     for (const peak of [400, 420, 900, 410]) run("shop", peak);
     run("client", 3000);
-    // The runs of shop: the 90th percentile is 900 MB, and 25% more is 1125 MB, rounded up to 1152 MB.
-    expect(engine.suggest("pnpm test", "shop")).toEqual({ memoryMb: 1152, runs: 4, peakMb: 900, cores: null, coreRuns: 0, peakCores: null });
+    // The runs of shop: the 90th percentile is 900 MB. 10% and 128 MB more is 1118 MB, rounded up to 1152 MB (H78).
+    expect(engine.suggest("pnpm test", "shop")).toEqual({ memoryMb: 1152, runs: 4, peakMb: 900, rung: "job", cores: null, coreRuns: 0, peakCores: null });
     // A holder with no run of its own uses the runs of all holders.
     expect(engine.suggest("pnpm test", "vex")).toMatchObject({ runs: 5, peakMb: 3000 });
     engine.close();
@@ -162,6 +162,33 @@ describe("Engine suggest", () => {
     run("lag", "vitest related", { memory: 900 }, 45_000);
     expect(engine.runEstimate("vitest related", "vex", { memory: 900 })).toEqual({ ms: 45_000, from: "job", runs: 2 });
     expect(engine.runEstimate("vitest related", "shop", { memory: 900 })).toEqual({ ms: 30_000, from: "own", runs: 1 });
+    engine.close();
+  });
+
+  it("writes the key of a request, and sizes a new job name from the runs of its key, then of its kind (H78)", () => {
+    let now = 1_000_000;
+    const store = new Store(":memory:");
+    const engine = new Engine({ sampler, store, sessionsDir: "/nowhere", now: () => now });
+    const key = { kind: "test" as const, repo: "shop", lock: "0123456789abcdef", filter: ".", warm: true, packages: 800, command: "pnpm test" };
+    const run = (job: string, peakMb: number, ranMs: number, each: typeof key | null = key) => {
+      const lease = engine.request({ holder: "shop", job, amounts: { memory: 512 }, ttlMs: 600_000, key: each });
+      now += ranMs;
+      engine.release(lease.id, "the job ended", peakMb, undefined, { code: 0, signal: null });
+      return lease.id;
+    };
+    // The first run has no run before it: the rung none.
+    const first = run("h1-test", 400, 20_000);
+    expect(store.leaseKeyRow(first)).toMatchObject({ key, predictedMb: null, rung: "none", runs: 0 });
+    run("h2-test", 600, 40_000);
+    // A new job name with the same key: the rung key, and its run time from the key.
+    expect(engine.suggest("h3-test", "shop", key)).toMatchObject({ memoryMb: 832, rung: "key", runs: 2, peakMb: 600 });
+    expect(engine.runEstimate("h3-test", "shop", { memory: 512 }, key)).toEqual({ ms: 40_000, from: "key", runs: 2 });
+    // The same name without a key: no run of the name, as before H78.
+    expect(engine.suggest("h3-test", "shop")).toMatchObject({ memoryMb: null, rung: "none" });
+    // Another repo of the same kind: the rung kind.
+    expect(engine.suggest("h3-test", "shop", { ...key, repo: "vex", packages: null })).toMatchObject({ rung: "kind", runs: 2 });
+    // A request without a key writes no key.
+    expect(store.leaseKeyRow(run("h4-test", 300, 1_000, null))).toBeNull();
     engine.close();
   });
 

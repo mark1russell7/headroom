@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { leaseConditions, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import type { JobUsage, ResourceId, Room } from "./resources.ts";
 import type { SpawnClass } from "./spawn.ts";
+import type { JobKey } from "./predict.ts";
 import { MEMORY, type Amounts } from "./types.ts";
 
 /** The state of a lease. Only `waiting` and `granted` are active. */
@@ -49,6 +50,11 @@ export interface LeaseRequest {
   readonly ignorePresence?: boolean | undefined;
   /** The hard cap of the job in cores, with `--cpu N --limit` (H23). The client of `headroom run` sets it on the job object. */
   readonly cpuCap?: number | undefined;
+  /**
+   * The typed key of the job (H78), from the client. The engine writes it with its predictions to the store, and the
+   * ladder of `--mem auto` matches it. The broker does not read it. An older client sends none.
+   */
+  readonly key?: JobKey | null | undefined;
 }
 
 /** The exit of a job, from its holder at the release (H26). */

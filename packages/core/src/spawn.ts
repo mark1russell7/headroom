@@ -13,6 +13,7 @@
  *   other leases stays at or below the limit, in each order.
  */
 
+import { quantile } from "@mark1russell7/rigor-statistics";
 import type { Lease } from "./broker.ts";
 import { countText } from "./starts.ts";
 
@@ -54,11 +55,12 @@ export interface SpawnClass {
   readonly runs: number;
 }
 
-/** This function gives the 90th percentile of a list, as `--mem auto` uses it. Up to 10 values, it is the highest value. It gives `null` for an empty list. */
+/**
+ * This function gives the 90th percentile of a list, as `--mem auto` uses it. Up to 10 values, it is the highest value. It gives `null` for an empty list.
+ * The quantile comes from the statistics home (`higher` method), which gives the same values as the local copy of before (H78).
+ */
 export function percentile90(values: readonly number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.9))] ?? null;
+  return values.length === 0 ? null : quantile(values, 0.9, "higher");
 }
 
 /**

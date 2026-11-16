@@ -617,7 +617,7 @@ H23 shipped in one change. These parts are as built:
 - **Enforce**: `headroom run --cpu N --limit` sets `JobObjectCpuRateControlInformation` (class 15) with `ENABLE | HARD_CAP` and the rate N / processors × 10,000.
 - **The weight**: without `--limit`, each job object gets `ENABLE | WEIGHT_BASED` with the weight 5. A failed call does not stop the job. The run writes a warning.
 - **Report**: the run gives the processor time of the job object at the release. The lease keeps its peak cores: the highest 1-minute average of its group, or the average over the run for a short job.
-- **`--cpu auto`** gives the 90th percentile of the peak cores of the last 20 runs and 25% more, the rule of `--mem auto`. The amount is at most the processors less the reserve. A job with no run gets 2 cores.
+- **`--cpu auto`** gives the 90th percentile of the peak cores of the last 20 runs and 25% more, the rule of `--mem auto` before H78. The amount is at most the processors less the reserve. A job with no run gets 2 cores.
 
 Before step 2, `cpu` was a counted pool with the capacity 1 when no pool set it. Thus `headroom run --cpu 2` without `headroom pool cpu 8` got cancelled. Step 2 corrects this: `cpu` is a counted kind, and its capacity is the count of logical processors. A configured pool `cpu` stays, as a cap. H23 keeps `cpu` counted, because the cpu amount of a lease is a promise of cores, not a measure of them.
 
@@ -1143,7 +1143,7 @@ On 2026-10-24, the Playwright browsers of shop did not start three times, with `
 - The lease keeps the highest rate in the column `peak_starts_per_min`. A lower rate does not lower it.
 - `headroom job` also gives the average: the processes over the run time, with at least 30 seconds.
 
-**Learn.** `Engine.spawnClass(job, holder)` uses the rule of `--mem auto`. The learned peak is the 90th percentile of the peaks of the last 20 runs. The runs of the same holder come first.
+**Learn.** `Engine.spawnClass(job, holder)` reads the runs of the rung `job` of `--mem auto` (H78). The learned peak is the 90th percentile of the peaks of the last 20 runs. The runs of the same holder come first.
 
 - Up to 10 runs, the 90th percentile is the highest peak.
 - A run from before H47 has no peak. Its average is a lower bound, so it counts instead.
@@ -1457,6 +1457,30 @@ On 2026-10-25, the available memory fell two times, and the reaper of Claude Cod
 1. Examine the Dev Drive: `fsutil devdrv query D:`. A trusted Dev Drive has Defender in performance mode.
 2. Remove the drive `D:` from the scope of Windows Search. Open Indexing Options with `control.exe srchadmin.dll`, and clear `D:` in the indexed locations. The service stays on for `C:`.
 3. To see the parts of the cache, run RAMMap of Sysinternals: the tab "Use Counts" gives `Metafile` and `Mapped File`. `RAMMap64.exe -Ew` empties the working sets, and `-Es` empties the system working set.
+
+### H78: the key of a job and the memory ladder
+
+**The problem.** The amount of `--mem auto` came from the past runs of the same job name. In the 7 days before 2026-11-16, 6932 leases had a memory request and a peak. 40.9% of them asked for the default of 1024 MB. The requests were 2.12 times the peaks, and 5.1% of the leases used more than their request. Most job names are new: a `--job` name or a command with a new path.
+
+**The key.** The client of `headroom run` sends a `JobKey` with `resources.lease`, `resources.defer` and `resources.suggest`. The field `key` is optional, and the inputs are not strict, so a daemon of before H78 ignores it. `packages/daemon/src/job-key.ts` makes the key with `node:fs` only. It reuses `autoSlots` of `slots.ts` for the kind `browser`. The mapper lives in the CLI until H79 moves it to the procedure layer.
+
+**The ladder.** `predictMemory` in `packages/core/src/predict.ts` is pure. It takes the reads of the store as functions, and calls a read only when each rung before it has no run. The rungs are `job`, `key`, `repo`, `fit`, `kind` and `none`. The core compares only the fields of the key with `IS`, so a `null` field matches only a `null` field. The rung `job` leaves out the runs with a key of another repository.
+
+**The amount.** `PEAK_RULE` is the 90th percentile of the peaks, 10% more and 128 MB more, rounded up to 64 MB, and at least 256 MB. `LEGACY_RULE` is the rule of before H78: the 90th percentile and 25% more. The fit uses `leastSquares` of `@mark1russell7/rigor-statistics` on the logs, and holds the count of packages in the range of its runs.
+
+**The store.** Step 4 adds the table `lease_keys` (one row for each lease with a key) and its index `lease_keys_ladder` on `(kind, repo, filter, warm, lock)`. The row keeps the key, and the amount, the rung, the runs and the run time of the ladder at the request. `prune` removes the rows of the leases that it removes.
+
+**The replay.** `replayLeases` in `packages/core/src/replay.ts` gives the amount of a rule at each request from the runs that ended before it. `headroom report leases` replays the base and a grid of 51 rules. The over gate uses the upper end of the 95% Wilson interval (`wilson` of rigor-statistics). The run of 2026-11-16:
+
+| Rule | Default | Measured | Kind | Request/peak | Over | Over 95% | Gates |
+|---|---|---|---|---|---|---|---|
+| Base: rung `job`, p90×1.25 | 53.4% | 46.6% | 0% | 2.00 | 5.7% | 6.2% | none |
+| Ladder, p90×1.25 | 0% | 46.6% | 53.3% | 1.99 | 5.5% | 6.0% | none |
+| Ladder, p90×1.1+128MB (chosen) | 0% | 46.6% | 53.3% | 2.06 | 4.3% | 4.8% | over only |
+
+- No rule of the grid held both gates. The lowest ratio at the over gate was 2.06. Within one job, the peaks vary much: the rung `job` alone gave 1.69 at 4.3% over.
+- The leases of before H78 have no key. Thus the replay tests only the rungs `job` and `kind`. The target of 90% measured or fitted has no read until the leases with a key fill the rungs `key`, `repo` and `fit`.
+- The wait of the install leases of a replay is no read, because the replay does not run the queue. As the leases ran, its 90th percentile was 2.95 minutes.
 
 ## Decisions
 
