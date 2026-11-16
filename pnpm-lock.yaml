@@ -180,7 +180,7 @@ importers:
         version: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7
       '@mark1russell7/template-cli':
         specifier: ^0.1.0
-        version: 0.1.7
+        version: 0.1.8
       '@vitest/coverage-v8':
         specifier: ^5.0.3
         version: 5.1.0(vitest@5.1.0)
@@ -198,7 +198,7 @@ importers:
     dependencies:
       '@mark1russell7/sqlite':
         specifier: ^0.3.1
-        version: 0.3.3
+        version: 0.3.6
       koffi:
         specifier: ^3.3.3
         version: 3.3.5
@@ -222,8 +222,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@mark1russell7/text':
-        specifier: ^0.0.6
-        version: 0.0.6
+        specifier: ^0.0.7
+        version: 0.0.7
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.2(zod@4.6.7)
@@ -259,15 +259,15 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@mark1russell7/text':
-        specifier: ^0.0.6
-        version: 0.0.6
+        specifier: ^0.0.7
+        version: 0.0.7
     devDependencies:
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@mark1russell7/site-pages':
-        specifier: ^0.5.0
-        version: 0.5.0
+        specifier: ^0.6.0
+        version: 0.6.0
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.6
@@ -683,14 +683,14 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/site-pages@0.5.0':
-    resolution: {integrity: sha512-sGDFRCr2fIRarRV4FCoDvfYBSOln134N9ApuwNMKXYtiiXpPv8LMeUUB/19QQU7fJDKWGZgqPSAJZ/+RA7p63A==}
+  '@mark1russell7/site-pages@0.6.0':
+    resolution: {integrity: sha512-fj4r31yTJVhuZkTFdfg/n1cQSu+vuUf5eRxWpkUMXp2EsAYpdnbfanCNCC3kPen6C69lNwkkbyUs5YIR7bVFNw==}
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/sqlite@0.3.3':
-    resolution: {integrity: sha512-FQmvcDymVQtT/atS1Yv7khd05GF3rc5D62YXRsDG2ICJP96leTNnpAwSNDbaKwKBbQyBbgQ9rux7MQOd3sefUg==}
-    engines: {node: '>=22.16'}
+  '@mark1russell7/sqlite@0.3.6':
+    resolution: {integrity: sha512-5XLi5WPVxGHwqv7BseNm4y/tGxG4uCQ2UjKhnqFVtuIcUuWEgIwCxnyiik2DyQ8PLgZweF5VDinsErp5O6twVQ==}
+    engines: {node: '>=22.13'}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     resolution: {gitHosted: true, integrity: sha512-HDxumpWNUeciZKaXbAGFPyoOTrt0trj7L3/koNvWnTN/vEuF0gYzqVJdsgfTQ9bE/DhSxfNMRxtrh4KYnbbimA==, tarball: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7}
@@ -698,8 +698,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/template-cli@0.1.7':
-    resolution: {integrity: sha512-Wy4xa6OgNXyMunSyXOArxmrspLSCuyw1pf1P5X45Uiwe1aWHzn0LJptUYVGUSwT3GTp9FGVDhFMeOnKlapD3Xw==}
+  '@mark1russell7/template-cli@0.1.8':
+    resolution: {integrity: sha512-uGzXp++PCRl+jTwVPZHGm9PkH4jmRx//xbphjE/KP2JA/WyWJ9XTyjRRQvWcVzoUN/hTDnfMNaGBFlT8wdwhUg==}
     engines: {node: '>=22.12'}
     hasBin: true
 
@@ -707,8 +707,8 @@ packages:
     resolution: {integrity: sha512-m1aIB8X+PDekktzr1fYOp1/7gvlh9iL/2M7ktj/GnmPmVrWin0rTADgTm00dKFdWFRzXraCUYkjyCl3jQZHEVg==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/text@0.0.6':
-    resolution: {integrity: sha512-IwKQHx9U+k5AbEzZ8q4CxImQCuYXSFhvzMOSgy5UGYrZRIBO9RES7SYrXDrKqQFtMl5qD2QbibffevUPsrUW+A==}
+  '@mark1russell7/text@0.0.7':
+    resolution: {integrity: sha512-z77JJNdQLstitCBkuatDxfDyDadNhGjQz+OBitkCQ4om0gsp4AF4ZgYZfsJofVAneo/4sPuQ+6czkxagJuWkPQ==}
     engines: {node: '>=22.12'}
 
   '@modelcontextprotocol/sdk@1.32.2':
@@ -2001,23 +2001,23 @@ snapshots:
       ws: 8.22.0
       zod: 4.6.7
 
-  '@mark1russell7/site-pages@0.5.0':
+  '@mark1russell7/site-pages@0.6.0':
     dependencies:
       '@mark1russell7/rigor-statistics': 0.2.4
 
-  '@mark1russell7/sqlite@0.3.3': {}
+  '@mark1russell7/sqlite@0.3.6': {}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:
       typescript: 6.0.3
 
-  '@mark1russell7/template-cli@0.1.7':
+  '@mark1russell7/template-cli@0.1.8':
     dependencies:
       '@clack/prompts': 1.8.1
 
   '@mark1russell7/text@0.0.2': {}
 
-  '@mark1russell7/text@0.0.6': {}
+  '@mark1russell7/text@0.0.7': {}
 
   '@modelcontextprotocol/sdk@1.32.2(zod@4.6.7)':
     dependencies:
