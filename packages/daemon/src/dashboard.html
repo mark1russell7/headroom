@@ -135,6 +135,7 @@ button.lg:hover { border-color: var(--border); background: var(--raise); }
 .chart .tip .t { color: var(--muted); margin-bottom: 4px; }
 .chart .tip .row { display: flex; align-items: center; gap: 8px; }
 .chart .tip .row b { font-weight: 650; font-variant-numeric: tabular-nums; color: var(--ink); }
+.chart .tip .row b, .chart .tip .row span { white-space: nowrap; }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--ink-2); font-size: 12px; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .key { width: 14px; height: 2px; border-radius: 1px; display: inline-block; }
@@ -202,7 +203,12 @@ button.row:hover { background: var(--raise); }
 .tl svg { display: block; width: 100%; }
 .sub3 { margin: 6px 0 0; font-size: 13px; font-weight: 650; }
 
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+/* H53: the growth of the pool tags since the start of Windows, one chart for each pool, side by side when they fit. */
+.tagcharts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 16px 28px; margin-top: 12px; }
+.tagchart { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.tagchart h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.tagchart h3 small { margin-left: 6px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.tagchart .legend b { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink); white-space: pre; }
 .owners { display: grid; gap: 2px; margin-top: 10px; }
 .owner { display: grid; grid-template-columns: minmax(120px, 230px) 1fr 72px 88px; align-items: center; gap: 10px; padding: 5px 6px; margin: 0 -6px; border: 0; background: none; text-align: left; border-radius: 6px; cursor: pointer; transition: opacity 0.15s; }
 button.owner:hover { background: var(--raise); }
@@ -215,7 +221,6 @@ div.owner { cursor: default; }
 .foot { color: var(--muted); font-size: 12px; text-align: center; }
 .stale { opacity: 0.55; transition: opacity 0.2s; }
 
-@media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
 @media (max-width: 760px) { .res.open { grid-template-columns: minmax(0, 1fr); } .row.own.full { grid-template-columns: minmax(0, 1fr) 48px auto; } .row.own.full svg { display: none; } }
 @media (max-width: 520px) { .hero b { font-size: 40px; } .owner { grid-template-columns: minmax(90px, 1fr) 1fr 64px; } .owner .spark { display: none; } .live { margin-left: 0; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
@@ -274,10 +279,16 @@ div.owner { cursor: default; }
     <div class="owners" id="owners"></div>
   </section>
 
-  <section class="grid2">
-    <div class="card"><h2>MCP gateway</h2><p class="hint">One shared copy of each MCP server for all the sessions.</p><div class="scroll" id="mcp"></div></div>
-    <div class="card"><h2>Pool tags</h2><p class="hint" id="tagsHint">The largest non-paged pool tags, and their change in the last hour. <code>headroom pool-tags --drivers</code> names the driver of a tag.</p><div class="scroll" id="tags"></div></div>
+  <section class="card" aria-labelledby="tagsTitle">
+    <h2 id="tagsTitle">Pool tags</h2>
+    <p class="hint" id="tagLinesHint">The tags of the kernel pools that grew most since the start of Windows. A driver marks its memory with a tag, so a line that climbs names the driver that holds more.</p>
+    <div class="tagcharts" id="tagLines"></div>
+    <h3 class="sub3">The last hour</h3>
+    <p class="hint" id="tagsHint">The largest non-paged pool tags, and their change in the last hour. <code>headroom pool-tags --drivers</code> names the driver of a tag.</p>
+    <div class="scroll" id="tags"></div>
   </section>
+
+  <section class="card"><h2>MCP gateway</h2><p class="hint">One shared copy of each MCP server for all the sessions.</p><div class="scroll" id="mcp"></div></section>
 
   <p class="foot" id="foot">headroom stops its requests while this tab is hidden.</p>
 </div>
@@ -303,7 +314,7 @@ const WINDOWS = [
   { minutes: 1440, label: "24 h", step: 12 },
   { minutes: 10080, label: "7 days", step: 84 },
 ];
-const state = { status: null, history: null, historyAt: 0, mcp: [], tags: null, config: null, disk: null, window: 360, ok: true, at: 0, open: null, focus: null };
+const state = { status: null, history: null, historyAt: 0, mcp: [], tags: null, tagLines: null, tagLinesAt: null, config: null, disk: null, window: 360, ok: true, at: 0, open: null, focus: null };
 try {
   const saved = Number(localStorage.getItem("headroom.window"));
   if (WINDOWS.some((w) => w.minutes === saved)) state.window = saved;
@@ -491,28 +502,35 @@ function niceStep(range) {
 const timeLabel = (t, span) => (span > 36 * 3600e3 ? dayClock(t) : clock(t));
 
 /**
- * A line chart over time: one y axis from 0, 2px lines, a hairline grid, direct end labels when they do not collide,
+ * A line chart over time: one y axis that holds 0, 2px lines, a hairline grid, direct end labels when they do not collide,
  * a crosshair with one tooltip for every series, keyboard steps with the arrow keys, and a table of the data.
+ * Options: `ends: false` gives no end labels (the legend names the lines), `gapMs` is the gap that breaks a line,
+ * `format` writes a value, and the `notes` of a series add a text to its row of the tooltip.
  */
-function lineChart(host, tableHost, { times, series, unit, toUnit, digits, reference, label }) {
+function lineChart(host, tableHost, { times, series, unit, toUnit, digits, reference, label, ends = true, gapMs, format }) {
   if (times.length < 2) { host.replaceChildren(h("div", { class: "empty", text: "No history yet in this window." })); tableHost.replaceChildren(); return; }
-  const fmt = (v) => `${toUnit(v).toFixed(digits)}${unit ? ` ${unit}` : ""}`;
-  const W = Math.max(300, host.clientWidth || 600), H = 210, padL = 44, padR = 92, padT = 10, padB = 24;
+  const fmt = format || ((v) => `${toUnit(v).toFixed(digits)}${unit ? ` ${unit}` : ""}`);
+  const W = Math.max(300, host.clientWidth || 600), H = 210, padL = 44, padR = ends ? 92 : 14, padT = 10, padB = 24;
   const pw = W - padL - padR, ph = H - padT - padB;
   const t0 = times[0], t1 = times[times.length - 1], span = t1 - t0;
-  const max = Math.max(...series.flatMap((sr) => sr.values.filter((v) => v != null)), reference ? reference.value : 0);
-  const step = niceStep(toUnit(max) || 1);
+  const all = series.flatMap((sr) => sr.values.filter((v) => v != null));
+  const max = Math.max(...all, reference ? reference.value : 0);
+  // A value below 0 (a change that fell) moves the floor of the axis below 0: by the dip and a margin, at most to the next step.
+  const lo = toUnit(Math.min(0, ...all));
+  const step = niceStep(toUnit(max) - lo || 1);
   const top = Math.ceil(toUnit(max) / step) * step || step;
+  const bottom = lo < 0 ? Math.max(Math.floor(lo / step) * step, lo * 1.1) : 0;
   const x = (t) => padL + ((t - t0) / (span || 1)) * pw;
-  const y = (v) => padT + ph - (toUnit(v) / top) * ph;
+  const yAt = (u) => padT + ph - ((u - bottom) / (top - bottom)) * ph;
+  const y = (v) => yAt(toUnit(v));
   const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, tabindex: 0, role: "img", "aria-label": `${label}. Use the left and right arrow keys to read the values.` });
-  for (let v = 0; v <= top + 1e-9; v += step) {
-    const yy = padT + ph - (v / top) * ph;
-    svg.append(s("line", { x1: padL, x2: padL + pw, y1: yy, y2: yy, stroke: v === 0 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
+  for (let i = Math.ceil(bottom / step - 1e-9); i * step <= top + 1e-9; i++) {
+    const v = i * step, yy = yAt(v);
+    svg.append(s("line", { x1: padL, x2: padL + pw, y1: yy, y2: yy, stroke: Math.abs(v) < step / 1e6 ? "var(--axis)" : "var(--grid)", "stroke-width": 1 }));
     svg.append(s("text", { x: padL - 8, y: yy + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)", style: "font-variant-numeric:tabular-nums" }, String(+v.toFixed(2))));
   }
-  // The number of time labels follows the width, so the labels do not touch on a phone.
-  const ticks = Math.max(2, Math.min(5, Math.floor(pw / 95)));
+  // The number of time labels follows the width and the length of a label, so the labels do not touch on a phone.
+  const ticks = Math.max(2, Math.min(5, Math.floor(pw / (span > 36 * 3600e3 ? 130 : 95))));
   for (let i = 0; i <= ticks; i++) {
     const t = t0 + (span * i) / ticks;
     svg.append(s("text", { x: x(t), y: H - 6, "text-anchor": i === 0 ? "start" : i === ticks ? "end" : "middle", "font-size": 11, fill: "var(--muted)" }, timeLabel(t, span)));
@@ -530,8 +548,8 @@ function lineChart(host, tableHost, { times, series, unit, toUnit, digits, refer
     svg.append(s("rect", { x: a, y: padT, width: Math.max(1, b - a), height: ph, fill: "var(--grid)", "fill-opacity": 0.6 }, s("title", {}, `The computer slept from ${clock(from)} to ${clock(to)}`)));
   }
   // A gap in the samples (the daemon did not run) breaks the line. A wash under a single series shows its area.
-  const gap = Math.max(3 * (span / Math.max(1, times.length - 1)), 3 * 60_000);
-  const ends = [];
+  const gap = gapMs ?? Math.max(3 * (span / Math.max(1, times.length - 1)), 3 * 60_000);
+  const endLabels = [];
   for (const sr of series) {
     let d = "", prev = null;
     const runs = [];
@@ -543,17 +561,18 @@ function lineChart(host, tableHost, { times, series, unit, toUnit, digits, refer
       d += `${join ? "L" : "M"}${x(times[i]).toFixed(1)},${y(v).toFixed(1)}`;
       prev = i;
     });
-    if (series.length === 1) for (const r of runs) if (r.length > 1) svg.append(s("path", { d: `M${r[0][0].toFixed(1)},${padT + ph}${r.map((p) => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("")}L${r[r.length - 1][0].toFixed(1)},${padT + ph}Z`, fill: sr.color, "fill-opacity": 0.1 }));
+    const base = y(0).toFixed(1);
+    if (series.length === 1) for (const r of runs) if (r.length > 1) svg.append(s("path", { d: `M${r[0][0].toFixed(1)},${base}${r.map((p) => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join("")}L${r[r.length - 1][0].toFixed(1)},${base}Z`, fill: sr.color, "fill-opacity": 0.1 }));
     svg.append(s("path", { d, fill: "none", stroke: sr.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
     const last = sr.values.length - 1;
     if (sr.values[last] != null) {
       svg.append(s("circle", { cx: x(times[last]), cy: y(sr.values[last]), r: 4, fill: sr.color, stroke: "var(--surface)", "stroke-width": 2 }));
-      ends.push({ y: y(sr.values[last]), value: sr.values[last], name: sr.name });
+      endLabels.push({ y: y(sr.values[last]), value: sr.values[last], name: sr.name });
     }
   }
   // Direct end labels only when they do not collide: the legend or the title carries the names in each case.
-  const sorted = [...ends].sort((a, b) => a.y - b.y);
-  if (sorted.every((e, i) => i === 0 || e.y - sorted[i - 1].y >= 26)) for (const e of ends) {
+  const sorted = [...endLabels].sort((a, b) => a.y - b.y);
+  if (ends && sorted.every((e, i) => i === 0 || e.y - sorted[i - 1].y >= 26)) for (const e of endLabels) {
     svg.append(s("text", { x: padL + pw + 10, y: e.y - 1, "font-size": 12, "font-weight": 650, fill: "var(--ink)" }, fmt(e.value)));
     svg.append(s("text", { x: padL + pw + 10, y: e.y + 12, "font-size": 11, fill: "var(--ink-2)" }, e.name));
   }
@@ -573,9 +592,9 @@ function lineChart(host, tableHost, { times, series, unit, toUnit, digits, refer
       if (v != null) { dots[k].setAttribute("cx", xx); dots[k].setAttribute("cy", y(v)); }
     });
     tip.replaceChildren(h("div", { class: "t", text: timeLabel(times[index], span) }),
-      ...series.map((sr) => h("div", { class: "row" }, h("i", { class: "key", style: `background:${sr.color}` }), h("b", { text: sr.values[index] == null ? "-" : fmt(sr.values[index]) }), h("span", { text: sr.name }))));
+      ...series.map((sr) => h("div", { class: "row" }, h("i", { class: "key", style: `background:${sr.color}` }), h("b", { text: sr.values[index] == null ? "-" : fmt(sr.values[index]) }), h("span", { text: sr.notes ? `${sr.name}, ${sr.notes[index]}` : sr.name }))));
     tip.hidden = false;
-    tip.style.left = `${Math.min(host.clientWidth - 170, Math.max(0, (xx / W) * host.clientWidth + 12))}px`;
+    tip.style.left = `${Math.max(0, Math.min(host.clientWidth - (tip.offsetWidth || 170), (xx / W) * host.clientWidth + 12))}px`;
     tip.style.top = "8px";
   };
   const hide = () => { cross.setAttribute("visibility", "hidden"); dots.forEach((d) => d.setAttribute("visibility", "hidden")); tip.hidden = true; };
@@ -1175,6 +1194,66 @@ function renderTags() {
   ]));
 }
 
+// ---- H53: the growth of the pool tags since the start of Windows, one chart for each pool ----
+const TAG_LINES = 5;
+const TAG_COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)", "var(--c5)"];
+// A tag keeps its color while it stays in the lines of its pool: the color follows the tag, never its rank.
+const tagSlots = { nonPaged: new Map(), paged: new Map() };
+function slotsOf(pool, tags) {
+  const held = tagSlots[pool];
+  for (const tag of [...held.keys()]) if (!tags.includes(tag)) held.delete(tag);
+  for (const tag of tags) {
+    if (held.has(tag)) continue;
+    const used = new Set(held.values());
+    held.set(tag, TAG_COLORS.findIndex((_, i) => !used.has(i)));
+  }
+  return held;
+}
+const POOLS = [["nonPaged", "Non-paged pool"], ["paged", "Paged pool"]];
+function renderTagLines() {
+  const host = $("tagLines"), t = state.tagLines, series = t?.series;
+  const note = (text) => host.replaceChildren(h("div", { class: "empty", text }));
+  if (!t) return note("Reading the pool tags.");
+  if (!series) return note("The daemon is older than this chart (H53). Run headroom service restart.");
+  if (!series.readable) return note("Only Windows has pool tags. This computer has no chart of them.");
+  const times = series.times;
+  if (times.length === 0) return note("No snapshot yet. The daemon reads the pool tags every 5 minutes.");
+  if (times.length === 1) return note(`The first snapshot after the start of Windows is at ${dayClock(times[0])}. The lines start at the next snapshot, 5 minutes later.`);
+  $("tagLinesHint").replaceChildren(`The tags of the kernel pools that grew most since ${dayClock(times[0])}, the first snapshot after the start of Windows (${dur(times[times.length - 1] - times[0])} ago). A driver marks its memory with a tag, so a line that climbs names the driver that holds more.`);
+  const boxes = POOLS.map(([pool, title]) => {
+    // A growth below 1 MB is noise: the legend would show +0 MB.
+    const lines = series[pool].filter((l) => l.growthMb >= 1);
+    const box = h("div", { class: "tagchart" });
+    if (!lines.length) {
+      box.append(h("h3", { text: title }), h("div", { class: "empty", text: `No tag of the ${title.toLowerCase()} grew by 1 MB or more since ${dayClock(times[0])}.` }));
+      return [box, null];
+    }
+    // Each line is the change of its tag since the first snapshot, so each line starts at 0.
+    const values = lines.map((l) => l.mb.map((v) => v - l.mb[0]));
+    const big = Math.max(...values.flat().map(Math.abs)) >= 2048;
+    const [unit, toUnit, digits] = big ? ["GB", (v) => v / 1024, 1] : ["MB", (v) => v, 0];
+    const slots = slotsOf(pool, lines.map((l) => l.tag));
+    const color = (tag) => TAG_COLORS[slots.get(tag)];
+    const chart = h("div", { class: "chart" }), table = h("div");
+    box.append(
+      h("h3", {}, title, h("small", { text: `growth in ${unit} since the first snapshot` })),
+      h("div", { class: "legend", role: "list", "aria-label": `The ${lines.length} tags of the ${title.toLowerCase()} that grew most` },
+        lines.map((l) => h("span", { role: "listitem" }, h("i", { class: "key", style: `background:${color(l.tag)}` }), h("b", { text: l.tag }), `+${mb(l.growthMb)}`))),
+      chart, table);
+    return [box, () => lineChart(chart, table, {
+      times, unit, toUnit, digits, ends: false,
+      // The store keeps one snapshot each hour after 48 hours: only a longer gap breaks a line.
+      gapMs: 3 * 3600e3,
+      format: (v) => `${v >= 0 ? "+" : "-"}${Math.abs(toUnit(v)).toFixed(digits)} ${unit}`,
+      label: `${title}: the growth of the ${lines.length} tags that grew most since ${dayClock(times[0])}`,
+      series: lines.map((l, k) => ({ name: l.tag, color: color(l.tag), values: values[k], notes: l.mb.map((v) => `size ${mb(v)}`) })),
+    })];
+  });
+  // The charts read the width of their box, so the boxes go into the page first.
+  host.replaceChildren(...boxes.map(([box]) => box));
+  for (const [, draw] of boxes) draw?.();
+}
+
 // ---- the refresh loops ----
 function renderAll() { renderAlerts(); renderNow(); renderResources(); renderJobs(); renderOwners(); applyFocus(); }
 async function refreshStatus() {
@@ -1187,7 +1266,17 @@ async function refreshHistory() {
   catch { markLive(false); }
 }
 async function refreshMcp() { try { state.mcp = await call("mcp/list"); renderMcp(); } catch {} }
-async function refreshTags() { try { state.tags = await call("resources/pooltags", { limit: 10 }); renderTags(); } catch {} }
+async function refreshTags() {
+  try {
+    state.tags = await call("resources/pooltags", { limit: 10 });
+    renderTags();
+    // H53: the lines since the start of Windows change only with a new snapshot, one each 5 minutes.
+    if (state.tagLines && state.tags.at === state.tagLinesAt) return;
+    state.tagLines = await call("resources/pooltags", { limit: 1, since: 0, series: TAG_LINES });
+    state.tagLinesAt = state.tags.at;
+    renderTagLines();
+  } catch {}
+}
 async function refreshConfig() { try { state.config = await call("config/get"); if (state.status) renderResources(); } catch {} }
 // H21: a daemon of an older version has no disk/report. The card then asks for a report.
 async function refreshDisk() { try { state.disk = await call("disk/report"); if (state.status) renderResources(); } catch {} }
@@ -1210,7 +1299,7 @@ new ResizeObserver(([entry]) => {
   if (w === lastWidth) return;
   lastWidth = w;
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if (state.status) renderAll(); }, 150);
+  resizeTimer = setTimeout(() => { if (state.status) renderAll(); if (state.tagLines) renderTagLines(); }, 150);
 }).observe(document.querySelector(".wrap"));
 
 renderWindows();

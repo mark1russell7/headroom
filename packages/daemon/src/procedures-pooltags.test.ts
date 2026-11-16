@@ -54,6 +54,18 @@ describe("the procedure resources.pooltags (H53)", () => {
       ["FMfn", 500, 300],
       ["File", 0, 0],
     ]);
+    // A call without `series` gives no lines, as before H53.
+    expect(sinceBoot.series).toBeUndefined();
+
+    // The lines of the dashboard: the tags that grew most since the start, in both pools.
+    expect((await call({ limit: 1, since: 0, series: 5 })).series).toEqual({
+      readable: true,
+      times: [10_000_000, now],
+      nonPaged: [{ tag: "File", growthMb: 240, mb: [100, 340] }],
+      paged: [{ tag: "FMfn", growthMb: 300, mb: [200, 500] }],
+    });
+    await expect(call({ since: 0, series: 0 })).rejects.toThrow();
+    await expect(call({ since: 0, series: 21 })).rejects.toThrow();
     engine.close();
   });
 });

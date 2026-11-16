@@ -335,6 +335,30 @@ describe("Store pool tags", () => {
     expect(store.poolTagsSince(0).map((snapshot) => snapshot.at)).toEqual([10 * hour, 10 * hour + 1000, 13 * hour]);
     store.close();
   });
+
+  it("reads the times, one snapshot at a time, and the rows of some tags only (H53)", () => {
+    const store = new Store(":memory:");
+    store.savePoolTags(1000, [
+      { tag: "DAL3", nonPagedMb: 270, pagedMb: 0 },
+      { tag: "FMfn", nonPagedMb: 0, pagedMb: 470 },
+    ]);
+    store.savePoolTags(2000, [{ tag: "File", nonPagedMb: 40, pagedMb: 2 }]);
+    store.savePoolTags(3000, [
+      { tag: "DAL3", nonPagedMb: 300, pagedMb: 0 },
+      { tag: "FMfn", nonPagedMb: 0, pagedMb: 520 },
+    ]);
+    expect(store.poolTagTimes(0)).toEqual([1000, 2000, 3000]);
+    expect(store.poolTagTimes(1500)).toEqual([2000, 3000]);
+    expect(store.poolTagsAt(3000)).toEqual({ at: 3000, tags: new Map([["DAL3", 300], ["FMfn", 0]]), paged: new Map([["DAL3", 0], ["FMfn", 520]]) });
+    expect(store.poolTagsAt(2500)).toBeUndefined();
+    // A snapshot without a row of the tags is absent: the snapshot of 2000 holds only File.
+    expect(store.poolTagsSince(0, ["FMfn"])).toEqual([
+      { at: 1000, tags: new Map([["FMfn", 0]]), paged: new Map([["FMfn", 470]]) },
+      { at: 3000, tags: new Map([["FMfn", 0]]), paged: new Map([["FMfn", 520]]) },
+    ]);
+    expect(store.poolTagsSince(0, [])).toEqual([]);
+    store.close();
+  });
 });
 
 describe("Store history with a step", () => {

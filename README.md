@@ -732,7 +732,9 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `service` | A shared service does not answer for 2 checks in a row (one minute): critical for Docker and the MCP servers, a warning for a URL of the setting `health`. An answer after more than 1 second for 3 checks in a row is a warning. The id is `service:<name>`, for example `The Docker engine does not answer since 18:42 UTC (3 min). Containers such as Mongo and the test databases need it. headroom does not restart it.` An idle MCP server and an absent Docker engine give no alert. |
 | `stop` | Another process stopped the daemon, or 2 clients of `headroom run` in 2 minutes. This alert is an event: it stays for 15 minutes. |
 
-On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. `headroom pool-tags --since boot` (or `--hours <n>`) shows the growth of the tags in both pools over days. The store keeps one snapshot for each hour for 7 days. It also keeps the first snapshot after the start of Windows. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit.
+On Windows, the daemon reads the kernel pool by pool tag every 5 minutes. A driver marks its allocations with a tag, so the tag that grows names the driver that leaks. The store keeps one snapshot for each hour for 7 days. It also keeps the first snapshot after the start of Windows.
+
+`headroom pool-tags --since boot` (or `--hours <n>`) shows the growth of the tags in both pools over days. `headroom pool-tags --drivers` shows the largest tags, the tags that grew in the last hour, and the driver files that contain each tag. It needs no admin rights and no driver kit. The procedure `resources/pooltags` gives the lines of a chart with the input `series`, the number of tags for each pool (H53).
 
 ### The memory of `--mem auto` (H78)
 
@@ -809,7 +811,10 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - The panel "What uses the space" follows it. It shows the time of the last `headroom disk report` and its largest places (H21).
 - Select a panel to open it to the full width. It then shows a chart of its history in the window, a table of the data and all its users.
 - The section "Jobs" shows the leases of the window on a timeline, one line for each holder. A bar is amber while its job waits for room, and blue from its start to its end. A dot at its end gives the exit code.
-- The page is one HTML file of approximately 73 KB, with no framework and no build step. The daemon keeps it as one string.
+- The card "Pool tags" shows two charts, one for each kernel pool (H53). Each chart has one line for each of the 5 tags that grew most since the start of Windows.
+- A line gives the growth of its tag since the first snapshot after the start of Windows. The legend gives the name and the growth of each tag, and the tooltip gives its size.
+- Before the second snapshot, and on a computer without Windows, the card shows a note and no chart. Two tables under the charts give the tags of the last hour.
+- The page is one HTML file of approximately 95 KB, with no framework and no build step. The daemon keeps it as one string.
 - The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
 - The page holds the token of the daemon. Thus only a request to `127.0.0.1` or `localhost` with the key of the dashboard gets the page.
 - The key is in `~/.headroom/dashboard.key`, and only this user can read it. `headroom dashboard` opens the page with the key.

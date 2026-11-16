@@ -865,10 +865,31 @@ export class Store {
     });
   }
 
-  /** This function reads the snapshots of the pool tags since a time, the oldest first. */
-  poolTagsSince(since: number): PoolTagSnapshot[] {
+  /**
+   * This function reads the snapshots of the pool tags since a time, the oldest first. With a list of tags, it reads
+   * only the rows of those tags. Thus a chart of some tags over days reads a small part of the table (H53).
+   */
+  poolTagsSince(since: number, tags?: readonly string[]): PoolTagSnapshot[] {
+    if (tags === undefined) return this.#poolTagSnapshots("SELECT * FROM pool_tags WHERE at >= ? ORDER BY at, tag", [since]);
+    if (tags.length === 0) return [];
+    const marks = tags.map(() => "?").join(", ");
+    return this.#poolTagSnapshots(`SELECT * FROM pool_tags WHERE at >= ? AND tag IN (${marks}) ORDER BY at, tag`, [since, ...tags]);
+  }
+
+  /** This function reads the snapshot of the pool tags at a time. It gives `undefined` when the store has no snapshot at that time. */
+  poolTagsAt(at: number): PoolTagSnapshot | undefined {
+    return this.#poolTagSnapshots("SELECT * FROM pool_tags WHERE at = ? ORDER BY tag", [at])[0];
+  }
+
+  /** This function reads the time of each snapshot of the pool tags since a time, the oldest first. */
+  poolTagTimes(since: number): number[] {
+    return this.#db.prepare("SELECT DISTINCT at FROM pool_tags WHERE at >= ? ORDER BY at").all(since).map((row) => Number(row["at"]));
+  }
+
+  /** This function groups the rows of a query of the pool tags into snapshots. The rows come in the order of their time. */
+  #poolTagSnapshots(sql: string, params: readonly (number | string)[]): PoolTagSnapshot[] {
     const snapshots: { at: number; tags: Map<string, number>; paged: Map<string, number> }[] = [];
-    for (const row of this.#db.prepare("SELECT * FROM pool_tags WHERE at >= ? ORDER BY at, tag").all(since)) {
+    for (const row of this.#db.prepare(sql).all(...params)) {
       const at = Number(row["at"]);
       let snapshot = snapshots.at(-1);
       if (snapshot?.at !== at) {
