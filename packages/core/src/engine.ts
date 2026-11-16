@@ -397,6 +397,19 @@ const DISK_KEEP_MS = 60 * 60_000;
 const LEASE_KEEP_MS = 7 * 24 * 3_600_000;
 /** H178: the engine keeps the expected run time of a job for this time. Thus a tick reads the store at most one time a minute for each job. */
 const RUN_TIME_KEEP_MS = 60_000;
+
+/** The source of an expected run time (H184). It is the runs of the job by the holder, of the job, of its size class or of each job. */
+export type RunSource = "own" | "job" | "size" | "all";
+
+/** An expected run time and its source (H184). */
+export interface RunEstimate {
+  /** The 90th percentile of the run times of the source, in ms, or `null` when no run is known. */
+  readonly ms: number | null;
+  /** The source of the time, or `null` when no run is known. */
+  readonly from: RunSource | null;
+  /** The count of runs of the source. */
+  readonly runs: number;
+}
 /** A window shorter than this counts as this long, so one short write does not give a large speed. */
 const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
@@ -951,17 +964,35 @@ export class Engine {
   }
 
   /**
-   * This function gives the expected run time of the job of a lease in ms (H178). It is the 90th percentile of the last 20
-   * runs of the job with an exit code. The runs of the same holder come first, as in `suggest`. Without a run, it gives
-   * `null`. The engine keeps each value for one minute.
+   * This function gives the expected run time of a job in ms, and the runs that give it (H178, H184). It is the 90th
+   * percentile of the last runs with an exit code. It comes from the first of these sources with a run:
+   * - `own`: the last 20 runs of the job by the holder, as in `suggest`
+   * - `job`: the last 20 runs of the job
+   * - `size`: the last 50 runs of the size class of its memory (`Store.runTimesOfSize`)
+   * - `all`: the last 50 runs of each job
+   * Most jobs have a new name. Thus the base rate of its class gives the run time of a new job.
    */
+  runEstimate(job: string, holder: string, amounts: Lease["amounts"]): RunEstimate {
+    const sources: readonly (readonly [RunSource, () => number[]])[] = [
+      ["own", () => this.#store.runTimesOf(job, holder)],
+      ["job", () => this.#store.runTimesOf(job)],
+      ["size", () => this.#store.runTimesOfSize(amounts["memory"] ?? 0)],
+      ["all", () => this.#store.runTimesOfSize()],
+    ];
+    for (const [from, read] of sources) {
+      const runs = read();
+      if (runs.length > 0) return { ms: percentile90(runs), from, runs: runs.length };
+    }
+    return { ms: null, from: null, runs: 0 };
+  }
+
+  /** This function gives the expected run time of the job of a lease in ms, from `runEstimate`. The engine keeps each value for one minute. */
   #runMs(lease: Lease): number | null {
-    const key = JSON.stringify([lease.holder, lease.job]);
+    const key = JSON.stringify([lease.holder, lease.job, lease.amounts["memory"] ?? 0]);
     const now = this.#now();
     const kept = this.#runTimes.get(key);
     if (kept !== undefined && now - kept.at < RUN_TIME_KEEP_MS) return kept.ms;
-    const own = this.#store.runTimesOf(lease.job, lease.holder);
-    const ms = percentile90(own.length > 0 ? own : this.#store.runTimesOf(lease.job));
+    const ms = this.runEstimate(lease.job, lease.holder, lease.amounts).ms;
     if (this.#runTimes.size >= 500) for (const [k, v] of this.#runTimes) if (now - v.at >= RUN_TIME_KEEP_MS) this.#runTimes.delete(k);
     this.#runTimes.set(key, { at: now, ms });
     return ms;

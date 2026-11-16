@@ -453,6 +453,25 @@ export class Store {
     return rows.map((row) => Number(row["ran_ms"]));
   }
 
+  /**
+   * This function reads the run times of the last runs with an exit code, the newest first (H184). With an amount of
+   * memory, it reads only the runs of the size class of the amount. A class goes from a power of 2 to the next power of 2.
+   * For example, the class of 900 MB is above 512 MB, up to 1024 MB. An amount of 0 has its own class: the leases with
+   * no memory. Without an amount, it reads the runs of each job.
+   */
+  runTimesOfSize(memoryMb?: number, limit = 50): number[] {
+    const ran = "SELECT ended_at - granted_at AS ran_ms FROM leases WHERE exit_code IS NOT NULL AND granted_at IS NOT NULL AND ended_at IS NOT NULL";
+    const memory = "COALESCE(json_extract(amounts, '$.memory'), 0)";
+    const order = "ORDER BY ended_at DESC LIMIT ?";
+    const top = memoryMb === undefined || memoryMb <= 0 ? 0 : 2 ** Math.ceil(Math.log2(memoryMb));
+    const rows = memoryMb === undefined
+      ? this.#db.prepare(`${ran} ${order}`).all(limit)
+      : top === 0
+        ? this.#db.prepare(`${ran} AND ${memory} <= 0 ${order}`).all(limit)
+        : this.#db.prepare(`${ran} AND ${memory} > ? AND ${memory} <= ? ${order}`).all(top / 2, top, limit);
+    return rows.map((row) => Number(row["ran_ms"]));
+  }
+
   /** This function reads the peak cores of the last runs of a job that ended, the newest first (H23). With a holder, only the runs of that holder. */
   corePeaksOf(job: string, holder?: string, limit = 20): number[] {
     const ran = "SELECT peak_cores FROM leases WHERE job = ? AND peak_cores IS NOT NULL AND ended_at IS NOT NULL";
