@@ -344,6 +344,101 @@ describe("Engine pool tags after a restart", () => {
   });
 });
 
+describe("Engine pool tag lines (H53)", () => {
+  const minute = 60_000;
+
+  it("gives the tags that grew most since the start of Windows, with their size at each snapshot in time order", () => {
+    let now = 60 * minute;
+    const bootedAt = 50 * minute;
+    const store = new Store(":memory:");
+    // A snapshot from before the start of Windows. No line starts from it, and its tag is in no line.
+    store.savePoolTags(10 * minute, [
+      { tag: "Old ", nonPagedMb: 900, pagedMb: 0 },
+      { tag: "DAL3", nonPagedMb: 5, pagedMb: 0 },
+    ]);
+    let tags: PoolTag[] = [
+      { tag: "DAL3", nonPagedMb: 100, pagedMb: 0 },
+      { tag: "File", nonPagedMb: 40, pagedMb: 10 },
+      { tag: "Flat", nonPagedMb: 70, pagedMb: 0 },
+      { tag: "FMfn", nonPagedMb: 0, pagedMb: 200 },
+    ];
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      poolTags: () => tags,
+      bootedAt: () => bootedAt,
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store, now: () => now, sessionsDir: "/nowhere" });
+    engine.tick();
+    // One snapshot gives one time and no line: nothing grew yet.
+    expect(engine.poolTags(10, 0, 2).series).toEqual({ readable: true, times: [60 * minute], nonPaged: [], paged: [] });
+
+    now += 5 * minute;
+    tags = [
+      { tag: "DAL3", nonPagedMb: 160, pagedMb: 0 },
+      { tag: "File", nonPagedMb: 41, pagedMb: 10 },
+      { tag: "Flat", nonPagedMb: 70, pagedMb: 0 },
+      { tag: "FMfn", nonPagedMb: 0, pagedMb: 260 },
+      { tag: "New ", nonPagedMb: 3, pagedMb: 0 },
+    ];
+    engine.tick();
+    now += 5 * minute;
+    tags = [
+      { tag: "DAL3", nonPagedMb: 250, pagedMb: 0 },
+      { tag: "File", nonPagedMb: 43, pagedMb: 12 },
+      { tag: "Flat", nonPagedMb: 70, pagedMb: 0 },
+      { tag: "FMfn", nonPagedMb: 0, pagedMb: 330 },
+      { tag: "New ", nonPagedMb: 6, pagedMb: 0 },
+    ];
+    engine.tick();
+
+    const sinceBoot = engine.poolTags(10, 0, 2);
+    expect(sinceBoot.sinceAt).toBe(60 * minute);
+    // The two tags that grew most in each pool, the largest growth first. A tag absent from a snapshot counts 0 MB there.
+    expect(sinceBoot.series).toEqual({
+      readable: true,
+      times: [60 * minute, 65 * minute, 70 * minute],
+      nonPaged: [
+        { tag: "DAL3", growthMb: 150, mb: [100, 160, 250] },
+        { tag: "New ", growthMb: 6, mb: [0, 3, 6] },
+      ],
+      paged: [
+        { tag: "FMfn", growthMb: 130, mb: [200, 260, 330] },
+        { tag: "File", growthMb: 2, mb: [10, 10, 12] },
+      ],
+    });
+    // The lists agree with the lines: the lines are the first tags of `growing` and `pagedGrowing`.
+    expect(sinceBoot.growing.map((row) => row.tag)).toEqual(["DAL3", "New ", "File"]);
+    // The window of the last hour gives the same lines from the snapshots in memory.
+    expect(engine.poolTags(10, undefined, 2).series).toEqual(sinceBoot.series);
+    // A call without lines gives no field `series`, as before H53.
+    expect("series" in engine.poolTags(10, 0)).toBe(false);
+    expect("series" in engine.poolTags()).toBe(false);
+    engine.close();
+  });
+
+  it("gives empty lines and readable false on a platform with no pool tags", () => {
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [],
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => 60 * minute, sessionsDir: "/nowhere" });
+    engine.tick();
+    expect(engine.poolTags(10, 0, 5)).toEqual({
+      at: null,
+      sinceAt: null,
+      largest: [],
+      growing: [],
+      pagedGrowing: [],
+      largestPaged: [],
+      series: { readable: false, times: [], nonPaged: [], paged: [] },
+    });
+    engine.close();
+  });
+});
+
 describe("Engine disks", () => {
   it("gives the loss of free space over the last hour, and names the new large files in a disk alert", () => {
     let now = 1_000_000;

@@ -106,7 +106,7 @@ import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
-import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type Sleep, type Store } from "./store.ts";
+import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
 import { diskSize } from "./units.ts";
@@ -386,7 +386,31 @@ export interface PoolTags {
   readonly pagedGrowing: readonly { readonly tag: string; readonly pagedMb: number; readonly growthMb: number }[];
   /** The largest tags of the paged pool, with their change over the window. */
   readonly largestPaged: readonly { readonly tag: string; readonly pagedMb: number; readonly growthMb: number }[];
+  /** The lines of the tags that grew most over the window, for a chart. Only a call that asks for lines gives this field. */
+  readonly series?: PoolTagSeries;
 }
+
+/** The line of one pool tag in a chart: its size at each time of the series, and its growth over the window (H53). */
+export interface PoolTagLine {
+  readonly tag: string;
+  /** The change of the tag from the first to the last snapshot of the window, in MB. */
+  readonly growthMb: number;
+  /** The size of the tag in MB at each time of `PoolTagSeries.times`. A snapshot without a row of the tag gives 0, because the store keeps only the tags of 1 MB or more. */
+  readonly mb: readonly number[];
+}
+
+/** The lines of the tags that grew most over a window, in the two pools (H53). The dashboard draws them since the start of Windows. */
+export interface PoolTagSeries {
+  /** The value is false when the sampler of this platform reads no pool tags. Only Windows has them. */
+  readonly readable: boolean;
+  /** The time of each snapshot of the window, the oldest first. */
+  readonly times: readonly number[];
+  /** The tags of the non-paged pool that grew most, the largest growth first. */
+  readonly nonPaged: readonly PoolTagLine[];
+  /** The tags of the paged pool that grew most, the largest growth first. */
+  readonly paged: readonly PoolTagLine[];
+}
+
 
 /** The time that an event alert stays active. */
 const EVENT_MS = 15 * 60_000;
@@ -1543,31 +1567,67 @@ export class Engine {
   }
 
   /**
-   * This function gives the non-paged pool by tag: the largest tags, and the change of each tag over the
-   * snapshots of the last hour. A driver that leaks shows as a tag that grows. Only Windows has tags.
-   * The window starts at the start of the computer or at the last wake, so it compares no snapshots across a start or a sleep.
+   * This function gives the kernel pools by tag: the largest tags, and the change of each tag over the snapshots of
+   * the window. A driver that leaks shows as a tag that grows. Only Windows has tags.
+   *
+   * Without a time, the window is the last hour. It starts at the start of the computer or at the last wake, so it compares no snapshots across a start or a sleep.
+   * With a time, the window starts at that time or at the start of Windows, whichever is later.
+   * A count of lines above 0 adds `series`: the size at each snapshot of the tags that grew most in each pool (H53).
    */
-  poolTags(limit = 20, since?: number): PoolTags {
+  poolTags(limit = 20, since?: number, series = 0): PoolTags {
     // A given time reads the store, which holds days. A window does not reach back past the start of Windows.
-    const window =
-      since === undefined
-        ? this.#tags.filter((snapshot) => snapshot.at >= Math.max(this.#bootedAt, this.#resumedAt))
-        : this.#store.poolTagsSince(Math.max(since, this.#bootedAt));
-    const last = window.at(-1);
-    const first = window[0];
-    if (!last || !first) return { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [], largestPaged: [] };
+    // The store gives only the first and the last snapshot, and the lines read only the rows of their tags.
+    const start = Math.max(since ?? 0, this.#bootedAt);
+    const recent = since === undefined ? this.#tags.filter((snapshot) => snapshot.at >= Math.max(this.#bootedAt, this.#resumedAt)) : undefined;
+    const times = recent ? recent.map((snapshot) => snapshot.at) : this.#store.poolTagTimes(start);
+    const firstAt = times[0];
+    const lastAt = times.at(-1);
+    const first = recent ? recent[0] : firstAt === undefined ? undefined : this.#store.poolTagsAt(firstAt);
+    const last = recent ? recent.at(-1) : lastAt === undefined || lastAt === firstAt ? first : this.#store.poolTagsAt(lastAt);
+    if (!last || !first) {
+      const none = { at: null, sinceAt: null, largest: [], growing: [], pagedGrowing: [], largestPaged: [] };
+      return series > 0 ? { ...none, series: this.#tagLines([], [], [], []) } : none;
+    }
     const rows = [...last.tags].map(([tag, mb]) => ({ tag, nonPagedMb: round(mb), growthMb: round(mb - (first.tags.get(tag) ?? 0)) }));
     const pagedRows = [...last.paged].map(([tag, mb]) => ({ tag, pagedMb: round(mb), growthMb: round(mb - (first.paged.get(tag) ?? 0)) }));
-    return {
+    const growing = rows.filter((row) => row.growthMb > 0).sort((a, b) => b.growthMb - a.growthMb);
+    const pagedGrowing = pagedRows.filter((row) => row.growthMb > 0).sort((a, b) => b.growthMb - a.growthMb);
+    const result: PoolTags = {
       at: last.at,
       sinceAt: first.at,
       largest: [...rows].sort((a, b) => b.nonPagedMb - a.nonPagedMb).slice(0, limit),
-      growing: rows.filter((row) => row.growthMb > 0).sort((a, b) => b.growthMb - a.growthMb).slice(0, limit),
-      pagedGrowing: pagedRows
-        .filter((row) => row.growthMb > 0)
-        .sort((a, b) => b.growthMb - a.growthMb)
-        .slice(0, limit),
+      growing: growing.slice(0, limit),
+      pagedGrowing: pagedGrowing.slice(0, limit),
       largestPaged: [...pagedRows].sort((a, b) => b.pagedMb - a.pagedMb).slice(0, limit),
+    };
+    if (series <= 0) return result;
+    const nonPaged = growing.slice(0, series);
+    const paged = pagedGrowing.slice(0, series);
+    const snapshots = recent ?? this.#store.poolTagsSince(start, [...new Set([...nonPaged, ...paged].map((row) => row.tag))]);
+    return { ...result, series: this.#tagLines(times, snapshots, nonPaged, paged) };
+  }
+
+  /**
+   * This function gives the lines of a chart of some pool tags: the size of each tag at each time of the window (H53).
+   * A time without a snapshot of a tag gives 0, because the store keeps only the tags of 1 MB or more.
+   */
+  #tagLines(
+    times: readonly number[],
+    snapshots: readonly PoolTagSnapshot[],
+    nonPaged: readonly { readonly tag: string; readonly growthMb: number }[],
+    paged: readonly { readonly tag: string; readonly growthMb: number }[],
+  ): PoolTagSeries {
+    const byTime = new Map(snapshots.map((snapshot) => [snapshot.at, snapshot]));
+    const line = (row: { readonly tag: string; readonly growthMb: number }, pool: "tags" | "paged"): PoolTagLine => ({
+      tag: row.tag,
+      growthMb: row.growthMb,
+      mb: times.map((time) => round(byTime.get(time)?.[pool].get(row.tag) ?? 0)),
+    });
+    return {
+      readable: typeof this.#sampler.poolTags === "function",
+      times,
+      nonPaged: nonPaged.map((row) => line(row, "tags")),
+      paged: paged.map((row) => line(row, "paged")),
     };
   }
 

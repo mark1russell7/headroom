@@ -280,6 +280,13 @@ type PoolInput = z.infer<typeof PoolInput>;
 const PoolTagsInput = z.object({
   limit: z.number().int().positive().max(200).default(20).describe("The number of tags in each list (default: 20)"),
   since: z.number().int().nonnegative().optional().describe("The start of the window in ms. 0 is the start of Windows. Without it: the last hour"),
+  series: z
+    .number()
+    .int()
+    .positive()
+    .max(20)
+    .optional()
+    .describe("The number of lines in each pool: the tags that grew most in the window, with their size at each snapshot (H53). Without it: no lines"),
 });
 type PoolTagsInput = z.infer<typeof PoolTagsInput>;
 
@@ -543,12 +550,12 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .input(zodAdapter<PoolTagsInput>(PoolTagsInput))
     .output(anything<PoolTags>())
     .meta({
-      description: "Give the non-paged kernel pool by pool tag: the largest tags and the tags that grew in the last hour (Windows)",
+      description: "Give the kernel pools by pool tag: the largest tags, the tags that grew in the window, and on request their lines for a chart (Windows)",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },
     })
-    .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit, input.since))
+    .handler(async (input: PoolTagsInput): Promise<PoolTags> => engine.poolTags(input.limit, input.since, input.series))
     .build() as AnyProcedure;
 
   const ports = createProcedure()

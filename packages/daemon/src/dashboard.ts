@@ -4,7 +4,7 @@
  * panel for each resource, a timeline of the leases, the owners, the MCP servers and the pool tags. A panel opens to a chart
  * of its history.
  *
- * The page has no framework and no build step. The daemon keeps the page as one string of approximately 69 KB.
+ * The page has no framework and no build step. The daemon keeps the page as one string of approximately 95 KB.
  *
  * - The page holds the token of the daemon. Only a request with a loopback host gets the page. Thus a site
  *   that tries DNS rebinding gets nothing, and a page of another site cannot read the answer.
