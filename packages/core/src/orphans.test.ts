@@ -124,6 +124,55 @@ describe("owner records and orphans (H48)", () => {
     expect(ownerOf.get(40)).toBe("other");
   });
 
+  it("keeps the owner of a rule under an orphan whose record has the owner of a rule (H185)", () => {
+    const records = new OwnerRecords();
+    const store = new FakeStore();
+    // Explorer has no live parent after the logon. Its record has the owner of its rule, system.
+    const desktop = [
+      p(4, 0, "System", 0),
+      p(30, 999, "explorer.exe", T0 - 60 * MIN),
+      p(31, 30, "chrome.exe", T0 - MIN),
+      p(32, 31, "chrome.exe", T0),
+      p(33, 30, "Code.exe", T0 - MIN),
+      p(34, 30, "OneDrive.exe", T0 - MIN),
+    ];
+    read(records, store, T0, desktop);
+    expect(records.get(desktop[1] as ProcessInfo)?.owner).toBe("system");
+    const { ownerOf, owners } = read(records, store, T0 + 10_000, desktop);
+    expect(ownerOf.get(31)).toBe("browser");
+    expect(ownerOf.get(32)).toBe("browser");
+    expect(ownerOf.get(33)).toBe("editor");
+    // A program with no rule gets the rule of Explorer, as before, with no label.
+    expect(ownerOf.get(34)).toBe("system");
+    expect(owners.some((each) => each.owner.endsWith(" (orphan)"))).toBe(false);
+  });
+
+  it("keeps the session of a tree whose shell ended over the rule of a program in it (H185)", () => {
+    const records = new OwnerRecords();
+    const store = new FakeStore();
+    // The shell of the session starts a browser test: chrome.exe under find.exe stands for each program with a rule.
+    const withBrowser = [...tree, p(14, 13, "chrome.exe", T0)];
+    read(records, store, T0, withBrowser);
+    const { ownerOf } = read(records, store, T0 + 10_000, withBrowser.filter((info) => info.pid !== 12));
+    expect(ownerOf.get(13)).toBe("session:harbor-crane tools (orphan)");
+    expect(ownerOf.get(14)).toBe("session:harbor-crane tools (orphan)");
+  });
+
+  it("keeps the service and the MCP server of a tree whose top process ended (H185)", () => {
+    const kept = new Map([
+      [processKey({ pid: 50, startedAt: T0 }), { owner: "service:fleet-site", ppid: 7, parentCreated: T0 - MIN }],
+      [processKey({ pid: 60, startedAt: T0 }), { owner: "mcp:vex", ppid: 8, parentCreated: T0 - MIN }],
+      [processKey({ pid: 70, startedAt: T0 }), { owner: "browser", ppid: 9, parentCreated: T0 - MIN }],
+    ]);
+    const list = [p(4, 0, "System", 0), p(50, 7, "node.exe", T0), p(51, 50, "git.exe", T0), p(60, 8, "node.exe", T0), p(70, 9, "rg.exe", T0)];
+    const { ownerOf } = attribute(list, [], undefined, undefined, undefined, kept);
+    expect(ownerOf.get(50)).toBe("service:fleet-site (orphan)");
+    expect(ownerOf.get(51)).toBe("service:fleet-site (orphan)");
+    expect(ownerOf.get(60)).toBe("mcp:vex (orphan)");
+    // The record of a rule does not move to a process with no rule.
+    expect(ownerOf.get(70)).toBe("other");
+  });
+
   it("writes a record to the store after one minute, keeps it over a restart, and prunes the records of ended processes", () => {
     const store = new FakeStore();
     const before = new OwnerRecords();

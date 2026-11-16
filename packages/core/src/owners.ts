@@ -186,6 +186,22 @@ export function orphanName(owner: string, orphan: boolean): string {
   return orphan && !owner.endsWith(ORPHAN_LABEL) ? `${owner}${ORPHAN_LABEL}` : owner;
 }
 
+/** The prefixes of the owners that start a tree of processes: a session, a server of the MCP gateway, a service (H185). */
+const STARTER_PREFIXES = ["session:", "mcp:", "service:"] as const;
+
+/**
+ * This function tells if an owner started its tree of processes (H185): a session, an MCP server or a service. The other
+ * owners come from a rule for the name of a program (`system`, `browser`, `editor`) and tell only what a program is.
+ *
+ * The record of an orphan keeps its owner after the parent ends. Only the owner of a starter can go to the processes under
+ * the orphan. On 2026-11-15, the record of Explorer (`system`) went to each program that the desktop started. Thus 106
+ * processes and 4.9 GB got the owner `system (orphan)`. The processes whose parent ended had only 1.0 GB.
+ */
+export function isStarter(owner: string): boolean {
+  const base = baseOwner(owner);
+  return STARTER_PREFIXES.some((prefix) => base.startsWith(prefix));
+}
+
 /** This function gives an owner without the label of an orphan: `session:shop (orphan)` gives `session:shop`. */
 export function baseOwner(owner: string): string {
   return owner.endsWith(ORPHAN_LABEL) ? owner.slice(0, -ORPHAN_LABEL.length) : owner;
@@ -328,8 +344,11 @@ export function unattributedRow(unattributed: number | null | undefined, mbText:
  * The search goes up only to a parent that started at or before its child (H29). A later start shows a parent ID that
  * is in use again. The search then stops, and the process and the ancestors below that point decide the owner.
  *
- * When the search stops at an orphan, its record in `kept` gives the owner that it had while its parent was alive (H48). That owner wins when it is different, with the label `(orphan)` and the kind `other`. The key of
- * `kept` is `processKey()`. Thus a command that a session started keeps the name of the session after its shell ends.
+ * When the search stops at an orphan, its record in `kept` gives the owner that it had while its parent was alive (H48).
+ * That owner wins when it started the tree (`isStarter()`: a session, an MCP server or a service) and is different, with
+ * the label `(orphan)` and the kind `other` (H185). The owner of a rule does not win: the record of Explorer (`system`)
+ * does not go to a browser that Explorer started. The key of `kept` is `processKey()`. Thus a command that a session
+ * started keeps the name of the session after its shell ends.
  *
  * The search also compares the start of each parent with the start in its record (H182). The session of each process
  * comes from the same search: the session file of the ancestor, or the kept record of an orphan.
@@ -379,10 +398,11 @@ export function attribute(
       const plain: { name: string; kind: OwnerKind } =
         rule === null ? { name: "other", kind: "other" } : title !== null && rule.kind === "system" ? { name: `service:${title}`, kind: "service" } : { name: rule.owner, kind: rule.kind };
       // H48: an orphan keeps the owner of its record. The kind is `other`, because no live session or server holds it.
+      // H185: only an owner that started the tree (a session, an MCP server or a service) wins over the rules.
       const record = kept.get(processKey(top));
       const orphan = record !== undefined && isOrphan(top, byPid, parentRecordOf(record)) ? record : undefined;
       const remembered = orphan?.owner;
-      owner = remembered !== undefined && remembered !== "other" && remembered !== plain.name ? { name: `${remembered}${ORPHAN_LABEL}`, kind: "other" } : plain;
+      owner = remembered !== undefined && isStarter(remembered) && remembered !== plain.name ? { name: `${remembered}${ORPHAN_LABEL}`, kind: "other" } : plain;
       // H182: an orphan also keeps the session of its record.
       const keptSession = orphan?.session;
       if (typeof keptSession === "string") sessionOf.set(info.pid, { name: keptSession, id: orphan?.sessionId ?? "" });
