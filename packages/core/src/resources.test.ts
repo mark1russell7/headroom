@@ -107,7 +107,9 @@ describe("resources", () => {
     expect(admit?.reserve).toEqual({ amount: 1024 });
     expect(admit?.used?.(lease(2), "memory", readings, owners)).toBe(treeMb(2, processes));
     expect(admit?.used?.(lease(2), "memory", readings, owners)).toBe(4000);
-    expect(admit?.used?.(lease(null), "memory", readings, owners)).toBe(0);
+    // H187: a lease with no process, or a process that the read does not have, has no measure.
+    expect(admit?.used?.(lease(null), "memory", readings, owners)).toBeNull();
+    expect(admit?.used?.(lease(99_999), "memory", readings, owners)).toBeNull();
     expect(RESOURCES.get("memory")?.enforce?.limit(2048, 16)).toEqual({ memoryMb: 2048 });
   });
 

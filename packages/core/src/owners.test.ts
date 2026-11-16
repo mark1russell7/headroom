@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { attribute, childrenOf, fileTimeMs, isParent, kernelOwners, readSessions, titleOf, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
+import { attribute, childrenOf, fileTimeMs, isParent, jobTreeMb, kernelOwners, readSessions, titleOf, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb / 2 });
@@ -217,6 +217,17 @@ describe("treeMb", () => {
   it("sums a process and its descendants", () => {
     expect(treeMb(11, processes)).toBe(990);
     expect(treeMb(999, processes)).toBe(0);
+  });
+});
+
+describe("jobTreeMb (H187)", () => {
+  it("measures a job by its tree, and gives no measure for a missing process or a tree that starts containers", () => {
+    expect(jobTreeMb(11, processes)).toBe(990);
+    expect(jobTreeMb(999, processes)).toBeNull();
+    const stack = [p(20, 1, "node.exe", 60), p(21, 20, "docker.exe", 30), p(22, 21, "docker-compose.exe", 20)];
+    expect(jobTreeMb(20, stack)).toBeNull();
+    expect(jobTreeMb(21, stack)).toBeNull();
+    expect(jobTreeMb(20, [p(20, 1, "node.exe", 60), p(23, 20, "vitest.exe", 40)])).toBe(100);
   });
 });
 
