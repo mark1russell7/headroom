@@ -3,7 +3,7 @@
   "name": "headroom-monorepo",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@12.18.0",
+  "packageManager": "pnpm@12.20.0",
   "engines": {
     "node": ">=22"
   },
