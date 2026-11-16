@@ -220,32 +220,76 @@ export function reapCandidates(
   sessionPids: ReadonlySet<number> = new Set(),
 ): ReapCandidate[] {
   const byPid = new Map(processes.map((info) => [info.pid, info]));
+  const children = childIndex(processes);
   const list: ReapCandidate[] = [];
   for (const info of processes) {
     if (info.pid === 0 || sessionPids.has(info.pid) || isSessionProgram(info.name)) continue;
     const record = recordOf(info);
     if (record === undefined || !isOrphan(info, byPid, record)) continue;
     if (!all && record.session === null) continue;
+    if (hostsKeptIn(children, info, sessionPids)) continue;
     list.push(reapCandidate(info, record, now));
   }
   return list.sort((a, b) => b.privateMb - a.privateMb);
 }
 
+/** This function gives the children of each process ID of a read. */
+function childIndex(processes: readonly ProcessInfo[]): ReadonlyMap<number, readonly ProcessInfo[]> {
+  const children = new Map<number, ProcessInfo[]>();
+  for (const info of processes) {
+    if (info.pid === 0 || info.pid === info.ppid) continue;
+    const list = children.get(info.ppid);
+    if (list === undefined) children.set(info.ppid, [info]);
+    else list.push(info);
+  }
+  return children;
+}
+
+/** This function walks down from `target` (see `hostsKept()`). */
+function hostsKeptIn(children: ReadonlyMap<number, readonly ProcessInfo[]>, target: ProcessInfo, kept: ReadonlySet<number>): boolean {
+  const seen = new Set<number>([target.pid]);
+  const stack: ProcessInfo[] = [target];
+  for (let parent = stack.pop(); parent !== undefined; parent = stack.pop()) {
+    for (const child of children.get(parent.pid) ?? []) {
+      if (seen.has(child.pid)) continue;
+      // A child that started before its parent has a reused parent ID: it is not a child. An unknown start proves no
+      // order, so the child counts: a false keep is safe, and a false stop is not.
+      if (parent.startedAt !== undefined && child.startedAt !== undefined && child.startedAt + 1 < parent.startedAt) continue;
+      seen.add(child.pid);
+      if (kept.has(child.pid) || isSessionProgram(child.name)) return true;
+      stack.push(child);
+    }
+  }
+  return false;
+}
+
 /**
- * This function tells if a process belongs to the session of the caller (H183). When the record and the caller have the
- * ID of a session, the IDs decide. When only the caller has an ID, the record does not prove the session: a new session
- * can have the name of a session that ended. Only when the caller has no ID, the names decide.
+ * This function tells if a process that must stay runs below `target` (H183): a process of `kept` (the sessions, the
+ * daemon and the clients of the active leases) or a `claude` program. A stop of `target` can end it: for example, a stop
+ * of a terminal closes its consoles and the sessions in them. Thus headroom reap does not stop or list such a process.
+ */
+export function hostsKept(target: ProcessInfo, processes: readonly ProcessInfo[], kept: ReadonlySet<number>): boolean {
+  return hostsKeptIn(childIndex(processes), target, kept);
+}
+
+/**
+ * This function tells if a process belongs to the session of the caller (H183). When the record has the ID of a session,
+ * only the same ID of the caller proves it. When only the caller has an ID, the record does not prove the session: a new
+ * session can have the name of a session that ended. Only when neither has an ID, the names decide.
  */
 export function ownSession(record: Pick<ProcessRecord, "session" | "sessionId">, caller: SessionRef | null): boolean {
   if (caller === null || record.session === null) return false;
-  if (record.sessionId !== null && caller.id !== "") return record.sessionId === caller.id;
+  if (record.sessionId !== null) return caller.id !== "" && record.sessionId === caller.id;
   if (caller.id !== "") return false;
   return caller.name !== "" && record.session === caller.name;
 }
 
-/** This function tells if a running session is the session of the caller (H183): by the IDs, else by the names. */
+/**
+ * This function tells if a running session is the session of the caller (H183). When the session has an ID, only the same
+ * ID of the caller proves it. Else the names decide.
+ */
 function isCaller(session: SessionInfo, caller: SessionRef): boolean {
-  if (session.sessionId !== "" && caller.id !== "") return session.sessionId === caller.id;
+  if (session.sessionId !== "") return caller.id !== "" && session.sessionId === caller.id;
   return caller.name !== "" && session.name === caller.name;
 }
 
@@ -278,7 +322,10 @@ export function liveSession(
  */
 export function reapStep(record: Pick<ProcessRecord, "session" | "sessionId">, caller: SessionRef | null, owner: SessionInfo | undefined): ReapStep {
   if (owner === undefined) return "needs-owner";
-  if (caller !== null && isCaller(owner, caller) && (ownSession(record, caller) || record.sessionId === null)) return "stop";
+  // A record with no ID cannot prove its session to a caller with an ID: two running sessions can have one name, and a
+  // new session can have the name of a session that ended. Then only the owner of the machine stops the process.
+  if (record.sessionId === null && caller !== null && caller.id !== "") return "needs-owner";
+  if (caller !== null && isCaller(owner, caller) && ownSession(record, caller)) return "stop";
   return "ask";
 }
 
@@ -292,7 +339,12 @@ export function reapNotice(process: ReapCandidate, step: Exclude<ReapStep, "stop
   const what = `${process.name} (pid ${process.pid}) holds ${diskSize(process.privateMb)} of private memory, and its parent ended.${age}${command}`;
   const from = by === null ? "A caller with no session" : `The session ${by.name}`;
   if (step === "ask") return `${what} ${from} asks the session ${process.session ?? ""} to stop it with: headroom reap ${process.pid}`;
-  const owner = process.session === null ? "No session started it" : `Its session ${process.session} does not run`;
+  const owner =
+    process.session === null
+      ? "No session started it"
+      : process.sessionId === null
+        ? `Its record names the session ${process.session} with no ID, and no session can prove that the process is its own`
+        : `Its session ${process.session} does not run`;
   return `${what} ${owner}, so it needs the owner of the machine. ${from} asked for the stop.`;
 }
 

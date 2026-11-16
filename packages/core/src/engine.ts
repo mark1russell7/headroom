@@ -29,6 +29,7 @@ import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./ne
 import { attribute, isOrphan, processKey, readSessions, sessionsDir, treeMb, unattributedMb, type SessionRef } from "./owners.ts";
 import { OwnerRecords } from "./orphans.ts";
 import {
+  hostsKept,
   isSessionProgram,
   liveSession,
   REAP_KEEP_MS,
@@ -1132,6 +1133,13 @@ export class Engine {
     if (this.#headroomPids().has(pid)) {
       const what = pid === process.pid ? "the headroom daemon" : "the client of an active lease of headroom run. headroom release <id> ends the lease";
       return { pid, outcome: "headroom", process: null, message: `${info.name} (pid ${pid}) is ${what}. headroom reap does not stop it.`, notice: null };
+    }
+    // A stop of a process can end the processes below it, for example a terminal and the sessions in its consoles.
+    if (hostsKept(info, this.#processes, this.#sessionPids())) {
+      return { pid, outcome: "session", process: null, message: `A session runs below ${info.name} (pid ${pid}). A stop of ${info.name} can end the session, so headroom reap does not stop it.`, notice: null };
+    }
+    if (hostsKept(info, this.#processes, this.#headroomPids())) {
+      return { pid, outcome: "headroom", process: null, message: `The headroom daemon or the client of an active lease runs below ${info.name} (pid ${pid}). A stop of ${info.name} can end it, so headroom reap does not stop it.`, notice: null };
     }
     const byPid = new Map(this.#processes.map((each) => [each.pid, each]));
     const record = this.#records.get(info);

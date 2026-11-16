@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Engine } from "./engine.ts";
 import type { ProcessRecord } from "./orphans.ts";
 import {
+  hostsKept,
   liveSession,
   namesSessionFiles,
   ownSession,
@@ -145,10 +146,35 @@ describe("the candidates of headroom reap (H183)", () => {
   });
 
   it("does not list the process of a session, also when the parent of the session ended", () => {
-    const processes = [node(100, 50, "claude.exe", T0 - HOUR, 600)];
     const own = { ...record(100, T0 - HOUR, "claude"), ppid: 50 };
-    expect(reapCandidates(processes, () => own, T0).map((each) => each.pid)).toEqual([100]);
-    expect(reapCandidates(processes, () => own, T0, true, new Set([100]))).toEqual([]);
+    // A claude program stays out by its name, also when no session file names it.
+    expect(reapCandidates([node(100, 50, "claude.exe", T0 - HOUR, 600)], () => own, T0, true)).toEqual([]);
+    // Another program stays out when the engine gives it as the process of a session.
+    const other = [node(100, 50, "node.exe", T0 - HOUR, 600)];
+    expect(reapCandidates(other, () => own, T0).map((each) => each.pid)).toEqual([100]);
+    expect(reapCandidates(other, () => own, T0, true, new Set([100]))).toEqual([]);
+  });
+
+  it("does not list a process with a session, the daemon or a lease client below it (H183)", () => {
+    // A terminal whose parent ended hosts a shell, and the shell hosts a session.
+    const terminal = node(300, 200, "WindowsTerminal.exe", T0 - 2 * HOUR, 900);
+    const shell = node(310, 300, "pwsh.exe", T0 - 2 * HOUR, 80);
+    const grep = node(400, 200, "grep.exe", T0 - HOUR, 500);
+    const recordOf = (info: ProcessInfo): ProcessRecord => ({ ...record(info.pid, info.startedAt ?? 0, null), ppid: info.ppid, parentCreated: 0 });
+    const withSession = [terminal, shell, node(320, 310, "claude.exe", T0 - HOUR, 600), grep];
+    expect(reapCandidates(withSession, recordOf, T0).map((each) => each.pid)).toEqual([400]);
+    expect(hostsKept(terminal, withSession, new Set())).toBe(true);
+    // A process of `kept` below it, for example a lease client, also keeps it out.
+    const withClient = [terminal, shell, node(320, 310, "node.exe", T0 - HOUR, 600), grep];
+    expect(reapCandidates(withClient, recordOf, T0).map((each) => each.pid)).toEqual([300, 400]);
+    expect(reapCandidates(withClient, recordOf, T0, false, new Set([320])).map((each) => each.pid)).toEqual([400]);
+    // A child that started before its parent has a reused parent ID: it is not below the terminal.
+    const reused = [terminal, node(330, 300, "claude.exe", T0 - 3 * HOUR, 600), grep];
+    expect(hostsKept(terminal, reused, new Set())).toBe(false);
+    expect(reapCandidates(reused, recordOf, T0).map((each) => each.pid)).toEqual([300, 400]);
+    // A child with no start proves no order, so it counts: a false keep is safe.
+    const unknown = [terminal, { pid: 340, ppid: 300, name: "claude.exe", privateMb: 600, workingMb: 600 }, grep];
+    expect(hostsKept(terminal, unknown, new Set())).toBe(true);
   });
 
   it("stops only a process of the session that asks, and needs the owner of the machine when no session runs", () => {
@@ -169,6 +195,22 @@ describe("the candidates of headroom reap (H183)", () => {
     expect(reapStep(kestrel, OTTER, live)).toBe("ask");
     expect(reapStep(kestrel, OTTER, undefined)).toBe("needs-owner");
     expect(reapStep(kestrel, null, live)).toBe("ask");
+  });
+
+  it("needs the ID of the caller when the record or the session has an ID (H183)", () => {
+    const live = { pid: 100, name: "kestrel", sessionId: "6f1c-kestrel", status: null, cwd: null };
+    const kestrel = record(27308, T0, GREP_COMMAND);
+    const noId = { name: "kestrel", id: "" };
+    // The record has an ID: a caller with the name and no ID does not prove the session.
+    expect(ownSession(kestrel, noId)).toBe(false);
+    expect(reapStep(kestrel, noId, live)).toBe("ask");
+    // The running session has an ID: a caller with no ID is not that session, also when the record has no ID.
+    expect(reapStep({ session: "kestrel", sessionId: null }, noId, live)).toBe("ask");
+    // Only when neither has an ID, the names decide.
+    expect(reapStep({ session: "kestrel", sessionId: null }, noId, { ...live, sessionId: "" })).toBe("stop");
+    // A record with no ID cannot prove its session to a caller with an ID: two sessions can have one name.
+    expect(reapStep({ session: "kestrel", sessionId: null }, KESTREL, live)).toBe("needs-owner");
+    expect(reapStep({ session: "kestrel", sessionId: null }, OTTER, live)).toBe("needs-owner");
   });
 
   it("stops only when the running session of the record is the caller (H183)", () => {
@@ -201,6 +243,9 @@ describe("the candidates of headroom reap (H183)", () => {
     expect(ask).toContain("2b7e1c55-0d4f-4c1e-9a65-3f2f8f1d9c10.jsonl");
     expect(ask).toContain("The session otter asks the session kestrel to stop it with: headroom reap 27308");
     expect(reapNotice(candidate, "needs-owner", null)).toContain("Its session kestrel does not run, so it needs the owner of the machine.");
+    expect(reapNotice({ ...candidate, sessionId: null }, "needs-owner", KESTREL)).toContain(
+      "Its record names the session kestrel with no ID, and no session can prove that the process is its own, so it needs the owner of the machine.",
+    );
   });
 });
 
@@ -479,6 +524,22 @@ describe("Engine reap (H183)", () => {
     restart();
     expect(engine.reapList().map((each) => each.pid)).toEqual([27308]);
     expect(engine.reap(27900, KESTREL)).toMatchObject({ outcome: "session" });
+    expect(stops).toEqual([]);
+  });
+
+  it("does not list or stop a process with a session below it, for example a terminal whose parent ended", () => {
+    // The terminal 70 lost its parent. A session runs in one of its consoles.
+    extra = [node(70, 4343, "WindowsTerminal.exe", T0 - 6 * HOUR, 900), node(71, 70, "claude.exe", T0 - 5 * HOUR, 300)];
+    restart();
+    expect(engine.reapList(true).map((each) => each.pid)).not.toContain(70);
+    const result = engine.reap(70, KESTREL);
+    expect(result).toMatchObject({ outcome: "session", process: null });
+    expect(result.message).toContain("A session runs below WindowsTerminal.exe (pid 70)");
+    // When the session ends, the terminal is an orphan like others, and the rules of the record decide.
+    extra = [node(70, 4343, "WindowsTerminal.exe", T0 - 6 * HOUR, 900)];
+    now += 10_000;
+    engine.tick();
+    expect(engine.reap(70, KESTREL).outcome).not.toBe("session");
     expect(stops).toEqual([]);
   });
 
