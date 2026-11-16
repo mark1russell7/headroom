@@ -8,7 +8,7 @@
 import type { Alert, AlertKind, AlertRules } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
-import { childrenOf, orphanName, treeMb } from "./owners.ts";
+import { childrenOf, jobTreeMb, orphanName } from "./owners.ts";
 import { MB } from "./sampler.ts";
 import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
@@ -423,8 +423,11 @@ export interface Admit {
   readonly reserveFrom?: Level | undefined;
   /** The capacity of an instance with no measurement and no configuration. A slot has 1, a lock. */
   readonly defaultCapacity?: number | undefined;
-  /** This function gives the part of a granted lease that its job uses at this time. Without it, the lease keeps its full amount. */
-  used?(lease: Lease, id: ResourceId, readings: Readings, owners: Owners): number;
+  /**
+   * This function gives the part of a granted lease that its job uses at this time. Without it, the lease keeps its full
+   * amount. It gives `null` when the read does not measure the job, for example a lease with no process (H187).
+   */
+  used?(lease: Lease, id: ResourceId, readings: Readings, owners: Owners): number | null;
   /** At this level of an instance, no job starts, also a job with no amount of it (step 5). */
   readonly gate?: Level | undefined;
 }
@@ -752,7 +755,8 @@ const MEMORY_RESOURCE: Resource = {
     mode: "measured",
     reserve: { amount: 1024 },
     // A job that starts uses little memory, but its lease holds the rest of its amount.
-    used: (lease, _id, readings) => (lease.pid === null ? 0 : treeMb(lease.pid, readings.processes)),
+    // H187: a job that starts containers has their memory in the VM of Docker, so its tree does not measure it.
+    used: (lease, _id, readings) => (lease.pid === null ? null : jobTreeMb(lease.pid, readings.processes)),
   },
   enforce: { limit: (amount) => ({ memoryMb: amount }), report: ["peakMb"] },
   // The target is the limit of the memory alert: 1 GB available.

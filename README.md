@@ -42,7 +42,9 @@ headroom run --slot docker --mem 1g -- docker compose up -d mongo
 
 - The expected run time of a job is the 90th percentile of its last 20 runs with an exit code. The runs of the same holder come first. A job with no such run has no expected run time.
 - When the ends of the granted leases give the first lease its room, the broker knows its expected start. A later lease goes first when its expected run ends before that start. It also goes first when it fits in the room that the first lease does not need.
-- When no end of a granted lease gives the first lease its room, other processes hold that room, and the start is not known. Then a later lease goes first only when its expected run is at most 10 minutes. Thus the first lease starts at most 10 minutes after the room comes back.
+- When no end of a granted lease gives the first lease its room, other processes hold that room, and the start is not known. Then a later lease goes first when its expected run is at most 10 minutes. Thus the first lease starts at most 10 minutes after the room comes back.
+- In that case, a later lease with a longer run also goes first when the leases that went first stay in a cap (H187). The cap is the room that the first lease waits for from other processes. Thus the leases that go first at most double that room.
+- After 30 minutes of measures, a granted lease holds its measured memory, not its amount (H187). The measured memory is the peak of the job times 1.25, or its use at this time when that is more. Thus a server that asked for 1024 MB and uses 32 MB holds 40 MB. A lease with no process, and a job that starts containers, keep their amount, because the read does not measure them.
 - A later lease that waits for the first lease tells it in `headroom status`, for example `waits for the first request (pnpm build): its run of 25 min would delay that request`.
 
 See the memory, the free space of the drives, the free amounts, the leases and the memory of each owner:

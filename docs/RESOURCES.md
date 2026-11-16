@@ -255,7 +255,7 @@ The broker has two modes:
 - **Measured**: the operating system gives the free part. The broker uses the measured free part, less the reserve, less the unspent part of each granted lease.
 - **Counted**: the store gives the capacity. The broker uses the capacity, less the sum of the granted amounts. A slot is counted.
 
-The unspent part of a lease is its amount less the part that its job uses at this time. A job that starts uses little memory, but it holds the rest of its amount. This rule is the `MEMORY` special case of `Broker.free()` today. The model makes it the rule of each measured kind.
+The unspent part of a lease is its hold less the part that its job uses at this time. A job that starts uses little memory, but it holds the rest of its amount. After 30 minutes of measures, the hold is not the amount (H187). It is the measured peak times 1.25, or the use at this time when that is more. This rule is the `MEMORY` special case of `Broker.free()` today. The model makes it the rule of each measured kind.
 
 ```ts
 /** How the broker compares a lease amount with an instance. */
@@ -265,8 +265,8 @@ export interface Admit {
   readonly reserve: Limit;
   /** The capacity of an instance with no measurement and no configuration. A slot: 1, a lock. */
   readonly defaultCapacity?: number | undefined;
-  /** The part of a granted lease that its job uses at this time. Without it, the lease keeps its full amount. */
-  used?(lease: Lease, id: ResourceId, readings: Readings, owners: Owners): number;
+  /** The part of a granted lease that its job uses at this time, or `null` when the read does not measure the job (H187). Without it, the lease keeps its full amount. */
+  used?(lease: Lease, id: ResourceId, readings: Readings, owners: Owners): number | null;
   /** At this level of an instance, no job starts, also a job with no amount of it. Disk: `critical`. */
   readonly gate?: Level | undefined;
 }

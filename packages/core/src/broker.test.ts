@@ -3,14 +3,15 @@ import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
 import { Broker, NO_REJOIN_REASON, type Capacity, type Lease } from "./broker.ts";
 import { rooms } from "./resources.ts";
 
-function setup(options: { alive?: Set<number>; used?: number; runMs?: Record<string, number> } = {}) {
+function setup(options: { alive?: Set<number>; used?: number; use?: (lease: Lease) => number | null; runMs?: Record<string, number>; longRunMs?: number } = {}) {
   let now = 1_000_000;
   let next = 0;
   const broker = new Broker({
     now: () => now,
     newId: () => `l${++next}`,
     isAlive: (pid) => options.alive?.has(pid) ?? true,
-    usedMb: () => options.used ?? 0,
+    used: (lease, id) => (id === "memory" ? (options.use === undefined ? (options.used ?? 0) : options.use(lease)) : null),
+    longRunMs: options.longRunMs ?? 1_800_000,
     reserveMb: 1000,
     agingMs: 60_000,
     headWaitMs: 600_000,
@@ -95,15 +96,16 @@ describe("Broker", () => {
     // A process holds it, so it does not expire for lack of a heartbeat while it waits.
     const big = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 7 });
     advance(1000);
-    const small = broker.request({ holder: "vex", job: "test", amounts: { memory: 500 } });
-    broker.tick(cap(3000));
+    const small = broker.request({ holder: "vex", job: "test", amounts: { memory: 500 }, pid: 8 });
+    broker.tick(cap(4800));
     expect(broker.get(small.id)?.state).toBe("granted");
     expect(broker.get(big.id)?.state).toBe("waiting");
 
     advance(700_000);
     const later = broker.request({ holder: "vex", job: "test 2", amounts: { memory: 100 } });
-    broker.tick(cap(3000));
-    expect(broker.get(later.id)?.state).toBe("waiting");
+    broker.tick(cap(4800));
+    // Other processes hold 200 of the 4000 of `gate`, and `small`, which went first, holds 500: more than that room (H187).
+    expect(broker.get(later.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): the run time of this job is not known" });
   });
 
   describe("after the long wait of the first request (H178)", () => {
@@ -112,15 +114,16 @@ describe("Broker", () => {
     it("lets a short job go first when no end of a granted lease lets the first request start", () => {
       const { broker, advance } = setup({ runMs: { quick: 5 * MIN, slow: 20 * MIN } });
       const small = broker.request({ holder: "vex", job: "test", amounts: { memory: 500 }, pid: 7 });
-      broker.tick(cap(3000));
-      // The room of the first request is held outside the leases: the end of `small` gives it 2000 of 4000.
+      broker.tick(cap(4800));
+      // The room of the first request is held outside the leases: the end of `small` gives it 3800 of 4000.
       const big = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 8 });
-      broker.tick(cap(3000));
+      broker.tick(cap(4800));
       advance(700_000);
       const quick = broker.request({ holder: "lag", job: "quick", amounts: { memory: 100 } });
-      const slow = broker.request({ holder: "lag", job: "slow", amounts: { memory: 100 } });
-      const unknown = broker.request({ holder: "lag", job: "new", amounts: { memory: 100 } });
-      broker.tick(cap(3000));
+      // Each needs more than the cap of H187: 4000 less 3200 free and the 100 of `quick` leaves 700, and 100 of it is taken.
+      const slow = broker.request({ holder: "lag", job: "slow", amounts: { memory: 700 } });
+      const unknown = broker.request({ holder: "lag", job: "new", amounts: { memory: 700 } });
+      broker.tick(cap(4800));
       expect(broker.get(small.id)?.state).toBe("granted");
       expect(broker.get(big.id)?.state).toBe("waiting");
       expect(broker.get(quick.id)?.state).toBe("granted");
@@ -161,6 +164,115 @@ describe("Broker", () => {
       broker.tick(cap(8000));
       expect(broker.get(gate.id)?.state).toBe("waiting");
       expect(broker.get(short.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 1 min would delay that request" });
+    });
+  });
+
+  describe("the hold of a long lease and the cap of the first request (H187)", () => {
+    const MIN = 60_000;
+
+    it("holds the measured peak of a lease after 30 minutes of measures, so the queue of 2026-11-13 moves", () => {
+      // 2026-11-13 04:43Z: a server held 1024 MB for days and used 32 MB. The first request of 3500 MB was 923 MB short.
+      const { broker, advance } = setup({ use: (lease) => (lease.job === "jarvis serve" ? 32 : 0) });
+      const server = broker.request({ holder: "jarvis", job: "jarvis serve", amounts: { memory: 1024 }, pid: 5 });
+      broker.tick(cap(8000));
+      expect(broker.get(server.id)?.state).toBe("granted");
+      const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 3500 }, pid: 8 });
+      broker.tick(cap(4569));
+      expect(broker.get(gate.id)).toMatchObject({ state: "waiting", reason: "waits for memory: needs 3500, 2577 free" });
+      advance(29 * MIN);
+      broker.tick(cap(4569));
+      expect(broker.get(gate.id)?.state).toBe("waiting");
+      advance(2 * MIN);
+      // After 30 minutes of measures, the server holds 32 x 1.25 = 40 MB: 4569 - 1000 - (40 - 32) = 3561 free.
+      broker.tick(cap(4569));
+      expect(broker.get(gate.id)?.state).toBe("granted");
+    });
+
+    it("holds the peak times 1.25, or the use now when it is more", () => {
+      let use = 600;
+      const { broker, advance } = setup({ use: () => use });
+      broker.request({ holder: "graph", job: "serve", amounts: { memory: 2000 }, pid: 5 });
+      broker.tick(cap(8000));
+      // The measures of a lease start at the first tick after its grant.
+      broker.tick(cap(8000));
+      use = 200;
+      advance(31 * MIN);
+      broker.tick(cap(8000));
+      // The peak of 600 gives a hold of 750, and the job uses 200 of it.
+      expect(broker.free(cap(8000))["memory"]).toBe(8000 - 1000 - 550);
+      use = 1500;
+      // The use now is more than the hold of the peak, and more than the amount: the lease holds what it uses.
+      expect(broker.free(cap(8000))["memory"]).toBe(8000 - 1000);
+      broker.tick(cap(8000));
+      expect(broker.free(cap(8000))["memory"]).toBe(8000 - 1000 - 375);
+    });
+
+    it("keeps the amount of a lease that the read does not measure, and of a lease after a restart until 30 minutes of new measures", () => {
+      const { broker, advance } = setup({ use: (lease) => (lease.job === "stack" ? null : 32) });
+      broker.request({ holder: "graph", job: "stack", amounts: { memory: 1000 }, pid: 5 });
+      const server = broker.request({ holder: "jarvis", job: "serve", amounts: { memory: 1000 }, pid: 6 });
+      broker.tick(cap(8000));
+      broker.tick(cap(8000));
+      advance(31 * MIN);
+      broker.tick(cap(8000));
+      // The stack keeps its 1000. The server holds 40 and uses 32 of it.
+      expect(broker.free(cap(8000))["memory"]).toBe(8000 - 1000 - 1000 - 8);
+      const restarted = setup({ use: () => 32 });
+      restarted.broker.restore([{ ...(broker.get(server.id) as Lease) }]);
+      restarted.broker.tick(cap(8000));
+      restarted.advance(10 * MIN);
+      restarted.broker.tick(cap(8000));
+      expect(restarted.broker.free(cap(8000))["memory"]).toBe(8000 - 1000 - 968);
+      restarted.advance(21 * MIN);
+      restarted.broker.tick(cap(8000));
+      expect(restarted.broker.free(cap(8000))["memory"]).toBe(8000 - 1000 - 8);
+    });
+
+    it("lets a long job go first in the room that the first request waits for from other processes, and no more", () => {
+      const { broker, advance } = setup({ runMs: { long: 60 * MIN } });
+      broker.request({ holder: "vex", job: "test", amounts: { memory: 500 }, pid: 7 });
+      broker.tick(cap(4800));
+      const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 8 });
+      broker.tick(cap(4800));
+      advance(11 * MIN);
+      // 3300 free, and other processes hold 700 of the 4000 of the first request. No end of a lease gives it its room.
+      const first = broker.request({ holder: "lag", job: "long", amounts: { memory: 300 }, pid: 9 });
+      const second = broker.request({ holder: "lag", job: "long", amounts: { memory: 300 }, pid: 10 });
+      const third = broker.request({ holder: "lag", job: "long", amounts: { memory: 300 }, pid: 11 });
+      broker.tick(cap(4800));
+      expect([first, second].map((each) => broker.get(each.id)?.state)).toEqual(["granted", "granted"]);
+      // 600 went first. A third 300 makes 900, more than the 700 that the first request now waits for.
+      expect(broker.get(third.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 60 min would delay that request" });
+      expect(broker.get(gate.id)?.state).toBe("waiting");
+    });
+
+    it("does not let a stream of short jobs starve the first request when its room comes back", () => {
+      const alive = new Set<number>();
+      const { broker, advance } = setup({ alive, runMs: { quick: 5 * MIN } });
+      alive.add(8);
+      const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 8 });
+      broker.tick(cap(4500));
+      advance(11 * MIN);
+      // A new short job comes each 2 minutes and runs 5 minutes. At minute 10 other processes give back 500 MB.
+      let pid = 100;
+      const started: { pid: number; at: number }[] = [];
+      let grantedAt: number | null = null;
+      for (let minute = 0; minute <= 30 && grantedAt === null; minute += 1) {
+        for (const each of started) if (minute - each.at >= 5) alive.delete(each.pid);
+        if (minute % 2 === 0) {
+          pid += 1;
+          alive.add(pid);
+          broker.request({ holder: "lag", job: "quick", amounts: { memory: 500 }, pid });
+          started.push({ pid, at: minute });
+        }
+        broker.tick(cap(minute >= 10 ? 5000 : 4500));
+        if (broker.get(gate.id)?.state === "granted") grantedAt = minute;
+        advance(MIN);
+      }
+      // The short jobs went first before minute 10. After it, no new job goes first, so the first request starts when they end.
+      expect(started.length).toBeGreaterThan(5);
+      expect(grantedAt).not.toBeNull();
+      expect(grantedAt ?? 99).toBeLessThanOrEqual(15);
     });
   });
 

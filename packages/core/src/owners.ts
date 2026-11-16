@@ -447,3 +447,30 @@ export function treeMb(pid: number, processes: readonly ProcessInfo[]): number {
   }
   return total;
 }
+
+/**
+ * The programs that start containers. The memory of a container is in the VM of Docker, not in the tree of its client.
+ * Thus the tree of such a job does not measure the job (H187), until a container gives its memory to its lease (h62).
+ */
+const CONTAINER_CLIENTS: ReadonlySet<string> = new Set(["docker", "docker-compose", "com.docker.cli", "podman", "nerdctl", "kubectl"]);
+
+/**
+ * This function gives the private memory, in MB, of the job of a process: the process and all of its descendants (H187).
+ * It gives `null` when the processes do not measure the job. Then the process is not in the read, or a process of the
+ * tree starts containers.
+ */
+export function jobTreeMb(pid: number, processes: readonly ProcessInfo[]): number | null {
+  const root = processes.find((info) => info.pid === pid);
+  if (root === undefined) return null;
+  const children = childrenOf(processes);
+  const seen = new Set<number>();
+  const stack = [root];
+  while (stack.length > 0) {
+    const at = stack.pop();
+    if (at === undefined || seen.has(at.pid)) continue;
+    seen.add(at.pid);
+    if (CONTAINER_CLIENTS.has(programName(at.name))) return null;
+    stack.push(...(children.get(at.pid) ?? []));
+  }
+  return treeMb(pid, processes);
+}

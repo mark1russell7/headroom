@@ -165,8 +165,17 @@ export interface BrokerOptions {
   readonly isAlive?: ((pid: number) => boolean) | undefined;
   /** This function gives the memory, in MB, that the processes of a granted lease use at this time. It is the memory case of `used`. */
   readonly usedMb?: ((lease: Lease) => number) | undefined;
-  /** This function gives the part of the amount of an id that a granted lease uses at this time. The default uses `usedMb` for the memory. */
-  readonly used?: ((lease: Lease, id: ResourceId) => number) | undefined;
+  /**
+   * This function gives the part of the amount of an id that a granted lease uses at this time. It gives `null` when the
+   * read does not measure the job (H187). The default uses `usedMb` for the memory.
+   */
+  readonly used?: ((lease: Lease, id: ResourceId) => number | null) | undefined;
+  /**
+   * After the broker measured a granted lease for this time, the lease holds its measured use of each measured id, not
+   * its amount (H187). The measured use is the peak times `LONG_HOLD_MARGIN`, or the use at this time when that is more.
+   * The default is 30 minutes.
+   */
+  readonly longRunMs?: number | undefined;
   /** The memory that the broker keeps free, in MB. The default is 1024. */
   readonly reserveMb?: number | undefined;
   /** A waiting request gains 1 of priority for each period of this length. The default is 1 minute. */
@@ -211,6 +220,9 @@ export interface BrokerOptions {
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
 
+/** The margin on the peak of a lease that holds its measured use after a long run (H187). */
+export const LONG_HOLD_MARGIN = 1.25;
+
 /** The reason of a waiting lease from the store that no client called for in its heartbeat limit after a restart of the daemon. */
 export const NO_REJOIN_REASON = "no client came back after a restart of the daemon";
 
@@ -249,7 +261,8 @@ export class Broker {
   readonly #now: () => number;
   readonly #newId: () => string;
   readonly #isAlive: (pid: number) => boolean;
-  readonly #used: (lease: Lease, id: ResourceId) => number;
+  readonly #used: (lease: Lease, id: ResourceId) => number | null;
+  readonly #longRunMs: number;
   readonly #reserveMb: number;
   readonly #agingMs: number;
   readonly #headWaitMs: number;
@@ -266,13 +279,16 @@ export class Broker {
    * heartbeat limit with no call, also when a process has its process ID.
    */
   readonly #rejoin = new Set<string>();
+  /** The peak of the measured use of each id of each granted lease, and the time of its first measure (H187). */
+  readonly #peaks = new Map<string, Map<ResourceId, { peak: number; since: number }>>();
 
   constructor(options: BrokerOptions = {}) {
     this.#now = options.now ?? Date.now;
     this.#newId = options.newId ?? randomUUID;
     this.#isAlive = options.isAlive ?? processIsAlive;
     const usedMb = options.usedMb ?? (() => 0);
-    this.#used = options.used ?? ((lease, id) => (id === MEMORY ? usedMb(lease) : 0));
+    this.#used = options.used ?? ((lease, id) => (id === MEMORY ? usedMb(lease) : null));
+    this.#longRunMs = options.longRunMs ?? 1_800_000;
     this.#reserveMb = options.reserveMb ?? 1024;
     this.#agingMs = options.agingMs ?? 60_000;
     this.#headWaitMs = options.headWaitMs ?? 600_000;
@@ -435,7 +451,7 @@ export class Broker {
     return this.#free(capacity, []);
   }
 
-  #free(capacity: Capacity, more: Iterable<ResourceId>): Record<string, number> {
+  #free(capacity: Capacity, more: Iterable<ResourceId>, now = this.#now()): Record<string, number> {
     const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
     const base = this.#baseRooms(capacity);
     const ids = new Set([...Object.keys(capacity.pools), ...Object.keys(capacity.rooms ?? {}), ...granted.flatMap((lease) => Object.keys(lease.amounts)), ...more]);
@@ -451,7 +467,7 @@ export class Broker {
       for (const lease of granted) {
         const amount = lease.amounts[id];
         if (amount === undefined) continue;
-        left -= room.mode === "measured" ? Math.max(0, amount - this.#used(lease, id)) : amount;
+        left -= room.mode === "measured" ? Math.max(0, this.#holdOf(lease, id, now) - (this.#used(lease, id) ?? 0)) : amount;
       }
       free[id] = left;
     }
@@ -487,7 +503,8 @@ export class Broker {
     const waiting = [...this.#leases.values()]
       .filter((lease) => lease.state === "waiting")
       .sort((a, b) => this.#rank(b, now) - this.#rank(a, now) || a.requestedAt - b.requestedAt);
-    const free = this.#free(capacity, waiting.flatMap((lease) => Object.keys(lease.amounts)));
+    this.#measure(capacity, now);
+    const free = this.#free(capacity, waiting.flatMap((lease) => Object.keys(lease.amounts)), now);
     // The granted leases, with the leases that this tick grants, and the leases that wait before the next lease (H47).
     const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
     const before: Lease[] = [];
@@ -514,7 +531,7 @@ export class Broker {
       if (this.#held.delete(lease.id)) lease = this.#set({ ...lease, conditionsMetAt: now });
       const index = place;
       place += 1;
-      const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before) ?? (hold === null ? null : this.#delays(lease, hold, now));
+      const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before) ?? (hold === null ? null : this.#delays(lease, hold, now, free, granted, capacity));
       if (short === null) {
         for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? 0) - amount;
         const next = this.#set({ ...lease, state: "granted", grantedAt: now, reason: null });
@@ -580,11 +597,7 @@ export class Broker {
     const left = [...granted];
     const ends = granted.map((lease) => ({ lease, at: this.#endOfRun(lease, now) })).sort((a, b) => a.at - b.at);
     for (const { lease, at } of ends) {
-      for (const [id, amount] of Object.entries(lease.amounts)) {
-        // A measured room gets back the use of the job and the part of the amount that the job did not use.
-        const back = this.#room(id, capacity).mode === "measured" ? Math.max(amount, this.#used(lease, id)) : amount;
-        room[id] = (room[id] ?? 0) + back;
-      }
+      for (const id of Object.keys(lease.amounts)) room[id] = (room[id] ?? 0) + this.#backOf(lease, id, capacity, now);
       left.splice(left.indexOf(lease), 1);
       if (this.#shortOf(head, room) === null && this.#conflictOf(head, left, []) === null) {
         const extra = Object.fromEntries(Object.entries(room).map(([id, value]) => [id, value - (head.amounts[id] ?? 0)]));
@@ -592,6 +605,71 @@ export class Broker {
       }
     }
     return { head, startAt: null, extra: null };
+  }
+
+  /**
+   * This function records the measured use of each granted lease at a tick (H187). The record of each measured id has its
+   * peak and the time of its first measure. A lease that is not granted loses its record. A restart of the daemon starts each record
+   * again. Thus a lease holds its measured use only after a full `longRunMs` of measures.
+   */
+  #measure(capacity: Capacity, now: number): void {
+    for (const id of this.#peaks.keys()) if (this.#leases.get(id)?.state !== "granted") this.#peaks.delete(id);
+    for (const lease of this.#leases.values()) {
+      if (lease.state !== "granted") continue;
+      for (const id of Object.keys(lease.amounts)) {
+        if (this.#room(id, capacity).mode !== "measured") continue;
+        const used = this.#used(lease, id);
+        if (used === null) continue;
+        const peaks = this.#peaks.get(lease.id) ?? new Map<ResourceId, { peak: number; since: number }>();
+        const last = peaks.get(id);
+        peaks.set(id, { peak: Math.max(last?.peak ?? 0, used), since: last?.since ?? now });
+        this.#peaks.set(lease.id, peaks);
+      }
+    }
+  }
+
+  /**
+   * This function gives the part of a measured id that a granted lease holds (H187). Before a full `longRunMs` of
+   * measures, it is the amount. After it, it is the peak times `LONG_HOLD_MARGIN`, or the use at this time when that is
+   * more. Thus a server that asked for 1024 MB and uses 32 MB holds 40 MB after 30 minutes. A job that uses more than
+   * its amount holds what it uses.
+   */
+  #holdOf(lease: Lease, id: ResourceId, now: number): number {
+    const amount = lease.amounts[id] ?? 0;
+    const record = this.#peaks.get(lease.id)?.get(id);
+    if (record === undefined || now - record.since < this.#longRunMs) return amount;
+    const used = this.#used(lease, id);
+    if (used === null) return amount;
+    return Math.max(record.peak * LONG_HOLD_MARGIN, used);
+  }
+
+  /**
+   * This function gives the room that the end of a granted lease gives back. A measured id gets back the use of the job and
+   * the part of the hold that the job does not use. A counted id gets back the amount.
+   */
+  #backOf(lease: Lease, id: ResourceId, capacity: Capacity, now: number): number {
+    const amount = lease.amounts[id] ?? 0;
+    if (this.#room(id, capacity).mode !== "measured") return amount;
+    return Math.max(this.#holdOf(lease, id, now), this.#used(lease, id) ?? 0);
+  }
+
+  /**
+   * This function tells if a lease can go before the first request of a hold with no known start (H187). Other processes
+   * hold the room that the first request waits for. The leases that went before the first request hold at most that room,
+   * so they at most double the room that it waits for. An id where the first request does not wait for other processes
+   * takes a lease only when the first request still fits beside it.
+   */
+  #inCap(lease: Lease, head: Lease, free: Record<string, number>, granted: readonly Lease[], capacity: Capacity, now: number): boolean {
+    const passed = granted.filter((each) => (each.grantedAt ?? 0) > head.requestedAt);
+    return Object.entries(lease.amounts).every(([id, amount]) => {
+      const need = head.amounts[id];
+      if (need === undefined) return true;
+      const left = free[id] ?? 0;
+      const held = passed.reduce((sum, each) => sum + (each.amounts[id] === undefined ? 0 : this.#backOf(each, id, capacity, now)), 0);
+      // The room that the first request waits for from other processes: its amount, less the free room and the room of the leases that went before it.
+      const outside = need - left - held;
+      return outside > 0 ? held + amount <= outside : left - amount >= need;
+    });
   }
 
   /**
@@ -608,9 +686,10 @@ export class Broker {
    * This function tells why a lease that fits at this time cannot go before the first request of a hold (H178). It gives
    * `null` when the lease can go. The lease can go when its expected end comes before the start of the first request.
    * When that start is not known, the lease can go when its expected run time is at most `backfillMs`. A lease with no
-   * known run time has no end. A lease that fits in the extra room of the hold can also go, and it takes that room.
+   * known run time has no end. A lease that fits in the extra room of the hold can also go, and it takes that room. When
+   * the start is not known, a lease can also go in the cap of the room that the first request waits for (H187).
    */
-  #delays(lease: Lease, hold: Hold, now: number): string | null {
+  #delays(lease: Lease, hold: Hold, now: number, free: Record<string, number>, granted: readonly Lease[], capacity: Capacity): string | null {
     const run = this.#runMs(lease);
     const end = run === null ? Number.POSITIVE_INFINITY : now + run;
     if (end <= (hold.startAt ?? now + this.#backfillMs)) return null;
@@ -619,6 +698,8 @@ export class Broker {
       for (const [id, amount] of Object.entries(lease.amounts)) extra[id] = (extra[id] ?? 0) - amount;
       return null;
     }
+    // H187: when other processes hold the room of the first request, a later lease can go in the cap of that room.
+    if (hold.startAt === null && this.#inCap(lease, hold.head, free, granted, capacity, now)) return null;
     const first = `waits for the first request (${hold.head.job})`;
     if (run === null) return `${first}: the run time of this job is not known`;
     return `${first}: its run of ${Math.ceil(run / 60_000)} min would delay that request`;

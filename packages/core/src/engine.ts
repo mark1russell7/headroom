@@ -637,7 +637,8 @@ export class Engine {
       // The admit part of the kind of each id tells the part of a granted lease that its job uses.
       used: (lease, id) => {
         const readings = this.#readings;
-        return readings === null ? 0 : (resourceOf(id).admit?.used?.(lease, id, readings, this.#ownership) ?? 0);
+        // H187: `null` means that the read does not measure the job, so the lease keeps its amount.
+        return readings === null ? null : (resourceOf(id).admit?.used?.(lease, id, readings, this.#ownership) ?? null);
       },
       // H47: a spawn-heavy lease and a lease with the slot browser do not run at the same time.
       conflict: spawnConflict,
