@@ -21,6 +21,7 @@ import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.t
 import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "./reap.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
+import { traceKindsOf } from "./trace.ts";
 import { FIT_RUNS, isJobKind, KIND_RUNS, PEAK_RUNS, type JobKey, type MemoryPrediction, type Rung, type RunEstimate, type RunSource, type SizedPeak } from "./predict.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -318,6 +319,12 @@ export interface Config {
    */
   readonly reapAuto: boolean;
   /**
+   * The owner kinds of the start trace (H188). The daemon puts their processes in job objects, and also the processes of
+   * the granted leases. Then it names each start in their trees. The default is `session`, `mcp`, `service` and `docker`. An
+   * empty list turns the trace off.
+   */
+  readonly startTrace: readonly OwnerKind[];
+  /**
    * The alert limits that differ from the defaults (H179), by the names of `AlertRules`. A computer with its own lines (for
    * example a hold of the jobs below 2 GB of available memory) sets them here. The default is no differences.
    */
@@ -500,13 +507,15 @@ export class Store {
       autoDrainMb: autoDrainOf(values.get("autoDrainMb")),
       worktreeAutoClean: values.get("worktreeAutoClean") === "on",
       reapAuto: values.get("reapAuto") === "on",
+      startTrace: traceKindsOf(values.get("startTrace")),
       alerts: alertRulesOf(values.get("alerts")),
     };
   }
 
   /**
    * This function sets one setting. `null` removes it. The value of `health` and `alerts` is the JSON text of its object. The value of
-   * `presence`, `worktreeAutoClean` and `reapAuto` is `on` or `off`. The values of the other settings are numbers as text.
+   * `presence`, `worktreeAutoClean` and `reapAuto` is `on` or `off`. The value of `startTrace` is `off` or owner kinds with
+   * commas. The values of the other settings are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);

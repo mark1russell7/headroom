@@ -22,6 +22,7 @@ import { batteryParts, batteryState, cpuWatts, minutesText, ownersWattsText, pow
 import type { ServiceHealth, ServiceState } from "./services.ts";
 import { countText, STARTS_WINDOW_MS, topStartsText, type ProcessStarts } from "./starts.ts";
 import { heatHolds, heatMessage, heatOwners, type ThermalState } from "./thermal.ts";
+import { percentText, sourceText, type TracedStarts } from "./trace.ts";
 import { gainAt, handlesText } from "./handles.ts";
 import type { ProcessRecord } from "./orphans.ts";
 
@@ -1211,26 +1212,57 @@ const PROCESS_STARTS: Attribute = {
     (starts?.owners ?? []).map((each) => ({ resource: "procs", owner: each.owner, kind: each.kind, amount: each.perMinute, processes: 0 })),
 };
 
-/** This function gives the text of the churn alert: the rate, the owners and the leased jobs with the most starts, and the reason. */
+/**
+ * This function gives the sources of the trace for the churn alert (H188). Each source has its parent and its program.
+ * The sources hold 90 % of the traced starts, and the text gives their part of all the starts. It gives "" without
+ * traced starts.
+ */
+export function tracedSourcesText(traced: TracedStarts | null | undefined): string {
+  if (traced === null || traced === undefined || traced.sources.length === 0) return "";
+  const part = traced.coverage === null ? `${percentText(traced.named)} of the traced starts` : `${percentText(traced.named * traced.coverage)} of all the starts`;
+  const failed = traced.failedPerMinute > 0 ? ` ${countText(traced.failedPerMinute)} a minute failed with 0xC0000142.` : "";
+  return ` Sources: ${traced.sources.map(sourceText).join(", ")} (${part}).${failed}`;
+}
+
+/**
+ * This function gives the text of the churn alert. The text has the rate and the sources of the trace (H188). Without
+ * the trace, it has the owners with the most starts. Then it has the leased jobs with the most starts, and the reason.
+ */
 function churnText({ measurement, readings }: InstanceFacts): AlertText {
   const starts = readings.starts;
   const rate = countText(measurement.used ?? 0);
   const minutes = Math.round((starts?.spanMs ?? STARTS_WINDOW_MS) / 60_000);
-  const most = starts === undefined ? "" : topStartsText(starts, CHURN_SHOWN);
+  const sources = tracedSourcesText(starts?.traced);
+  const most = starts === undefined || sources !== "" ? "" : topStartsText(starts, CHURN_SHOWN);
   const jobs = (starts?.jobs ?? []).filter((each) => each.processes > 0).slice(0, CHURN_SHOWN);
-  const named = most === "" ? "" : ` Most: ${most}.`;
+  const named = most === "" ? sources : ` Most: ${most}.`;
   const leased = jobs.length === 0 ? "" : ` Leased jobs with the most starts: ${jobs.map((each) => `${each.job} of ${each.holder} ${countText(each.processes)} so far`).join(", ")}.`;
   return { subject: "process starts", mb: 0, message: `Processes start at ${rate} a minute over the last ${minutes} minutes.${named}${leased} ${CHURN_CAUSE}` };
 }
 
 /**
- * The process starts (H29): one instance, `procs`, in starts per minute over the last 10 minutes. It has no capacity.
+ * The process starts (H29): the instance `procs`, in starts per minute over the last 10 minutes. It has no capacity.
  * On Windows, the sequence numbers of the processes give the exact count. Elsewhere, the count is a lower bound.
+ *
+ * With the start trace (H188), two more instances: `procs:traced`, the starts that the trace named, and `procs:failed`,
+ * the traced starts that failed with 0xC0000142. The store keeps them each minute, so the history gives the limit.
  */
 const PROCS: Resource = {
   kind: "procs",
   unit: "per minute",
-  measure: { read: ({ starts }) => (starts === undefined || starts.spanMs <= 0 ? [] : [{ id: "procs", capacity: null, used: starts.perMinute, free: null }]) },
+  measure: {
+    read: ({ starts }) => {
+      if (starts === undefined || starts.spanMs <= 0) return [];
+      const traced = starts.traced;
+      const all = [{ id: "procs", capacity: null, used: starts.perMinute, free: null }];
+      if (traced === null || traced === undefined || traced.spanMs <= 0) return all;
+      return [
+        ...all,
+        { id: "procs:traced", capacity: null, used: traced.perMinute, free: null },
+        { id: "procs:failed", capacity: null, used: traced.failedPerMinute, free: null },
+      ];
+    },
+  },
   attribute: PROCESS_STARTS,
   alert: {
     rules: (limits) => [
@@ -1239,6 +1271,8 @@ const PROCS: Resource = {
         type: "level",
         alert: "churn",
         alertId: () => "churn",
+        // The rule examines only the starts of the computer, not the instances of the trace.
+        instance: "procs",
         on: "used",
         severity: true,
         warning: { amount: limits.churnPerMinute },

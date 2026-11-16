@@ -109,6 +109,7 @@ import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPredict
 import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
+import { TraceBook, traceCovers, traceKindsText, withTrace, type StartTrace } from "./trace.ts";
 import { diskSize } from "./units.ts";
 import {
   MEMORY,
@@ -301,6 +302,11 @@ export interface ConfigChange {
   readonly worktreeAutoClean?: boolean | null | undefined;
   /** The automatic reap (H183): true for on, false for off. `null` gives the default: off. In this version, on stops no process. */
   readonly reapAuto?: boolean | null | undefined;
+  /**
+   * The owner kinds of the start trace (H188), for example `["session", "mcp"]`. An empty list turns the trace off, and
+   * `null` gives the default: `session`, `mcp`, `service` and `docker`.
+   */
+  readonly startTrace?: readonly string[] | null | undefined;
   /**
    * A change of the alert limits (H179), merged into the stored differences. A number sets a limit, and `null` gives the
    * base value of one limit back. `null` for the whole change removes all the differences.
@@ -528,6 +534,14 @@ export class Engine {
   readonly #startTracker = new StartTracker();
   /** The process starts of the last 10 minutes, from the last read of the processes or the last count of a job. */
   #starts: ProcessStarts = NO_STARTS;
+  /** The owner kinds of the start trace (H188). An empty list: no trace. */
+  #traceKinds: readonly OwnerKind[];
+  /** The start trace of the platform (H188), or `null` before its start, without a trace and when the setting turns it off. */
+  #trace: StartTrace | null = null;
+  /** The reason when the start of the trace failed. The trace starts again only after a change of the setting. */
+  #traceError: string | null = null;
+  /** The book of the trace: the live processes of the traced trees and the counts of each source. */
+  #book = new TraceBook();
   #load: SessionLoad = { processes: 0, userObjects: null, gdiObjects: null };
   #disks: readonly DiskSpace[] = [];
   /** The byte counters of the network adapters at the last read and at the read before it (H24). */
@@ -707,6 +721,7 @@ export class Engine {
     const config = this.#store.config();
     this.#cpuReserve = config.cpuReserve;
     this.#autoDrainMb = config.autoDrainMb;
+    this.#traceKinds = config.startTrace;
     this.#policy = policyOf(config);
     this.#memory = this.#sampler.memory();
     this.#seedTrends();
@@ -894,7 +909,9 @@ export class Engine {
       this.#leaseCores = new Map([...this.#counters.groupCores(now, LEASE_GROUP)].map(([group, cores]) => [group.slice(LEASE_GROUP.length), cores]));
       this.#recordPeakCores();
       this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
-      this.#starts = this.#startTracker.summary(now);
+      // H188: the trace names the starts in the trees of the traced owners, and puts the new processes of those owners in jobs.
+      this.#readTrace(now);
+      this.#starts = this.#startsWithTrace(now);
       // H31: the admission of this tick tests `starts<N` on the new sample, so a waiting lease starts at once when it holds.
       this.#facts = null;
       const gui = this.#sampler.gui?.();
@@ -1150,7 +1167,7 @@ export class Engine {
     if (processes === undefined || lease.processes === undefined) return lease;
     const now = this.#now();
     this.#startTracker.report(lease, now, lease.processes, this.#ownership);
-    this.#starts = this.#startTracker.summary(now);
+    this.#starts = this.#startsWithTrace(now);
     const points = this.#startTracker.points(lease.id);
     const rate = windowRate(points);
     if (rate === null) return lease;
@@ -1390,6 +1407,7 @@ export class Engine {
     if (autoClean !== undefined && autoClean !== null && typeof autoClean !== "boolean") throw new RangeError("The automatic worktree cleanup must be true, false or null");
     const reapAuto = change.reapAuto;
     if (reapAuto !== undefined && reapAuto !== null && typeof reapAuto !== "boolean") throw new RangeError("The automatic reap must be true, false or null");
+    const startTrace = change.startTrace === undefined || change.startTrace === null ? change.startTrace : traceKindsText(change.startTrace);
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -1416,6 +1434,10 @@ export class Engine {
     }
     if (autoClean !== undefined) this.#store.setConfig("worktreeAutoClean", autoClean === null ? null : autoClean ? "on" : "off");
     if (reapAuto !== undefined) this.#store.setConfig("reapAuto", reapAuto === null ? null : reapAuto ? "on" : "off");
+    if (startTrace !== undefined) {
+      this.#store.setConfig("startTrace", startTrace);
+      this.#setTraceKinds(this.#store.config().startTrace);
+    }
     if (alerts !== undefined) {
       // H179: an empty set is no setting. The next sample examines the new limits.
       this.#store.setConfig("alerts", alerts === null || Object.keys(alerts).length === 0 ? null : JSON.stringify(alerts));
@@ -2008,6 +2030,7 @@ export class Engine {
     for (const lease of this.#broker.resume(to - from)) this.#store.saveLease(lease);
     this.#counters.gap();
     this.#startTracker.gap(to);
+    this.#book.gap(to);
     // H35: a limit of the CPU does not span the sleep.
     this.#thermal.gap();
     // H36: the time above the GPU limit does not span the sleep.
@@ -2374,9 +2397,57 @@ export class Engine {
     });
   }
 
-  /** This function closes the store and the sampler. */
+  /**
+   * This function reads the messages of the start trace into the book, and puts the new processes of the traced owners in
+   * jobs (H188). It starts the trace at its first call. A start that fails stays failed until a change of the setting.
+   */
+  #readTrace(now: number): void {
+    if (this.#traceKinds.length === 0 || this.#traceError !== null) return;
+    if (this.#trace === null) {
+      if (this.#sampler.startTrace === undefined) return;
+      try {
+        this.#trace = this.#sampler.startTrace();
+      } catch (error) {
+        this.#traceError = `the trace did not start: ${error instanceof Error ? error.message : String(error)}`;
+        return;
+      }
+    }
+    const trace = this.#trace;
+    const leases = this.#broker.leases();
+    this.#book.add(trace.drain(), { leases, kindOf: this.#ownership.kindOf, processes: this.#processes });
+    this.#book.cpu(now, trace.cpuMs());
+    this.#book.prune(this.#processes, now);
+    if (trace.failure() !== null) return;
+    for (const cover of traceCovers(this.#book, { processes: this.#processes, owners: this.#ownership, leases, kinds: this.#traceKinds, self: process.pid, now })) {
+      const key = trace.cover(cover.root.pid);
+      if (key === null) this.#book.refuse(cover.root.pid, cover.startedAt);
+      else this.#book.root(key, cover.root, now);
+    }
+  }
+
+  /** This function gives the starts of the tracker with the starts of the trace (H188). */
+  #startsWithTrace(now: number): ProcessStarts {
+    const starts = this.#startTracker.summary(now);
+    const failure = this.#traceError ?? this.#trace?.failure() ?? null;
+    const traced = this.#book.summary(now, { jobs: this.#trace?.jobs() ?? 0, failure }, (spanMs) => (starts.exact ? this.#startTracker.recent(now, spanMs) : null));
+    return withTrace(starts, traced);
+  }
+
+  /** This function changes the owner kinds of the start trace (H188). No kinds stops the trace. The processes stay in their jobs. */
+  #setTraceKinds(kinds: readonly OwnerKind[]): void {
+    this.#traceKinds = kinds;
+    this.#traceError = null;
+    if (kinds.length > 0) return;
+    this.#trace?.close();
+    this.#trace = null;
+    this.#book = new TraceBook();
+  }
+
+  /** This function closes the start trace, the store and the sampler. */
   close(): void {
     this.#listeners.clear();
+    this.#trace?.close();
+    this.#trace = null;
     if (this.#awake !== null) this.#setAwake(null);
     this.#store.close();
     this.#sampler.close();

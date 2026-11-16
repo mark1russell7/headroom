@@ -328,6 +328,7 @@ export {
   sustainedLevel,
   trailLevel,
   trailPointLevel,
+  tracedSourcesText,
   treeAbove,
   withKinds,
 } from "./resources.ts";
@@ -543,6 +544,26 @@ export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, 
 export type { Sampler } from "./sampler.ts";
 export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, RECENT_STARTS_MS, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
 export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
+export {
+  COVER_AFTER_MS,
+  COVERS_PER_READ,
+  DLL_INIT_FAILED,
+  NAMED_PART,
+  percentText,
+  SOURCES_KEPT,
+  sourceText,
+  TRACE_STOP_KEY,
+  TRACE_WINDOW_MS,
+  TRACEABLE_KINDS,
+  TraceBook,
+  traceCovers,
+  TRACED_KINDS,
+  traceKindsOf,
+  traceKindsText,
+  traceLines,
+  withTrace,
+} from "./trace.ts";
+export type { CoverInput, StartSource, StartTrace, TraceBatch, TraceContext, TraceCover, TracedStarts, TraceEvent, TraceRoot } from "./trace.ts";
 export {
   MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep } from "./store.ts";

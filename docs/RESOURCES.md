@@ -399,7 +399,7 @@ The enforce part works in the process of `headroom run`, not in the daemon. The 
 | Slots: `browser`, `docker`, each name (count) | Capacity: configured with `headroom pool`, else 1. Used: the granted leases. | The holders of the granted leases. | Later: a lease that waits more than 30 minutes for a slot. | Counted. A command pattern takes a slot by itself, as `browser` does. | None on the job. The lease ends with its process. |
 | `net:in`, `net:out` (MB/s) | H24. The bytes of the physical and Wi-Fi adapters: `GetIfTable2`, `/proc/net/dev`. Used: the MB/s between two reads. Capacity: the sum of the link speeds, else `null`. | None. The bytes of each process need ETW and admin rights. | Later: a link that stays full. | None. Later: a slot for large downloads. | None. Report only. |
 | `ports:tcp` (count) | H24. The TCP connections of IPv4 and IPv6: `GetExtendedTcpTable`, `/proc/net/tcp`. Capacity: the dynamic port range. Used: the connections with a local port in the range, in each state. | The connections of each owner, from the process of each row. `headroom ports` gives the listening ports of each owner. | Level on used: a warning above 80%, critical above 95%. | None. Later: a port lease for dev servers. | None. Report only. |
-| `procs` (per minute) | H29. The process starts in one minute, as an average over the last 10 minutes. Windows: exact, from the sequence number of the newest process. Elsewhere: a lower bound. Capacity: `null`. | The starts of each owner: its leased jobs (exact, from the job objects) and its own commands (a lower bound, the new processes of each read). | Level on used: a warning above 600 for 10 minutes (`churn`). | None. | None. Report only: the lease keeps `processes`. |
+| `procs` (per minute) | H29. The process starts in one minute, as an average over the last 10 minutes. Windows: exact, from the sequence number of the newest process. Elsewhere: a lower bound. Capacity: `null`. H188 adds `procs:traced`, the traced starts, and `procs:failed`, the traced starts that failed with `0xC0000142`. | The starts of each owner: its leased jobs (exact, from the job objects) and its own commands (a lower bound, the new processes of each read). | Level on used: a warning above 600 for 10 minutes (`churn`). | None. | None. Report only: the lease keeps `processes`. |
 | `battery` (Wh) | H30. Capacity: the full charge. Free: the remaining charge, from `CallNtPowerInformation(SystemBatteryState)`. The measurement also has the power source, the charge state, the percent, the rate in W and the minutes left. No battery: no instance. Linux and macOS: no instance. | None. | Check: a warning below 30 minutes left, critical below 10 minutes or 10%. A warning when leased jobs run on battery. On AC power, no alert. | No amount. The conditions of H31 read the power source and the charge: `ac`, `battery>=N` and the battery floor. | EcoQoS for the processes of `headroom run` on battery, from the answer of the heartbeat. `--no-eco` turns it off. |
 | `power` (W) | H30. Used: the power of the whole computer, from the counter `\Energy Meter(*)\Power` (PDH). Capacity: `null`. No counter set: no instance. Linux and macOS: no instance. | An estimate: the CPU power, shared by the processor time of each owner. | None. The battery alert names the 3 owners with the most power. | None. | A power request keeps the computer awake on AC power while a lease is granted. |
 | `service:<name>` (state) | H27. One instance for each shared service: `service:docker`, `service:mcp:<server>` and each URL of the setting `health`. The measurement has the health: `ok`, `slow`, `down`, `idle` or `absent`. Used: the latency of the last check in ms. | None. | Health: down for 2 checks in a row, critical for Docker and the MCP servers, else a warning. Slow for 3 checks: a warning. | None. | None. headroom does not restart a service. |
@@ -728,6 +728,71 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 **Cost.** One more `OpenProcess` and one more `NtQueryInformationProcess` at each read. The tracker keeps the start of each live process, the reads of 10 minutes and the counts of the jobs of 10 minutes.
 
 **The numbers on 2026-10-24.** The computer started 1,450 processes in one minute. A read every second found 260 of them, and a read every 10 seconds found 60. Thus the owners show a small part of the starts, and the leased jobs give the exact part.
+
+### H188: the start trace
+
+H29 counts all the starts exactly, from the sequence numbers of Windows. An owner gets only a lower bound, because a read every 10 seconds misses most short processes. On 2026-10-24, a read every 10 seconds found 60 of 1,450 starts. The trace gives a name and a parent to each start of the traced owners.
+
+**The jobs.** `trace-windows.ts` calls the job API of Windows through koffi.
+
+- `cover(pid)` opens the process, makes a job and puts the process in it.
+- The job has only `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. It has no limit on memory, processors or processes, and a child can break away from it.
+- All the jobs share one completion port. The key of each job is its number in the trace. The key 0 stops the reader.
+- The children of a process in a job go into the same job. Windows sends a message for each start (`JOB_OBJECT_MSG_NEW_PROCESS`).
+- Windows also sends a message for each exit (`JOB_OBJECT_MSG_EXIT_PROCESS` or `JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS`), and a message when the job is empty (`JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`). The trace then closes the job.
+- Windows refuses a job for a protected process and for a process of another user. `cover` then gives `null`.
+- The book keeps each refusal with the start of the process, so the next reads do not try again. A new process with the same ID is a different process.
+
+**The reader.** `trace-reader.ts` is a worker thread. It waits on the port with `GetQueuedCompletionStatusEx`, so the event loop of the daemon does not wait.
+
+- At each start message, it opens the new process, reads its name and its parent, and keeps the handle until the exit message.
+- Thus the exit code comes also for a process that lives for 10 ms.
+- It sends at most one batch of messages each second, with the processor time of its thread. That time is the cost of the trace.
+- The thread imports only types, so it loads no module of the engine.
+
+**Which processes.** At each read of the processes, `traceCovers()` gives the processes to put in new jobs:
+
+- A process under a granted lease, or a process with a tree owner of a traced kind. The setting `startTrace` gives the kinds.
+- The default kinds are `session`, `mcp`, `service` and `docker`. The browsers and the editors of Mark stay out of the trace.
+- Not the daemon, not the process IDs 0 to 4, not a process in a job of the trace and not a refused process.
+- Only a process older than 5 seconds. The start message of a younger process in the job of its parent can still come.
+- The leased processes first, then the oldest. At most 200 in one read.
+
+**The book.** `TraceBook` in `trace.ts` names and counts the starts of the last 10 minutes.
+
+- The holder of a granted lease decides the owner of each start under the lease (`holderOwner()`). Else a start gets the owner of its parent, or the owner of its root.
+- A source is the owner, the name of the parent and the name of the program. The name of a parent outside the trace comes from the read of the processes, else `?`.
+- A nested job gives a second message for one start. The book counts each start one time.
+- A failed start is an exit with the code `0xC0000142` (`STATUS_DLL_INIT_FAILED`).
+- At each read, the book removes the ended processes, also when no exit message came. At a wake, the rates start again (`gap()`).
+- `coverage` is the part of all the starts that the trace has, from the exact rate of H29 over the same span. It is `null` when that rate is not exact.
+- `sources` names the sources of 90 % of the traced starts, at most 12. `named` gives their part of the traced starts.
+
+**Status, the alert and the measure.** `Status.starts.traced` gives the rate, the coverage, the failed starts and the sources. It also gives the jobs, the live processes, the refusals, the cost and a failure.
+
+- `headroom status` gives the line `Traced starts` and the line `Most`.
+- The alert `churn` names the sources and their part of all the starts.
+- The kind `procs` gets the instances `procs:traced` and `procs:failed`, in starts in one minute. The dashboard shows them in the panel `Process starts`.
+- `withTrace()` gives each owner the higher of its rate from the reads and its traced rate. An owner that only the trace has gets a row.
+
+**The setting.** `headroom config start-trace <kinds>` sets the kinds, with commas.
+
+- `off` stops the trace and closes all the jobs. `--clear` sets the default again.
+- A kind that is not traceable gives an error. The kinds are `session`, `mcp`, `service`, `docker`, `browser`, `editor`, `system` and `other`.
+- A stored value with a bad kind gives the default, so a bad value does not stop the trace.
+
+**A failure.** When the trace does not start or the reader stops, the status gives the failure. An example: `Traced starts: none. The trace stopped: the trace did not start: no port.` The engine does not try again until the setting changes.
+
+**The limit of a restart.** A job keeps the completion port of its first daemon. Thus each restart of the daemon puts one more job around a live process.
+
+- Windows nests jobs, so the processes go on. The cost is one more job for Windows to update at each start in that tree.
+- The end of this limit: a later step gives the port to the next daemon at the restart.
+
+**The measures of 2026-11-16.**
+
+- A job with a `NULL` port detaches from its port, and it can then take a new port. A second port while the first holds gives the error 87.
+- A job with a closed handle and an open port that nobody read got 1 packet for 1,500 starts. The pool tag `Icp ` of the packets did not grow.
+- Thus a daemon that stops with no clean stop leaves no packets in the kernel memory.
 
 ### H30: battery and power
 
