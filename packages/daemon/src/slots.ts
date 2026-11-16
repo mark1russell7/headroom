@@ -7,7 +7,11 @@
  *   beside a browser test either (H47).
  *
  * The rating reads the command words of each part of the line (H55). A false slot costs a wait, and a missing slot
- * risks failed process starts. Thus only one case gives no slot: the word e2e as a filter word of a unit test runner.
+ * risks failed process starts. Thus only three cases give no slot, each for a program that is known to start no browser:
+ * - The word e2e as a filter word of a unit test runner (H55).
+ * - Each word of a program that does not start a browser, for example `tsc -p e2e/tsconfig.json` (H52).
+ * - A browser test runner that only lists its tests or gives its help, for example `playwright test --list` (H52).
+ * An unknown program that names e2e keeps the slot.
  */
 
 import { BROWSER_SLOT } from "@headroom/core";
@@ -23,6 +27,23 @@ const E2E_WORD = /\be2e\b/gi;
 
 /** The shell divides a line into parts at these separators. */
 export const PART_END: RegExp = /&&|\|\||;|\|/;
+
+/** The programs that run browser tests by their command words: Playwright, Cypress and WebdriverIO. */
+const BROWSER_RUNNERS: ReadonlySet<string> = new Set(["playwright", "cypress", "wdio"]);
+
+/** An option of a browser test runner that only lists the tests or gives help or a version. Such a run starts no browser (H52). */
+const LIST_ONLY = /(?:^|\s)(?:--list|--help|-h|--version|-V)(?=[\s=]|$)/;
+
+/**
+ * The programs that do not start a browser (H52). For them, the word e2e is only a path or a text. These are the
+ * compilers and the type checkers, the linters and the formatters, git and the GitHub CLI, and the tools that read or move
+ * files. The commands of a package manager that only change the installed packages are also in this set.
+ */
+const NO_BROWSER: ReadonlySet<string> = new Set([
+  ...["tsc", "tsgo", "vue-tsc", "svelte-check", "eslint", "prettier", "biome", "oxlint", "dprint"],
+  ...["git", "gh", "cat", "echo", "grep", "rg", "sed", "awk", "head", "tail", "ls", "find", "wc", "cp", "mv", "rm", "mkdir", "touch"],
+  ...["install", "add", "remove", "update"],
+]);
 
 /** The unit test runners. They run in Node, so the word e2e is only a filter word or a folder for them. */
 const UNIT_RUNNERS: ReadonlySet<string> = new Set(["vitest", "jest"]);
@@ -68,9 +89,15 @@ export function runnerOf(part: string): string {
   return "";
 }
 
-/** This function tells if one part of a line runs browser tests. For a unit test runner, the word e2e does not count, unless the part has `--browser` or picks an e2e suite. */
+/**
+ * This function tells if one part of a line runs browser tests. A program that does not start a browser does not, whatever
+ * its words are (H52). A browser test runner does not when it only lists its tests or gives its help (H52). For a unit
+ * test runner, the word e2e does not count, unless the part has `--browser` or picks an e2e suite (H55).
+ */
 function runsBrowserTests(part: string): boolean {
-  const filterWord = UNIT_RUNNERS.has(runnerOf(part)) && !BROWSER_OPTION.test(part) && !E2E_SUITE.test(part);
+  const runner = runnerOf(part);
+  if (NO_BROWSER.has(runner) || (BROWSER_RUNNERS.has(runner) && LIST_ONLY.test(part))) return false;
+  const filterWord = UNIT_RUNNERS.has(runner) && !BROWSER_OPTION.test(part) && !E2E_SUITE.test(part);
   return BROWSER_TESTS.test(filterWord ? part.replace(E2E_WORD, "") : part);
 }
 

@@ -68,4 +68,33 @@ describe("autoSlots", () => {
     expect(autoSlots("vitest run playwright test")).toEqual(["browser"]);
     expect(autoSlots("jest wdio")).toEqual(["browser"]);
   });
+
+  it("gives no slot to a program that never starts a browser (H52)", () => {
+    expect(autoSlots("tsc -p e2e/tsconfig.json")).toEqual([]);
+    expect(autoSlots("pnpm exec tsc -p e2e/tsconfig.json --noEmit")).toEqual([]);
+    expect(autoSlots("node_modules/.bin/eslint e2e")).toEqual([]);
+    expect(autoSlots("npx prettier --check e2e/**/*.ts")).toEqual([]);
+    expect(autoSlots("git add e2e/a.spec.ts")).toEqual([]);
+    expect(autoSlots('git commit -m "run playwright test in e2e"')).toEqual([]);
+    expect(autoSlots('gh pr create --title "e2e: a fix"')).toEqual([]);
+    expect(autoSlots("pnpm --filter web-e2e install")).toEqual([]);
+    expect(autoSlots("cat e2e/a.spec.ts")).toEqual([]);
+  });
+
+  it("gives no slot to a browser test runner that only lists its tests or gives its help (H52)", () => {
+    expect(autoSlots("npx playwright test --list")).toEqual([]);
+    expect(autoSlots("pnpm exec playwright test e2e --list")).toEqual([]);
+    expect(autoSlots("npx playwright test --help")).toEqual([]);
+    expect(autoSlots("npx cypress run -h")).toEqual([]);
+    expect(autoSlots("pnpm exec wdio --version")).toEqual([]);
+  });
+
+  it("keeps the slot of each other part beside a light part, and of each unknown program that names e2e (H52)", () => {
+    expect(autoSlots("tsc -p e2e/tsconfig.json && npx playwright test")).toEqual(["browser"]);
+    expect(autoSlots("npx playwright test --list; npx playwright test")).toEqual(["browser"]);
+    expect(autoSlots("npx playwright test --listen-port 9000")).toEqual(["browser"]);
+    expect(autoSlots("node scripts/e2e.mjs")).toEqual(["browser"]);
+    expect(autoSlots("bash scripts/run-e2e.sh")).toEqual(["browser"]);
+    expect(autoSlots("pnpm --filter web-e2e test")).toEqual(["browser"]);
+  });
 });
