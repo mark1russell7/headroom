@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { DEFAULT_ALERT_RULES, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -11,6 +11,22 @@ import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext }
 import { z } from "zod";
 
 const Amounts = z.record(z.string().min(1).max(64), z.number().min(0)).describe("The amounts: memory in MB, cpu in processors, or a slot of a named pool");
+
+/**
+ * The typed key of a job (H78). The client of `headroom run` reads it from the command and the files of its folder.
+ * The core matches only these fields. It does not read the command.
+ */
+const JobKeyInput = z
+  .object({
+    kind: z.enum(JOB_KINDS).describe("The kind of the job: install, test, typecheck, build, lint, browser or other"),
+    repo: z.string().min(1).max(200).nullable().describe("The name of the git repository of the job, or null outside a repository"),
+    lock: z.string().regex(/^[0-9a-f]{16}$/).nullable().describe("The first 16 hex characters of the SHA-256 of the lockfile, or null with no lockfile"),
+    filter: z.string().min(1).max(1000).nullable().describe("The sorted --filter values, else the package folder from the repository root, or null"),
+    warm: z.boolean().nullable().describe("True when node_modules is at the root of the workspace, or null with no root"),
+    packages: z.number().int().nonnegative().nullable().describe("The count of the packages of the lockfile, or null with no lockfile"),
+    command: z.string().max(500).describe("The command with no absolute paths, temporary names or hex ids"),
+  })
+  .describe("The typed key of the job (H78). The ladder of --mem auto matches it. A client of before H78 sends none.");
 
 const LeaseInput = z.object({
   holder: z.string().min(1).max(200).describe("The holder: a session or a role, for example shop"),
@@ -42,6 +58,7 @@ const LeaseInput = z.object({
     .max(1024)
     .optional()
     .describe("The hard cap of the job in cores, with --cpu N --limit (H23). The client sets it on the job object, and the status names the capped jobs."),
+  key: JobKeyInput.nullable().optional(),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -269,6 +286,7 @@ type PoolTagsInput = z.infer<typeof PoolTagsInput>;
 const SuggestInput = z.object({
   job: z.string().min(1).max(500).describe("The job, as headroom run names it: the command line or --job"),
   holder: z.string().min(1).max(200).optional().describe("The holder: its own runs come first"),
+  key: JobKeyInput.nullable().optional(),
 });
 type SuggestInput = z.infer<typeof SuggestInput>;
 
@@ -362,6 +380,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         duringDrain: input.duringDrain,
         ignorePresence: input.ignorePresence,
         cpuCap: input.cpuCap,
+        key: input.key,
       }),
     )
     .build() as AnyProcedure;
@@ -577,12 +596,13 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .input(zodAdapter<SuggestInput>(SuggestInput))
     .output(anything<Suggestion>())
     .meta({
-      description: "Give a memory amount and the cores for a job from the peaks of its last runs (the 90th percentile and 25% more)",
+      description:
+        "Give a memory amount and the cores for a job from the peaks of its last runs. With a key, the ladder of H78 goes from the job to its key, its repository, a fit over the repositories and its kind",
       args: ["job"],
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },
     })
-    .handler(async (input: SuggestInput): Promise<Suggestion> => engine.suggest(input.job, input.holder))
+    .handler(async (input: SuggestInput): Promise<Suggestion> => engine.suggest(input.job, input.holder, input.key ?? null))
     .build() as AnyProcedure;
 
   const configGet = createProcedure()

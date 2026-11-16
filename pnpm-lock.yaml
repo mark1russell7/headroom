@@ -205,6 +205,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@mark1russell7/rigor-statistics':
+        specifier: ^0.2.9
+        version: 0.2.9
       '@mark1russell7/sqlite':
         specifier: ^0.3.1
         version: 0.3.6
@@ -215,6 +218,9 @@ importers:
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
+      '@mark1russell7/rigor-generators':
+        specifier: ^0.2.0
+        version: 0.2.0
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.6
@@ -230,6 +236,15 @@ importers:
       '@headroom/core':
         specifier: workspace:*
         version: link:../core
+      '@mark1russell7/files':
+        specifier: ^0.0.3
+        version: 0.0.3
+      '@mark1russell7/rigor-generators':
+        specifier: ^0.2.0
+        version: 0.2.0
+      '@mark1russell7/rigor-statistics':
+        specifier: ^0.2.9
+        version: 0.2.9
       '@mark1russell7/text':
         specifier: ^0.0.7
         version: 0.0.7
@@ -638,6 +653,10 @@ packages:
     resolution: {integrity: sha512-3oKnBCxZi5ChjRmxP3lMFsWTRZuhHvt8I7ZHIr2UmgPQR5VrY/qJDKF6k9m8IqFq4958m0Z1+8BDa0SqXe/Ymw==}
     engines: {node: '>=22'}
 
+  '@mark1russell7/files@0.0.3':
+    resolution: {integrity: sha512-FiiKK/sAbp39ypGv+2XzYRc+s911pdCtu97UQ4LiKmQKHjqPiyocGO48r2YObucxUkQhnm9mCdkiQxW6rFjiAg==}
+    engines: {node: '>=22'}
+
   '@mark1russell7/optional@1.2.0':
     resolution: {integrity: sha512-vS5jF21WC/VApRv4p8afRZahcMl9cuNp03LxbVngY9nYkzq+S7Oit6ksySt2baML+tp46UF60sxnHxn1jlwtTg==}
     engines: {node: '>=22.12'}
@@ -659,16 +678,16 @@ packages:
     resolution: {integrity: sha512-wSSv2qWetdgWMhhr7VdujBKgdF0kYB8PsckImdGC3yibgpI79fwos0U61dKZaPF7DebhE29F9AXWk7Ke//ASPQ==}
     engines: {node: '>=22'}
 
-  '@mark1russell7/rigor-generators@0.1.16':
-    resolution: {integrity: sha512-C94Q4C31aZ8UXx1R0JSBV7DiQFl5tVpbFxHxHzHaSqr3dTgmCkEvLrvlUV8/0/GZqPhQYG9cbX6GOlqfRj/h4g==}
+  '@mark1russell7/rigor-generators@0.2.0':
+    resolution: {integrity: sha512-eTyJhK4Nowx1KQ3QrsQqLiAlhFoL+8m1OT6He+X0Lf0G/0f9OyQC8ponQLViQKRkP/ef10B6oACFjtjnKErobg==}
     engines: {node: '>=22'}
 
   '@mark1russell7/rigor-statistics@0.1.27':
     resolution: {integrity: sha512-UnBEZVSVSytwFH5pJ5ezlOCEs/19Ur0/REQ+Tq5BYs8uYWSNoP/hZNGx2tdqLN2Rn0u+A41GwieBnuM6DuWS4g==}
     engines: {node: '>=22'}
 
-  '@mark1russell7/rigor-statistics@0.2.4':
-    resolution: {integrity: sha512-0L075rT+toD6edxEwDdZHiFzHP4+dJrI64Pw5gh9V33VwCfNRUMQY90AooDpMgVcC9cuxHNXegDLSOYU9ZMIlA==}
+  '@mark1russell7/rigor-statistics@0.2.9':
+    resolution: {integrity: sha512-9u9u2imcLpkiwSu1FGeB57Z+/Fr7byplVNMoR8G9OELjhSwOdzNbTiPieHqFM6phVVyMWrGlgoEQyBaxKqwvtQ==}
     engines: {node: '>=22'}
 
   '@mark1russell7/service@0.8.6':
@@ -1964,6 +1983,8 @@ snapshots:
 
   '@mark1russell7/files@0.0.2': {}
 
+  '@mark1russell7/files@0.0.3': {}
+
   '@mark1russell7/optional@1.2.0': {}
 
   '@mark1russell7/quantity@0.3.5(zod@4.6.7)':
@@ -1976,15 +1997,15 @@ snapshots:
 
   '@mark1russell7/rigor-generators@0.1.14': {}
 
-  '@mark1russell7/rigor-generators@0.1.16': {}
+  '@mark1russell7/rigor-generators@0.2.0': {}
 
   '@mark1russell7/rigor-statistics@0.1.27':
     dependencies:
       '@mark1russell7/rigor-generators': 0.1.14
 
-  '@mark1russell7/rigor-statistics@0.2.4':
+  '@mark1russell7/rigor-statistics@0.2.9':
     dependencies:
-      '@mark1russell7/rigor-generators': 0.1.16
+      '@mark1russell7/rigor-generators': 0.2.0
 
   '@mark1russell7/service@0.8.6(@opentelemetry/api@1.10.0)(ws@8.22.0)(zod@4.6.7)':
     dependencies:
@@ -2000,7 +2021,7 @@ snapshots:
 
   '@mark1russell7/site-pages@0.6.0':
     dependencies:
-      '@mark1russell7/rigor-statistics': 0.2.4
+      '@mark1russell7/rigor-statistics': 0.2.9
 
   '@mark1russell7/sqlite@0.3.6': {}
 

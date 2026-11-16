@@ -153,6 +153,27 @@ export type {
 } from "./conditions.ts";
 export { ALL_JOBS_MS, findJobs, jobState, MIN_ID_PREFIX } from "./job-state.ts";
 export type { JobPhase, JobQuery, JobState } from "./job-state.ts";
+export {
+  amountOf,
+  fitPackages,
+  FIT_MIN_RUNS,
+  FIT_RUNS,
+  isJobKind,
+  JOB_KINDS,
+  KIND_RUNS,
+  LEGACY_RULE,
+  PEAK_RULE,
+  PEAK_RUNS,
+  predictMemory,
+  predictRunMs,
+  RUN_SOURCES,
+  RUNGS,
+} from "./predict.ts";
+export type { AmountRule, JobKey, JobKind, MemoryPrediction, PackagesFit, PeakReads, Rung, RunEstimate, RunReads, RunSource, SizedPeak } from "./predict.ts";
+export { keyedLeases } from "./store.ts";
+export type { KeyedLease, KeyScope, LeaseKeyRow } from "./store.ts";
+export { chooseRule, holdsGates, holdsOver, measureRows, OVER_GATE, RATIO_GATE, replayLeases } from "./replay.ts";
+export type { AmountMeasures, ChosenRule, ReplayOptions, ReplayRow, RuleResult } from "./replay.ts";
 export { Engine } from "./engine.ts";
 export type {
   Alerts,

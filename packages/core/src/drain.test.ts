@@ -419,10 +419,10 @@ describe("Automatic drain: only heavy jobs wait", () => {
     store.saveLease({ ...past, id: "past-2", job: "next build", requestedAt: at, grantedAt: at, endedAt: at + MINUTE, peakMb: 1800 });
     const engine = drained(store);
     expect(ask(engine, "jest", {})).toMatchObject({ state: "waiting", reason: reasonOf("it starts many processes") });
-    // --mem auto: the client asks for the amount of the past peaks, 1800 MB and 25% more.
+    // --mem auto: the client asks for the amount of the past peaks, 1800 MB, 10% and 128 MB more (H78).
     const auto = engine.suggest("next build", "client").memoryMb ?? 0;
-    expect(auto).toBe(2304);
-    expect(ask(engine, "next build", { memory: auto })).toMatchObject({ state: "waiting", reason: reasonOf("it asks for 2.3 GB of memory") });
+    expect(auto).toBe(2112);
+    expect(ask(engine, "next build", { memory: auto })).toMatchObject({ state: "waiting", reason: reasonOf("it asks for 2.1 GB of memory") });
     engine.close();
   });
 

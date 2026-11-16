@@ -21,6 +21,7 @@ import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.t
 import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "./reap.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
+import { FIT_RUNS, isJobKind, KIND_RUNS, PEAK_RUNS, type JobKey, type MemoryPrediction, type Rung, type RunEstimate, type RunSource, type SizedPeak } from "./predict.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
 /** One stored memory sample. */
@@ -115,7 +116,119 @@ const MIGRATIONS: readonly Migration[] = [
   (db) => {
     db.exec(REAP_SCHEMA);
   },
+  // H78: the key of each lease from the client, and the predictions at its request.
+  (db) => {
+    db.exec(KEYS_SCHEMA);
+  },
 ];
+
+/**
+ * The table of H78. Step 4 of the schema makes it. Each lease with a key has one row. The index serves the rungs `key`,
+ * `repo` and `kind` of the ladder: each rung is a prefix of it.
+ */
+const KEYS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS lease_keys (
+  lease_id TEXT PRIMARY KEY, kind TEXT NOT NULL, repo TEXT, lock TEXT, filter TEXT, warm INTEGER, packages INTEGER,
+  command TEXT NOT NULL, predicted_mb REAL, rung TEXT NOT NULL, runs INTEGER NOT NULL, predicted_ms REAL, run_from TEXT
+);
+CREATE INDEX IF NOT EXISTS lease_keys_ladder ON lease_keys (kind, repo, filter, warm, lock);
+`;
+
+/** The scope of a read of the keyed runs (H78): the full key, the key without the lockfile, or the kind. */
+export type KeyScope = "key" | "repo" | "kind";
+
+/** This function gives the SQL condition and the values of a scope of a key. `IS` compares the `null` fields too. */
+function keyWhere(key: JobKey, scope: KeyScope): { readonly where: string; readonly values: (string | number | null)[] } {
+  const warm = key.warm === null ? null : key.warm ? 1 : 0;
+  if (scope === "kind") return { where: "k.kind = ?", values: [key.kind] };
+  if (scope === "repo") return { where: "k.kind = ? AND k.repo IS ? AND k.filter IS ? AND k.warm IS ?", values: [key.kind, key.repo, key.filter, warm] };
+  return { where: "k.kind = ? AND k.repo IS ? AND k.filter IS ? AND k.warm IS ? AND k.lock IS ?", values: [key.kind, key.repo, key.filter, warm, key.lock] };
+}
+
+/** One row of the table `lease_keys` (H78): the key of a lease and the predictions at its request. */
+export interface LeaseKeyRow {
+  readonly key: JobKey;
+  /** The memory of the ladder at the request, or `null` at the rung `none`. */
+  readonly predictedMb: number | null;
+  readonly rung: Rung;
+  readonly runs: number;
+  /** The expected run time at the request, or `null` with no run. */
+  readonly predictedMs: number | null;
+  readonly runFrom: RunSource | null;
+}
+
+/** One lease for `headroom report leases` (H78): its request, its end and its key, when it has one. */
+export interface KeyedLease {
+  readonly id: string;
+  readonly holder: string;
+  readonly job: string;
+  readonly state: string;
+  /** The memory of the request in MB, or `null` for a request with no memory. */
+  readonly memoryMb: number | null;
+  readonly peakMb: number | null;
+  readonly requestedAt: number;
+  readonly grantedAt: number | null;
+  readonly endedAt: number | null;
+  readonly exitCode: number | null;
+  /** The key and the predictions, or `null` for a lease of an older client. */
+  readonly keyed: LeaseKeyRow | null;
+}
+
+/** This function reads a row of `lease_keys`, or gives `null` for a row with a kind that this version does not know. */
+function toKeyRow(row: Record<string, unknown>): LeaseKeyRow | null {
+  const kind = row["kind"];
+  if (!isJobKind(kind)) return null;
+  const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+  const number = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
+  const warm = row["warm"];
+  return {
+    key: {
+      kind,
+      repo: text(row["repo"]),
+      lock: text(row["lock"]),
+      filter: text(row["filter"]),
+      warm: warm === null || warm === undefined ? null : Number(warm) === 1,
+      packages: number(row["packages"]),
+      command: String(row["command"] ?? ""),
+    },
+    predictedMb: number(row["predicted_mb"]),
+    rung: String(row["rung"]) as Rung,
+    runs: Number(row["runs"] ?? 0),
+    predictedMs: number(row["predicted_ms"]),
+    runFrom: text(row["run_from"]) as RunSource | null,
+  };
+}
+
+/**
+ * This function reads the leases that a request started at or after `since`, the oldest first, with their keys (H78).
+ * It only reads, so `headroom report leases` uses it on a database that it opens read-only. A database before step 4
+ * of the schema has no keys.
+ */
+export function keyedLeases(db: DatabaseSync, since: number): KeyedLease[] {
+  const hasKeys = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lease_keys'").get() !== undefined;
+  const keys = hasKeys ? "k.*" : "NULL AS kind";
+  const join = hasKeys ? "LEFT JOIN lease_keys k ON k.lease_id = l.id" : "";
+  const rows = db
+    .prepare(
+      `SELECT l.id, l.holder, l.job, l.state, json_extract(l.amounts, '$.memory') AS memory_mb, l.peak_mb, l.requested_at, l.granted_at,
+         l.ended_at, l.exit_code, ${keys} FROM leases l ${join} WHERE l.requested_at >= ? ORDER BY l.requested_at, l.id`,
+    )
+    .all(since);
+  const number = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
+  return rows.map((row) => ({
+    id: String(row["id"]),
+    holder: String(row["holder"]),
+    job: String(row["job"]),
+    state: String(row["state"]),
+    memoryMb: number(row["memory_mb"]),
+    peakMb: number(row["peak_mb"]),
+    requestedAt: Number(row["requested_at"]),
+    grantedAt: number(row["granted_at"]),
+    endedAt: number(row["ended_at"]),
+    exitCode: number(row["exit_code"]),
+    keyed: row["kind"] === null || row["kind"] === undefined ? null : toKeyRow(row),
+  }));
+}
 
 /** The tables of H183. Step 3 of the schema makes them. */
 const REAP_SCHEMA = `
@@ -433,24 +546,88 @@ export class Store {
     return this.#db.prepare("SELECT * FROM leases WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT ?").all(since, limit).map(toLease);
   }
 
-  /** This function reads the peak memory of the last runs of a job, the newest first. With a holder, only the runs of that holder. */
-  peaksOf(job: string, holder?: string, limit = 20): number[] {
-    const rows = holder === undefined
-      ? this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, limit)
-      : this.#db.prepare("SELECT peak_mb FROM leases WHERE job = ? AND holder = ? AND peak_mb IS NOT NULL ORDER BY ended_at DESC LIMIT ?").all(job, holder, limit);
-    return rows.map((row) => Number(row["peak_mb"]));
+  /**
+   * This function reads the peak memory of the last runs of a job, the newest first. With a holder, only the runs of that holder.
+   * With a repo (H78), it leaves out the runs with a key of another repo. A run with no key stays.
+   */
+  peaksOf(job: string, holder?: string, limit: number = PEAK_RUNS, repo: string | null = null): number[] {
+    return this.#ofJob("l.peak_mb", "l.peak_mb IS NOT NULL", job, holder, limit, repo);
+  }
+
+  /** This function reads one column of the last runs of a job, the newest first, for `peaksOf` and `runTimesOf`. */
+  #ofJob(column: string, ran: string, job: string, holder: string | undefined, limit: number, repo: string | null): number[] {
+    const join = repo === null ? "" : "LEFT JOIN lease_keys k ON k.lease_id = l.id";
+    const where = [`l.job = ?`, ran, ...(holder === undefined ? [] : ["l.holder = ?"]), ...(repo === null ? [] : ["(k.repo IS NULL OR k.repo = ?)"])];
+    const values = [job, ...(holder === undefined ? [] : [holder]), ...(repo === null ? [] : [repo]), limit];
+    const rows = this.#db.prepare(`SELECT ${column} AS value FROM leases l ${join} WHERE ${where.join(" AND ")} ORDER BY l.ended_at DESC LIMIT ?`).all(...values);
+    return rows.map((row) => Number(row["value"]));
+  }
+
+  /** This function writes the key of a lease and the predictions at its request (H78). */
+  saveLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate): void {
+    this.#db
+      .prepare(
+        `INSERT OR REPLACE INTO lease_keys (lease_id, kind, repo, lock, filter, warm, packages, command, predicted_mb, rung, runs, predicted_ms, run_from)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id, key.kind, key.repo ?? null, key.lock ?? null, key.filter ?? null, key.warm === null || key.warm === undefined ? null : key.warm ? 1 : 0,
+        key.packages ?? null, key.command, memory.mb, memory.rung, memory.runs, run.ms, run.from,
+      );
+  }
+
+  /** This function reads the key of a lease (H78), or gives `null` for a lease with no key. */
+  leaseKey(id: string): JobKey | null {
+    const row = this.#db.prepare("SELECT * FROM lease_keys WHERE lease_id = ?").get(id);
+    return row === undefined ? null : (toKeyRow(row)?.key ?? null);
+  }
+
+  /** This function reads the key and the predictions of a lease (H78), or gives `null` for a lease with no key. */
+  leaseKeyRow(id: string): LeaseKeyRow | null {
+    const row = this.#db.prepare("SELECT * FROM lease_keys WHERE lease_id = ?").get(id);
+    return row === undefined ? null : toKeyRow(row);
+  }
+
+  /**
+   * This function reads the peak memory of the last runs of a scope of a key, the newest first (H78). The rungs `key` and
+   * `repo` read 20 runs, and the rung `kind` reads 50.
+   */
+  keyedPeaks(key: JobKey, scope: KeyScope, limit: number = scope === "kind" ? KIND_RUNS : PEAK_RUNS): number[] {
+    return this.#keyed("l.peak_mb", "l.peak_mb IS NOT NULL", key, scope, limit);
+  }
+
+  /** This function reads the run times in ms of the last runs of a scope of a key that ended with an exit code (H78). The newest run comes first. */
+  keyedRunTimes(key: JobKey, scope: KeyScope, limit: number = PEAK_RUNS): number[] {
+    return this.#keyed("l.ended_at - l.granted_at", "l.exit_code IS NOT NULL AND l.granted_at IS NOT NULL AND l.ended_at IS NOT NULL", key, scope, limit);
+  }
+
+  /** This function reads one column of the last runs of a scope of a key, the newest first. */
+  #keyed(column: string, ran: string, key: JobKey, scope: KeyScope, limit: number): number[] {
+    const { where, values } = keyWhere(key, scope);
+    return this.#db
+      .prepare(`SELECT ${column} AS value FROM lease_keys k JOIN leases l ON l.id = k.lease_id WHERE ${where} AND ${ran} ORDER BY l.ended_at DESC LIMIT ?`)
+      .all(...values, limit)
+      .map((row) => Number(row["value"]));
+  }
+
+  /** This function reads the count of packages and the peak of the last runs of a kind and a warm state over each repo. The fit of H78 uses them. */
+  sizedPeaks(kind: JobKey["kind"], warm: boolean | null, limit: number = FIT_RUNS): SizedPeak[] {
+    return this.#db
+      .prepare(
+        `SELECT k.packages, l.peak_mb FROM lease_keys k JOIN leases l ON l.id = k.lease_id
+         WHERE k.kind = ? AND k.warm IS ? AND k.packages > 0 AND l.peak_mb IS NOT NULL ORDER BY l.ended_at DESC LIMIT ?`,
+      )
+      .all(kind, warm === null ? null : warm ? 1 : 0, limit)
+      .map((row) => ({ packages: Number(row["packages"]), peakMb: Number(row["peak_mb"]) }));
   }
 
   /**
    * This function reads the run times in ms of the last runs of a job that ended with an exit code, the newest first (H178).
    * A run that a signal stopped has no exit code, so its short time does not count. With a holder, only the runs of that holder.
+   * With a repo (H78), it leaves out the runs with a key of another repo.
    */
-  runTimesOf(job: string, holder?: string, limit = 20): number[] {
-    const ran = "SELECT ended_at - granted_at AS ran_ms FROM leases WHERE job = ? AND exit_code IS NOT NULL AND granted_at IS NOT NULL AND ended_at IS NOT NULL";
-    const rows = holder === undefined
-      ? this.#db.prepare(`${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, limit)
-      : this.#db.prepare(`${ran} AND holder = ? ORDER BY ended_at DESC LIMIT ?`).all(job, holder, limit);
-    return rows.map((row) => Number(row["ran_ms"]));
+  runTimesOf(job: string, holder?: string, limit: number = PEAK_RUNS, repo: string | null = null): number[] {
+    return this.#ofJob("l.ended_at - l.granted_at", "l.exit_code IS NOT NULL AND l.granted_at IS NOT NULL AND l.ended_at IS NOT NULL", job, holder, limit, repo);
   }
 
   /**
@@ -838,6 +1015,7 @@ export class Store {
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM resource_samples WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(leasesBefore);
+    this.#db.prepare("DELETE FROM lease_keys WHERE lease_id NOT IN (SELECT id FROM leases)").run();
     this.#db.prepare("DELETE FROM reap_shadow WHERE last_at < ?").run(reapBefore);
     this.#db.prepare("DELETE FROM reap_log WHERE at < ?").run(reapBefore);
   }
