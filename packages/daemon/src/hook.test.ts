@@ -207,4 +207,24 @@ describe("the lease form of a command line", () => {
     expect(leased("(cd app && pnpm test)")).toBe("(cd app && headroom run --mem auto -- pnpm test)");
     expect(leased("cat > a.md <<'MSG'\nvitest run\nMSG\npnpm test")).toBe("cat > a.md <<'MSG'\nvitest run\nMSG\nheadroom run --mem auto -- pnpm test");
   });
+
+  it("never puts the prefix in the body of a program that is not a shell, but in front of that program (H52)", async () => {
+    const { leased } = (await import(pathToFileURL(hook).href)) as { leased: (command: string) => string };
+    // The body is code of node or python: the prefix goes in front of the program that reads it.
+    expect(leased("node - <<'JS'\n// the gate runs vitest run\nJS")).toBe("headroom run --mem auto -- node - <<'JS'\n// the gate runs vitest run\nJS");
+    expect(leased("cd app && python3 - <<'PY'\nimport pytest\nPY")).toBe("cd app && headroom run --mem auto -- python3 - <<'PY'\nimport pytest\nPY");
+    // A pipe takes the body to node: the prefix goes in front of node, not in front of cat.
+    expect(leased("cat <<'EOF' | node\n// vitest run\nEOF")).toBe("cat <<'EOF' | headroom run --mem auto -- node\n// vitest run\nEOF");
+    // A body of node in the body of bash: node is a command of bash, so the prefix goes in front of node.
+    expect(leased("bash <<'SH'\ncd app\nnode - <<'JS'\n// vitest run\nJS\nSH")).toBe("bash <<'SH'\ncd app\nheadroom run --mem auto -- node - <<'JS'\n// vitest run\nJS\nSH");
+    // A body of node in the body of python: the prefix goes in front of python, outside each body.
+    expect(leased("python3 - <<'PY'\nnode - <<'JS'\n// vitest run\nJS\nPY")).toBe("headroom run --mem auto -- python3 - <<'PY'\nnode - <<'JS'\n// vitest run\nJS\nPY");
+  });
+
+  it("puts the prefix on the heavy line of a body that a shell reads, because the line is a command (H52)", async () => {
+    const { leased } = (await import(pathToFileURL(hook).href)) as { leased: (command: string) => string };
+    expect(leased("bash <<'EOF'\ncd app\npnpm test\nEOF")).toBe("bash <<'EOF'\ncd app\nheadroom run --mem auto -- pnpm test\nEOF");
+    expect(leased("cat <<'EOF' | sh\nvitest run\nEOF")).toBe("cat <<'EOF' | sh\nheadroom run --mem auto -- vitest run\nEOF");
+    expect(leased("cat <<EOF\n$(pnpm test)\nEOF")).toBe("cat <<EOF\n$(headroom run --mem auto -- pnpm test)\nEOF");
+  });
 });

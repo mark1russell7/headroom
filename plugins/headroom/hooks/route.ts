@@ -58,11 +58,21 @@ const SHELLS: ReadonlyMap<string, RegExp> = new Map([
   ["cmd", /^\/c$/i],
 ]);
 
+/**
+ * The shells that read the body of a here-document as commands. A prefix in such a body is a command of the shell. Each
+ * other program that reads a body reads it as its own code or data, so a prefix goes in front of that program (H52).
+ */
+const BODY_SHELLS: ReadonlySet<string> = new Set([...SHELLS.keys(), "zsh", "dash", "ksh", "ash"]);
+
 /** The shell divides a line at these separators. The `&` of a redirection, as in `2>&1`, is not one. */
 const SEPARATOR = /&&|\|\||;|\||\r?\n|(?<!>)&(?!>)/g;
 
-/** The start of a part before its program: brackets, the words of a shell loop or test, and variables (`CI=1`). */
-const LEAD = /^\s*(?:[({!]\s*|(?:if|then|elif|else|while|until|do)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/;
+/**
+ * The start of a part before its program. It can hold brackets, the start of a command substitution (`$(` or a
+ * backquote), the words of a shell loop or test, and variables (`CI=1`). Thus a prefix goes after the `$(` of a command
+ * substitution (H52).
+ */
+const LEAD = /^\s*(?:(?:[({!`]|\$\()\s*|(?:if|then|elif|else|while|until|do)\s+|[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/;
 
 /**
  * The programs that only take the body of a here-document as text: the text readers, `tee`, `git` (`commit -F -`) and
@@ -98,6 +108,18 @@ interface Part {
   readonly start: number;
   readonly raw: string;
   readonly text: string;
+  /**
+   * The start of the part that reads this part as its input, or `null` (H52). A part has an owner when it is in the
+   * body of a here-document, and a program other than a shell reads that body.
+   */
+  readonly owner: number | null;
+}
+
+/** The body of a here-document that a program other than a shell reads (H52). `reader` is the start of the part of that program. */
+interface Body {
+  readonly start: number;
+  readonly end: number;
+  readonly reader: number;
 }
 
 /** This function reads the operator of a here-document at `at`, or gives null. A here-string (`<<<`) is not one. */
@@ -179,6 +201,25 @@ function pipesToText(command: string, text: string, from: number, to: number): b
   return true;
 }
 
+/**
+ * This function gives the part that reads the body of a here-document (H52). Usually, this is the part of its operator.
+ * When that program is one of `TEXT_SINKS`, it is the first program after it in the pipe that is not one of
+ * `TEXT_SINKS`. Thus `cat <<'EOF' | node` gives the part of `node`. `to` is the end of the line.
+ */
+function readerOf(command: string, text: string, waiting: Waiting, to: number): { start: number; program: string } {
+  if (!TEXT_SINKS.has(waiting.owner)) return { start: waiting.from, program: waiting.owner };
+  const separators = [...text.slice(waiting.from, to).matchAll(SEPARATOR)];
+  for (const [index, separator] of separators.entries()) {
+    if (separator[0] !== "|") break;
+    const start = waiting.from + (separator.index ?? 0) + 1;
+    const after = separators[index + 1];
+    const end = after === undefined ? to : waiting.from + (after.index ?? 0);
+    const program = programAt(command, text, start, end);
+    if (!TEXT_SINKS.has(program)) return { start, program };
+  }
+  return { start: waiting.from, program: waiting.owner };
+}
+
 /** This function tells if the position `at` is in an arithmetic expression `((…))` of its part, where `<<` is a shift. */
 function inArithmetic(text: string, from: number, at: number): boolean {
   const before = text.slice(from, at);
@@ -214,9 +255,9 @@ function bodyEnd(command: string, start: number, heredoc: Heredoc): number {
  * - The shell does not run a part of it: a quoted delimiter, or no `$(` and no backquote in it.
  *
  * The body then becomes one blank stretch with no newline, so it gives no part of its own. Each other body stays in the
- * rating, as before.
+ * rating, as before. When a program other than a shell reads such a body, the body goes into `bodies` (H52).
  */
-function withoutText(command: string): string {
+function withoutText(command: string, bodies: Body[] = []): string {
   let out = "";
   let at = 0;
   let waiting: Waiting[] = [];
@@ -253,6 +294,17 @@ function withoutText(command: string): string {
         spans.push([stop, close]);
         stop = close + 1;
       }
+      if (!blank) {
+        // The body stays in the rating. A program other than a shell reads it as its own code or data (H52).
+        let start = at;
+        for (const each of waiting) {
+          const close = bodyEnd(command, start, each.heredoc);
+          if (close < 0) break;
+          const reader = readerOf(command, out, each, line);
+          if (!BODY_SHELLS.has(reader.program) && !TEXT_SINKS.has(reader.program)) bodies.push({ start, end: close, reader: reader.start });
+          start = close + 1;
+        }
+      }
       waiting = [];
       if (blank) {
         for (const [index, [from, to]] of spans.entries()) {
@@ -288,12 +340,20 @@ function withoutText(command: string): string {
 
 /** This function divides a command line into its parts. A separator in a quoted string does not divide the line. */
 function partsOf(command: string): Part[] {
-  const text = withoutText(command);
+  const bodies: Body[] = [];
+  const text = withoutText(command, bodies);
+  const bodyAt = (at: number): Body | undefined => bodies.find((body) => at >= body.start && at < body.end);
+  // A body can be in the body of another program. The owner is the outer program, so a prefix goes outside each body.
+  const ownerOf = (at: number): number | null => {
+    let owner: number | null = null;
+    for (let body = bodyAt(at); body !== undefined; body = bodyAt(body.reader)) owner = body.reader;
+    return owner;
+  };
   const parts: Part[] = [];
   let start = 0;
   for (const match of [...text.matchAll(SEPARATOR), null]) {
     const end = match ? (match.index ?? 0) : command.length;
-    parts.push({ start, raw: command.slice(start, end), text: text.slice(start, end) });
+    parts.push({ start, raw: command.slice(start, end), text: text.slice(start, end), owner: ownerOf(start) });
     if (match) start = end + match[0].length;
   }
   return parts;
@@ -352,11 +412,17 @@ export function isHeavy(command: string): boolean {
  * This function puts `headroom run --mem auto --` in front of the heavy part of a command line. It uses the rating of
  * `isHeavy`, so the prefix does not go in front of a `grep`. The prefix goes at the start of the heavy part, after its
  * variables (`CI=1 pnpm test`). Thus `cd app && pnpm test` gives `cd app && headroom run --mem auto -- pnpm test`.
+ *
+ * The prefix does not go in the body of a here-document that a program other than a shell reads (H52). There, the body
+ * is code or data of that program, so the prefix goes in front of that program: `node - <<'JS'` gives
+ * `headroom run --mem auto -- node - <<'JS'`. In the body of a shell, the heavy part is a command, so the prefix goes there.
  */
 export function leased(command: string): string {
-  const heavy = partsOf(command).find(isHeavyPart);
+  const parts = partsOf(command);
+  const heavy = parts.find(isHeavyPart);
   if (heavy === undefined) return `headroom run --mem auto -- ${command}`;
-  const at = heavy.start + leadOf(heavy);
+  const target = heavy.owner === null ? heavy : (parts.find((part) => part.start === heavy.owner) ?? heavy);
+  const at = target.start + leadOf(target);
   return `${command.slice(0, at)}headroom run --mem auto -- ${command.slice(at)}`;
 }
 
