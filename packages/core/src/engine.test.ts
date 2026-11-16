@@ -138,6 +138,33 @@ describe("Engine suggest", () => {
     engine.close();
   });
 
+  it("gives a job with no run the base rate of its size class, then of each job (H184)", () => {
+    let now = 1_000_000;
+    const store = new Store(":memory:");
+    const engine = new Engine({ sampler, store, sessionsDir: "/nowhere", now: () => now });
+    const run = (holder: string, job: string, amounts: Record<string, number>, ranMs: number) => {
+      const lease = engine.request({ holder, job, amounts, ttlMs: 600_000 });
+      now += ranMs;
+      engine.release(lease.id, "the job ended", 200, undefined, { code: 0, signal: null });
+    };
+    expect(engine.runEstimate("vitest related", "lag", { memory: 900 })).toEqual({ ms: null, from: null, runs: 0 });
+    run("shop", "tsc", { memory: 300 }, 20_000);
+    run("shop", "lock", {}, 1_000);
+    // No run of the job, and no run in its class (above 512 MB, up to 1024 MB): the runs of each job
+    expect(engine.runEstimate("vitest related", "lag", { memory: 900 })).toEqual({ ms: 20_000, from: "all", runs: 2 });
+    run("shop", "playwright", { memory: 1024 }, 120_000);
+    run("shop", "vite build", { memory: 600 }, 60_000);
+    expect(engine.runEstimate("vitest related", "lag", { memory: 900 })).toEqual({ ms: 120_000, from: "size", runs: 2 });
+    // A lease with no memory has its own class
+    expect(engine.runEstimate("other lock", "lag", {})).toEqual({ ms: 1_000, from: "size", runs: 1 });
+    // The runs of the job come before its class, and the runs of the holder come first
+    run("shop", "vitest related", { memory: 900 }, 30_000);
+    run("lag", "vitest related", { memory: 900 }, 45_000);
+    expect(engine.runEstimate("vitest related", "vex", { memory: 900 })).toEqual({ ms: 45_000, from: "job", runs: 2 });
+    expect(engine.runEstimate("vitest related", "shop", { memory: 900 })).toEqual({ ms: 30_000, from: "own", runs: 1 });
+    engine.close();
+  });
+
   it("keeps the peak of a lease in the store, and adds the column to an older database", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-store-"));
     const path = join(dir, "old.db");
