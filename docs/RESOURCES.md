@@ -1470,7 +1470,7 @@ On 2026-10-25, the available memory fell two times, and the reaper of Claude Cod
 
 **The store.** Step 4 adds the table `lease_keys` (one row for each lease with a key) and its index `lease_keys_ladder` on `(kind, repo, filter, warm, lock)`. The row keeps the key, and the amount, the rung, the runs and the run time of the ladder at the request. `prune` removes the rows of the leases that it removes.
 
-**The replay.** `replayLeases` in `packages/core/src/replay.ts` gives the amount of a rule at each request from the runs that ended before it. `headroom report leases` replays the base and a grid of 51 rules. The over gate uses the upper end of the 95% Wilson interval (`wilson` of rigor-statistics). The run of 2026-11-16:
+**The replay.** `replayLeases` in `packages/core/src/replay.ts` gives the amount of a rule at each request from the runs that ended before it. `headroom report leases` replays the base and a grid of 47 rules. The over gate uses the upper end of the 95% Wilson interval (`wilson` of rigor-statistics). The run of 2026-11-16:
 
 | Rule | Default | Measured | Kind | Request/peak | Over | Over 95% | Gates |
 |---|---|---|---|---|---|---|---|
