@@ -86,7 +86,8 @@ export type AlertKind =
   | "handles"
   | "cache"
   | "docker"
-  | "worktree";
+  | "worktree"
+  | "reap";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -431,12 +432,13 @@ function changesOf(input: AlertInput): Map<ResourceId, Change> {
 
 /**
  * This function tells if an outlier rule examines a process with this owner kind. A process is an orphan when its parent
- * ended, also when a new process has the ID of the parent (H29).
+ * ended, also when a new process has the ID of the parent (H29). The owner record of the process, when there is one, gives
+ * the start of the parent at the first read (H182).
  */
-function examines(rule: OutlierRule, info: ProcessInfo, kind: OwnerKind, owners: Owners, byPid: ReadonlyMap<number, ProcessInfo>): boolean {
+function examines(rule: OutlierRule, info: ProcessInfo, kind: OwnerKind, owners: Owners, byPid: ReadonlyMap<number, ProcessInfo>, record: ProcessRecord | undefined): boolean {
   if (rule.skip.includes(kind) || (rule.only !== undefined && !rule.only.includes(kind))) return false;
   if (rule.when === "unleased") return !owners.leaseOf.has(info.pid);
-  if (rule.when === "orphaned") return isOrphan(info, byPid);
+  if (rule.when === "orphaned") return isOrphan(info, byPid, record);
   return true;
 }
 
@@ -456,13 +458,14 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
   for (const info of input.processes) {
     const owner = input.ownerOf.get(info.pid) ?? "other";
     const kind = input.kindOf.get(owner) ?? "other";
+    const record = input.recordOf?.(info);
     // The first rule that gives an alert stops the search, so a process gets at most one alert.
     kinds.some(({ resource, rules: each }) => {
       const amount = resource.attribute?.counter(info);
       if (amount === undefined) return false;
       for (const rule of each) {
-        if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, byPid)) continue;
-        const text = rule.text({ process: info, owner, amount, orphan: isOrphan(info, byPid) });
+        if (rule.type !== "outlier" || rule.subject !== "process" || !(amount > rule.above) || !examines(rule, info, kind, owners, byPid, record)) continue;
+        const text = rule.text({ process: info, owner, amount, orphan: isOrphan(info, byPid, record) });
         alerts.push({ id: `${rule.alert}:${info.pid}`, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, rule: rule.type, message: text.message });
         return true;
       }
@@ -481,10 +484,11 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         const info = byPid.get(tree.pid);
         if (info === undefined) continue;
         const owner = input.ownerOf.get(info.pid) ?? "other";
-        if (!examines(rule, info, input.kindOf.get(owner) ?? "other", owners, byPid)) continue;
+        const record = input.recordOf?.(info);
+        if (!examines(rule, info, input.kindOf.get(owner) ?? "other", owners, byPid, record)) continue;
         const id = rule.alertId?.(String(tree.pid)) ?? `${rule.alert}:${tree.pid}`;
         if (!treeAbove(rule, tree.trail, endOf(tree.trail), activeLevel.has(id))) continue;
-        const text = rule.text({ process: info, owner, amount: tree.trail.at(-1)?.value ?? 0, processes: tree.processes, orphan: isOrphan(info, byPid) });
+        const text = rule.text({ process: info, owner, amount: tree.trail.at(-1)?.value ?? 0, processes: tree.processes, orphan: isOrphan(info, byPid, record) });
         alerts.push({ id, kind: rule.alert, subject: text.subject, pid: info.pid, mb: text.mb, rule: rule.type, message: text.message });
       }
     }
@@ -502,7 +506,8 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
         const level = trailLevel(rule, trail, at, activeLevel.get(id) ?? null);
         if (level === null) continue;
         const owner = input.ownerOf.get(pid) ?? "other";
-        const text = rule.text({ process: info, owner, orphan: isOrphan(info, byPid), record: input.recordOf?.(info), trail, level, at });
+        const record = input.recordOf?.(info);
+        const text = rule.text({ process: info, owner, orphan: isOrphan(info, byPid, record), record, trail, level, at });
         alerts.push({ id, kind: rule.alert, subject: text.subject, pid, mb: text.mb, ...(rule.severity === true ? { severity: level } : {}), rule: rule.type, message: text.message });
       }
     }

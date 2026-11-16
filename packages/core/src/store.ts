@@ -18,6 +18,7 @@ import { BATTERY_FLOOR_DEFAULT, type LeaseConditions, type UnmetCondition } from
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
 import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } from "./presence.ts";
 import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.ts";
+import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "./reap.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
@@ -103,7 +104,37 @@ const MIGRATIONS: readonly Migration[] = [
     addMissingColumns(db, "memory", { processes: "INTEGER", user_objects: "INTEGER", gdi_objects: "INTEGER" });
     addMissingColumns(db, "owners", { write_mb: "REAL", read_mb: "REAL" }); // the writes (H20) and the reads (H66) of an owner
   },
+  // H182: the parent ID, the start of the parent and the session of each owner record. An older record gets the name of
+  // its session from its owner `session:<name>`, because the owner came from the same session file. Its parent stays 0
+  // until the next read while the parent runs.
+  (db) => {
+    addMissingColumns(db, "process_owners", { ppid: "INTEGER", parent_created: "INTEGER", session: "TEXT", session_id: "TEXT" });
+    db.exec("UPDATE process_owners SET session = substr(owner, 9) WHERE session IS NULL AND owner LIKE 'session:%'");
+  },
+  // H183: the shadow log of the automatic reap rule, and the log of `headroom reap <pid>`.
+  (db) => {
+    db.exec(REAP_SCHEMA);
+  },
 ];
+
+/** The tables of H183. Step 3 of the schema makes them. */
+const REAP_SCHEMA = `
+CREATE TABLE IF NOT EXISTS reap_shadow (
+  pid INTEGER NOT NULL, created INTEGER NOT NULL, name TEXT NOT NULL, first_at INTEGER NOT NULL, last_at INTEGER NOT NULL,
+  above_since INTEGER NOT NULL, samples INTEGER NOT NULL, private_mb REAL NOT NULL, peak_mb REAL NOT NULL, owner TEXT NOT NULL,
+  session TEXT, session_id TEXT, command TEXT, stdout TEXT NOT NULL, PRIMARY KEY (pid, created)
+);
+CREATE INDEX IF NOT EXISTS reap_shadow_last ON reap_shadow (last_at);
+CREATE TABLE IF NOT EXISTS reap_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, pid INTEGER NOT NULL, created INTEGER NOT NULL, name TEXT NOT NULL,
+  session TEXT, session_id TEXT, by_name TEXT, by_id TEXT, action TEXT NOT NULL, private_mb REAL NOT NULL, command TEXT,
+  result TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reap_log_at ON reap_log (at);
+`;
+
+/** The most rows that one read of the shadow log or of the reap log gives (H183). */
+export const REAP_ROWS_MAX = 200;
 
 /** One sleep of the computer (H30): its start and its end, in milliseconds since the epoch. The history has no samples in it. */
 export type Sleep = readonly [from: number, to: number];
@@ -168,6 +199,11 @@ export interface Config {
    * daemon also removes the trees of the plan, in batches.
    */
   readonly worktreeAutoClean: boolean;
+  /**
+   * The automatic reap (H183): false by default. In this version, true stops no process. A later version stops the processes
+   * of the shadow log only after 7 days of shadow log with no wrong case.
+   */
+  readonly reapAuto: boolean;
   /**
    * The alert limits that differ from the defaults (H179), by the names of `AlertRules`. A computer with its own lines (for
    * example a hold of the jobs below 2 GB of available memory) sets them here. The default is no differences.
@@ -350,13 +386,14 @@ export class Store {
       presentReserve: cpuReserveOf(values.get("presentReserve"), PRESENT_RESERVE_DEFAULT),
       autoDrainMb: autoDrainOf(values.get("autoDrainMb")),
       worktreeAutoClean: values.get("worktreeAutoClean") === "on",
+      reapAuto: values.get("reapAuto") === "on",
       alerts: alertRulesOf(values.get("alerts")),
     };
   }
 
   /**
    * This function sets one setting. `null` removes it. The value of `health` and `alerts` is the JSON text of its object. The value of
-   * `presence` and `worktreeAutoClean` is `on` or `off`. The values of the other settings are numbers as text.
+   * `presence`, `worktreeAutoClean` and `reapAuto` is `on` or `off`. The values of the other settings are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {
     if (value === null) this.#db.prepare("DELETE FROM settings WHERE name = ?").run(name);
@@ -662,16 +699,21 @@ export class Store {
       .map((row) => [Number(row["from_at"]), Number(row["to_at"])] as const);
   }
 
-  /** This function reads the owner records of the processes (H48), at most 4096. */
+  /** This function reads the owner records of the processes (H48), at most 4096. A record of an older version has the parent 0 (H182). */
   processOwners(): ProcessRecord[] {
+    const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
     return this.#db
-      .prepare("SELECT pid, created, owner, command, first_seen FROM process_owners LIMIT ?")
+      .prepare("SELECT pid, created, ppid, parent_created, owner, session, session_id, command, first_seen FROM process_owners LIMIT ?")
       .all(RECORDS_MAX)
       .map((row) => ({
         pid: Number(row["pid"]),
         created: Number(row["created"]),
+        ppid: Number(row["ppid"] ?? 0),
+        parentCreated: Number(row["parent_created"] ?? 0),
         owner: String(row["owner"]),
-        command: row["command"] === null || row["command"] === undefined ? null : String(row["command"]),
+        session: text(row["session"]),
+        sessionId: text(row["session_id"]),
+        command: text(row["command"]),
         firstSeen: Number(row["first_seen"]),
       }));
   }
@@ -687,16 +729,89 @@ export class Store {
         const keys = JSON.stringify(changes.ended.map((record) => `${record.pid}:${record.created}`));
         this.#db.prepare("DELETE FROM process_owners WHERE pid || ':' || created IN (SELECT value FROM json_each(?))").run(keys);
       }
-      const insert = this.#db.prepare("INSERT OR REPLACE INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)");
-      for (const record of changes.save) insert.run(record.pid, record.created, record.owner, record.command, record.firstSeen);
+      const insert = this.#db.prepare(
+        "INSERT OR REPLACE INTO process_owners (pid, created, ppid, parent_created, owner, session, session_id, command, first_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const record of changes.save) {
+        insert.run(record.pid, record.created, record.ppid, record.parentCreated, record.owner, record.session, record.sessionId, record.command, record.firstSeen);
+      }
     });
   }
 
   /**
-   * This function removes the samples older than a time, and the leases that ended before the second time. The second
-   * time is the first time by default.
+   * This function writes the matches of one sample to the shadow log (H183). A process has one row. Each match adds one to
+   * its count of samples, and keeps its last memory and its peak. A match also writes the start of its period above the
+   * line, because a read below the line starts a new period.
    */
-  prune(before: number, leasesBefore: number = before): void {
+  saveShadow(at: number, matches: readonly ShadowMatch[]): void {
+    if (matches.length === 0) return;
+    transaction(this.#db, () => {
+      const upsert = this.#db.prepare(
+        `INSERT INTO reap_shadow (pid, created, name, first_at, last_at, above_since, samples, private_mb, peak_mb, owner, session, session_id, command, stdout)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (pid, created) DO UPDATE SET last_at = excluded.last_at, samples = samples + 1, private_mb = excluded.private_mb,
+           peak_mb = max(peak_mb, excluded.private_mb), above_since = excluded.above_since, session = excluded.session, session_id = excluded.session_id,
+           stdout = excluded.stdout`,
+      );
+      for (const each of matches) {
+        upsert.run(each.pid, each.created, each.name, at, at, each.aboveSince, each.privateMb, each.privateMb, each.owner, each.session, each.sessionId, each.command, each.stdout);
+      }
+    });
+  }
+
+  /** This function reads the shadow log (H183), the newest last match first, at most `REAP_ROWS_MAX` rows. */
+  reapShadow(): ShadowRow[] {
+    const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+    return this.#db
+      .prepare("SELECT * FROM reap_shadow ORDER BY last_at DESC LIMIT ?")
+      .all(REAP_ROWS_MAX)
+      .map((row) => ({
+        pid: Number(row["pid"]),
+        created: Number(row["created"]),
+        name: String(row["name"]),
+        firstAt: Number(row["first_at"]),
+        lastAt: Number(row["last_at"]),
+        aboveSince: Number(row["above_since"]),
+        samples: Number(row["samples"]),
+        privateMb: Number(row["private_mb"]),
+        peakMb: Number(row["peak_mb"]),
+        owner: String(row["owner"]),
+        session: text(row["session"]),
+        sessionId: text(row["session_id"]),
+        command: text(row["command"]),
+        stdout: String(row["stdout"]) as StdoutKind,
+      }));
+  }
+
+  /** This function writes one row of the reap log (H183). */
+  saveReap(entry: ReapEntry): void {
+    this.#db
+      .prepare("INSERT INTO reap_log (at, pid, created, name, session, session_id, by_name, by_id, action, private_mb, command, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(entry.at, entry.pid, entry.created, entry.name, entry.session, entry.sessionId, entry.by, entry.byId, entry.action, entry.privateMb, entry.command, entry.result);
+  }
+
+  /** This function reads the reap log (H183), the newest first, at most `REAP_ROWS_MAX` rows. */
+  reapLog(): ReapEntry[] {
+    return this.#db.prepare("SELECT * FROM reap_log ORDER BY at DESC, id DESC LIMIT ?").all(REAP_ROWS_MAX).map(reapEntry);
+  }
+
+  /**
+   * This function reads the requests of the reap log at or after a time (H183). They are the rows with the action
+   * `asked` or `needs-owner`, the newest first. A restart of the daemon reads them to show the alerts of the requests again.
+   */
+  reapRequests(since: number): ReapEntry[] {
+    return this.#db
+      .prepare("SELECT * FROM reap_log WHERE at >= ? AND action IN ('asked', 'needs-owner') ORDER BY at DESC, id DESC")
+      .all(since)
+      .map(reapEntry);
+  }
+
+  /**
+   * This function removes the samples older than a time, and the leases that ended before the second time. The second
+   * time is the first time by default. The rows of the shadow log and of the reap log go before the third time (H183),
+   * by default the second time.
+   */
+  prune(before: number, leasesBefore: number = before, reapBefore: number = leasesBefore): void {
     this.#db.prepare("DELETE FROM sleeps WHERE to_at < ?").run(before);
     this.#db.prepare("DELETE FROM memory WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM owners WHERE at < ?").run(before);
@@ -704,12 +819,33 @@ export class Store {
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM resource_samples WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(leasesBefore);
+    this.#db.prepare("DELETE FROM reap_shadow WHERE last_at < ?").run(reapBefore);
+    this.#db.prepare("DELETE FROM reap_log WHERE at < ?").run(reapBefore);
   }
 
   /** This function closes the database. */
   close(): void {
     this.#db.close();
   }
+}
+
+/** This function gives the entry of one row of the reap log (H183). */
+function reapEntry(row: Record<string, unknown>): ReapEntry {
+  const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+  return {
+    at: Number(row["at"]),
+    pid: Number(row["pid"]),
+    created: Number(row["created"]),
+    name: String(row["name"]),
+    session: text(row["session"]),
+    sessionId: text(row["session_id"]),
+    by: text(row["by_name"]),
+    byId: text(row["by_id"]),
+    action: String(row["action"]) as ReapAction,
+    privateMb: Number(row["private_mb"]),
+    command: text(row["command"]),
+    result: String(row["result"]),
+  };
 }
 
 function toLease(row: Record<string, unknown>): Lease {

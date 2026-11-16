@@ -170,13 +170,34 @@ export type {
   Status,
   Suggestion,
 } from "./engine.ts";
-export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, ORPHAN_LABEL, orphanName, parentOf, processKey, programName, readSessions, sessionsDir, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
-export { COMMAND_MAX, isOrphanOwner, OwnerRecords, ownerText, RECORD_AFTER_MS, RECORDS_MAX, shortCommand } from "./orphans.ts";
+export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, ORPHAN_LABEL, orphanName, parentOf, parentRecordOf, processKey, programName, readSessions, sessionsDir, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
+export { COMMAND_CUT, COMMAND_HEAD, COMMAND_MAX, commandText, isOrphanOwner, keepEnds, OwnerRecords, ownerText, RECORD_AFTER_MS, RECORDS_MAX, shortCommand } from "./orphans.ts";
 export type { ProcessRecord, RecordChanges } from "./orphans.ts";
 export { gainAt, gainPerMinute, HANDLE_HOLDERS_SHOWN, HandleTracker, handleStatus, handlesLines, handlesText, HANDLES_FLOOR, HANDLES_TRAIL_MS } from "./handles.ts";
 export type { HandleHolder, HandleStatus } from "./handles.ts";
-export type { Attribution, KeptOwner, OwnerRule } from "./owners.ts";
-export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf } from "./peer.ts";
+export type { Attribution, KeptOwner, OwnerRule, ParentRecord, SessionRef } from "./owners.ts";
+export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, sameStart, startedFirst } from "./peer.ts";
+export {
+  isReader,
+  isSessionProgram,
+  liveSession,
+  namesSessionFiles,
+  ownSession,
+  READER_PROGRAMS,
+  REAP_COMMAND_MAX,
+  REAP_KEEP_MS,
+  REAP_NOTICE_MS,
+  reapCandidate,
+  reapCandidates,
+  reapNotice,
+  reapStep,
+  SHADOW_MIN_MB,
+  SHADOW_MIN_MS,
+  ShadowTracker,
+  stdoutKindOf,
+  writesFile,
+} from "./reap.ts";
+export type { ReapAction, ReapCandidate, ReapEntry, ReapOutcome, ReapResult, ReapStep, ShadowMatch, ShadowRow, ShadowView, StdoutKind } from "./reap.ts";
 export type { Peer, PeerErrorCode, PeerInput, PeerSources, Role, RolesState } from "./peer.ts";
 export {
   DEFAULT_DYNAMIC_PORTS,

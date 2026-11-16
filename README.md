@@ -187,6 +187,26 @@ On 2026-10-25, a subagent started `find / -name ... | head -3` in Git Bash. The 
 - The alert names the process, its handles and their gain in one minute, its age, its owner and its command line. It ends when the process ends, or after 2 minutes under its line.
 - headroom does not stop the process. The owner stops it by its process ID.
 
+### Orphans that a session stops (H183)
+
+On 2026-11-15, a `grep.exe` over the transcript of a session stayed after its shell ended. It held 1.5 GB of private memory for 3.5 hours. `headroom reap` lists such processes, and it stops a process only for its own session:
+
+```sh
+headroom reap            # each process of a session whose parent is proven gone
+headroom reap --all      # also the orphans that no session started
+headroom reap 27308      # stop a process of your session
+headroom reap --shadow   # the processes that a later automatic rule stops
+headroom reap --log      # the stops and the requests
+```
+
+- A row has the process ID, the private memory, the age, the session and the command line. `(yours)` marks a process of your session.
+- For a process of another session, headroom does not stop it. It records a request and shows it in `headroom alerts`. headroom has no path that sends a notice to one session.
+- A process of a session that ended needs the owner of the machine. headroom records it in the same way.
+- The shadow log records each reader with no parent that reads the files of a session: grep, rg, sort, findstr or cat. It records the reader when it holds more than 500 MB for more than 30 minutes. No rule stops a process in this version.
+- `headroom config reap-auto on|off` is the setting of the later automatic mode. Off is the default, and in this version on stops no process.
+
+The rule and the tables are in [docs/RESOURCES.md](docs/RESOURCES.md#h183-headroom-reap-and-the-shadow-log).
+
 ### The system file cache (H50)
 
 On 2026-10-25, the available memory fell two times while no job used much memory. The system file cache grew from 0.5 GB to 10.1 GB in some minutes, and the available memory stayed near 1 GB for 22 minutes. Then the reaper of Claude Code stopped jobs. Windows Search read 350 MB each second from the files of the sessions on `D:`, and Defender scanned them.
@@ -197,7 +217,7 @@ On 2026-10-25, the available memory fell two times while no job used much memory
 - **The owners.** `system:search` and `system:defender` show the work of the indexer and the scanner in the lists of owners.
 - **The jobs.** Run jobs that read many files (a wide grep, a build of many repos) with `headroom run --slot files`. Only one job holds the slot `files` at a time.
 - headroom does not trim the cache. A trim needs a privilege that the daemon does not have. `docs/RESOURCES.md` gives the commands for an admin shell.
-- **The owner records.** At the first read of a process, the daemon records its owner, its command line (200 characters) and its start. The record keeps the owner after the parent ends.
+- **The owner records.** At the first read of a process, the daemon records its owner, its full command line and its start. It also records its parent with the start of the parent, and its session. The record keeps the owner after the parent ends.
 - An orphan shows as `<owner> (orphan)`, with the owner of its record, in the owners of `headroom status`, of the dashboard and of each resource. The runaway alerts of the memory and the CPU (H23) add `(orphan)` to the owner of each orphan, also `other (orphan)`.
 - The store keeps the records of the processes that live for more than one minute. Thus a restart of the daemon keeps the owners of the orphans. The record of an ended process goes away at the next read.
 - `headroom status` gives the sum of the handles, for example `Handles: 200,020 in all`. When one process is above 100,000 handles, it also names the 3 processes with the most handles.

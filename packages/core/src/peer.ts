@@ -295,7 +295,7 @@ export function isLoopback(address: string): boolean {
 }
 
 /** This function tells if two starts are the same start. An unknown start matches each start. */
-function sameStart(a: number | undefined, b: number | undefined): boolean {
+export function sameStart(a: number | undefined, b: number | undefined): boolean {
   return a === undefined || b === undefined || Math.abs(a - b) <= 1;
 }
 
@@ -303,7 +303,7 @@ function sameStart(a: number | undefined, b: number | undefined): boolean {
  * This function tells if a process can be the parent of a child. The parent must start at or before the child. A later
  * start shows a process ID that is in use again. An unknown start stops the walk, because the walk fails closed.
  */
-function startedFirst(parent: ProcessLink, child: ProcessLink): boolean {
+export function startedFirst(parent: ProcessLink, child: ProcessLink): boolean {
   return parent.pid !== child.pid && parent.startedAt !== undefined && child.startedAt !== undefined && parent.startedAt <= child.startedAt;
 }
 

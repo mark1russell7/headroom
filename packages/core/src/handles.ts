@@ -13,7 +13,7 @@
 
 import type { TrailPoint } from "./cpu.ts";
 import { spanText } from "./forecast.ts";
-import { ownerText, type ProcessRecord } from "./orphans.ts";
+import { commandText, ownerText, type ProcessRecord } from "./orphans.ts";
 import { isOrphan, processKey } from "./owners.ts";
 import type { AlertText, ProcessTrail, TrailFacts } from "./resources.ts";
 import { countText } from "./starts.ts";
@@ -120,6 +120,9 @@ export function gainAt(trail: readonly TrailPoint[], index: number, windowMs: nu
   return end === undefined || base === undefined ? 0 : end.value - base.value;
 }
 
+/** The longest command line in the text of an alert, in characters (H182). */
+const ALERT_COMMAND_MAX = 200;
+
 /**
  * This function gives the text of the handles alert (H48). The text names the process, its handles, their gain in one
  * minute and its age. It also names the owner, the command line and the next step.
@@ -129,7 +132,8 @@ export function handlesText({ process, owner, orphan, record, trail, at }: Trail
   const perMinute = Math.round(gainPerMinute(trail, windowMs));
   const rate = perMinute >= 1 ? `, +${countText(perMinute)} a minute` : "";
   const age = process.startedAt === undefined ? "" : ` It started ${spanText(Math.max(0, at - process.startedAt) / 60_000)} ago.`;
-  const command = record?.command ? ` Command: ${record.command}.` : "";
+  // H182: the record keeps the full command line, so the alert gives its start and its end in at most 200 characters.
+  const command = record?.command ? ` Command: ${commandText(record.command, ALERT_COMMAND_MAX)}.` : "";
   return {
     subject: `${process.name} (${process.pid})`,
     mb: 0,
@@ -148,7 +152,7 @@ export function handlesLines(handles: HandleStatus | null | undefined): string[]
   if ((handles.top[0]?.handles ?? 0) <= handles.warning) return lines;
   lines[0] = `Handles: ${countText(handles.total)} in all. Most handles:`;
   for (const each of handles.top) {
-    const command = each.command === null ? "" : `  ${each.command.slice(0, 80)}`;
+    const command = each.command === null ? "" : `  ${commandText(each.command, 80)}`;
     lines.push(`  ${`${each.name} (${each.pid})`.padEnd(24)} ${countText(each.handles).padStart(10)}  ${each.owner}${command}`);
   }
   return lines;
@@ -183,13 +187,14 @@ export function handleStatus(
     total,
     warning,
     top: top.map((info) => {
-      const orphan = isOrphan(info, byPid);
+      const record = recordOf(info);
+      const orphan = isOrphan(info, byPid, record);
       return {
         pid: info.pid,
         name: info.name,
         handles: info.handles ?? 0,
         owner: ownerText(ownerOf.get(info.pid) ?? "other", orphan),
-        command: recordOf(info)?.command ?? null,
+        command: record?.command ?? null,
         ...(info.startedAt === undefined ? {} : { startedAt: info.startedAt }),
       };
     }),

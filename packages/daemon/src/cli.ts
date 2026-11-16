@@ -28,6 +28,8 @@
  * - `headroom reboot-plan [--json]`: the reboot budget: the kernel pools, a waiting Windows update, the uptime and a recommendation (H34).
  * - `headroom drain --at <HH:MM|now> [--until <HH:MM>]` and `headroom drain --cancel`: a planned drain for a reboot (H34).
  * - `headroom cancel <id> | --job <name> [--holder <h>] [--all]`: take a waiting lease off the queue. Its job does not start.
+ * - `headroom reap [--all] | <pid> | --shadow | --log`: the processes whose parent is proven gone, and a stop of a process of the own session (H183).
+ * - `headroom config reap-auto on|off`: the setting of a later automatic reap. In this version it stops no process (H183).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -94,6 +96,9 @@ import {
   type Lease,
   type Peer,
   type PoolTags,
+  type ProcessInfo,
+  type Sampler,
+  type SessionRef,
   type Status,
   type Suggestion,
   type TcpPorts,
@@ -107,7 +112,8 @@ import { diskCommand } from "./disk-cli.ts";
 import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, startClient, tellParent, waitForDaemon } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
-import { sessionFromEnv } from "./holder.ts";
+import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
+import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
@@ -200,6 +206,9 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom config worktree-auto-clean [on | off | --clear]
                on: the daemon removes the worktrees of its plan, in batches. off (the default): it writes
                only the plan to ~/.headroom/worktree-plan.json.
+  headroom config reap-auto [on | off | --clear]
+               The setting of a later automatic reap. off is the default. In this version, on stops
+               no process: the daemon only writes the shadow log of headroom reap --shadow.
   headroom presence [--json]                (Mark at the laptop: present, busy or away, and the history)
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
@@ -243,6 +252,13 @@ const HELP = `headroom: the memory and job broker of this computer
                Take a waiting job off the queue: it does not start, and its headroom run exits with code 75.
                <id>: the lease id or its first 8 characters. --job: more than one match cancels none, unless --all.
                A running job does not change: headroom release <id> ends its lease. No match: exit 3.
+  ${REAP_USAGE}
+               With no pid: each process whose parent is proven gone, with its memory, age, session and command.
+               --all also lists the orphans that no session started.
+               <pid>: a process of your session gets a stop. For a process of another session, headroom records
+               a request and shows it in headroom alerts. It does not stop it. No process: exit 3.
+               --shadow: the processes that a later automatic rule stops. No rule stops a process now.
+               --log: the stops and the requests.
   headroom resume-plan
 `;
 
@@ -259,22 +275,39 @@ async function sessionHolder(): Promise<string | null> {
   const fromEnv = process.env["HEADROOM_HOLDER"];
   if (fromEnv) return fromEnv;
   try {
-    const known = readSessions();
-    const named = sessionFromEnv(process.env, known);
+    const named = sessionFromEnv(process.env, readSessions());
     if (named) return named;
-    const sampler = await createSampler();
-    const byPid = new Map(sampler.processes().map((info) => [info.pid, info]));
-    const sessions = new Map(known.map((session) => [session.pid, session.name]));
-    const seen = new Set<number>();
-    for (let pid = process.ppid; pid > 0 && !seen.has(pid); pid = byPid.get(pid)?.ppid ?? 0) {
-      seen.add(pid);
-      const name = sessions.get(pid);
-      if (name) return name;
-    }
+  } catch {
+    // The session files are not readable. The process tree can still name the session.
+  }
+  return (await callerSession())?.name ?? null;
+}
+
+/**
+ * This function finds the Claude Code session that started this process, with the ID of its session file (H183). It reads
+ * the variables of Claude Code, then the process tree. It gives `null` when it finds no session. `HEADROOM_HOLDER` is a free label, so `headroom reap`
+ * does not use it.
+ *
+ * The variables name the session ID first. The process of the session must run with the start of its session file. The
+ * walk up the tree checks the start of each parent (H29). Thus a process ID that is in use again does not name a session.
+ */
+async function callerSession(): Promise<SessionRef | null> {
+  let sampler: Sampler | undefined;
+  try {
+    const known = readSessions();
+    const read = await createSampler();
+    sampler = read;
+    // The read of all the processes is slower than the read of one start, so it happens only when a step needs it.
+    let tree: ProcessInfo[] | undefined;
+    const processes = (): ProcessInfo[] => (tree ??= read.processes());
+    const startOf = (pid: number): number | undefined => (read.processStart === undefined ? processes().find((info) => info.pid === pid)?.startedAt : read.processStart(pid));
+    return sessionRefFromEnv(process.env, known, startOf) ?? sessionRefFromTree(process.pid, processes(), known) ?? null;
   } catch {
     // The process tree is not readable, so no session is known.
+    return null;
+  } finally {
+    sampler?.close();
   }
-  return null;
 }
 
 function mb(value: number): string {
@@ -1223,8 +1256,26 @@ function printConfig(config: Config): void {
         : "worktree-auto-clean: off (the default). The daemon writes only the plan to ~/.headroom/worktree-plan.json.",
     );
   }
+  // H183: a daemon of an older version has no setting reapAuto.
+  if (typeof config.reapAuto === "boolean") {
+    console.log(
+      config.reapAuto
+        ? "reap-auto: on. In this version it stops no process. The daemon writes the shadow log (headroom reap --shadow)."
+        : "reap-auto: off (the default). The daemon writes the shadow log (headroom reap --shadow) and stops no process.",
+    );
+  }
   // H179: a daemon of an older version has no setting alerts.
   if (config.alerts !== undefined) for (const line of alertsLines(config.alerts)) console.log(line);
+}
+
+/** `headroom config reap-auto on|off` sets the automatic reap (H183). `--clear` gives the default: off. In this version it stops no process. */
+async function reapAutoConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra || (value !== undefined && value !== "on" && value !== "off")) {
+    console.error("Usage: headroom config reap-auto on, headroom config reap-auto off, or headroom config reap-auto --clear (the default: off)");
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { reapAuto: value === undefined ? null : value === "on" }));
+  return 0;
 }
 
 /** `headroom config worktree-auto-clean on|off` sets the removals of the daemon worktree cleanup (H175). `--clear` gives the default: off. */
@@ -1434,9 +1485,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "present-reserve") return presentReserveConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "auto-drain") return autoDrainConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "worktree-auto-clean" || name === "worktrees.autoClean") return worktreeAutoCleanConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "reap-auto" || name === "reapAuto") return reapAutoConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }
@@ -1657,6 +1709,9 @@ async function main(argv: string[]): Promise<number> {
     case "cancel":
       // The caller of the cancel: its session, else "cli".
       return cancelCommand(rest, connect(), (await sessionHolder()) ?? "cli");
+    case "reap":
+      // H183: only the session of the caller, with the ID of its session file, can stop a process.
+      return reapCommand(rest, connect(), await callerSession());
     case "release": {
       const connection = connect();
       if (!connection || !rest[0]) return (console.error("Usage: headroom release <id>, with the daemon running"), 1);

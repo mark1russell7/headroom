@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { DEFAULT_ALERT_RULES, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ServiceHealth, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { DEFAULT_ALERT_RULES, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -220,6 +220,11 @@ const ConfigSetInput = z.object({
     .nullable()
     .optional()
     .describe("The automatic worktree cleanup (H175). false: the daemon writes only the plan. true: it also removes the trees of the plan, in batches. null gives the default: false."),
+  reapAuto: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe("The automatic reap (H183). In this version true stops no process: the daemon only writes the shadow log. null gives the default: false."),
   alerts: AlertsChangeInput.nullable()
     .optional()
     .describe(
@@ -227,6 +232,21 @@ const ConfigSetInput = z.object({
     ),
 }).strict();
 type ConfigSetInput = z.infer<typeof ConfigSetInput>;
+
+const ReapListInput = z.object({
+  all: z.boolean().default(false).describe("Also list the orphans that no session started (default: only the processes of a session)"),
+});
+type ReapListInput = z.infer<typeof ReapListInput>;
+
+const ReapInput = z.object({
+  pid: z.number().int().positive().describe("The process ID of a process whose parent is proven gone"),
+  caller: z
+    .object({ name: z.string().min(1), id: z.string() })
+    .nullable()
+    .default(null)
+    .describe("The session that asks: its name and the ID of its session file. A process of this session gets a stop. null: no session."),
+});
+type ReapInput = z.infer<typeof ReapInput>;
 
 const HistoryInput = z.object({
   minutes: z.number().int().positive().max(10_080).default(60).describe("The length of the history in minutes (default: 60)"),
@@ -584,7 +604,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175). alerts: the alert limits that differ from the defaults (H179).",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175). reapAuto: the automatic reap, which stops no process in this version (H183). alerts: the alert limits that differ from the defaults (H179).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -607,6 +627,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           presentReserve: input.presentReserve,
           autoDrainMb: input.autoDrainMb,
           worktreeAutoClean: input.worktreeAutoClean,
+          reapAuto: input.reapAuto,
           alerts: input.alerts,
         };
         return engine.setConfig(change);
@@ -635,7 +656,62 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     })
     .build() as AnyProcedure;
 
-  return [status, lease, defer, adopt, wait, release, cancel, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain];
+  const reapList = createProcedure()
+    .path(["resources", "reapList"])
+    .input(zodAdapter<ReapListInput>(ReapListInput))
+    .output(anything<ReapCandidate[]>())
+    .meta({
+      description:
+        "List the processes whose parent is proven gone (H183), the most private memory first: the ID, the private memory, the age, the session and the command line. By default only the processes of a session.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom", "process"], writes: [], destructive: false },
+    })
+    .handler(async (input: ReapListInput): Promise<ReapCandidate[]> => engine.reapList(input.all))
+    .build() as AnyProcedure;
+
+  const reap = createProcedure()
+    .path(["resources", "reap"])
+    .input(zodAdapter<ReapInput>(ReapInput))
+    .output(anything<ReapResult>())
+    .meta({
+      description:
+        "Reap one process whose parent is proven gone (H183). A process of the session of the caller gets a stop. For a process of another session, headroom records a request and shows it as an alert. It does not stop it. A process of no running session needs the owner of the machine.",
+      args: ["pid"],
+      output: "json",
+      effects: { reads: ["headroom", "process"], writes: ["headroom", "process"], destructive: true },
+    })
+    .handler(async (input: ReapInput): Promise<ReapResult> => engine.reap(input.pid, input.caller))
+    .build() as AnyProcedure;
+
+  const reapShadow = createProcedure()
+    .path(["resources", "reapShadow"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<ShadowView>())
+    .meta({
+      description:
+        "Give the shadow log of the automatic reap rule (H183): each process that the rule stops in a later version, with the rule and the setting reapAuto. No rule stops a process in this version.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<ShadowView> => engine.reapShadow())
+    .build() as AnyProcedure;
+
+  const reapLog = createProcedure()
+    .path(["resources", "reapLog"])
+    .input(zodAdapter<Empty>(Empty))
+    .output(anything<ReapEntry[]>())
+    .meta({
+      description: "Give the reap log (H183), the newest first: the stops, the requests, and the processes that need the owner of the machine.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (): Promise<ReapEntry[]> => engine.reapLog())
+    .build() as AnyProcedure;
+
+  return [status, lease, defer, adopt, wait, release, cancel, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain, reapList, reap, reapShadow, reapLog];
 }
 
 const RestartWhenIdleInput = z.object({

@@ -48,11 +48,11 @@ describe("Store", () => {
 
   it("keeps the settings, and the usage of an ended lease", () => {
     const store = new Store(":memory:");
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
     store.setConfig("jobTemp", "D:\\headroom\\tmp");
-    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
     store.setConfig("jobTemp", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
 
     // H27: the setting health. Without it, the list is empty, so the monitor checks no URL (H57).
     store.setConfig("health", JSON.stringify({ "local-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
@@ -68,7 +68,7 @@ describe("Store", () => {
     store.setConfig("alerts", "not json");
     expect(store.config().alerts).toEqual({});
     store.setConfig("alerts", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, alerts: {} });
     // H47: the limit of a spawn-heavy job. A value that is not a number above 0 gives the default.
     store.setConfig("spawnHeavy", "1200");
     expect(store.config().spawnHeavy).toBe(1200);
@@ -125,31 +125,33 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 1, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 3, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
     expect(leases).toEqual(expect.arrayContaining(["peak_mb", "usage", "exit_code", "processes", "conditions", "cpu_cap", "peak_gpu_mb", "cancelled_by"]));
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leases_job'").get()).toEqual({ name: "leases_job" });
+    // H183: step 3 makes the tables of the shadow log and of the reap log.
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'reap_%' ORDER BY name").all()).toEqual([{ name: "reap_log" }, { name: "reap_shadow" }]);
     expect(read.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 3 });
     again.close();
   });
 
   it("refuses a file of a newer version of headroom", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-newer-")), "new.db");
     const newer = new DatabaseSync(path);
-    newer.exec("PRAGMA user_version = 2");
+    newer.exec("PRAGMA user_version = 99");
     newer.close();
     expect(() => new Store(path)).toThrow(/headroom/);
   });
@@ -230,6 +232,50 @@ describe("Store", () => {
     expect(store.leasesOfJob("e2e", { since: 3500 }).map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2"]);
     store.prune(10_000, 3000);
     expect(store.leasesOfJob("e2e").map((lease) => lease.id)).toEqual(["bbbb2222-1", "aaaa1111-2"]);
+    store.close();
+  });
+});
+
+describe("Store reap tables (H183)", () => {
+  /** A match of the shadow log: a made-up grep.exe of the session kestrel. */
+  const match = (pid: number, aboveSince: number) =>
+    ({ pid, created: 1000, name: "grep.exe", privateMb: 600, ageMs: 0, owner: "session:kestrel", session: "kestrel", sessionId: null, command: null, aboveSince, stdout: "pipe" }) as const;
+  /** A row of the reap log. */
+  const entry = (at: number, action: "stopped" | "asked" | "needs-owner") =>
+    ({ at, pid: 7, created: 1000, name: "grep.exe", session: "kestrel", sessionId: null, by: "otter", byId: null, action, privateMb: 600, command: null, result: "the text" }) as const;
+
+  it("gives the requests of the reap log at or after a time, the newest first", () => {
+    const store = new Store(":memory:");
+    store.saveReap(entry(1000, "asked"));
+    store.saveReap(entry(2000, "stopped"));
+    store.saveReap(entry(3000, "needs-owner"));
+    expect(store.reapRequests(0).map((row) => [row.at, row.action])).toEqual([[3000, "needs-owner"], [1000, "asked"]]);
+    expect(store.reapRequests(1001).map((row) => row.at)).toEqual([3000]);
+    store.close();
+  });
+
+  it("starts a new period above the line when a match has a new start of the period", () => {
+    const store = new Store(":memory:");
+    store.saveShadow(5000, [match(1, 1000)]);
+    store.saveShadow(9000, [match(1, 7000)]);
+    expect(store.reapShadow()).toMatchObject([{ pid: 1, firstAt: 5000, lastAt: 9000, aboveSince: 7000, samples: 2 }]);
+    store.close();
+  });
+
+  it("removes the rows of the shadow log and of the reap log before the third time, by default the time of the leases", () => {
+    const store = new Store(":memory:");
+    store.saveShadow(1000, [match(1, 1000)]);
+    store.saveShadow(5000, [match(2, 5000)]);
+    store.saveReap(entry(1000, "asked"));
+    store.saveReap(entry(5000, "asked"));
+    // The samples go before 9000. The leases and, by default, the reap rows go before 3000.
+    store.prune(9000, 3000);
+    expect(store.reapShadow().map((row) => row.pid)).toEqual([2]);
+    expect(store.reapLog().map((row) => row.at)).toEqual([5000]);
+    // The third time decides for the reap tables.
+    store.prune(0, 0, 6000);
+    expect(store.reapShadow()).toEqual([]);
+    expect(store.reapLog()).toEqual([]);
     store.close();
   });
 });

@@ -2,9 +2,10 @@
  * The sampler of Linux and WSL. It reads `/proc`, so it starts no process.
  */
 
-import { existsSync, readdirSync, readFileSync, statfsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, readlinkSync, statfsSync, statSync } from "node:fs";
 import { homedir, uptime } from "node:os";
 import { parseNetDev, parsePortRange, parseProcTcp } from "./network.ts";
+import { stdoutKindOf, type StdoutKind } from "./reap.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import type { DiskSpace, NetAdapter, ProcessInfo, SystemMemory, TcpTable } from "./types.ts";
 
@@ -62,6 +63,12 @@ export function parseStat(text: string): StatLine | null {
     ...(Number.isFinite(cpuTicks) ? { cpuTicks } : {}),
     ...(Number.isFinite(startTicks) ? { startTicks } : {}),
   };
+}
+
+/** This function tells if the text of `/proc/<pid>/stat` is of an ended process: the state `Z` (a zombie) or `X` (dead). */
+function isEnded(text: string): boolean {
+  const state = text.slice(text.lastIndexOf(")") + 2).split(" ")[0];
+  return state === "Z" || state === "X";
 }
 
 /** The clock ticks in one second. Linux uses 100 on almost each computer. */
@@ -156,7 +163,34 @@ export function linuxSampler(root = "/proc", sys = "/sys"): Sampler {
     }
   }
 
-  return { memory, processes, commandLine, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
+  /**
+   * This function reads the start of a live process (H183), as `processes()` reads it: the field 22 of `/proc/<pid>/stat`
+   * after the start of the computer. A process that ended, a zombie, and a computer with no start give `undefined`.
+   */
+  function processStart(pid: number): number | undefined {
+    try {
+      const bootAt = parseBootTime(readFileSync(`${root}/stat`, "utf8"));
+      const text = readFileSync(`${root}/${pid}/stat`, "utf8");
+      const stat = parseStat(text);
+      if (bootAt === undefined || stat?.startTicks === undefined || isEnded(text)) return undefined;
+      return bootAt + (stat.startTicks * 1000) / CLOCK_TICKS;
+    } catch {
+      // The process ended.
+      return undefined;
+    }
+  }
+
+  /** This function reads the kind of the standard output of a process from the link `/proc/<pid>/fd/1` (H183). */
+  function stdoutKind(pid: number): StdoutKind {
+    try {
+      return stdoutKindOf(readlinkSync(`${root}/${pid}/fd/1`));
+    } catch {
+      // The process ended, or it belongs to another user.
+      return "unknown";
+    }
+  }
+
+  return { memory, processes, commandLine, processStart, stdoutKind, disks: () => linuxDisks(), network, tcp, bootedAt: () => Date.now() - uptime() * 1000, close: () => {} };
 }
 
 /** The default dynamic port range of Linux: the ports 32768 to 60999. */

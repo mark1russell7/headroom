@@ -6,6 +6,7 @@ import type { GpuSample } from "./gpu.ts";
 import type { PowerEvent } from "./power.ts";
 import type { CallRead, PresenceRead } from "./presence.ts";
 import type { KeyState } from "./reboot.ts";
+import type { StdoutKind } from "./reap.ts";
 import type { ThermalRead } from "./thermal.ts";
 import type {
   BatteryRead,
@@ -32,6 +33,12 @@ export interface Sampler {
    * The engine reads it one time for each new process, for the owner record of the process.
    */
   commandLine?(pid: number): string | null;
+  /**
+   * This function reads the kind of the standard output of one process (H183): a file, a pipe, a terminal, the null device
+   * or a socket. The shadow log of the reap rule reads it only for a process that matches the other parts of the rule.
+   * Only Linux has it. On Windows the read needs the handle table of another process, so it is a later step.
+   */
+  stdoutKind?(pid: number): StdoutKind;
   /**
    * This function gives the sequence number of the newest process at the last read of the processes (H29). Windows gives
    * each new process the next number, so the change between two reads is the exact count of starts. Only Windows has it.
