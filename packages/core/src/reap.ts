@@ -83,7 +83,7 @@ export interface ShadowView {
   readonly readers: readonly string[];
   /**
    * True when the sampler read the kind of the standard output of each row. When it is false, the writer rule did not
-   * read the standard output of all the rows: the sampler has no such read, or the read of a row failed (`unknown`).
+   * read the standard output of all the rows. The sampler has no such read, or the read of a row failed (`unknown`).
    */
   readonly stdoutKnown: boolean;
   /** The rows, the newest last match first. */
@@ -108,8 +108,8 @@ export type ReapAction = "stopped" | "asked" | "needs-owner";
  * - `not-found`: no process has the ID.
  * - `not-orphan`: the parent of the process is not proven gone.
  * - `session`: the process is the process of a session, or a `claude` program. `headroom reap` does not stop a session.
- * - `ended`: the process ended, or a new process has its ID, before the stop. headroom also stops nothing when it cannot
- *   read the start of the live process, or when the read of the processes has no start of the process.
+ * - `ended`: the process ended before the stop, or a new process has its ID. The result is also `ended` when headroom
+ *   cannot compare the starts of the process. Then it stops nothing.
  * - `failed`: the stop of an own process failed.
  * - `headroom`: the process is the headroom daemon, or the client of an active lease of `headroom run`.
  */
@@ -274,7 +274,7 @@ export function hostsKept(target: ProcessInfo, processes: readonly ProcessInfo[]
 
 /**
  * This function tells if a process belongs to the session of the caller (H183). When the record has the ID of a session,
- * only the same ID of the caller proves it. When only the caller has an ID, the record does not prove the session: a new
+ * only the same ID of the caller proves it. When only the caller has an ID, the record does not prove the session. A new
  * session can have the name of a session that ended. Only when neither has an ID, the names decide.
  */
 export function ownSession(record: Pick<ProcessRecord, "session" | "sessionId">, caller: SessionRef | null): boolean {

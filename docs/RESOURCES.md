@@ -1287,7 +1287,8 @@ H183 gives the sessions a tool and a record. It stops no process by a rule.
 
 - Each row has the process ID, the private memory, the age, the session and the command line. The text shortens a long command line, and it keeps the start and the end.
 - By default, the list has only the processes of a session. `--all` also lists the orphans that no session started.
-- The process of a session is not in the list. `headroom reap` does not stop a session. A read of the session files can skip a file that Claude Code writes at that time. Thus the list and the stop also keep out each process named `claude` or `claude.exe`, and each live process that a session file named at an earlier read of the daemon.
+- The process of a session is not in the list. `headroom reap` does not stop a session. A read of the session files can skip a file that Claude Code writes at that time. Thus the list and the stop also keep out each process named `claude` or `claude.exe`. They also keep out each live process that a session file named at an earlier read of the daemon.
+- A process with a session, a `claude` program, the daemon or a lease client below it is not in the list. `headroom reap` does not stop it. A stop of the process can end the processes below it. The result is `session` or `headroom`. A child that started before its parent has a parent ID that is in use again, so the walk skips that child.
 - The daemon and the client of each active lease are not in the list, and `headroom reap` does not stop them. The result is `headroom`. The parent of a client of `headroom run --detach` can end while its job runs, so the client can look like an orphan. `headroom release <id>` ends a lease.
 
 **`headroom reap <pid>`.** A process ID has only the digits 0 to 9. The CLI refuses `0x10` and `1e3`. The CLI finds the session of the caller. `HEADROOM_HOLDER` is a free label, so `headroom reap` does not use it.
@@ -1299,10 +1300,10 @@ The daemon finds the running session of the record. When the record and the sess
 
 - **A process of the session that asks**: the running session of the record is the caller. The daemon stops the process and writes the stop to the reap log. When the record and the caller have the ID of a session, the IDs also decide.
 - Before the stop, the daemon reads the start of the live process. It must be the start of the last read and the start of the record. A new process with the same ID has a different start, so the daemon does not stop it. The result is `ended`.
-- When the daemon cannot compare the starts, it stops nothing, and the result is `ended`. This occurs when the sampler cannot read the start of a live process, when the process ended, or when the last read has no start of the process. The sampler of Linux reads the start from the field 22 of `/proc/<pid>/stat`, after the start of the computer.
+- When the daemon cannot compare the starts, it stops nothing, and the result is `ended`. This occurs when the sampler cannot read the start of a live process, or when the process ended. It also occurs when the last read has no start of the process. The sampler of Linux reads the start from the field 22 of `/proc/<pid>/stat`, after the start of the computer.
 - **A process of another session that runs**: the daemon does not stop it. It writes a request to the reap log and adds the alert `reap:<pid>:<start>` for 24 hours. The alert ends when the process ends.
 - The reap log in the store keeps each request. At its first read of the processes, a daemon that starts again reads the requests of the last 24 hours. It shows again the alert of each request whose process runs, with the time of the request.
-- **A process of a session that ended, or of no session**: the daemon does not stop it, also when the caller has the name of that session. The record and the alert say that the process needs the owner of the machine.
+- **A process of a session that ended, or of no session**: the daemon does not stop it. This is also true when the caller has the name of that session. The record and the alert say that the process needs the owner of the machine.
 - headroom has no path that sends a notice to one session. The CLI prints the text of the request, and the alert shows it in `headroom alerts` and on the dashboard.
 - The daemon trusts the session that the CLI sends. A local caller can stop its own processes with the tools of the system, so the check prevents a mistake, not an attack.
 

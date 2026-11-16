@@ -289,7 +289,7 @@ async function sessionHolder(): Promise<string | null> {
  * does not use it.
  *
  * The variables name the session ID first. The process of the session must run with the start of its session file. The
- * walk up the tree checks the start of each parent (H29), so a process ID that is in use again does not name a session.
+ * walk up the tree checks the start of each parent (H29). Thus a process ID that is in use again does not name a session.
  */
 async function callerSession(): Promise<SessionRef | null> {
   let sampler: Sampler | undefined;

@@ -1075,8 +1075,8 @@ export class Engine {
   }
 
   /**
-   * This function gives the process IDs that `headroom reap` does not stop because they belong to headroom (H183): the
-   * daemon, and the client of each active lease. The parent of a client of `headroom run --detach` can end while the job
+   * This function gives the process IDs that belong to headroom (H183): the daemon, and the client of each active lease.
+   * `headroom reap` does not stop them. The parent of a client of `headroom run --detach` can end while the job
    * runs, so the client can look like an orphan. `headroom release <id>` ends a lease.
    */
   #headroomPids(): ReadonlySet<number> {
@@ -1086,8 +1086,8 @@ export class Engine {
   }
 
   /**
-   * This function gives the process IDs of the sessions (H183): the sessions of the last read of the session files, and
-   * each live process that a session file named at an earlier read.
+   * This function gives the process IDs of the sessions (H183): the sessions of the last read of the session files. It
+   * also gives each live process that a session file named at an earlier read.
    */
   #sessionPids(): ReadonlySet<number> {
     const pids = new Set(this.#sessions.map((session) => session.pid));

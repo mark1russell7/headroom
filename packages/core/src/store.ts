@@ -796,8 +796,8 @@ export class Store {
   }
 
   /**
-   * This function reads the requests of the reap log at or after a time (H183): the rows with the action `asked` or
-   * `needs-owner`, the newest first. A restart of the daemon reads them to show the alerts of the requests again.
+   * This function reads the requests of the reap log at or after a time (H183). They are the rows with the action
+   * `asked` or `needs-owner`, the newest first. A restart of the daemon reads them to show the alerts of the requests again.
    */
   reapRequests(since: number): ReapEntry[] {
     return this.#db

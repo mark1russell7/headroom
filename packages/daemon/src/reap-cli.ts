@@ -97,9 +97,9 @@ export function reapExit(result: ReapResult): number {
 
 /**
  * This function runs `headroom reap`. `caller` is the session of the caller, or `null`. It gives 0 for a list, a stop, a
- * request or a record. It gives 3 when no process has the ID. It gives 1 for a process whose parent is not proven gone, for
- * a process of a session or of headroom, for a failed stop, or when the daemon does not run. It gives 2 for a wrong use. A
- * process ID has only the digits 0 to 9, so `0x10` and `1e3` are a wrong use.
+ * request or a record. It gives 3 when no process has the ID. It gives 1 for a process whose parent is not proven gone,
+ * and for a process of a session or of headroom. It also gives 1 for a failed stop, or when the daemon does not run. It
+ * gives 2 for a wrong use. A process ID has only the digits 0 to 9, so `0x10` and `1e3` are a wrong use.
  */
 export async function reapCommand(argv: readonly string[], connection: Connection | null, caller: SessionRef | null, io: ReapOutput = CONSOLE): Promise<number> {
   let parsed: ReturnType<typeof parse>;
