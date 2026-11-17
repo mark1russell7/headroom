@@ -4,7 +4,7 @@ import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clientArgs, detachedLine, noDaemonLine, relayCommandLine, relayPipePath, routeLine, runRelay, startDetachedClient, waitForDaemon, type ClientStart, type RelayLaunch } from "./detach.ts";
+import { clientArgs, detachedLine, noDaemonLine, relayCommandLine, relayPipePath, routeLine, runRelay, RELAY_MAX_WAIT_MS, startDetachedClient, waitForDaemon, type ClientStart, type RelayLaunch } from "./detach.ts";
 
 // The command itself, started as a user starts it. Its daemon has its own folder and port.
 const cli = join(import.meta.dirname, "cli.ts");
@@ -272,7 +272,7 @@ function fakeStart(result: ClientStart | (() => Promise<ClientStart>)): { readon
 
 const ENTRY = "D:/git/headroom/packages/daemon/src/cli.ts";
 const ARGS = ["run", "--job", "a b", "--", "sh", "-c", 'echo "x" ✓'];
-const LOG = "C:/Users/someone/.headroom/jobs/x.log";
+const LOG = "D:/headroom-test/.headroom/jobs/x.log";
 const STARTED = { kind: "started", pid: 4242, shellPid: 17 } as const;
 
 describe("the start of a detached client through a relay (H190)", () => {
@@ -382,6 +382,20 @@ describe("the relay (H190)", () => {
   it("starts nothing and ends with 1 when the request is not a request", { timeout: 20000 }, async () => {
     const pipe = relayPipePath();
     const server = createServer((socket) => socket.end(`${JSON.stringify({ entry: ENTRY, args: [1, 2], log: LOG, waitMs: 100 })}\n`));
+    await new Promise<void>((resolve) => server.listen(pipe, resolve));
+    const relay = fakeStart({ kind: "lease", lease: "x" });
+    try {
+      expect(await runRelay(pipe, relay.start, 3000)).toBe(1);
+      expect(relay.calls).toEqual([]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("starts nothing and ends with 1 when the wait of the request is longer than the bound", { timeout: 20000 }, async () => {
+    const pipe = relayPipePath();
+    const server = createServer((socket) => socket.end(`${JSON.stringify({ entry: ENTRY, args: ["run"], log: LOG, waitMs: RELAY_MAX_WAIT_MS + 1 })}
+`));
     await new Promise<void>((resolve) => server.listen(pipe, resolve));
     const relay = fakeStart({ kind: "lease", lease: "x" });
     try {

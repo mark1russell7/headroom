@@ -162,6 +162,12 @@ export const RELAY_CONNECT_MS = 15_000;
 /** The time that the relay gets for its answer after the wait for the lease, in milliseconds. */
 export const RELAY_MARGIN_MS = 5_000;
 
+/**
+ * The longest wait for the lease that a relay accepts, in milliseconds. Each process of the user can write to the pipe.
+ * Thus a request with a longer wait is not a request, and the relay starts no timer for it.
+ */
+export const RELAY_MAX_WAIT_MS = 60_000;
+
 /** The longest line on the pipe of a relay, in bytes. A command line of Windows has at most 32,767 characters. */
 const RELAY_LINE_BYTES = 1024 * 1024;
 
@@ -265,7 +271,7 @@ function parseStart(line: string): ClientStart {
 function parseRequest(line: string): RelayRequest | null {
   try {
     const { entry, args, log, waitMs } = JSON.parse(line) as { readonly entry?: unknown; readonly args?: unknown; readonly log?: unknown; readonly waitMs?: unknown };
-    if (typeof entry !== "string" || typeof log !== "string" || typeof waitMs !== "number" || !Number.isFinite(waitMs) || waitMs < 0) return null;
+    if (typeof entry !== "string" || typeof log !== "string" || typeof waitMs !== "number" || !Number.isFinite(waitMs) || waitMs < 0 || waitMs > RELAY_MAX_WAIT_MS) return null;
     if (!Array.isArray(args) || !args.every((arg): arg is string => typeof arg === "string")) return null;
     return { entry, args, log, waitMs };
   } catch {
