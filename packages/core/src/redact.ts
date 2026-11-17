@@ -1,8 +1,8 @@
 /**
  * The redaction of the command lines that headroom keeps (H186). A command line or the name of a job can hold a secret.
  * Examples are `GITHUB_TOKEN=... gh pr list`, `curl -u admin:...` and `mysql --password=...`. headroom stores and
- * shows each such text only after this redaction. Thus the database, the reap logs, the alerts and the dashboard hold no
- * secret of a command line.
+ * shows each such text only after this redaction. Thus the database, the start log (H193), the reap logs, the alerts and
+ * the dashboard hold no secret of a command line.
  *
  * The shapes come from the home of redaction (`@mark1russell7/text/redact`). The tokens of known services are found by
  * their shape. The other secrets are found by their context. The contexts are a parameter or a flag with the name of

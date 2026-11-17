@@ -843,6 +843,13 @@ On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer, each with the c
 - In the first 5 minutes of the log, 11,993 rows came at most 95 ms after the creation. The 188 adoptions came 8,064 ms to 4,956,090 ms after it.
 - Thus the limit of 1 s is more than 10 times the slowest start and less than 1/8 of the fastest adoption.
 
+**Secrets.** The first version of the log kept each command line as it came. H186 permits a stored command line only after the redaction.
+
+- On 2026-11-17 at 20:55Z, the redaction changed 397 of the 9,251 texts of the live log. 20,347 of the 49,575 start rows named such a text.
+- 2 marks were values of `GH_TOKEN=`. 374 marks were the value of `git -c log.showSignature=false`, and 40 were the minutes of `date -u +%H:%M`.
+- The last two kinds are false matches of the home of redaction. They go to that home as an issue. Until its fix, the log keeps them with the mark.
+- The writer redacts a text only when its memory does not have the text. Thus a known text costs no redaction.
+
 **The start of the reader.** The modules of the thread load in approximately 170 ms: koffi in 59 ms, and the start log with SQLite in 114 ms more.
 
 - The port keeps each message, but the reader reads the program of a new process when it gets the message. A process that ended before that has no name.
@@ -1716,6 +1723,7 @@ A command line or the name of a job can hold a token, a password or a key. Examp
 
 - The name of the job of a lease, and the command of its key (H78).
 - The command line of each owner record (H48, H182).
+- The image, the command line and the command line of the parent of each row of the start log (H193). Step 2 of its schema redacts the texts of an older file.
 - Thus also the shadow log and the log of `headroom reap` (H183), the alerts and the dashboard.
 
 **The step of the schema.** Step 5 redacts the rows of an older file. It changes only the rows with a secret. The columns are in `COMMAND_COLUMNS` of `store.ts`: `process_owners.command`, `reap_shadow.command`, `reap_log.command`, `leases.job` and `lease_keys.command`.
@@ -1724,3 +1732,4 @@ A command line or the name of a job can hold a token, a password or a key. Examp
 
 - A test puts fixture secrets in each path and holds that no fixture secret reaches any table.
 - A test fails when a table gets a new column with the name `command` or `job` that is not in `COMMAND_COLUMNS`.
+- That test reads only `headroom.db`, and the start log keeps its texts in its own file. Thus a test of its own puts fixture secrets through its writer and its step 2.

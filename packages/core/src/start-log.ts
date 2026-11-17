@@ -6,6 +6,8 @@
  * - A start row has the pid, the parent and the exact creation time: a FILETIME, to join with a crash dump. It also has
  *   the image, the command line, the command line of the parent and the time since a traced process with the pid ended.
  * - The table `texts` keeps each image and command line once. A row names its texts by id.
+ * - Each text gets the redaction of H186 (`redact.ts`) before the file keeps it. Step 2 of the schema redacts the texts
+ *   of an older file.
  * - The file has no index of its own. The rows come in the order of time, so a search by time is a binary search on the
  *   rowid. Each index costs writes of pages at each commit.
  * - The log keeps 24 hours, counted back from its newest row. Thus a long stop after a crash does not empty it.
@@ -15,6 +17,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { migrate, openDatabase, transaction, type Migration } from "@mark1russell7/sqlite";
+import { redactCommand } from "./redact.ts";
 
 /** The time that the log keeps, counted back from its newest row. */
 export const START_LOG_KEEP_MS = 86_400_000;
@@ -110,11 +113,28 @@ const MIGRATIONS: readonly Migration<DatabaseSync>[] = [
    CREATE TABLE starts (at INTEGER NOT NULL, key INTEGER NOT NULL, pid INTEGER NOT NULL, ppid INTEGER, created INTEGER,
      image INTEGER, command INTEGER, parent_command INTEGER, reuse_ms INTEGER);
    CREATE TABLE exits (at INTEGER NOT NULL, key INTEGER NOT NULL, pid INTEGER NOT NULL, code INTEGER, created INTEGER);`,
+  redactTexts,
 ];
 
 /** This function gives the first 8 bytes of the SHA-256 of a text, as a signed 64-bit integer. */
 function textHash(text: string): bigint {
   return createHash("sha256").update(text).digest().readBigInt64LE(0);
+}
+
+/**
+ * Step 2 of the schema (H186). The first version of the log kept each text as it came, so a text can hold a secret. This
+ * step gives the redacted text to each text that the redaction changes. When another text has the hash of the new text,
+ * the changed text gets no hash, as in `#textId`.
+ */
+function redactTexts(db: DatabaseSync): void {
+  const taken = db.prepare("SELECT id FROM texts WHERE hash = ? AND id <> ?");
+  const update = db.prepare("UPDATE texts SET text = ?, hash = ? WHERE id = ?");
+  for (const { id, text } of db.prepare("SELECT id, text FROM texts").all() as { id: number; text: string }[]) {
+    const stored = redactCommand(text);
+    if (stored === text) continue;
+    const hash = textHash(stored);
+    update.run(stored, taken.get(hash, id) === undefined ? hash : null, id);
+  }
 }
 
 /** This function gives the Unix time in ms of a FILETIME. */
@@ -205,7 +225,10 @@ export class StartLogWriter {
     this.#touchText = this.#db.prepare("UPDATE texts SET last = ? WHERE id = ?");
   }
 
-  /** This function gives the id of a text, and writes the text when the file does not have it. */
+  /**
+   * This function gives the id of a text, and writes the text when the file does not have it. The file keeps the text only
+   * after the redaction of H186. The memory keeps the id under the text as it came, so a known text costs no redaction.
+   */
   #textId(text: string | null, now: number): number | null {
     if (text === null) return null;
     const cached = this.#texts.get(text);
@@ -216,10 +239,11 @@ export class StartLogWriter {
       }
       return cached.id;
     }
-    const hash = textHash(text);
+    const stored = redactCommand(text);
+    const hash = textHash(stored);
     const found = this.#findText.get(hash) as { id: number; text: string; last: number } | undefined;
     let entry: { id: number; last: number };
-    if (found !== undefined && found.text === text) {
+    if (found !== undefined && found.text === stored) {
       entry = { id: found.id, last: found.last };
       if (now - found.last >= TOUCH_EVERY_MS) {
         this.#touchText.run(now, found.id);
@@ -227,7 +251,7 @@ export class StartLogWriter {
       }
     } else {
       // A different text with the same hash gets no hash, so the search never finds it. The memory still finds it.
-      entry = { id: Number(this.#insertText.run(found === undefined ? hash : null, text, now).lastInsertRowid), last: now };
+      entry = { id: Number(this.#insertText.run(found === undefined ? hash : null, stored, now).lastInsertRowid), last: now };
     }
     if (this.#texts.size >= CACHED_TEXTS) this.#texts.clear();
     this.#texts.set(text, entry);
