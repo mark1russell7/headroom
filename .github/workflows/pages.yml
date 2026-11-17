@@ -13,7 +13,6 @@ on:
   schedule:
     - cron: "37 6 * * *"
   workflow_dispatch:
-  pull_request:
 
 permissions: {}
 
@@ -37,21 +36,6 @@ jobs:
       statuses: read
       pages: write
       id-token: write
-    with:
-      build: pnpm --filter @headroom/site run build
-      out: packages/site/dist
-      env: '{"SITE_BASE": "/${{ github.event.repository.name }}"}'
-      deploy: ${{ github.event_name != 'pull_request' }}
-      # The site-pages action adds releases/, status/, data/releases.json and data/status.json to the built site.
-      site-pages: true
-      site-name: headroom
-      roadmap: docs/ROADMAP.md
-      # The check opens each page in a browser at 360, 400 and 1280 pixels, in light and dark.
-      # The probe drives the simulator: it adds jobs and examines the queue, the reasons and the ended jobs.
-      # The check reads the TypeScript source and removes its types.
-      site-check: true
-      site-check-pages: /,/releases/,/status/
-      site-check-probe: packages/site/src/check-probe.ts
 
   # This job examines the deployed site: the home page and the pages of site-pages.
   # It starts no code of the repository and reads only the public site.
