@@ -271,6 +271,7 @@ On 2026-10-25, the available memory fell two times while no job used much memory
 - **The alert `cache`.** A warning comes when the cache holds 4 GB or more and less than 6 GB of memory is available. Below 1 GB available, the alert is critical. It ends when the cache falls below 3 GB, or when more than 8 GB is available.
 - The alert names the owners that read most and wrote most in the last hour. The daemon counts the reads of each owner from the same process read as the writes. The count includes the reads from the cache and from pipes.
 - **The owners.** `system:search` and `system:defender` show the work of the indexer and the scanner in the lists of owners.
+- **The alert `reader` (H192).** An owner of the kind `system` or `other` can read 50 GB or more in the last hour. When less than 2 GB of memory is available then, a warning comes. The alert names the processes of the owner that read most in the last minute. For Windows Search and Defender, it also gives the next step. headroom does not stop them. The alert ends when the reads fall below 37.5 GB, or when more than 2.7 GB is available. `headroom config alerts readerMb 0` turns it off.
 - **The jobs.** Run jobs that read many files (a wide grep, a build of many repos) with `headroom run --slot files`. Only one job holds the slot `files` at a time.
 - headroom does not trim the cache. A trim needs a privilege that the daemon does not have. `docs/RESOURCES.md` gives the commands for an admin shell.
 - **The owner records.** At the first read of a process, the daemon records its owner, its full command line and its start. It also records its parent with the start of the parent, and its session. The record keeps the owner after the parent ends.
@@ -785,6 +786,7 @@ The alerts tell about a problem before the memory runs out. `headroom status` sh
 | `handles` | One process holds more than 100,000 handles (a warning) or more than 500,000 (critical), or gains more than 20,000 handles in 5 minutes. The id is `runaway:handles:<pid>`. The alert names the owner, also after the parent ended, and the command line (H48). |
 | `memory` | Less than 1 GB of memory is available. |
 | `cache` | The system file cache holds 4 GB or more, and less than 6 GB of memory is available (a warning) or less than 1 GB (critical). The alert names the owners that read and wrote most in the last hour (H50). |
+| `reader` | An owner of the kind `system` or `other`, for example Windows Search, read 50 GB or more in the last hour, and less than 2 GB of memory is available. The alert names its processes of the last minute and the next step (H192). |
 | `commit` | The commit charge is above 90% of its limit. |
 | `desktop` | More than 1000 processes run in the session. The desktop heap can run out, and new processes then fail at their start. |
 | `pool` | The non-paged kernel pool is above 3 GB, or the paged pool is above 4 GB, or one of them grew more than 500 MB in one hour. The alert names the pool tags that grow. |
