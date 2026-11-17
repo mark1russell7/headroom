@@ -154,6 +154,35 @@ The line `Process starts` of `headroom status` gives the starts of the last 10 m
 
 On 2026-10-24, this computer started 1,450 processes in one minute. A read every second found only 260 of them, and a read every 10 seconds found 60.
 
+### Named process starts (H188)
+
+H29 gives the exact count of all the starts, but a read every 10 seconds sees few of them. Thus an owner had only a lower bound, and an alert could not name the program that starts the processes. With H188, the daemon traces the starts on Windows:
+
+- The daemon puts each process of a traced owner in a job object of its own. All the jobs have one completion port. The children of a process go into its job.
+- Windows then sends a message for each start and each exit in the tree. A reader thread takes the messages.
+- The reader reads the name and the parent of each new process, and keeps a handle until the exit. Thus it gets the exit code, also of a process that lives for 10 ms.
+- The jobs have no limit and do not stop their processes. A child can still break away, so `headroom run --detach` works.
+- By default, the trace follows the sessions, the MCP servers, the services, Docker and the processes under the granted leases. The browsers and the editors of Mark stay out of it.
+
+The line `Traced starts` of `headroom status` comes after the line `Process starts`, for example:
+
+```text
+Traced starts: 900 a minute, 90 % of all the starts. 12 a minute failed with 0xC0000142. The trace used 85 ms of processor time a minute, with 12 jobs and 40 live processes.
+  Most: session:shop bash.exe > git.exe 600, mcp:vex node.exe > cmd.exe 250, 12 failed.
+```
+
+- A source is an owner, a parent program and a program. The line names the sources of 90 % of the traced starts, at most 12.
+- The alert `churn` names these sources when the trace has them.
+- The resource `procs` gets 2 more instances. `procs:traced` is the traced starts in one minute. `procs:failed` is the starts that failed with `0xC0000142`.
+- An owner gets the higher of its two rates: its lower bound from the reads, or its traced starts.
+- `headroom config start-trace session,mcp` sets the owner kinds that the trace follows. `off` stops the trace, and `--clear` sets the default again.
+
+Windows refuses a job for a protected process and for a process of another user. The status counts these refusals.
+
+Each restart of the daemon puts one more job around a live process, because a job keeps the port of its first daemon. Windows nests jobs, so the processes go on. The end of this limit: a later step gives the port to the next daemon.
+
+The rule and the measures are in [docs/RESOURCES.md](docs/RESOURCES.md#h188-the-start-trace).
+
 ### Spawn-heavy jobs and browser tests (H47)
 
 On 2026-10-24, the Playwright browsers of shop did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases. The desktop heap, the memory, the commit charge and the kernel pools had room. Thus the burst itself stops the start of a browser.

@@ -83,6 +83,8 @@ import {
   spawnLine,
   startsLine,
   thermalLine,
+  TRACED_KINDS,
+  traceLines,
   thermalLines,
   SUM_WAIT_START,
   unattributedRow,
@@ -399,6 +401,8 @@ function printStatus(status: DaemonStatus): void {
   // H29: the process starts. A daemon of an older version gives none.
   const starts = status.starts === undefined ? null : startsLine(status.starts);
   if (starts !== null) console.log(starts);
+  // H188: the traced starts with their sources. A daemon of an older version gives none.
+  for (const line of traceLines(status.starts?.traced)) console.log(line);
   // H47: the spawn-heavy jobs that run. A browser test waits until they end.
   const heavy = spawnLine(status.leases);
   if (heavy !== null) console.log(heavy);
@@ -1274,8 +1278,31 @@ function printConfig(config: Config): void {
         : "reap-auto: off (the default). The daemon writes the shadow log (headroom reap --shadow) and stops no process.",
     );
   }
+  // H188: a daemon of an older version has no setting startTrace.
+  if (Array.isArray(config.startTrace)) {
+    const byDefault = config.startTrace.length === TRACED_KINDS.length && TRACED_KINDS.every((kind) => config.startTrace.includes(kind)) ? " (the default)" : "";
+    console.log(
+      config.startTrace.length === 0
+        ? "start-trace: off. The daemon names no process start."
+        : `start-trace: ${config.startTrace.join(",")}${byDefault}. The daemon puts the processes of these owner kinds and of the leases in job objects, and names each start in their trees.`,
+    );
+  }
   // H179: a daemon of an older version has no setting alerts.
   if (config.alerts !== undefined) for (const line of alertsLines(config.alerts)) console.log(line);
+}
+
+/**
+ * `headroom config start-trace <kinds>|off` sets the owner kinds of the start trace (H188), for example `session,mcp`.
+ * `--clear` gives the default: session, mcp, service, docker.
+ */
+async function startTraceConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra || value === "") {
+    console.error("Usage: headroom config start-trace <kinds>, for example session,mcp,service,docker, headroom config start-trace off, or headroom config start-trace --clear (the default)");
+    return 2;
+  }
+  const kinds = value === undefined ? null : value === "off" ? [] : value.split(",").map((kind) => kind.trim());
+  printConfig(await connection.call<Config>(["config", "set"], { startTrace: kinds }));
+  return 0;
 }
 
 /** `headroom config reap-auto on|off` sets the automatic reap (H183). `--clear` gives the default: off. In this version it stops no process. */
@@ -1496,9 +1523,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "auto-drain") return autoDrainConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "worktree-auto-clean" || name === "worktrees.autoClean") return worktreeAutoCleanConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "reap-auto" || name === "reapAuto") return reapAutoConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "start-trace" || name === "startTrace") return startTraceConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config start-trace <kinds>|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }

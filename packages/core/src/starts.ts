@@ -14,6 +14,7 @@
 
 import type { Lease } from "./broker.ts";
 import type { Owners } from "./resources.ts";
+import type { TracedStarts } from "./trace.ts";
 import type { OwnerKind, ProcessInfo } from "./types.ts";
 
 /** The starts of one owner in one minute, as an average over the last 10 minutes. */
@@ -55,6 +56,11 @@ export interface ProcessStarts {
   readonly owners: readonly OwnerStarts[];
   /** The leased jobs with a count in the window, the most starts first. */
   readonly jobs: readonly JobStarts[];
+  /**
+   * The starts of the trace (H188): a name and a parent for each start in the trees of the traced owners. It is `null` or
+   * absent before the first root of the trace, without a trace on the platform, and when the setting turns it off.
+   */
+  readonly traced?: TracedStarts | null | undefined;
 }
 
 /** The process starts before the first two reads: no rate and no owner. */

@@ -35,6 +35,7 @@ import { fileTimeMs, programName, titleOf } from "./owners.ts";
 import type { KeyState } from "./reboot.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { parseResident, parseSystemProcesses, type ProcessTotals, type ResidentMemory } from "./system-information.ts";
+import { windowsStartTrace } from "./trace-windows.ts";
 import type { DiskSpace, NetAdapter, PoolTag, PortRange, ProcessInfo, ProcessLink, SystemMemory, TcpConnection, TcpEndpoints, TcpTable } from "./types.ts";
 import { readGpu } from "./windows-gpu.ts";
 import { closePower, keepAwake, readBattery, readMeters, readThermal, watchPower } from "./windows-power.ts";
@@ -521,6 +522,7 @@ export function windowsSampler(): Sampler {
     processes,
     commandLine,
     processSequence: () => sequence,
+    startTrace: windowsStartTrace,
     poolTags,
     gui,
     disks,

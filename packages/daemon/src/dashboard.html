@@ -764,7 +764,7 @@ function renderReboot(st) {
 const GROUPS = [["disk", "Disk"], ["memory", "Memory"], ["commit", "Memory"], ["cpu", "CPU"], ["thermal", "CPU"], ["gpu", "GPU"], ["battery", "Power"], ["power", "Power"], ["net", "Network"], ["ports", "Network"], ["service", "Services"], ["slot", "Slots"], ["pool", "Kernel"], ["desktop", "Kernel"], ["procs", "Kernel"], ["handles", "Kernel"]];
 const NAMES = {
   memory: "Memory", commit: "Commit charge", cpu: "CPU", desktop: "Processes of the session", "pool:nonpaged": "Non-paged pool", "pool:paged": "Paged pool",
-  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports", procs: "Process starts", handles: "Handles", battery: "Battery", power: "Power draw", thermal: "CPU speed and heat",
+  "net:in": "Network in", "net:out": "Network out", "ports:tcp": "Dynamic TCP ports", procs: "Process starts", "procs:traced": "Traced process starts", "procs:failed": "Failed process starts", handles: "Handles", battery: "Battery", power: "Power draw", thermal: "CPU speed and heat",
 };
 /** The GPU part of the text of a GPU card (H36): the shared memory in the RAM and the use of the busiest engine. */
 function gpuSub(g) {
