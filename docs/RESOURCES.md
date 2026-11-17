@@ -737,6 +737,7 @@ H29 counts all the starts exactly, from the sequence numbers of Windows. An owne
 
 - `cover(pid)` opens the process, makes a job and puts the process in it.
 - The job has only `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. It has no limit on memory, processors or processes, and a child can break away from it.
+- `headroom run --detach` does not need the breakaway. Its relay starts with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` set to the shell of the desktop (H190). Thus the relay and the client have only the jobs of the shell.
 - All the jobs share one completion port. The key of each job is its number in the trace. The key 0 stops the reader.
 - The children of a process in a job go into the same job. Windows sends a message for each start (`JOB_OBJECT_MSG_NEW_PROCESS`).
 - Windows also sends a message for each exit (`JOB_OBJECT_MSG_EXIT_PROCESS` or `JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS`), and a message when the job is empty (`JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO`). The trace then closes the job.

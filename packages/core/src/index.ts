@@ -240,8 +240,8 @@ export {
   tcpSummary,
 } from "./network.ts";
 export type { Flow, Flows, ListeningPort, OwnerConnections, TcpPorts, TcpSummary } from "./network.ts";
-export { createJob, startOutsideJob } from "./enforce.ts";
-export type { Job, JobLimits, StartedProcess } from "./enforce.ts";
+export { createJob, environmentBlock, startOutsideJob, startUnderShell } from "./enforce.ts";
+export type { Job, JobLimits, ShellStart, StartedProcess } from "./enforce.ts";
 export {
   fitTrend,
   forecast,

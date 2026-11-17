@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clientArgs, detachedLine, noDaemonLine, waitForDaemon } from "./detach.ts";
+import { clientArgs, detachedLine, noDaemonLine, relayCommandLine, relayPipePath, routeLine, runRelay, RELAY_MAX_WAIT_MS, startDetachedClient, waitForDaemon, type ClientStart, type RelayLaunch } from "./detach.ts";
 
 // The command itself, started as a user starts it. Its daemon has its own folder and port.
 const cli = join(import.meta.dirname, "cli.ts");
@@ -227,5 +227,188 @@ describe("headroom run --detach with a daemon", () => {
     // The client writes to the log too. The line of the peak comes from the job object, which only Windows has.
     expect(readFileSync(log, "utf8")).toContain("headroom: lease");
     if (process.platform === "win32") expect(readFileSync(log, "utf8")).toContain("the job used at most");
+  });
+});
+
+describe("the command line of the relay (H190)", () => {
+  it("quotes Node, its options, the file of the relay and the pipe", () => {
+    const line = relayCommandLine("\\\\.\\pipe\\headroom-detach-1", "C:\\Program Files\\nodejs\\node.exe", ["--title=headroom-cli"], "D:\\git\\headroom\\detach-relay.ts");
+    expect(line).toBe('"C:\\Program Files\\nodejs\\node.exe" "--title=headroom-cli" "D:\\git\\headroom\\detach-relay.ts" "\\\\.\\pipe\\headroom-detach-1"');
+  });
+
+  it("gives a named pipe on Windows, and a socket file elsewhere, with a new name each time", () => {
+    expect(relayPipePath("win32")).toMatch(/^\\\\\.\\pipe\\headroom-detach-[0-9a-f-]{36}$/);
+    const unix = relayPipePath("linux");
+    expect(unix.startsWith(tmpdir())).toBe(true);
+    expect(unix).toMatch(/headroom-detach-[0-9a-f-]{36}\.sock$/);
+    expect(relayPipePath("win32")).not.toBe(relayPipePath("win32"));
+  });
+});
+
+describe("the line about the place of a detached client", () => {
+  it("names the relay and the shell outside the jobs of the caller", () => {
+    expect(routeLine("build", { kind: "shell", relayPid: 41, shellPid: 7 })).toBe(
+      "headroom: the client of job build runs outside the jobs of the caller. Its relay (process 41) has the shell (process 7) as its parent.",
+    );
+  });
+
+  it("tells why the client stays in the jobs of the caller, and has no line on a platform with no relay", () => {
+    expect(routeLine("build", { kind: "caller", reason: "no shell window" })).toContain("runs in the jobs of the caller, because no shell window.");
+    expect(routeLine("build", { kind: "caller", reason: null })).toBeNull();
+  });
+});
+
+/** The start of a client in a test: it keeps each call, and gives `result`. */
+function fakeStart(result: ClientStart | (() => Promise<ClientStart>)): { readonly calls: unknown[][]; readonly start: (...args: [string, readonly string[], string, number?]) => Promise<ClientStart> } {
+  const calls: unknown[][] = [];
+  return {
+    calls,
+    start: async (...args) => {
+      calls.push(args);
+      return typeof result === "function" ? result() : result;
+    },
+  };
+}
+
+const ENTRY = "D:/git/headroom/packages/daemon/src/cli.ts";
+const ARGS = ["run", "--job", "a b", "--", "sh", "-c", 'echo "x" ✓'];
+const LOG = "D:/headroom-test/.headroom/jobs/x.log";
+const STARTED = { kind: "started", pid: 4242, shellPid: 17 } as const;
+
+describe("the start of a detached client through a relay (H190)", () => {
+  it("starts the client in the jobs of the caller when the platform has no relay", async () => {
+    const direct = fakeStart({ kind: "lease", lease: "direct" });
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch: null, waitMs: 300, direct: direct.start });
+    expect(started).toEqual({ start: { kind: "lease", lease: "direct" }, route: { kind: "caller", reason: null } });
+    expect(direct.calls).toEqual([[ENTRY, ARGS, LOG, 300]]);
+  });
+
+  it("gives the request to the relay, and the answer of the relay back, with each argument whole", { timeout: 20000 }, async () => {
+    const direct = fakeStart({ kind: "lease", lease: "direct" });
+    const relay = fakeStart({ kind: "lease", lease: "from-relay" });
+    let ran: Promise<number> = Promise.resolve(-1);
+    const launch: RelayLaunch = async (pipe) => {
+      ran = runRelay(pipe, relay.start, 5000);
+      return STARTED;
+    };
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch, waitMs: 2000, pipe: relayPipePath(), direct: direct.start });
+    expect(started).toEqual({ start: { kind: "lease", lease: "from-relay" }, route: { kind: "shell", relayPid: 4242, shellPid: 17 } });
+    expect(relay.calls).toEqual([[ENTRY, ARGS, LOG, 2000]]);
+    expect(direct.calls).toEqual([]);
+    expect(await ran).toBe(0);
+  });
+
+  it("starts the client in the jobs of the caller when the relay cannot start, and tells why", async () => {
+    const direct = fakeStart({ kind: "no-lease" });
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch: async () => ({ kind: "unavailable", reason: "the shell is elevated, and this process is not" }), direct: direct.start });
+    expect(started).toEqual({ start: { kind: "no-lease" }, route: { kind: "caller", reason: "the shell is elevated, and this process is not" } });
+    expect(direct.calls).toHaveLength(1);
+  });
+
+  it("takes an error of the launch as a reason, and starts the client in the jobs of the caller", async () => {
+    const direct = fakeStart({ kind: "pending" });
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, {
+      launch: async () => {
+        throw new Error("koffi did not load");
+      },
+      direct: direct.start,
+    });
+    expect(started.route).toEqual({ kind: "caller", reason: "koffi did not load" });
+    expect(direct.calls).toHaveLength(1);
+  });
+
+  it("starts exactly one client when the relay connects after the time limit: the late relay finds no pipe and starts nothing", { timeout: 20000 }, async () => {
+    const direct = fakeStart({ kind: "lease", lease: "direct" });
+    const relay = fakeStart({ kind: "lease", lease: "late" });
+    let late: Promise<number> = Promise.resolve(-1);
+    let wake: () => void = () => undefined;
+    const due = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    const launch: RelayLaunch = async (pipe) => {
+      setTimeout(() => {
+        late = runRelay(pipe, relay.start, 3000);
+        wake();
+      }, 600);
+      return STARTED;
+    };
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch, connectMs: 200, pipe: relayPipePath(), direct: direct.start });
+    expect(started).toEqual({ start: { kind: "lease", lease: "direct" }, route: { kind: "caller", reason: "the relay (process 4242) did not connect in 0.2 s" } });
+    await due;
+    expect(await late).toBe(1);
+    expect(relay.calls).toEqual([]);
+    expect(direct.calls).toHaveLength(1);
+  });
+
+  it("gives pending when the relay has the request but no answer comes in time, because the client can run", { timeout: 20000 }, async () => {
+    const direct = fakeStart({ kind: "lease", lease: "direct" });
+    const relay = fakeStart(() => new Promise((resolve) => setTimeout(() => resolve({ kind: "lease", lease: "slow" }), 1500)));
+    let ran: Promise<number> = Promise.resolve(-1);
+    const launch: RelayLaunch = async (pipe) => {
+      ran = runRelay(pipe, relay.start, 5000);
+      return STARTED;
+    };
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch, waitMs: 100, marginMs: 100, pipe: relayPipePath(), direct: direct.start });
+    expect(started).toEqual({ start: { kind: "pending" }, route: { kind: "shell", relayPid: 4242, shellPid: 17 } });
+    expect(direct.calls).toEqual([]);
+    expect(await ran).toBe(0);
+    expect(relay.calls).toHaveLength(1);
+  });
+
+  it("gives the reason of a relay whose start of the client failed", { timeout: 20000 }, async () => {
+    const relay = fakeStart(async () => {
+      throw new Error("no node at that path");
+    });
+    const launch: RelayLaunch = async (pipe) => {
+      void runRelay(pipe, relay.start, 5000);
+      return STARTED;
+    };
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch, waitMs: 2000, pipe: relayPipePath(), direct: fakeStart({ kind: "pending" }).start });
+    expect(started.start).toEqual({ kind: "failed", reason: "no node at that path" });
+  });
+
+  it("gives pending for an answer that is not a start of a client", { timeout: 20000 }, async () => {
+    const launch: RelayLaunch = async (pipe) => {
+      const socket = connect(pipe);
+      socket.once("data", () => socket.end("not a start\n"));
+      return STARTED;
+    };
+    const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch, waitMs: 2000, pipe: relayPipePath(), direct: fakeStart({ kind: "lease", lease: "direct" }).start });
+    expect(started).toEqual({ start: { kind: "pending" }, route: { kind: "shell", relayPid: 4242, shellPid: 17 } });
+  });
+});
+
+describe("the relay (H190)", () => {
+  it("starts nothing and ends with 1 when the request is not a request", { timeout: 20000 }, async () => {
+    const pipe = relayPipePath();
+    const server = createServer((socket) => socket.end(`${JSON.stringify({ entry: ENTRY, args: [1, 2], log: LOG, waitMs: 100 })}\n`));
+    await new Promise<void>((resolve) => server.listen(pipe, resolve));
+    const relay = fakeStart({ kind: "lease", lease: "x" });
+    try {
+      expect(await runRelay(pipe, relay.start, 3000)).toBe(1);
+      expect(relay.calls).toEqual([]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("starts nothing and ends with 1 when the wait of the request is longer than the bound", { timeout: 20000 }, async () => {
+    const pipe = relayPipePath();
+    const server = createServer((socket) => socket.end(`${JSON.stringify({ entry: ENTRY, args: ["run"], log: LOG, waitMs: RELAY_MAX_WAIT_MS + 1 })}
+`));
+    await new Promise<void>((resolve) => server.listen(pipe, resolve));
+    const relay = fakeStart({ kind: "lease", lease: "x" });
+    try {
+      expect(await runRelay(pipe, relay.start, 3000)).toBe(1);
+      expect(relay.calls).toEqual([]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("starts nothing and ends with 1 when no pipe answers", async () => {
+    const relay = fakeStart({ kind: "lease", lease: "x" });
+    expect(await runRelay(relayPipePath(), relay.start, 3000)).toBe(1);
+    expect(relay.calls).toEqual([]);
   });
 });

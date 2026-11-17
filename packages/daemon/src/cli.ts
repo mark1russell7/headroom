@@ -81,6 +81,7 @@ import {
   SPAWN_HEAVY_DEFAULT,
   spawnClassText,
   spawnLine,
+  startUnderShell,
   startsLine,
   thermalLine,
   TRACED_KINDS,
@@ -112,7 +113,7 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { diskCommand } from "./disk-cli.ts";
-import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, startClient, tellParent, waitForDaemon } from "./detach.ts";
+import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, relayCommandLine, routeLine, startDetachedClient, tellParent, waitForDaemon } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
@@ -820,8 +821,16 @@ async function run(argv: string[]): Promise<number> {
   const adopt = values.adopt;
   const detachAt = new Set(tokens.flatMap((token) => (token.kind === "option" && token.name === "detach" ? [token.index] : [])));
   // H56: the detached process is this same code, without --detach. It gives each message of the run to the log.
+  // H190: on Windows, a relay with the shell as its parent starts the client, so the client leaves the jobs of the caller.
+  // The daemon starts an adopted client (H64), and the children of the daemon are in no job of a session: so no relay.
   const startDetached = async (client: string): Promise<number> => {
-    const start = await startClient(import.meta.filename, clientArgs(argv, detachAt, values.holder ?? (await holderOf()), client), client);
+    const launch = process.platform === "win32" && adopt === undefined ? (pipe: string) => startUnderShell(relayCommandLine(pipe), process.cwd(), process.env) : null;
+    const { start, route } = await startDetachedClient(import.meta.filename, clientArgs(argv, detachAt, values.holder ?? (await holderOf()), client), client, { launch });
+    const where = routeLine(job, route);
+    if (where !== null) {
+      appendFileSync(client, `${where}\n`);
+      if (route.kind === "caller") console.error(where);
+    }
     const { line, code } = detachedLine(job, client, start);
     if (code === 0) console.log(line);
     else console.error(line);

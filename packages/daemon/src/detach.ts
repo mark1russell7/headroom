@@ -7,13 +7,23 @@
  *
  * This file has only the start. The detached process runs the code of a foreground run. Thus the queue, the slots, the
  * limits, the job object, the exit record and the release do not change.
+ *
+ * On Windows, a child has the jobs of its parent. An editor can hold its processes in a job that stops them when it
+ * closes. Thus a client that is a child of this process can stop with the editor. With H190, a relay starts the client.
+ * The relay has the shell of the desktop as its parent process, so it has none of the jobs of the caller. The relay and
+ * this process talk on a named pipe. This file holds no import of the core, so the relay starts quickly.
  */
 
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, openSync } from "node:fs";
+import { createServer, connect as connectPipe, type Socket } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { ShellStart } from "@headroom/core";
 import { headroomHome } from "./paths.ts";
+import { quoteArgument } from "./winshell.ts";
 
 /** The internal option of a detached client: the output of the client is already the log file, and its parent waits for the lease. */
 export const DETACHED_CLIENT = "--detached-client";
@@ -144,4 +154,230 @@ export async function waitForDaemon<C>(
 /** The line of an adopted job when no daemon answered before its wait ended. */
 export function noDaemonLine(job: string): string {
   return `headroom: no daemon answered before the wait of ${job} ended, so the job did not run without its lease. Nothing ran.`;
+}
+
+/** The longest wait for the relay to connect to its pipe, in milliseconds. A relay that comes later finds no pipe, and starts nothing. */
+export const RELAY_CONNECT_MS = 15_000;
+
+/** The time that the relay gets for its answer after the wait for the lease, in milliseconds. */
+export const RELAY_MARGIN_MS = 5_000;
+
+/**
+ * The longest wait for the lease that a relay accepts, in milliseconds. Each process of the user can write to the pipe.
+ * Thus a request with a longer wait is not a request, and the relay starts no timer for it.
+ */
+export const RELAY_MAX_WAIT_MS = 60_000;
+
+/** The longest line on the pipe of a relay, in bytes. A command line of Windows has at most 32,767 characters. */
+const RELAY_LINE_BYTES = 1024 * 1024;
+
+/** The file that Node runs as the relay. */
+export const RELAY_ENTRY: string = fileURLToPath(new URL("./detach-relay.ts", import.meta.url));
+
+/** The request of a run to its relay: the start of the client, with the arguments of `startClient`. */
+export interface RelayRequest {
+  readonly entry: string;
+  readonly args: readonly string[];
+  readonly log: string;
+  readonly waitMs: number;
+}
+
+/** This function starts the relay, which then connects to the pipe. On Windows, it is `startUnderShell` of the core. */
+export type RelayLaunch = (pipe: string) => Promise<ShellStart>;
+
+/** Where the client of a detached run started. */
+export type DetachRoute =
+  /** Outside each job of the caller: the parent process of the relay is the shell. */
+  | { readonly kind: "shell"; readonly relayPid: number; readonly shellPid: number }
+  /** In the jobs of the caller, as a child of this process. `reason` tells why, or is `null` on a platform with no relay. */
+  | { readonly kind: "caller"; readonly reason: string | null };
+
+/** The start of a detached client, and where it started. */
+export interface DetachedStart {
+  readonly start: ClientStart;
+  readonly route: DetachRoute;
+}
+
+/** The options of `startDetachedClient`. */
+export interface DetachOptions {
+  /** The start of the relay, or `null` for a start in the jobs of the caller. */
+  readonly launch: RelayLaunch | null;
+  readonly waitMs?: number;
+  readonly pipe?: string;
+  readonly connectMs?: number;
+  readonly marginMs?: number;
+  /** The start in the jobs of the caller. */
+  readonly direct?: typeof startClient;
+}
+
+/** This function gives a new pipe for a relay: a named pipe on Windows, else a socket file in the folder for temporary files. */
+export function relayPipePath(platform: NodeJS.Platform = process.platform): string {
+  const name = `headroom-detach-${randomUUID()}`;
+  return platform === "win32" ? `\\\\.\\pipe\\${name}` : join(tmpdir(), `${name}.sock`);
+}
+
+/**
+ * This function gives the Windows command line of the relay: Node with the options of this process, the file of the
+ * relay and the pipe. The arguments of the client go on the pipe, so they need no quotes here.
+ */
+export function relayCommandLine(pipe: string, node: string = process.execPath, execArgv: readonly string[] = process.execArgv, entry: string = RELAY_ENTRY): string {
+  return [node, ...execArgv, entry, pipe].map(quoteArgument).join(" ");
+}
+
+/** This function reads one line from a socket. It gives `null` when the socket closes, fails or stays silent for `ms`. */
+function readLine(socket: Socket, ms: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    const finish = (line: string | null): void => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      socket.off("data", onData);
+      resolve(line);
+    };
+    const onData = (chunk: Buffer): void => {
+      const end = chunk.indexOf(0x0a);
+      chunks.push(end === -1 ? chunk : chunk.subarray(0, end));
+      size += chunk.length;
+      if (end !== -1) finish(Buffer.concat(chunks).toString("utf8"));
+      else if (size > RELAY_LINE_BYTES) finish(null);
+    };
+    const timer = setTimeout(() => finish(null), ms);
+    socket.on("data", onData);
+    socket.once("close", () => finish(null));
+    socket.once("error", () => finish(null));
+  });
+}
+
+const START_KINDS: ReadonlySet<string> = new Set(["lease", "no-lease", "pending", "ended", "failed"]);
+
+/** This function reads the answer of a relay. An answer that is not a start of a client gives `pending`: the client can run. */
+function parseStart(line: string): ClientStart {
+  try {
+    const value = JSON.parse(line) as { readonly kind?: unknown; readonly lease?: unknown; readonly code?: unknown; readonly reason?: unknown };
+    if (typeof value.kind !== "string" || !START_KINDS.has(value.kind)) return { kind: "pending" };
+    if (value.kind === "lease") return typeof value.lease === "string" ? { kind: "lease", lease: value.lease } : { kind: "pending" };
+    if (value.kind === "ended") return { kind: "ended", code: typeof value.code === "number" ? value.code : null };
+    if (value.kind === "failed") return { kind: "failed", reason: typeof value.reason === "string" ? value.reason : "the relay gave no reason" };
+    return value.kind === "no-lease" ? { kind: "no-lease" } : { kind: "pending" };
+  } catch {
+    return { kind: "pending" };
+  }
+}
+
+/** This function reads the request of a run, or gives `null` when the line is not a request. */
+function parseRequest(line: string): RelayRequest | null {
+  try {
+    const { entry, args, log, waitMs } = JSON.parse(line) as { readonly entry?: unknown; readonly args?: unknown; readonly log?: unknown; readonly waitMs?: unknown };
+    if (typeof entry !== "string" || typeof log !== "string" || typeof waitMs !== "number" || !Number.isFinite(waitMs) || waitMs < 0 || waitMs > RELAY_MAX_WAIT_MS) return null;
+    if (!Array.isArray(args) || !args.every((arg): arg is string => typeof arg === "string")) return null;
+    return { entry, args, log, waitMs };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * This function starts a detached client (H190). With a relay, it opens a pipe, starts the relay and gives the relay the
+ * start of the client. The relay starts the client, and gives back the start. Sometimes the client starts as a child of this
+ * process, in the jobs of the caller. That occurs with no relay, and when the relay does not start or does not connect in
+ * time.
+ *
+ * Exactly one client starts. A relay that connects after the time limit gets no request: this process closes the pipe
+ * before it starts the client itself. When the relay has the request but gives no answer, the client can run, so the
+ * start is `pending`.
+ */
+export async function startDetachedClient(entry: string, args: readonly string[], log: string, options: DetachOptions): Promise<DetachedStart> {
+  const waitMs = options.waitMs ?? DETACH_WAIT_MS;
+  const connectMs = options.connectMs ?? RELAY_CONNECT_MS;
+  const direct = options.direct ?? startClient;
+  const inCaller = async (reason: string | null): Promise<DetachedStart> => ({ start: await direct(entry, args, log, waitMs), route: { kind: "caller", reason } });
+  if (options.launch === null) return inCaller(null);
+  const pipe = options.pipe ?? relayPipePath();
+  const server = createServer();
+  let closed = false;
+  let accepted: Socket | null = null;
+  let onAccept: ((socket: Socket) => void) | null = null;
+  server.on("connection", (socket) => {
+    if (closed || accepted !== null) {
+      socket.destroy();
+      return;
+    }
+    accepted = socket;
+    onAccept?.(socket);
+  });
+  const opened = await new Promise<string | null>((resolve) => {
+    server.once("error", (error) => resolve(error.message));
+    server.listen(pipe, () => resolve(null));
+  });
+  const close = (): void => {
+    closed = true;
+    server.close();
+  };
+  if (opened !== null) {
+    close();
+    return inCaller(`the pipe of the relay did not open: ${opened}`);
+  }
+  const launched = await options.launch(pipe).catch((error: unknown): ShellStart => ({ kind: "unavailable", reason: error instanceof Error ? error.message : String(error) }));
+  if (launched.kind === "unavailable") {
+    close();
+    return inCaller(launched.reason);
+  }
+  const socket: Socket | null =
+    accepted ??
+    (await new Promise<Socket | null>((resolve) => {
+      const timer = setTimeout(() => {
+        closed = true;
+        resolve(null);
+      }, connectMs);
+      onAccept = (each) => {
+        clearTimeout(timer);
+        resolve(each);
+      };
+    }));
+  close();
+  if (socket === null) return inCaller(`the relay (process ${launched.pid}) did not connect in ${connectMs / 1000} s`);
+  socket.on("error", () => undefined);
+  const request: RelayRequest = { entry, args, log, waitMs };
+  socket.write(`${JSON.stringify(request)}\n`);
+  const answer = await readLine(socket, waitMs + (options.marginMs ?? RELAY_MARGIN_MS));
+  socket.destroy();
+  return { start: answer === null ? { kind: "pending" } : parseStart(answer), route: { kind: "shell", relayPid: launched.pid, shellPid: launched.shellPid } };
+}
+
+/**
+ * This function is the relay (H190). It connects to the pipe, reads the start of the client, starts the client with
+ * `start`, and writes the result back. It gives the exit code of the relay: 1 when no request came.
+ */
+export async function runRelay(pipe: string, start: typeof startClient = startClient, readMs: number = RELAY_CONNECT_MS): Promise<number> {
+  const socket = connectPipe(pipe);
+  socket.on("error", () => undefined);
+  const line = await readLine(socket, readMs);
+  const request = line === null ? null : parseRequest(line);
+  if (request === null) {
+    socket.destroy();
+    return 1;
+  }
+  let result: ClientStart;
+  try {
+    result = await start(request.entry, request.args, request.log, request.waitMs);
+  } catch (error) {
+    result = { kind: "failed", reason: error instanceof Error ? error.message : String(error) };
+  }
+  await new Promise<void>((resolve) => {
+    socket.once("close", () => resolve());
+    socket.end(`${JSON.stringify(result)}\n`, () => resolve());
+  });
+  return 0;
+}
+
+/** This function gives the line about the place of a detached client, for its log, or `null` when there is nothing to tell. */
+export function routeLine(job: string, route: DetachRoute): string | null {
+  if (route.kind === "shell") {
+    return `headroom: the client of job ${job} runs outside the jobs of the caller. Its relay (process ${route.relayPid}) has the shell (process ${route.shellPid}) as its parent.`;
+  }
+  if (route.reason === null) return null;
+  return `headroom: the client of job ${job} runs in the jobs of the caller, because ${route.reason}. A job of the caller that stops its processes when it closes, for example the job of an editor, also stops this client.`;
 }
