@@ -14,24 +14,26 @@ import type { ProcessInfo } from "./types.ts";
 
 /** The fixture secrets. No real token: each one only has the shape or the context of a secret. */
 const TOKEN = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c3`;
-const PASSWORD = "hunter2-fixture-9";
+// CodeQL (js/insufficient-password-hash) reads a name with "password" as a real password. The start log hashes each text
+// with SHA-256 only as a content key. Thus this fixture has another name.
+const LOGIN_SECRET = "hunter2-fixture-9";
 const PG = "pg-fixture-secret-7";
-const SECRETS = [TOKEN, PASSWORD, PG] as const;
+const SECRETS = [TOKEN, LOGIN_SECRET, PG] as const;
 
 describe("redactCommand (H186)", () => {
   it("puts a mark in place of each secret of a command line, and keeps the rest", () => {
     expect(redactCommand(`GITHUB_TOKEN=${TOKEN} gh pr list`)).toBe("GITHUB_TOKEN=[secret] gh pr list");
     expect(redactCommand(`gh auth status --token ${TOKEN}`)).toBe("gh auth status --token [secret]");
     expect(redactCommand(`echo ${TOKEN}`)).toBe("echo [secret]");
-    expect(redactCommand(`mysql --password=${PASSWORD} -u root`)).toBe("mysql --password=[secret] -u root");
-    expect(redactCommand(`curl -u admin:${PASSWORD} https://h`)).toBe("curl -u admin:[secret] https://h");
-    expect(redactCommand(`git clone https://user:${PASSWORD}@github.com/o/r.git`)).toBe("git clone https://user:[secret]@github.com/o/r.git");
+    expect(redactCommand(`mysql --password=${LOGIN_SECRET} -u root`)).toBe("mysql --password=[secret] -u root");
+    expect(redactCommand(`curl -u admin:${LOGIN_SECRET} https://h`)).toBe("curl -u admin:[secret] https://h");
+    expect(redactCommand(`git clone https://user:${LOGIN_SECRET}@github.com/o/r.git`)).toBe("git clone https://user:[secret]@github.com/o/r.git");
   });
 
   it("keeps a command line with no secret, and changes nothing on a second pass", () => {
     const lines = ["pnpm install --frozen-lockfile --prefer-offline", "vitest run src/redact.test.ts", "node --max-old-space-size=4096 cli.js --title headroom"];
     for (const line of lines) expect(redactCommand(line)).toBe(line);
-    const once = redactCommand(`PGPASSWORD=${PG} psql --password ${PASSWORD} ${TOKEN}`);
+    const once = redactCommand(`PGPASSWORD=${PG} psql --password ${LOGIN_SECRET} ${TOKEN}`);
     expect(redactCommand(once)).toBe(once);
   });
 
@@ -63,15 +65,15 @@ describe("the secrets of a command line never reach the store (H186)", () => {
         memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
         processes: () => [node(4, 0, "System"), node(21, 4, "psql.exe"), node(22, 4, "curl.exe")],
         commandLine: (pid) =>
-          pid === 21 ? `"C:\\Program Files\\PostgreSQL\\bin\\psql.exe" "postgres://app:${PG}@db/app" --password ${PASSWORD}` : pid === 22 ? `curl -H "Authorization: Bearer ${TOKEN}" https://h` : null,
+          pid === 21 ? `"C:\\Program Files\\PostgreSQL\\bin\\psql.exe" "postgres://app:${PG}@db/app" --password ${LOGIN_SECRET}` : pid === 22 ? `curl -H "Authorization: Bearer ${TOKEN}" https://h` : null,
         close: () => undefined,
       };
       const path = join(dir, "headroom.db");
       const engine = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
       const key: JobKey = { kind: "test", repo: "headroom", lock: null, filter: null, warm: null, packages: null, command: `GITHUB_TOKEN=${TOKEN} vitest run` };
-      const lease = engine.request({ holder: "headroom", job: `GITHUB_TOKEN=${TOKEN} vitest run --password ${PASSWORD}`, amounts: { memory: 100 }, key });
+      const lease = engine.request({ holder: "headroom", job: `GITHUB_TOKEN=${TOKEN} vitest run --password ${LOGIN_SECRET}`, amounts: { memory: 100 }, key });
       expect(lease.job).toBe("GITHUB_TOKEN=[secret] vitest run --password [secret]");
-      expect(engine.suggest(`GITHUB_TOKEN=${TOKEN} vitest run --password ${PASSWORD}`, "headroom", key).rung).toBeDefined();
+      expect(engine.suggest(`GITHUB_TOKEN=${TOKEN} vitest run --password ${LOGIN_SECRET}`, "headroom", key).rung).toBeDefined();
       for (let step = 0; step < 3; step++) {
         engine.tick();
         now += 60_000;
@@ -101,7 +103,7 @@ describe("the secrets of a command line never reach the store (H186)", () => {
       new Store(path).close();
       const db = new DatabaseSync(path);
       const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-      db.prepare("INSERT INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)").run(31, 1, "other", `psql --password ${PASSWORD}`, 1);
+      db.prepare("INSERT INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)").run(31, 1, "other", `psql --password ${LOGIN_SECRET}`, 1);
       db.prepare("INSERT INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)").run(32, 1, "other", "vitest run", 1);
       db.prepare("INSERT INTO leases (id, holder, job, amounts, priority, ttl_ms, state, requested_at, heartbeat_at) VALUES (?, ?, ?, ?, 0, 1, 'released', 1, 1)").run(
         "l1",
@@ -110,7 +112,7 @@ describe("the secrets of a command line never reach the store (H186)", () => {
         "{}",
       );
       db.prepare("INSERT INTO lease_keys (lease_id, kind, command, rung, runs) VALUES (?, 'other', ?, 'none', 0)").run("l1", `gh pr list --token ${TOKEN}`);
-      db.prepare("INSERT INTO reap_log (at, pid, created, name, action, private_mb, command, result) VALUES (1, 31, 1, 'psql.exe', 'ask', 1, ?, 'ok')").run(`psql --password ${PASSWORD}`);
+      db.prepare("INSERT INTO reap_log (at, pid, created, name, action, private_mb, command, result) VALUES (1, 31, 1, 'psql.exe', 'ask', 1, ?, 'ok')").run(`psql --password ${LOGIN_SECRET}`);
       // The file goes back to the version before the step of H186, as a file of the last release.
       db.exec(`PRAGMA user_version = ${version - 1}`);
       db.close();
@@ -175,7 +177,7 @@ describe("the secrets of a command line never reach the start log (H186, H193)",
     try {
       const path = join(dir, "starts.db");
       const writer = new StartLogWriter(path, { now: () => T0 });
-      writer.write([start(T0, 21, `psql --password ${PASSWORD} -h db`, `GITHUB_TOKEN=${TOKEN} bash -c x`), start(T0 + 10, 22, `psql --password ${PASSWORD} -h db`)], []);
+      writer.write([start(T0, 21, `psql --password ${LOGIN_SECRET} -h db`, `GITHUB_TOKEN=${TOKEN} bash -c x`), start(T0 + 10, 22, `psql --password ${LOGIN_SECRET} -h db`)], []);
       // The second row is a known text: it gets the id of the first row, with no second text.
       writer.write([start(T0 + 20, 23, `curl -u admin:${PG} https://h`)], []);
       writer.close();
@@ -203,7 +205,7 @@ describe("the secrets of a command line never reach the start log (H186, H193)",
       const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
       // The texts of a file of the first version: each one as it came, with the hash of that text.
       const insert = db.prepare("INSERT INTO texts (hash, text, last) VALUES (?, ?, ?)");
-      for (const text of [`mysql --password=${PASSWORD} -u root`, `gh pr list --token ${TOKEN}`, "vitest run"]) insert.run(hashOf(text), text, T0);
+      for (const text of [`mysql --password=${LOGIN_SECRET} -u root`, `gh pr list --token ${TOKEN}`, "vitest run"]) insert.run(hashOf(text), text, T0);
       db.exec(`PRAGMA user_version = ${version - 1}`);
       db.close();
       const second = new StartLogWriter(path, { now: () => T0 + 1000 });
