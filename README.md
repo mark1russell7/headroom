@@ -161,7 +161,7 @@ H29 gives the exact count of all the starts, but a read every 10 seconds sees fe
 - The daemon puts each process of a traced owner in a job object of its own. All the jobs have one completion port. The children of a process go into its job.
 - Windows then sends a message for each start and each exit in the tree. A reader thread takes the messages.
 - The reader reads the name and the parent of each new process, and keeps a handle until the exit. Thus it gets the exit code, also of a process that lives for 10 ms.
-- The jobs have no limit and do not stop their processes. A child can still break away, so `headroom run --detach` works.
+- The jobs have no limit and do not stop their processes. A child can break away from them. `headroom run --detach` does not need that breakaway (H190).
 - By default, the trace follows the sessions, the MCP servers, the services, Docker and the processes under the granted leases. The browsers and the editors of Mark stay out of it.
 
 The line `Traced starts` of `headroom status` comes after the line `Process starts`, for example:
@@ -708,6 +708,10 @@ Claude Code stops a background shell when the runtime gives memory pressure "cri
 - The output of the client and the job goes to the file of `--log`, or to a new file `jobs/<uuid>.log` under the folder of headroom. `headroom job <name>` gives the path of the log.
 - `headroom job <name>` gives the state and the exit code of the job. The run itself gives 0 when the client starts, not the exit code of the job.
 - Without a daemon, the job runs without a lease, as a foreground run does. Then `headroom job` has no state of it, so read the log.
+- On Windows, a child process is in each job of its parent. An editor can keep its processes in a job that stops them when the editor closes. Thus a client that the run starts itself can stop with the editor.
+- So the run starts that client through a relay, which has the shell of the desktop as its parent process (H190). The client is then in none of the jobs of the caller. The log tells where the client started.
+- When Windows refuses, the client starts in the jobs of the caller, and the run tells why on stderr and in the log. For example, Windows refuses when the run is elevated and the shell is not.
+- A client that the daemon starts (H64) is already outside the jobs of the caller, so it needs no relay.
 
 A session can take its queued job off the queue with `headroom cancel`, for example after its subagent ended:
 

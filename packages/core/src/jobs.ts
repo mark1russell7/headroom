@@ -13,7 +13,7 @@
  *   The job gives its processor time, also of the processes that ended.
  *
  * Windows nests jobs. Thus a process that is in a job already, for example a shell of a terminal, can
- * also go into the job of headroom. Only `createJob()` and `startOutsideJob()` on Windows load this file.
+ * also go into the job of headroom. Only `createJob()`, `startOutsideJob()` and `startUnderShell()` on Windows load this file.
  */
 
 import koffi from "koffi";
@@ -321,4 +321,109 @@ export function startWindowsProcess(commandLine: string, cwd: string | null = nu
   const inside = attempt(base);
   if (inside === null) throw new Error(`CreateProcessW failed with the error ${getLastError()}`);
   return { pid: inside, breakaway: false, jobFlags };
+}
+
+const user32 = koffi.load("user32.dll");
+const advapi32 = koffi.load("advapi32.dll");
+const getShellWindow = user32.func("intptr_t __stdcall GetShellWindow()");
+const getWindowThreadProcessId = user32.func("uint32_t __stdcall GetWindowThreadProcessId(intptr_t window, _Out_ uint32_t *pid)");
+const openProcessToken = advapi32.func("int __stdcall OpenProcessToken(intptr_t process, uint32_t access, _Out_ intptr_t *token)");
+const getTokenInformation = advapi32.func("int __stdcall GetTokenInformation(intptr_t token, int cls, _Out_ uint32_t *info, uint32_t length, _Out_ uint32_t *returned)");
+const initializeAttributeList = kernel32.func("int __stdcall InitializeProcThreadAttributeList(void *list, uint32_t count, uint32_t flags, _Inout_ uintptr_t *size)");
+const updateAttribute = kernel32.func("int __stdcall UpdateProcThreadAttribute(void *list, uint32_t flags, uintptr_t attribute, void *value, uintptr_t size, void *previous, void *returned)");
+const deleteAttributeList = kernel32.func("void __stdcall DeleteProcThreadAttributeList(void *list)");
+const createProcessExtended = kernel32.func(
+  "int __stdcall CreateProcessW(const char16_t *application, void *commandLine, void *processAttributes, void *threadAttributes, int inheritHandles, uint32_t flags, void *environment, const char16_t *cwd, uint8_t *startup, _Out_ HEADROOM_PROCESS_INFORMATION *info)",
+);
+
+const PROCESS_CREATE_PROCESS = 0x0080;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const TOKEN_QUERY = 0x0008;
+const TOKEN_ELEVATION = 20;
+const PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x0002_0000;
+const EXTENDED_STARTUPINFO_PRESENT = 0x0008_0000;
+const CREATE_UNICODE_ENVIRONMENT = 0x0400;
+// STARTUPINFOEXW on x64: STARTUPINFOW (104 bytes, dwFlags at 60), then lpAttributeList at 104.
+const STARTUPINFOEX_SIZE = 112;
+const STARTUP_FLAGS_OFFSET = 60;
+const ATTRIBUTE_LIST_OFFSET = 104;
+
+/** How a start with the shell as the parent process ended. */
+export type ShellStart =
+  /** The process runs. Its parent process is the shell, so it has the jobs of the shell. */
+  | { readonly kind: "started"; readonly pid: number; readonly shellPid: number }
+  /** The process did not start. The caller can start it in another way. */
+  | { readonly kind: "unavailable"; readonly reason: string };
+
+/** This function tells if the token of a process is elevated, or gives `null` when Windows does not tell. */
+function elevated(process: number): boolean | null {
+  const token = [0];
+  if (openProcessToken(process, TOKEN_QUERY, token) === 0) return null;
+  const value = [0];
+  const ok = getTokenInformation(token[0], TOKEN_ELEVATION, value, 4, [0]) !== 0;
+  closeHandle(token[0]);
+  return ok ? value[0] !== 0 : null;
+}
+
+/**
+ * This function starts a process with the shell of the desktop (explorer.exe) as its parent process, through
+ * `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. The process then has the jobs of the shell, and not the jobs of the current
+ * process. Thus it does not stop when a job of the caller closes, for example the job of an editor (H190).
+ *
+ * - The process gets no console, no standard handles and no inherited handles, in a new process group.
+ * - The environment and the folder are those of the arguments, and not those of the shell.
+ * - The process gets the token of the shell. Thus the function refuses when the shell and the current process differ in
+ *   elevation. An elevated job must not lose its rights, and a job must not get rights.
+ * - With no shell, for example in a service, the function refuses.
+ */
+export function startWindowsUnderShell(commandLine: string, cwd: string, environment: Buffer): ShellStart {
+  const unavailable = (reason: string): ShellStart => ({ kind: "unavailable", reason });
+  const window = getShellWindow();
+  if (Number(window) === 0) return unavailable("this desktop has no shell window");
+  const shellPid: [number] = [0];
+  getWindowThreadProcessId(window, shellPid);
+  if (shellPid[0] === 0) return unavailable("Windows did not give the process of the shell window");
+  const shell = Number(openProcess(PROCESS_CREATE_PROCESS | PROCESS_QUERY_LIMITED_INFORMATION, 0, shellPid[0]));
+  if (shell === 0) return unavailable(`the shell (process ${shellPid[0]}) refused the open, with the error ${getLastError()}`);
+  try {
+    const shellElevated = elevated(shell);
+    const ownElevated = elevated(Number(getCurrentProcess()));
+    if (shellElevated === null || ownElevated === null) return unavailable("Windows did not tell the elevation of the shell or of this process");
+    if (shellElevated !== ownElevated) return unavailable(ownElevated ? "this process is elevated, and the shell is not" : "the shell is elevated, and this process is not");
+    const size: [number] = [0];
+    initializeAttributeList(null, 1, 0, size);
+    const list = koffi.alloc("uint8_t", size[0]);
+    const parent = koffi.alloc("intptr_t", 1);
+    try {
+      koffi.encode(parent, "intptr_t", shell);
+      if (initializeAttributeList(list, 1, 0, size) === 0) return unavailable(`InitializeProcThreadAttributeList failed with the error ${getLastError()}`);
+      try {
+        if (updateAttribute(list, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, parent, 8, null, null) === 0) {
+          return unavailable(`UpdateProcThreadAttribute failed with the error ${getLastError()}`);
+        }
+        const startup = new Uint8Array(STARTUPINFOEX_SIZE);
+        const view = new DataView(startup.buffer);
+        view.setUint32(0, STARTUPINFOEX_SIZE, true);
+        view.setUint32(STARTUP_FLAGS_OFFSET, STARTF_USESTDHANDLES, true);
+        view.setBigUint64(ATTRIBUTE_LIST_OFFSET, BigInt(koffi.address(list)), true);
+        // CreateProcessW can change the command line, so it gets a buffer that it can write.
+        const line = Buffer.from(`${commandLine}\0`, "utf16le");
+        const info = { hProcess: 0, hThread: 0, dwProcessId: 0, dwThreadId: 0 };
+        const flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT;
+        if (createProcessExtended(null, line, null, null, 0, flags, environment, cwd, startup, info) === 0) {
+          return unavailable(`CreateProcessW failed with the error ${getLastError()}`);
+        }
+        closeHandle(info.hThread);
+        closeHandle(info.hProcess);
+        return { kind: "started", pid: info.dwProcessId, shellPid: shellPid[0] };
+      } finally {
+        deleteAttributeList(list);
+      }
+    } finally {
+      koffi.free(list);
+      koffi.free(parent);
+    }
+  } finally {
+    closeHandle(shell);
+  }
 }
