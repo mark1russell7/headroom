@@ -22,6 +22,7 @@
  */
 
 import type { Lease } from "./broker.ts";
+import type { StartLogStats } from "./start-log.ts";
 import type { Owners } from "./resources.ts";
 import { holderOwner, type OwnerStarts, type ProcessStarts } from "./starts.ts";
 import type { OwnerKind, ProcessInfo } from "./types.ts";
@@ -40,6 +41,8 @@ export type TraceEvent =
 
 /** One batch of the reader thread of Windows (`trace-reader.ts`). The last batch has `stopped`. */
 export interface TraceBatch {
+  /** The facts of the start log (H193), when the reader writes one. */
+  readonly log?: StartLogStats | undefined;
   readonly events: readonly TraceEvent[];
   /** The processor time of the reader thread since its start, in ms. */
   readonly cpuMs: number;
@@ -81,6 +84,20 @@ export interface StartTrace {
   failure(): string | null;
   /** This function stops the reader and closes the handles. The processes go on, and they stay in their jobs. */
   close(): void;
+  /** This function gives the facts of the start log (H193), or `null` when the trace writes no log. */
+  log?(): StartLogStats | null;
+  /**
+   * This function gives true when the reader reads the messages (H193). The port keeps each message, but the reader reads
+   * the name of a new process when it gets the message. A process that ended before that has no name. Thus the engine
+   * puts no process in a job before the reader runs. A trace with no such function is ready at its start.
+   */
+  ready?(): boolean;
+}
+
+/** The options of the start of a trace. */
+export interface StartTraceOptions {
+  /** The file of the start log (H193). `null` or no value writes no log. */
+  readonly logPath?: string | null | undefined;
 }
 
 /** One source of starts: an owner, a parent program and the program that it starts. */
@@ -124,6 +141,8 @@ export interface TracedStarts {
   readonly cpuMsPerMinute: number;
   /** The reason when the reader stopped with an error, or `null` while it runs. */
   readonly failure: string | null;
+  /** The facts of the start log (H193), or `null` when the trace writes no log. */
+  readonly log?: StartLogStats | null | undefined;
 }
 
 /** The owner kinds that the trace follows by default. The programs of Mark (browsers, editors) stay out of it. */
@@ -385,10 +404,10 @@ export class TraceBook {
    * This function gives the traced starts over the window. `allPerMinute` is the rate of all the starts of the computer
    * over the same span, or `null` when it is not exact. It gives `null` before the first root, unless the trace failed.
    */
-  summary(now: number, trace: { readonly jobs: number; readonly failure: string | null }, allPerMinute: (spanMs: number) => number | null): TracedStarts | null {
+  summary(now: number, trace: { readonly jobs: number; readonly failure: string | null; readonly log?: StartLogStats | null | undefined }, allPerMinute: (spanMs: number) => number | null): TracedStarts | null {
     if (this.#since === null) {
       if (trace.failure === null) return null;
-      return { perMinute: 0, coverage: null, failedPerMinute: 0, sources: [], named: 1, spanMs: 0, processes: 0, jobs: trace.jobs, refused: this.#refused.size, cpuMsPerMinute: 0, failure: trace.failure };
+      return { perMinute: 0, coverage: null, failedPerMinute: 0, sources: [], named: 1, spanMs: 0, processes: 0, jobs: trace.jobs, refused: this.#refused.size, cpuMsPerMinute: 0, failure: trace.failure, log: trace.log ?? null };
     }
     const spanMs = Math.min(this.#windowMs, now - this.#since);
     const rate = (count: number): number => (spanMs > 0 ? (count * MINUTE_MS) / spanMs : 0);
@@ -439,6 +458,7 @@ export class TraceBook {
       refused: this.#refused.size,
       cpuMsPerMinute: round(cpuMsPerMinute),
       failure: trace.failure,
+      log: trace.log ?? null,
     };
   }
 
@@ -503,5 +523,19 @@ export function traceLines(traced: TracedStarts | null | undefined, limit = 5): 
   const lines = [`Traced starts: ${Math.round(traced.perMinute).toLocaleString("en-US")} a minute${coverage}.${failed} ${cost}${stopped}`];
   const shown = traced.sources.slice(0, limit);
   if (shown.length > 0) lines.push(`  Most: ${shown.map(sourceText).join(", ")}.`);
+  const log = startLogText(traced.log);
+  if (log !== null) lines.push(`  ${log}`);
   return lines;
+}
+
+/** This function writes the line of the start log (H193), or `null` when the trace writes no log. */
+export function startLogText(log: StartLogStats | null | undefined): string | null {
+  if (log === null || log === undefined) return null;
+  if (log.failure !== null) return `Start log: ${log.failure}. ${log.starts.toLocaleString("en-US")} starts are in ${log.path}.`;
+  if (log.starts === 0) return `Start log: no start yet, in ${log.path}.`;
+  const commands = percentText(log.withCommand / log.starts);
+  return (
+    `Start log: ${log.starts.toLocaleString("en-US")} starts and ${log.exits.toLocaleString("en-US")} exits since the start of the daemon, ${commands} with a command line. ` +
+    `The longest time from a creation to its row on the disk was ${log.slowestLagMs.toLocaleString("en-US")} ms. headroom starts --top ranks the starters.`
+  );
 }

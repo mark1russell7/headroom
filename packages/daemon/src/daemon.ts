@@ -17,9 +17,10 @@ import { McpGateway } from "./gateway.ts";
 import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
 import { readSummary } from "./disk-report.ts";
-import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery } from "./paths.ts";
+import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
 import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
+import { writeStartsBeforeStop } from "./starts-cli.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
 import { defaultRoots, readWorktreePlan, readWorktreeRecord, worktreeVersion } from "./worktree-cli.ts";
 import { launchClean, WorktreeSchedule } from "./worktree-schedule.ts";
@@ -50,6 +51,7 @@ export interface ServeOptions {
 
 /** This function runs the daemon until a signal stops it. It gives the exit code. */
 export async function serve(options: ServeOptions = {}): Promise<number> {
+  const startedAt = Date.now();
   const log = options.log ?? ((line: string) => console.log(line));
   mkdirSync(headroomHome(), { recursive: true });
   const running = readDiscovery();
@@ -86,6 +88,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       log(`The drain for the planned reboot started. The resume plan is in ${plan.path}.`);
     },
     resumePlan: () => resumePlanFile(),
+    // H193: the start trace writes each start with its command line to its own file, so the rows stay after a bugcheck.
+    startLogPath: startLogPath(),
   });
   if (unclean !== null) {
     const last = engine.history(Date.now() - 86_400_000).memory.at(-1)?.at;
@@ -99,6 +103,13 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       message: `The daemon before this one (process ${unclean}) stopped without a clean stop${after}. Another process can have stopped it.`,
     });
     log(`The daemon before this one (process ${unclean}) stopped without a clean stop.`);
+    // H193: a bugcheck is an unclean stop. The starts of its last 2 minutes stay in a file after the 24 hours of the log.
+    try {
+      const kept = writeStartsBeforeStop(startLogPath(), headroomHome(), startedAt);
+      if (kept !== null) log(`The ${kept.starts} starts of the 2 minutes before the stop are in ${kept.file}.`);
+    } catch (error) {
+      log(`The starts before the stop were not kept: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   // `headroom service restart --when-idle`: the daemon waits for an idle queue, and then it restarts itself.
   let stopSelf = (): void => undefined;

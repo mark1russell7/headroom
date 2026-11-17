@@ -182,6 +182,11 @@ export interface EngineOptions {
    * The default is `process.kill(pid)`. The tests give a fake.
    */
   readonly stopProcess?: ((pid: number) => void) | undefined;
+  /**
+   * The file of the start log (H193). The start trace writes each start and each exit to it, with the command line and the
+   * creation time. The rows stay after a bugcheck. `null` or no value writes no log.
+   */
+  readonly startLogPath?: string | null | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -508,6 +513,7 @@ export class Engine {
   readonly #recordEveryMs: number;
   readonly #retentionMs: number;
   readonly #sessionsDir: string;
+  readonly #startLogPath: string | null;
   readonly #servers: () => ReadonlyMap<number, string>;
   readonly #services: () => readonly ServiceHealth[];
   readonly #listeners = new Set<(changed: readonly Lease[]) => void>();
@@ -675,6 +681,7 @@ export class Engine {
     this.#recordEveryMs = options.recordEveryMs ?? 60_000;
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
+    this.#startLogPath = options.startLogPath ?? null;
     this.#servers = options.servers ?? (() => new Map());
     this.#services = options.services ?? (() => []);
     this.#baseAlertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
@@ -2444,7 +2451,7 @@ export class Engine {
     if (this.#trace === null) {
       if (this.#sampler.startTrace === undefined) return;
       try {
-        this.#trace = this.#sampler.startTrace();
+        this.#trace = this.#sampler.startTrace({ logPath: this.#startLogPath });
       } catch (error) {
         this.#traceError = `the trace did not start: ${error instanceof Error ? error.message : String(error)}`;
         return;
@@ -2455,7 +2462,8 @@ export class Engine {
     this.#book.add(trace.drain(), { leases, kindOf: this.#ownership.kindOf, processes: this.#processes });
     this.#book.cpu(now, trace.cpuMs());
     this.#book.prune(this.#processes, now);
-    if (trace.failure() !== null) return;
+    // A cover before the reader runs loses the names of the processes that end before it reads them (H193).
+    if (trace.failure() !== null || trace.ready?.() === false) return;
     for (const cover of traceCovers(this.#book, { processes: this.#processes, owners: this.#ownership, leases, kinds: this.#traceKinds, self: process.pid, now })) {
       const key = trace.cover(cover.root.pid, { hold: this.#traceHold.includes(cover.root.kind) });
       if (key === null) this.#book.refuse(cover.root.pid, cover.startedAt);
@@ -2467,7 +2475,8 @@ export class Engine {
   #startsWithTrace(now: number): ProcessStarts {
     const starts = this.#startTracker.summary(now);
     const failure = this.#traceError ?? this.#trace?.failure() ?? null;
-    const traced = this.#book.summary(now, { jobs: this.#trace?.jobs() ?? 0, failure }, (spanMs) => (starts.exact ? this.#startTracker.recent(now, spanMs) : null));
+    const log = this.#trace?.log?.() ?? null;
+    const traced = this.#book.summary(now, { jobs: this.#trace?.jobs() ?? 0, failure, log }, (spanMs) => (starts.exact ? this.#startTracker.recent(now, spanMs) : null));
     return withTrace(starts, traced);
   }
 

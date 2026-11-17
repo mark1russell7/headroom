@@ -185,6 +185,29 @@ Each restart of the daemon puts one more job around a live process, because a jo
 
 The rule and the measures are in [docs/RESOURCES.md](docs/RESOURCES.md#h188-the-start-trace).
 
+### The start log (H193)
+
+On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer. In each dump, a driver stopped Windows in the image load of a new process. That came 251 ms to 525 ms after the creation of the process. A dump gives the pid of the process, but not its program. With H193, the reader of the trace writes each start and each exit to a log on the disk:
+
+- The log is the SQLite file `~/.headroom/starts.db`, with the pragma `synchronous` FULL. A commit is on the disk when it ends, so the rows stay after a bugcheck.
+- The reader commits each row at most 100 ms after the message of the job.
+- A start row has the pid, the parent, the creation time, the program, the command line and the command line of the parent. The creation time is a FILETIME, as in a dump.
+- A start row also has the time since a traced process with the same pid ended, when that time is less than 60 s.
+- The log keeps 24 hours, counted back from its newest row.
+- After an unclean stop, the daemon writes the starts of the last 2 minutes before the stop to `~/.headroom/starts-before-<time>.json`.
+
+The command `headroom starts` reads the file, so it needs no daemon:
+
+- `headroom starts <pid> --at <time>` gives the program, the command line, the exit and the parents of the pid of a dump.
+- `headroom starts --top --hours 1` ranks the starters of the last hour, by program and by the command line of the parent. `--hours 24` gives the day.
+- `--json` gives the rows as data.
+
+Each start is one more chance for the bug of the driver, so the fleet cuts the top starters. The line `Start log` of `headroom status` gives the count of the rows and the longest time from a creation to its row on the disk.
+
+The limits: the log has only the processes of the trace. A reuse of a pid shows only when the trace saw the exit of the old process. Thus the log cannot prove that no reuse came.
+
+The rule and the measures are in [docs/RESOURCES.md](docs/RESOURCES.md#h193-the-start-log).
+
 ### Spawn-heavy jobs and browser tests (H47)
 
 On 2026-10-24, the Playwright browsers of shop did not start three times, with `0xC0000142`. Two of these runs overlapped bursts of process starts from other leases. The desktop heap, the memory, the commit charge and the kernel pools had room. Thus the burst itself stops the start of a browser.

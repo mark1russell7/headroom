@@ -10,7 +10,8 @@
 
 import { Worker } from "node:worker_threads";
 import koffi from "koffi";
-import { TRACE_STOP_KEY, type StartTrace, type TraceBatch, type TraceCoverOptions, type TraceEvent } from "./trace.ts";
+import { START_LOG_WRITE_EVERY_MS, type StartLogStats } from "./start-log.ts";
+import { TRACE_STOP_KEY, type StartTrace, type StartTraceOptions, type TraceBatch, type TraceCoverOptions, type TraceEvent } from "./trace.ts";
 
 const kernel32 = koffi.load("kernel32.dll");
 const createPort = kernel32.func("intptr_t __stdcall CreateIoCompletionPort(intptr_t file, intptr_t port, uintptr_t key, uint32_t threads)");
@@ -47,8 +48,8 @@ function setLimits(job: number, hold: boolean): boolean {
   return setInformation(job, EXTENDED_LIMIT_INFORMATION, hold ? HOLD_LIMITS : ALLOW_LIMITS, EXTENDED_LIMIT_SIZE) !== 0;
 }
 
-/** This function starts the trace: it makes the completion port and starts the reader thread. */
-export function windowsStartTrace(): StartTrace {
+/** This function starts the trace: it makes the completion port and starts the reader thread. With `logPath`, the reader writes the start log (H193). */
+export function windowsStartTrace(options: StartTraceOptions = {}): StartTrace {
   const port = Number(createPort(INVALID_HANDLE_VALUE, 0, 0, 1));
   if (port === 0) throw new Error("Windows did not make the completion port of the start trace");
   const jobs = new Map<number, number>();
@@ -57,11 +58,17 @@ export function windowsStartTrace(): StartTrace {
   let nextKey = TRACE_STOP_KEY + 1;
   let failure: string | null = null;
   let closed = false;
-  const worker = new Worker(new URL("./trace-reader.ts", import.meta.url), { workerData: { port, postEveryMs: POST_EVERY_MS, stopKey: TRACE_STOP_KEY } });
+  let log: StartLogStats | null = null;
+  // The first batch of the reader comes when its loop starts (H193).
+  let ready = false;
+  const workerData = { port, postEveryMs: POST_EVERY_MS, stopKey: TRACE_STOP_KEY, logPath: options.logPath ?? null, writeEveryMs: START_LOG_WRITE_EVERY_MS };
+  const worker = new Worker(new URL("./trace-reader.ts", import.meta.url), { workerData });
   // The reader is a helper: it does not keep the daemon alive.
   worker.unref();
   worker.on("message", (batch: TraceBatch) => {
+    ready = true;
     cpu = batch.cpuMs;
+    if (batch.log !== undefined) log = batch.log;
     for (const event of batch.events) {
       if (event.type !== "empty") continue;
       const job = jobs.get(event.key);
@@ -112,6 +119,8 @@ export function windowsStartTrace(): StartTrace {
     cpuMs: () => cpu,
     jobs: () => jobs.size,
     failure: () => failure,
+    log: () => log,
+    ready: () => ready,
     close(): void {
       if (closed) return;
       closed = true;

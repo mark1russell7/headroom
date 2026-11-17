@@ -806,6 +806,52 @@ H29 counts all the starts exactly, from the sequence numbers of Windows. An owne
 - A job with a closed handle and an open port that nobody read got 1 packet for 1,500 starts. The pool tag `Icp ` of the packets did not grow.
 - Thus a daemon that stops with no clean stop leaves no packets in the kernel memory.
 
+### H193: the start log
+
+On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer, each with the code 0x3B. In each dump, a driver failed in the image load of a new process (`NtMapViewOfSection`). The dump came 251 ms to 525 ms after the creation of the process. A dump gives the pid, the parent pid and the creation time, but not the program. The trace read the program, but only in the memory of the daemon. The start log keeps it on the disk.
+
+**The file.** `start-log.ts` writes the SQLite file `~/.headroom/starts.db`, apart from the database of the daemon.
+
+- It uses `openDatabase` of `@mark1russell7/sqlite` with `synchronous` FULL in WAL mode. A commit is on the disk when it ends.
+- The table `starts` has the time of the message, the key of the job, the pid, the parent pid and the creation time. It also has the program, the command line, the command line of the parent and `reuse_ms`.
+- The table `exits` has the time, the key, the pid, the exit code and the creation time of the process that ended.
+- The table `texts` keeps each program and each command line once, with the first 8 bytes of its SHA-256. A different text with the same hash gets no hash.
+- The file has no index of its own. The rows come in the order of time, so a search by time is a binary search on the rowid. Each index costs more page writes at each commit.
+
+**The writer.** The reader thread of the trace writes the rows. It imports no module of the engine.
+
+- At each start, it reads the creation time with `GetProcessTimes` and the command line with `NtQueryInformationProcess` (class 60).
+- It reads the command line of the parent too. A parent that is younger than the child is another process with the same pid, so the row gets no parent command.
+- It commits at most 100 ms after the first message that waits. The wait on the port ends at that time.
+- `reuse_ms` is the time from the exit of the last traced process with the same pid to the creation. It is kept when it is less than 60 s.
+- An exit joins its start by the pid and the creation time. Thus a new process that gets the pid in the same ms does not get the exit of the old process.
+- Each 10 minutes, it deletes the rows older than 24 hours before the newest row. A text stays one more hour, because the writer writes the time of the use of a text at most once each hour.
+- An error of the log closes the log, and the trace goes on. The status gives the reason.
+
+**The start of the reader.** The modules of the thread load in approximately 170 ms: koffi in 59 ms, and the start log with SQLite in 114 ms more.
+
+- The port keeps each message, but the reader reads the program of a new process when it gets the message. A process that ended before that has no name.
+- Thus the reader sends an empty batch when its loop starts, and the trace is ready at that batch (`ready()`).
+- The engine puts no process in a job before the trace is ready. The test of the real trace got 3 of 5 names without this rule.
+
+**The reads.** `headroom starts` opens the file read-only, so it needs no daemon.
+
+- `headroom starts <pid> [--at <time>]` gives the starts of the pid, nearest to the time first. Each start has its exit, its parents and its `reuse_ms`.
+- A parent is the last start of the parent pid before the child. A parent that ended before the child started is another process.
+- `headroom starts --top [--hours <n>]` gives the 20 programs and the 20 parent command lines with the most starts, from 1 to 24 hours.
+- The ranking also gives the part of the starts with a `reuse_ms` under 1 s and under 60 s.
+- After an unclean stop, the daemon writes the starts of the 2 minutes before the last row of the stopped daemon to `~/.headroom/starts-before-<time>.json`.
+
+**The status.** The line `Start log` of `headroom status` gives the rows since the start of the daemon and the part with a command line. It also gives the longest time from a creation to its commit. That time is what a bugcheck can lose.
+
+**The limits.**
+
+- The log has only the processes of the trace: the jobs of the traced owner kinds.
+- A reuse of a pid shows only when the trace saw the exit of the old process. Thus `reuse_ms` can show a reuse, but cannot rule it out.
+- A process that ends before the reader opens it has no program and no command line. Its row keeps the pid and the time.
+
+**The gates after the deploy.** At least 90 % of the start rows have a command line, and the longest time from a creation to its commit stays under 251 ms.
+
 ### H30: battery and power
 
 Mark asked for the battery as a resource on battery power. An event or a cheap read tells the daemon when the state changes.
