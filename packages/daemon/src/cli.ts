@@ -19,6 +19,7 @@
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
+ * - `headroom starts <pid> [--at <time>] | --top [--hours <n>]`: the start log: the program of a pid, and the top starters (H193).
  * - `headroom docker [--json]`: each container with its owner, its memory and its cores, the VM and the disk use of Docker (H38).
  * - `headroom disk report [--drive C:] [--deep] [--json]`: what uses the space of each drive (H21).
  * - `headroom disk clean [--apply] [--json]`: a dry run of the safe cleanup. With `--apply`, it deletes only disposable data (H21).
@@ -116,13 +117,14 @@ import { mcpCommand } from "./gateway-cli.ts";
 import { diskCommand } from "./disk-cli.ts";
 import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, relayCommandLine, routeLine, startDetachedClient, tellParent, waitForDaemon } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
+import { STARTS_USAGE, startsCommand } from "./starts-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
 import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseTime } from "./parse.ts";
-import { dashboardKey, databasePath, readDiscovery, readPlannedStop } from "./paths.ts";
+import { dashboardKey, databasePath, readDiscovery, readPlannedStop, startLogPath } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
@@ -235,6 +237,9 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom pool-tags [--since boot | --hours <n>] [--drivers] [--json]   (the kernel pools by tag, Windows)
   headroom ports [--json]                   (the listening TCP ports, with their process and owner)
   ${GPU_USAGE}                     (each GPU: its memory, its use, its owners and the leased jobs)
+  ${STARTS_USAGE}
+               The start log: each start of the trace with its command line and its exit, kept 24 hours.
+               A pid of a crash dump gives its program and its parents. --top ranks the starters.
   ${DOCKER_USAGE}                  (each container: its owner, memory and cores; the VM and the disk use)
   headroom disk report [--drive C:] [--deep] [--json]
                What uses the space: the temp folders, the caches, the disk images, node_modules and more.
@@ -1806,6 +1811,8 @@ async function main(argv: string[]): Promise<number> {
     }
     case "gpu":
       return gpuCommand(rest, connect());
+    case "starts":
+      return startsCommand(rest, startLogPath());
     case "docker":
       return dockerCommand(rest, connect());
     case "disk":

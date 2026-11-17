@@ -17,6 +17,11 @@ export function databasePath(): string {
   return join(headroomHome(), "headroom.db");
 }
 
+/** The start log (H193): each start of the trace with its command line, in its own file with `synchronous` FULL. */
+export function startLogPath(): string {
+  return join(headroomHome(), "starts.db");
+}
+
 /** The discovery file of the running daemon. Only this user can read it, because it holds the token. */
 export function discoveryPath(): string {
   return join(headroomHome(), "daemon.json");

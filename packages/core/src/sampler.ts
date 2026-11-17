@@ -8,7 +8,7 @@ import type { CallRead, PresenceRead } from "./presence.ts";
 import type { KeyState } from "./reboot.ts";
 import type { StdoutKind } from "./reap.ts";
 import type { ThermalRead } from "./thermal.ts";
-import type { StartTrace } from "./trace.ts";
+import type { StartTrace, StartTraceOptions } from "./trace.ts";
 import type {
   BatteryRead,
   DiskSpace,
@@ -48,8 +48,9 @@ export interface Sampler {
   /**
    * This function starts the trace of the process starts (H188): a name and a parent for each start. Only Windows has it,
    * with job objects and a completion port. The engine starts it one time, and closes it with `close()` of the trace.
+   * With `logPath`, the trace also writes the start log (H193).
    */
-  startTrace?(): StartTrace;
+  startTrace?(options?: StartTraceOptions): StartTrace;
   /** This function reads the use of the kernel pools by each pool tag. Only Windows has pool tags. */
   poolTags?(): PoolTag[];
   /** This function reads the USER and GDI objects of all the processes of the session. Only Windows has them. */

@@ -561,10 +561,27 @@ export {
   TRACED_KINDS,
   traceKindsOf,
   traceKindsText,
+  startLogText,
   traceLines,
   withTrace,
 } from "./trace.ts";
-export type { CoverInput, StartSource, StartTrace, TraceBatch, TraceContext, TraceCover, TraceCoverOptions, TracedStarts, TraceEvent, TraceRoot } from "./trace.ts";
+export type { CoverInput, StartSource, StartTrace, StartTraceOptions, TraceBatch, TraceContext, TraceCover, TraceCoverOptions, TracedStarts, TraceEvent, TraceRoot } from "./trace.ts";
+export {
+  filetimeMs,
+  msFiletime,
+  openStartLog,
+  parentsOf,
+  rankStarters,
+  START_LOG_KEEP_MS,
+  START_LOG_PRUNE_EVERY_MS,
+  START_LOG_REUSE_MS,
+  START_LOG_WRITE_EVERY_MS,
+  startLogSpan,
+  StartLogWriter,
+  startsBetween,
+  startsOfPid,
+} from "./start-log.ts";
+export type { ExitRow, LoggedStart, RankedStarter, StartLogSpan, StartLogStats, StartLogWriterOptions, StartRanking, StartRow } from "./start-log.ts";
 export {
   MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep } from "./store.ts";

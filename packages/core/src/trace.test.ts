@@ -1,9 +1,13 @@
 import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Broker, type Lease } from "./broker.ts";
 import { Engine } from "./engine.ts";
 import { RESOURCES, tracedSourcesText, type Owners, type Readings } from "./resources.ts";
 import type { Sampler } from "./sampler.ts";
+import { openStartLog, startsOfPid } from "./start-log.ts";
 import { NO_STARTS, type ProcessStarts } from "./starts.ts";
 import { Store } from "./store.ts";
 import {
@@ -15,9 +19,11 @@ import {
   TRACED_KINDS,
   traceKindsOf,
   traceKindsText,
+  startLogText,
   traceLines,
   withTrace,
   type StartTrace,
+  type StartTraceOptions,
   type TraceCoverOptions,
   type TracedStarts,
   type TraceEvent,
@@ -260,6 +266,18 @@ describe("the traced starts in the starts, the status and the alert (H188)", () 
     expect(tracedSourcesText(null)).toBe("");
   });
 
+  it("adds the line of the start log (H193)", () => {
+    const log = { path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, exits: 12_380, commits: 9000, writeMs: 4100, slowestWriteMs: 38, slowestLagMs: 141, failure: null };
+    expect(traceLines({ ...traced, log }).at(-1)).toBe(
+      "  Start log: 12,400 starts and 12,380 exits since the start of the daemon, 99 % with a command line. The longest time from a creation to its row on the disk was 141 ms. headroom starts --top ranks the starters.",
+    );
+    expect(startLogText({ ...log, starts: 0 })).toBe("Start log: no start yet, in starts.db.");
+    expect(startLogText({ ...log, failure: "the start log stopped at a write: disk I/O error" })).toBe(
+      "Start log: the start log stopped at a write: disk I/O error. 12,400 starts are in starts.db.",
+    );
+    expect(startLogText(null)).toBeNull();
+  });
+
   it("gives the instances procs:traced and procs:failed, and the churn alert names the sources", () => {
     const resources = RESOURCES.get("procs")?.measure.read({ starts: withTrace(starts, traced) } as Readings) ?? [];
     expect(resources.map((each) => [each.id, each.used])).toEqual([
@@ -271,6 +289,40 @@ describe("the traced starts in the starts, the status and the alert (H188)", () 
 });
 
 describe("Engine start trace (H188)", () => {
+  it("puts no process in a job before the reader of the trace runs (H193)", () => {
+    let now = 1_000_000;
+    let ready = false;
+    const covered: number[] = [];
+    const fake: StartTrace = {
+      cover: (pid) => {
+        covered.push(pid);
+        return covered.length;
+      },
+      drain: () => [],
+      cpuMs: () => 0,
+      jobs: () => covered.length,
+      failure: () => null,
+      ready: () => ready,
+      close: () => undefined,
+    };
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [p(4, 0, "System", 0), p(77, 1, "bash.exe", now - MIN)],
+      processSequence: () => 5000,
+      startTrace: () => fake,
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
+    engine.setConfig({ startTrace: ["other"] });
+    engine.tick();
+    expect(covered).toEqual([]);
+    ready = true;
+    now += 10 * S;
+    engine.tick();
+    expect(covered).toEqual([77]);
+    engine.close();
+  });
+
   it("puts the traced processes in jobs, names their starts, and stops the trace with the setting", () => {
     let now = 1_000_000;
     let sequence = 5000;
@@ -425,9 +477,19 @@ describe("Engine start trace (H188)", () => {
 /** The limit flag of a job that lets a child break away. */
 const BREAKAWAY_OK = 0x800;
 describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)", () => {
-  it("names the children of a covered process with their parent, and gives the exit code of a failed start", async () => {
+  /** This function starts the trace and waits for its reader, as the engine does (H193). */
+  async function readyTrace(options: StartTraceOptions = {}): Promise<StartTrace> {
     const { windowsStartTrace } = await import("./trace-windows.ts");
-    const trace = windowsStartTrace();
+    const trace = windowsStartTrace(options);
+    for (let tries = 0; tries < 100 && trace.ready?.() !== true; tries++) await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(trace.ready?.()).toBe(true);
+    return trace;
+  }
+
+  it("names the children of a covered process with their parent, gives the exit code of a failed start, and logs them", async () => {
+    const folder = mkdtempSync(join(tmpdir(), "headroom-trace-log-"));
+    const logPath = join(folder, "starts.db");
+    const trace = await readyTrace({ logPath });
     const script = `process.stdin.once("data", () => {
       const { spawnSync } = require("node:child_process");
       for (let i = 0; i < 5; i++) spawnSync("cmd.exe", ["/c", "exit 3"]);
@@ -454,6 +516,23 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
       const exits = events.filter((each): each is Extract<TraceEvent, { type: "exit" }> => each.type === "exit" && starts.some((started) => started.pid === each.pid));
       expect(exits.map((each) => each.exitCode)).toEqual([3, 3, 3, 3, 3]);
       expect(trace.failure()).toBeNull();
+      // The start log has each cmd.exe with its command line, the command line of its parent, and its exit (H193).
+      for (let tries = 0; tries < 30 && (trace.log?.()?.exits ?? 0) < 5; tries++) await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(trace.log?.()).toMatchObject({ path: logPath, failure: null });
+      expect(trace.log?.()?.slowestLagMs).toBeLessThan(5000);
+      const db = openStartLog(logPath);
+      try {
+        for (const started of starts) {
+          const [logged] = startsOfPid(db, started.pid);
+          expect(logged).toMatchObject({ ppid: child.pid, exit: { exitCode: 3 } });
+          expect(logged?.image?.toLowerCase()).toMatch(/\\cmd\.exe$/);
+          expect(logged?.command).toContain("exit 3");
+          expect(logged?.parentCommand).toContain("spawnSync");
+          expect(logged?.createdAt).not.toBeNull();
+        }
+      } finally {
+        db.close();
+      }
       child.stdin?.write("end\n");
       await new Promise((resolve) => child.once("exit", resolve));
       for (let tries = 0; tries < 30 && trace.jobs() > 0; tries++) {
@@ -466,12 +545,20 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
     } finally {
       if (child.exitCode === null) child.kill();
       trace.close();
+      // The reader closes the log when it stops. A file that it still holds stays in the temp folder.
+      for (let tries = 0; tries < 20; tries++) {
+        try {
+          rmSync(folder, { recursive: true, force: true });
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+      }
     }
   }, 30_000);
 
   it("gives a held job no breakaway, and changes the limits of an open job (H191)", async () => {
-    const { windowsStartTrace } = await import("./trace-windows.ts");
-    const trace = windowsStartTrace();
+    const trace = await readyTrace();
     // The child gives the limit flags of its innermost job at each line on its standard input: the job of the trace.
     const jobs = new URL("./jobs.ts", import.meta.url).href;
     const script = `import { ownJobFlags } from ${JSON.stringify(jobs)};
@@ -501,8 +588,7 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
   }, 30_000);
 
   it("refuses a process that is gone", async () => {
-    const { windowsStartTrace } = await import("./trace-windows.ts");
-    const trace = windowsStartTrace();
+    const trace = await readyTrace();
     try {
       const gone = spawnSync(process.execPath, ["-e", "process.stdout.write(String(process.pid))"], { encoding: "utf8" });
       expect(trace.cover(Number(gone.stdout))).toBeNull();
