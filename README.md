@@ -831,7 +831,9 @@ To turn it on in Claude Code: `/plugin marketplace add C:\Users\<you>\git\headro
 
 The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` opens it in the browser. It shows the alerts and what uses the computer. Then it shows one panel for each resource, the jobs, the owners, the MCP gateway and the pool tags. Its charts show the last hour to the last 7 days.
 
+- Each alert is one line with its kind, its start and its first sentence (H189). Select the line for the rest of the text and a link to the panel of its resource. An open alert stays open after a refresh.
 - The top section shows what uses the computer. One bar shows the memory in RAM by owner, the unattributed memory and the free memory. A second bar shows the processors by owner. The memory card also gives the unattributed memory (H49).
+- A third bar shows the process starts of each owner in one minute (H189). Its hatched part is the starts that no read named. These are the starts of the owners after the top 10, and of the short processes that end between two reads. Select the name of the bar for the panel of the process starts.
 - Each owner has the color of its group. The groups are the Claude sessions, the editor, the browser, Docker, the services, Windows, the kernel and the other programs.
 - Select a part of a bar, a group or an owner row. The page then marks that owner in the panels and the owner table. Escape removes the mark.
 - A line of chips gives the state of each service: the Docker engine, the MCP servers of the gateway and the local site. On a laptop, a chip gives the power source and the charge. The chip `Heat` gives the speed of the CPU and its hottest zone (H35).
@@ -846,7 +848,7 @@ The daemon serves a dashboard at `http://127.0.0.1:4730/`. `headroom dashboard` 
 - The card "Pool tags" shows two charts, one for each kernel pool (H53). Each chart has one line for each of the 5 tags that grew most since the start of Windows.
 - A line gives the growth of its tag since the first snapshot after the start of Windows. The legend gives the name and the growth of each tag, and the tooltip gives its size.
 - Before the second snapshot, and on a computer without Windows, the card shows a note and no chart. Two tables under the charts give the tags of the last hour.
-- The page is one HTML file of approximately 95 KB, with no framework and no build step. The daemon keeps it as one string.
+- The page is one HTML file of approximately 100 KB, with no framework and no build step. The daemon keeps it as one string.
 - The page stops its requests while its tab is hidden. Close the tab, and the dashboard costs nothing.
 - The page holds the token of the daemon. Thus only a request to `127.0.0.1` or `localhost` with the key of the dashboard gets the page.
 - The key is in `~/.headroom/dashboard.key`, and only this user can read it. `headroom dashboard` opens the page with the key.
