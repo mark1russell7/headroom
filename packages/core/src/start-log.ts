@@ -30,6 +30,21 @@ const TOUCH_EVERY_MS = 3_600_000;
 const CACHED_TEXTS = 20_000;
 /** The difference between the epoch of a FILETIME (1601) and the Unix epoch, in units of 100 ns. */
 const FILETIME_UNIX = 116_444_736_000_000_000n;
+/**
+ * A start row whose message comes more than this time after the creation of its process is an adoption. The engine put a
+ * process that ran before into a job, for example each live process at the start of the daemon. An adoption is no start,
+ * so the counts of starts, the lag and the ranking do not count it. A process that the engine puts in a job less than
+ * 1 s after its creation counts as a start: it is a new process.
+ */
+export const START_LOG_ADOPT_MS = 1_000;
+
+/**
+ * This function gives the SQL test of an adoption over the columns of `starts`. It reads only the stored time and creation
+ * time, so it applies to each file, also to the rows of an older version.
+ */
+function adoptedSql(prefix: "" | "s."): string {
+  return `(${prefix}created IS NOT NULL AND ${prefix}at - (${prefix}created - ${FILETIME_UNIX}) / 10000 > ${START_LOG_ADOPT_MS})`;
+}
 
 /** A new process, as the reader writes it. */
 export interface StartRow {
@@ -66,19 +81,21 @@ export interface ExitRow {
 /** The facts of the writer since its start. The trace gives them to the status. */
 export interface StartLogStats {
   readonly path: string;
-  /** The start rows that the writer wrote. */
+  /** The start rows of new processes that the writer wrote. An adoption does not count. */
   readonly starts: number;
-  /** The start rows with a command line. */
+  /** The start rows of new processes with a command line. */
   readonly withCommand: number;
-  /** The start rows with a creation time. */
+  /** The start rows of new processes with a creation time. */
   readonly withCreated: number;
+  /** The start rows of adoptions: processes that ran before the trace put them in a job (`START_LOG_ADOPT_MS`). */
+  readonly adopted: number;
   readonly exits: number;
   readonly commits: number;
   /** The time of all the commits, in ms. */
   readonly writeMs: number;
   /** The longest commit, in ms. */
   readonly slowestWriteMs: number;
-  /** The longest time from the creation of a process to the commit of its row, in ms: what a bugcheck can lose. */
+  /** The longest time from the creation of a new process to the commit of its row, in ms: what a bugcheck can lose. */
   readonly slowestLagMs: number;
   /** The reason when the writer stopped with an error, or `null` while it writes. */
   readonly failure: string | null;
@@ -166,6 +183,7 @@ export class StartLogWriter {
   #starts = 0;
   #withCommand = 0;
   #withCreated = 0;
+  #adopted = 0;
   #exits = 0;
   #commits = 0;
   #writeMs = 0;
@@ -237,11 +255,17 @@ export class StartLogWriter {
     this.#slowestWriteMs = Math.max(this.#slowestWriteMs, ms);
     this.#exits += exits.length;
     for (const row of starts) {
+      const createdMs = row.created === null ? null : filetimeMs(row.created);
+      // The age of an adopted process is no delay of the log (2026-11-17: 4,956,209 ms at the start of the daemon).
+      if (createdMs !== null && row.at - createdMs > START_LOG_ADOPT_MS) {
+        this.#adopted++;
+        continue;
+      }
       this.#starts++;
       if (row.command !== null) this.#withCommand++;
-      if (row.created === null) continue;
+      if (createdMs === null) continue;
       this.#withCreated++;
-      this.#slowestLagMs = Math.max(this.#slowestLagMs, end - filetimeMs(row.created));
+      this.#slowestLagMs = Math.max(this.#slowestLagMs, end - createdMs);
     }
   }
 
@@ -278,6 +302,7 @@ export class StartLogWriter {
       starts: this.#starts,
       withCommand: this.#withCommand,
       withCreated: this.#withCreated,
+      adopted: this.#adopted,
       exits: this.#exits,
       commits: this.#commits,
       writeMs: Math.round(this.#writeMs * 10) / 10,
@@ -306,6 +331,8 @@ export interface LoggedStart {
   readonly command: string | null;
   readonly parentCommand: string | null;
   readonly reuseMs: number | null;
+  /** True for an adoption: the process ran before the trace put it in a job, so its row is no start. */
+  readonly adopted: boolean;
   /** The first exit of the pid after the start, before the next start of the pid. */
   readonly exit: { readonly at: number; readonly exitCode: number | null } | null;
 }
@@ -332,7 +359,7 @@ export function startLogSpan(db: DatabaseSync): StartLogSpan {
   return { from: firsts.length === 0 ? null : Math.min(...firsts), to: lasts.length === 0 ? null : Math.max(...lasts), starts: starts.n, exits: exits.n };
 }
 
-const START_COLUMNS = `s.rowid AS id, s.at, s.key, s.pid, s.ppid, CAST(s.created AS TEXT) AS created, s.reuse_ms AS reuseMs,
+const START_COLUMNS = `s.rowid AS id, s.at, s.key, s.pid, s.ppid, CAST(s.created AS TEXT) AS created, s.reuse_ms AS reuseMs, ${adoptedSql("s.")} AS adopted,
   i.text AS image, c.text AS command, p.text AS parentCommand
   FROM starts s LEFT JOIN texts i ON i.id = s.image LEFT JOIN texts c ON c.id = s.command LEFT JOIN texts p ON p.id = s.parent_command`;
 
@@ -344,6 +371,7 @@ interface StartRecord {
   readonly ppid: number | null;
   readonly created: string | null;
   readonly reuseMs: number | null;
+  readonly adopted: number;
   readonly image: string | null;
   readonly command: string | null;
   readonly parentCommand: string | null;
@@ -362,7 +390,7 @@ function withExit(db: DatabaseSync, record: StartRecord): LoggedStart {
   ) as { at: number; code: number | null } | undefined;
   const ended = exit !== undefined && (next === undefined || exit.at <= next.at) ? { at: exit.at, exitCode: exit.code } : null;
   const { id: _id, ...rest } = record;
-  return { ...rest, createdAt: record.created === null ? null : filetimeMs(BigInt(record.created)), exit: ended };
+  return { ...rest, adopted: record.adopted === 1, createdAt: record.created === null ? null : filetimeMs(BigInt(record.created)), exit: ended };
 }
 
 /** This function gives the starts of a pid in the log, the newest first, each with its exit. */
@@ -419,11 +447,13 @@ export interface StartRanking {
   /** The starts that got a pid that a traced process left less than 1 s before, and the starts with a reuse under 60 s. */
   readonly reusedUnder1s: number;
   readonly reusedUnder60s: number;
+  /** The adoptions in the time. They are no starts, so the ranking does not count them. */
+  readonly adopted: number;
 }
 
 /**
  * This function ranks the starters of the last `spanMs` before the newest row. It gives the starts in one minute by
- * image and by the command line of the parent: the top `top` of each.
+ * image and by the command line of the parent: the top `top` of each. An adoption is no start.
  */
 export function rankStarters(db: DatabaseSync, spanMs: number, top = 20): StartRanking | null {
   const span = startLogSpan(db);
@@ -433,24 +463,27 @@ export function rankStarters(db: DatabaseSync, spanMs: number, top = 20): StartR
   const first = firstRowFrom(db, "starts", from);
   const minutes = Math.max(1, to - from) / 60_000;
   const rate = (count: number): number => Math.round((count / minutes) * 10) / 10;
+  const adopted = adoptedSql("");
   const totals = db.prepare(
-    `SELECT count(*) AS n, sum(reuse_ms IS NOT NULL AND reuse_ms < 1000) AS fast, sum(reuse_ms IS NOT NULL) AS reused FROM starts WHERE rowid >= ?`,
-  ).get(first) as { n: number; fast: number | null; reused: number | null };
+    `SELECT sum(NOT ${adopted}) AS n, sum(NOT ${adopted} AND reuse_ms IS NOT NULL AND reuse_ms < 1000) AS fast,
+       sum(NOT ${adopted} AND reuse_ms IS NOT NULL) AS reused, sum(${adopted}) AS adopted FROM starts WHERE rowid >= ?`,
+  ).get(first) as { n: number | null; fast: number | null; reused: number | null; adopted: number | null };
   const rank = (column: "image" | "parent_command"): RankedStarter[] =>
     (
       db.prepare(
-        `SELECT t.text AS text, r.n AS n FROM (SELECT ${column} AS id, count(*) AS n FROM starts WHERE rowid >= ? GROUP BY ${column} ORDER BY n DESC LIMIT ?) r
+        `SELECT t.text AS text, r.n AS n FROM (SELECT ${column} AS id, count(*) AS n FROM starts WHERE rowid >= ? AND NOT ${adopted} GROUP BY ${column} ORDER BY n DESC LIMIT ?) r
          LEFT JOIN texts t ON t.id = r.id ORDER BY r.n DESC`,
       ).all(first, top) as { text: string | null; n: number }[]
     ).map((row) => ({ text: row.text, starts: row.n, perMinute: rate(row.n) }));
   return {
     from,
     to,
-    starts: totals.n,
-    perMinute: rate(totals.n),
+    starts: totals.n ?? 0,
+    perMinute: rate(totals.n ?? 0),
     images: rank("image"),
     parents: rank("parent_command"),
     reusedUnder1s: totals.fast ?? 0,
     reusedUnder60s: totals.reused ?? 0,
+    adopted: totals.adopted ?? 0,
   };
 }

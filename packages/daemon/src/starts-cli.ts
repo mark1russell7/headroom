@@ -57,6 +57,7 @@ function startLines(start: LoggedStart, parents: readonly LoggedStart[]): string
   const created = start.createdAt === null ? "" : ` (created ${timeText(start.createdAt)})`;
   const end = start.exit === null ? "No exit is in the log." : `It ended ${timeText(start.exit.at)} with ${exitCodeText(start.exit.exitCode)}.`;
   const lines = [`Process ${start.pid}: in the log at ${timeText(start.at)}${created}. ${end}`, `  Program: ${start.image ?? "(not read)"}`, `  Command: ${start.command ?? "(not read)"}`];
+  if (start.adopted) lines.push("  It ran before the trace put it in a job: it is an adoption, not a start.");
   if (start.reuseMs !== null) lines.push(`  The pid was free for ${start.reuseMs.toLocaleString("en-US")} ms: a traced process with this pid ended before this creation.`);
   let indent = "  ";
   for (const parent of parents) {
@@ -68,6 +69,11 @@ function startLines(start: LoggedStart, parents: readonly LoggedStart[]): string
     lines.push(`  Parent ${start.ppid}: not in the log.${command}`);
   }
   return lines;
+}
+
+/** This function writes a count of adoptions: "1 process that ran before the trace put it in a job". */
+function adoptionText(count: number): string {
+  return count === 1 ? "1 process that ran before the trace put it in a job" : `${count.toLocaleString("en-US")} processes that ran before the trace put them in a job`;
 }
 
 /** This function writes the lines of a ranking. */
@@ -123,6 +129,7 @@ export function startsCommand(args: readonly string[], path: string, output: Sta
           ...rankLines("By program:", ranking.images),
           ...rankLines("By the command line of the parent:", ranking.parents),
           `Pid reuse: ${reused} % of the starts got a pid that a traced process left less than 60 s before, ${fast} % less than 1 s before.`,
+          ...(ranking.adopted > 0 ? [`The ranking does not count ${adoptionText(ranking.adopted)}.`] : []),
           "The log has only the processes of the start trace. headroom status gives the part of all the starts that the trace covers.",
         ].join("\n"),
       );

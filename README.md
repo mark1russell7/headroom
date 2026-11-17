@@ -193,6 +193,7 @@ On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer. In each dump, a
 - The reader commits each row at most 100 ms after the message of the job.
 - A start row has the pid, the parent, the creation time, the program, the command line and the command line of the parent. The creation time is a FILETIME, as in a dump.
 - A start row also has the time since a traced process with the same pid ended, when that time is less than 60 s.
+- A row that comes more than 1 s after the creation of its process is an adoption. The process ran before the trace put it in a job, for example at the start of the daemon. The counts, the lag and the ranking do not count an adoption.
 - The log keeps 24 hours, counted back from its newest row.
 - After an unclean stop, the daemon writes the starts of the last 2 minutes before the stop to `~/.headroom/starts-before-<time>.json`.
 
@@ -202,7 +203,7 @@ The command `headroom starts` reads the file, so it needs no daemon:
 - `headroom starts --top --hours 1` ranks the starters of the last hour, by program and by the command line of the parent. `--hours 24` gives the day.
 - `--json` gives the rows as data.
 
-Each start is one more chance for the bug of the driver, so the fleet cuts the top starters. The line `Start log` of `headroom status` gives the count of the rows and the longest time from a creation to its row on the disk.
+Each start is one more chance for the bug of the driver, so the fleet cuts the top starters. The line `Start log` of `headroom status` gives the count of the starts and of the adoptions. It also gives the longest time from the creation of a new process to its row on the disk.
 
 The limits: the log has only the processes of the trace. A reuse of a pid shows only when the trace saw the exit of the old process. Thus the log cannot prove that no reuse came.
 

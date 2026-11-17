@@ -267,10 +267,12 @@ describe("the traced starts in the starts, the status and the alert (H188)", () 
   });
 
   it("adds the line of the start log (H193)", () => {
-    const log = { path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, exits: 12_380, commits: 9000, writeMs: 4100, slowestWriteMs: 38, slowestLagMs: 141, failure: null };
+    const log = { path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, adopted: 0, exits: 12_380, commits: 9000, writeMs: 4100, slowestWriteMs: 38, slowestLagMs: 141, failure: null };
     expect(traceLines({ ...traced, log }).at(-1)).toBe(
-      "  Start log: 12,400 starts and 12,380 exits since the start of the daemon, 99 % with a command line. The longest time from a creation to its row on the disk was 141 ms. headroom starts --top ranks the starters.",
+      "  Start log: 12,400 starts and 12,380 exits since the start of the daemon, 99 % with a command line. The longest time from the creation of a new process to its row on the disk was 141 ms. headroom starts --top ranks the starters.",
     );
+    expect(startLogText({ ...log, adopted: 560 })).toContain("99 % with a command line. It also has 560 processes that ran before the trace put them in a job. The longest");
+    expect(startLogText({ ...log, starts: 0, adopted: 1 })).toBe("Start log: no start yet, in starts.db. It also has 1 process that ran before the trace put it in a job.");
     expect(startLogText({ ...log, starts: 0 })).toBe("Start log: no start yet, in starts.db.");
     expect(startLogText({ ...log, failure: "the start log stopped at a write: disk I/O error" })).toBe(
       "Start log: the start log stopped at a write: disk I/O error. 12,400 starts are in starts.db.",

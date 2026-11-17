@@ -25,6 +25,8 @@ beforeEach(() => {
   path = join(folder, "starts.db");
   const writer = new StartLogWriter(path, { now: () => T0 });
   writer.write([row(T0 - 60 * S, 15400, 1, "C:\\Program Files\\Git\\usr\\bin\\bash.exe", "bash -c 'node hook.mjs'")], []);
+  // An adoption: explorer.exe ran for 3 hours before the trace put it in a job.
+  writer.write([row(T0 - 59 * S, 4100, 1, "C:\\Windows\\explorer.exe", "explorer", { created: msFiletime(T0 - 3 * 3600 * S) })], []);
   writer.write(
     [row(T0 - 2 * S, 31368, 15400, "C:\\nodejs\\node.exe", "node old.mjs")],
     [{ at: T0 - S, key: 1, pid: 31368, exitCode: 0, created: msFiletime(T0 - 2 * S - 30) }],
@@ -63,6 +65,14 @@ describe("headroom starts (H193)", () => {
     expect(text).toContain("3 starts in the log");
     expect(text).toMatch(/By program:\n\s+1\.\s+2\.0 a minute {2}C:\\nodejs\\node\.exe/);
     expect(text).toContain("Pid reuse: 33.3 % of the starts got a pid that a traced process left less than 60 s before, 33.3 % less than 1 s before.");
+    expect(text).toContain("The ranking does not count 1 process that ran before the trace put it in a job.");
+    expect(text).not.toContain("explorer.exe");
+  });
+
+  it("names an adoption as no start", () => {
+    const output = capture();
+    expect(startsCommand(["4100"], path, output)).toBe(0);
+    expect(output.lines.join("\n")).toContain("It ran before the trace put it in a job: it is an adoption, not a start.");
   });
 
   it("says when no start of the pid is in the log, and when the file is not there", () => {
@@ -85,10 +95,10 @@ describe("headroom starts (H193)", () => {
 describe("the starts before an unclean stop (H193)", () => {
   it("keeps the starts of the 2 minutes before the last row of the daemon that stopped", () => {
     const kept = writeStartsBeforeStop(path, folder, T0 + 30 * S);
-    expect(kept?.starts).toBe(3);
+    expect(kept?.starts).toBe(4);
     const saved = JSON.parse(readFileSync(kept!.file, "utf8")) as { from: number; to: number; starts: { pid: number }[] };
     expect(saved.to).toBe(T0);
-    expect(saved.starts.map((start) => start.pid)).toEqual([15400, 31368, 31368]);
+    expect(saved.starts.map((start) => start.pid)).toEqual([15400, 4100, 31368, 31368]);
     expect(writeStartsBeforeStop(path, folder, T0 - 120 * S)).toBeNull();
     expect(writeStartsBeforeStop(join(folder, "none.db"), folder, T0)).toBeNull();
   });
