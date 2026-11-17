@@ -149,12 +149,21 @@ export function mcpCheck(name: string, state: () => McpServerState | undefined):
   };
 }
 
-/** This function gives the checks of one round: Docker, each URL of the setting `health`, and each MCP server of the gateway. */
-export function serviceChecks(urls: Readonly<Record<string, string>>, servers: readonly McpServerState[], pipe: string = DOCKER_PIPE): ServiceCheck[] {
+/**
+ * This function gives the checks of one round: Docker, each URL of the setting `health` and each MCP server of the gateway.
+ * The checks in `more` come last, for example the check of the hook (H194).
+ */
+export function serviceChecks(
+  urls: Readonly<Record<string, string>>,
+  servers: readonly McpServerState[],
+  pipe: string = DOCKER_PIPE,
+  more: readonly ServiceCheck[] = [],
+): ServiceCheck[] {
   const byName = new Map(servers.map((server) => [server.name, server]));
   return [
     dockerCheck(pipe),
     ...Object.entries(urls).map(([name, url]) => urlCheck(name, url)),
     ...[...byName.keys()].map((name) => mcpCheck(name, () => byName.get(name))),
+    ...more,
   ];
 }

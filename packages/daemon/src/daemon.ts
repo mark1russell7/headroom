@@ -8,11 +8,13 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom } from "@headroom/core";
 import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
-import { peerHostOptions } from "@procedures/peer";
+import { peerHostOptions, type HostFaceFactory, type ProcedureHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { CLIENT_TITLE, DeferredStarts, launchClient } from "./deferred.ts";
 import { dashboardFace } from "./dashboard.ts";
+import { hookCheck } from "./hook-check.ts";
+import { hookFace } from "./hook-face.ts";
 import { McpGateway } from "./gateway.ts";
 import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
@@ -36,6 +38,16 @@ const SWEEP_EVERY_MS = 10 * 60_000;
 
 /** The time between two checks of the schedule of the worktree cleanup (H175). The first check comes after this time too. */
 const WORKTREE_CHECK_MS = 5 * 60_000;
+
+/** This function adds faces to the options of the host, and puts each of them on each listener of the host (H194). */
+export function withFaces(base: ProcedureHostOptions, faces: Readonly<Record<string, HostFaceFactory>>): ProcedureHostOptions {
+  const names = Object.keys(faces);
+  return {
+    ...base,
+    faces: { ...base.faces, ...faces },
+    listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), ...names] })),
+  };
+}
 
 /** The options of `serve()`. */
 export interface ServeOptions {
@@ -69,8 +81,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
 
   const store = new Store(databasePath());
   const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
-  // H27: Docker, the URLs of the setting health and the MCP servers of the gateway, every 30 seconds.
-  const monitor = new ServiceMonitor({ checks: () => serviceChecks(store.config().health, gateway.list()) });
+  // H27: Docker, the URLs of the setting health, the MCP servers of the gateway and the hook (H194), every 30 seconds.
+  const port = options.port ?? DEFAULT_PORT;
+  // H194: the check of the hook compares the port of the hook of each install of the plugin with the port of this daemon.
+  const hook = hookCheck({ port });
+  const monitor = new ServiceMonitor({ checks: () => serviceChecks(store.config().health, gateway.list(), undefined, [hook]) });
   // H38: the containers of Docker every 30 seconds, and the disk use of Docker every 10 minutes. The tick starts each read.
   const docker = new DockerReader({ get: dockerGet(), log });
   const sampler = await createSampler();
@@ -142,22 +157,18 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     ]),
   ]);
 
-  const port = options.port ?? DEFAULT_PORT;
   const host = "127.0.0.1";
   const token = randomBytes(32).toString("hex");
   const base = peerHostOptions(
     { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
     "headroom",
   );
-  // The MCP gateway and the dashboard are faces on the same listener as the procedures: /mcp/<name> and / next to /api.
+  // The MCP gateway, the dashboard and the hook (H194) are faces on the same listener as the procedures: /mcp/<name>, / and
+  // /hooks/pre-tool-use next to /api.
   const started = await runProcedureHost({
     name: "headroom",
     mode: options.mode ?? "foreground",
-    host: {
-      ...base,
-      faces: { ...base.faces, mcp: gateway.face(), dashboard: dashboardFace() },
-      listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), "mcp", "dashboard"] })),
-    },
+    host: withFaces(base, { mcp: gateway.face(), dashboard: dashboardFace(), hook: hookFace({ status: () => engine.status() }) }),
     log,
   });
   if (started.life.state !== "running") {

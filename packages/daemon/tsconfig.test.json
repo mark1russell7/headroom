@@ -14,8 +14,7 @@
   },
   "include": [
     "src/**/*",
-    "*.config.ts",
-    "../../plugins/headroom/hooks/*.ts"
+    "*.config.ts"
   ],
   "exclude": []
 }
