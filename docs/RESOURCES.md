@@ -699,6 +699,10 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 - Windows gives each new process the next sequence number. `NtQueryInformationProcess(ProcessSequenceNumber)` gives the number of one process with `PROCESS_QUERY_LIMITED_INFORMATION`.
 - At each read of the processes, the sampler reads the number of the newest process. It tries at most 4 processes, because a short process can end before the read.
 - The change of the number between two reads is the exact count of starts. The number keeps its highest value, so an ended newest process gives no negative count.
+- A read can get no number, for example when the 4 processes end before the read opens them. Such a read keeps the last number and its time. The next read with a number counts the starts of the miss too.
+- The rate of a window is exact when a read of the window has a count. It is the sum of the counts over the time that they cover.
+- `sequenceMisses` of `Status.starts` gives the reads of the window with no number.
+- Until 2026-11-17, a miss cleared the last number, and the next read also got no count. One miss in 10 minutes made the rate a lower bound for 10 minutes. The status then gave no coverage of the trace.
 - On 2026-10-24, two processes that started one after the other had numbers with a difference of 1.
 - `UniqueProcessKey` of `SYSTEM_PROCESS_INFORMATION` is 0 with `SystemProcessInformation`, and the process ID with `SystemExtendedProcessInformation`. Thus it is not a count.
 - Linux gives no cheap exact count of processes. The `processes` line of `/proc/stat` counts each fork, also each thread. Thus Linux uses the lower bound.
@@ -829,6 +833,23 @@ On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer, each with the c
 - Each 10 minutes, it deletes the rows older than 24 hours before the newest row. A text stays one more hour, because the writer writes the time of the use of a text at most once each hour.
 - An error of the log closes the log, and the trace goes on. The status gives the reason.
 
+**Adoptions.** The trace also puts processes that ran before into jobs. Each of them gets a start row with an old creation time.
+
+- The daemon started on 2026-11-17 at 20:28:13Z, and the trace put 186 live processes in jobs. The status gave 4,956,209 ms as the longest time from a creation to its commit.
+- The ranking of that version counted these processes as starts. For example, it gave 114.5 starts a minute to `claude.exe`.
+- The sampler also puts a process that runs in a job later. A child of the daemon (`worktree clean --dry-run`) got its row 13 s after its creation.
+- Thus a row whose message comes more than 1 s (`START_LOG_ADOPT_MS`) after the creation is an adoption. The counts, the lag and the ranking do not count it, and `headroom starts <pid>` marks it.
+- The test is an SQL expression over the stored time and the creation time. It needs no new column, and it applies to the rows of the older version too.
+- In the first 5 minutes of the log, 11,993 rows came at most 95 ms after the creation. The 188 adoptions came 8,064 ms to 4,956,090 ms after it.
+- Thus the limit of 1 s is more than 10 times the slowest start and less than 1/8 of the fastest adoption.
+
+**Secrets.** The first version of the log kept each command line as it came. H186 permits a stored command line only after the redaction.
+
+- On 2026-11-17 at 20:55Z, the redaction changed 397 of the 9,251 texts of the live log. 20,347 of the 49,575 start rows named such a text.
+- 2 marks were values of `GH_TOKEN=`. 374 marks were the value of `git -c log.showSignature=false`, and 40 were the minutes of `date -u +%H:%M`.
+- The last two kinds are false matches of the home of redaction. They are in the issue [text#44](https://github.com/mark1russell7/text/issues/44) of that home. Until its fix, the log keeps them with the mark.
+- The writer redacts a text only when its memory does not have the text. Thus a known text costs no redaction.
+
 **The start of the reader.** The modules of the thread load in approximately 170 ms: koffi in 59 ms, and the start log with SQLite in 114 ms more.
 
 - The port keeps each message, but the reader reads the program of a new process when it gets the message. A process that ended before that has no name.
@@ -840,18 +861,19 @@ On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer, each with the c
 - `headroom starts <pid> [--at <time>]` gives the starts of the pid, nearest to the time first. Each start has its exit, its parents and its `reuse_ms`.
 - A parent is the last start of the parent pid before the child. A parent that ended before the child started is another process.
 - `headroom starts --top [--hours <n>]` gives the 20 programs and the 20 parent command lines with the most starts, from 1 to 24 hours.
-- The ranking also gives the part of the starts with a `reuse_ms` under 1 s and under 60 s.
+- The ranking also gives the part of the starts with a `reuse_ms` under 1 s and under 60 s. It gives the count of the adoptions too.
 - After an unclean stop, the daemon writes the starts of the 2 minutes before the last row of the stopped daemon to `~/.headroom/starts-before-<time>.json`.
 
-**The status.** The line `Start log` of `headroom status` gives the rows since the start of the daemon and the part with a command line. It also gives the longest time from a creation to its commit. That time is what a bugcheck can lose.
+**The status.** The line `Start log` of `headroom status` gives the rows since the start of the daemon and the part with a command line. It also gives the count of the adoptions and the longest time from the creation of a new process to its commit. That time is what a bugcheck can lose.
 
 **The limits.**
 
 - The log has only the processes of the trace: the jobs of the traced owner kinds.
 - A reuse of a pid shows only when the trace saw the exit of the old process. Thus `reuse_ms` can show a reuse, but cannot rule it out.
 - A process that ends before the reader opens it has no program and no command line. Its row keeps the pid and the time.
+- A new process whose row comes more than 1 s late counts as an adoption, so the ranking does not count it. A count of adoptions that grows after the start of the daemon shows such rows.
 
-**The gates after the deploy.** At least 90 % of the start rows have a command line, and the longest time from a creation to its commit stays under 251 ms.
+**The gates after the deploy.** At least 90 % of the start rows have a command line. The longest time from the creation of a new process to its commit stays under 251 ms.
 
 ### H30: battery and power
 
@@ -1701,6 +1723,7 @@ A command line or the name of a job can hold a token, a password or a key. Examp
 
 - The name of the job of a lease, and the command of its key (H78).
 - The command line of each owner record (H48, H182).
+- The image, the command line and the command line of the parent of each row of the start log (H193). Step 2 of its schema redacts the texts of an older file.
 - Thus also the shadow log and the log of `headroom reap` (H183), the alerts and the dashboard.
 
 **The step of the schema.** Step 5 redacts the rows of an older file. It changes only the rows with a secret. The columns are in `COMMAND_COLUMNS` of `store.ts`: `process_owners.command`, `reap_shadow.command`, `reap_log.command`, `leases.job` and `lease_keys.command`.
@@ -1709,3 +1732,4 @@ A command line or the name of a job can hold a token, a password or a key. Examp
 
 - A test puts fixture secrets in each path and holds that no fixture secret reaches any table.
 - A test fails when a table gets a new column with the name `command` or `job` that is not in `COMMAND_COLUMNS`.
+- That test reads only `headroom.db`, and the start log keeps its texts in its own file. Thus a test of its own puts fixture secrets through its writer and its step 2.

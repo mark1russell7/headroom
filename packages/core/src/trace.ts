@@ -532,10 +532,12 @@ export function traceLines(traced: TracedStarts | null | undefined, limit = 5): 
 export function startLogText(log: StartLogStats | null | undefined): string | null {
   if (log === null || log === undefined) return null;
   if (log.failure !== null) return `Start log: ${log.failure}. ${log.starts.toLocaleString("en-US")} starts are in ${log.path}.`;
-  if (log.starts === 0) return `Start log: no start yet, in ${log.path}.`;
+  const adoptions = log.adopted === 1 ? "1 process that ran before the trace put it" : `${log.adopted.toLocaleString("en-US")} processes that ran before the trace put them`;
+  const adopted = log.adopted > 0 ? ` It also has ${adoptions} in a job.` : "";
+  if (log.starts === 0) return `Start log: no start yet, in ${log.path}.${adopted}`;
   const commands = percentText(log.withCommand / log.starts);
   return (
-    `Start log: ${log.starts.toLocaleString("en-US")} starts and ${log.exits.toLocaleString("en-US")} exits since the start of the daemon, ${commands} with a command line. ` +
-    `The longest time from a creation to its row on the disk was ${log.slowestLagMs.toLocaleString("en-US")} ms. headroom starts --top ranks the starters.`
+    `Start log: ${log.starts.toLocaleString("en-US")} starts and ${log.exits.toLocaleString("en-US")} exits since the start of the daemon, ${commands} with a command line.${adopted} ` +
+    `The longest time from the creation of a new process to its row on the disk was ${log.slowestLagMs.toLocaleString("en-US")} ms. headroom starts --top ranks the starters.`
   );
 }

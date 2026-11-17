@@ -151,6 +151,24 @@ describe("StartTracker", () => {
 });
 
 describe("StartTracker recent rate (H31)", () => {
+  it("stays exact after a read with no sequence number, and counts the misses (2026-11-17)", () => {
+    const tracker = new StartTracker();
+    const list = second;
+    tracker.read(0, list, ownersOf(list, []), 1000);
+    tracker.read(10 * S, list, ownersOf(list, []), 1100);
+    // The 4 newest processes ended before the read opened them: no number. Two reads miss.
+    tracker.read(20 * S, list, ownersOf(list, []), undefined);
+    tracker.read(30 * S, list, ownersOf(list, []), undefined);
+    // The next number counts the starts of the misses too: 500 in 50 seconds.
+    tracker.read(60 * S, list, ownersOf(list, []), 1600);
+    expect(tracker.summary(60 * S)).toMatchObject({ perMinute: 600, exact: true, sequenceMisses: 2, spanMs: 60 * S });
+    expect(tracker.recent(60 * S, 60 * S)).toBe(600);
+    // Only misses in the window: a lower bound.
+    tracker.read(70 * S, list, ownersOf(list, []), undefined);
+    expect(tracker.recent(70 * S, 10 * S)).toBe(0);
+    expect(tracker.summary(60 * S + STARTS_WINDOW_MS)).toMatchObject({ exact: false, sequenceMisses: 1 });
+  });
+
   it("gives the exact starts of the computer over the last 2 minutes, for starts<N", () => {
     const tracker = new StartTracker();
     expect(tracker.recent(0)).toBeNull();

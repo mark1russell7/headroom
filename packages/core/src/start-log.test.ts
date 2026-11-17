@@ -194,6 +194,31 @@ describe("the reads of the start log (H193)", () => {
     expect(day?.images.at(-1)).toMatchObject({ text: "C:\\old.exe", starts: 1 });
   });
 
+  it("counts an adoption apart: no start, no lag and no place in the ranking", () => {
+    let now = T0;
+    const writer = new StartLogWriter(path, { now: () => now });
+    // At the start of the daemon, the trace puts the live processes in jobs. This claude.exe ran for 2 hours.
+    const adopted = row(T0, 10, 1, "C:\\claude.exe", "claude", { created: msFiletime(T0 - 2 * HOUR) });
+    writer.write([adopted, row(T0, 12, 10, "C:\\git.exe", "git status")], []);
+    // The engine put this process in a job 900 ms after its creation: it is a new process.
+    now = T0 + S;
+    writer.write([row(T0 + S, 11, 10, "C:\\bash.exe", "bash", { created: msFiletime(T0 + 100) })], []);
+    const stats = writer.stats();
+    writer.close();
+    expect(stats).toMatchObject({ starts: 2, withCommand: 2, withCreated: 2, adopted: 1 });
+    // git.exe: created at T0 - 50, on the disk at T0. bash.exe: created at T0 + 100, on the disk at T0 + 1000.
+    expect(stats.slowestLagMs).toBe(900);
+    const db = openStartLog(path);
+    const ranking = rankStarters(db, HOUR);
+    const [claude] = startsOfPid(db, 10);
+    const [git] = startsOfPid(db, 12);
+    db.close();
+    expect(ranking).toMatchObject({ starts: 2, adopted: 1, reusedUnder60s: 0 });
+    expect(ranking?.images.map((each) => each.text).sort()).toEqual(["C:\\bash.exe", "C:\\git.exe"]);
+    expect(claude?.adopted).toBe(true);
+    expect(git?.adopted).toBe(false);
+  });
+
   it("gives no ranking for an empty log", () => {
     new StartLogWriter(path).close();
     const db = openStartLog(path);

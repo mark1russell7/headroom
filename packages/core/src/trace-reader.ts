@@ -180,7 +180,7 @@ function logStats(log: Log): StartLogStats | undefined {
   if (log.writer !== null) return log.writer.stats();
   if (log.last !== null) return { ...log.last, failure: log.failure };
   if (log.failure === null) return undefined;
-  return { path: data.logPath ?? "", starts: 0, withCommand: 0, withCreated: 0, exits: 0, commits: 0, writeMs: 0, slowestWriteMs: 0, slowestLagMs: 0, failure: log.failure };
+  return { path: data.logPath ?? "", starts: 0, withCommand: 0, withCreated: 0, adopted: 0, exits: 0, commits: 0, writeMs: 0, slowestWriteMs: 0, slowestLagMs: 0, failure: log.failure };
 }
 
 function run(): void {
