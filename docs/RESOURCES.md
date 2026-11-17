@@ -847,7 +847,7 @@ On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer, each with the c
 
 - On 2026-11-17 at 20:55Z, the redaction changed 397 of the 9,251 texts of the live log. 20,347 of the 49,575 start rows named such a text.
 - 2 marks were values of `GH_TOKEN=`. 374 marks were the value of `git -c log.showSignature=false`, and 40 were the minutes of `date -u +%H:%M`.
-- The last two kinds are false matches of the home of redaction. They go to that home as an issue. Until its fix, the log keeps them with the mark.
+- The last two kinds are false matches of the home of redaction. They are in the issue [text#44](https://github.com/mark1russell7/text/issues/44) of that home. Until its fix, the log keeps them with the mark.
 - The writer redacts a text only when its memory does not have the text. Thus a known text costs no redaction.
 
 **The start of the reader.** The modules of the thread load in approximately 170 ms: koffi in 59 ms, and the start log with SQLite in 114 ms more.
