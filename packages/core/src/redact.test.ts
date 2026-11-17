@@ -1,0 +1,146 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { describe, expect, it } from "vitest";
+import { Engine } from "./engine.ts";
+import type { JobKey } from "./predict.ts";
+import { redactCommand, redactKey } from "./redact.ts";
+import type { Sampler } from "./sampler.ts";
+import { COMMAND_COLUMNS, Store } from "./store.ts";
+import type { ProcessInfo } from "./types.ts";
+
+/** The fixture secrets. No real token: each one only has the shape or the context of a secret. */
+const TOKEN = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c3`;
+const PASSWORD = "hunter2-fixture-9";
+const PG = "pg-fixture-secret-7";
+const SECRETS = [TOKEN, PASSWORD, PG] as const;
+
+describe("redactCommand (H186)", () => {
+  it("puts a mark in place of each secret of a command line, and keeps the rest", () => {
+    expect(redactCommand(`GITHUB_TOKEN=${TOKEN} gh pr list`)).toBe("GITHUB_TOKEN=[secret] gh pr list");
+    expect(redactCommand(`gh auth status --token ${TOKEN}`)).toBe("gh auth status --token [secret]");
+    expect(redactCommand(`echo ${TOKEN}`)).toBe("echo [secret]");
+    expect(redactCommand(`mysql --password=${PASSWORD} -u root`)).toBe("mysql --password=[secret] -u root");
+    expect(redactCommand(`curl -u admin:${PASSWORD} https://h`)).toBe("curl -u admin:[secret] https://h");
+    expect(redactCommand(`git clone https://user:${PASSWORD}@github.com/o/r.git`)).toBe("git clone https://user:[secret]@github.com/o/r.git");
+  });
+
+  it("keeps a command line with no secret, and changes nothing on a second pass", () => {
+    const lines = ["pnpm install --frozen-lockfile --prefer-offline", "vitest run src/redact.test.ts", "node --max-old-space-size=4096 cli.js --title headroom"];
+    for (const line of lines) expect(redactCommand(line)).toBe(line);
+    const once = redactCommand(`PGPASSWORD=${PG} psql --password ${PASSWORD} ${TOKEN}`);
+    expect(redactCommand(once)).toBe(once);
+  });
+
+  it("redacts only the command of a key, and keeps a key with no secret as the same object", () => {
+    const key: JobKey = { kind: "test", repo: "headroom", lock: null, filter: null, warm: null, packages: null, command: "vitest run" };
+    expect(redactKey(key)).toBe(key);
+    expect(redactKey({ ...key, command: `vitest run --token ${TOKEN}` })).toEqual({ ...key, command: "vitest run --token [secret]" });
+  });
+});
+
+/** This function gives each text of each row of each table of a database file, as JSON. */
+function allText(path: string): string {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[];
+    return tables.map(({ name }) => JSON.stringify(db.prepare(`SELECT * FROM "${name}"`).all())).join("\n");
+  } finally {
+    db.close();
+  }
+}
+
+describe("the secrets of a command line never reach the store (H186)", () => {
+  it("keeps no fixture secret of a job name, a job key or a process command line in any table", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
+    try {
+      let now = 1_800_000_000_000;
+      const node = (pid: number, ppid: number, name: string): ProcessInfo => ({ pid, ppid, name, privateMb: 10, workingMb: 10, startedAt: now - 60_000 });
+      const sampler: Sampler = {
+        memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+        processes: () => [node(4, 0, "System"), node(21, 4, "psql.exe"), node(22, 4, "curl.exe")],
+        commandLine: (pid) =>
+          pid === 21 ? `"C:\\Program Files\\PostgreSQL\\bin\\psql.exe" "postgres://app:${PG}@db/app" --password ${PASSWORD}` : pid === 22 ? `curl -H "Authorization: Bearer ${TOKEN}" https://h` : null,
+        close: () => undefined,
+      };
+      const path = join(dir, "headroom.db");
+      const engine = new Engine({ sampler, store: new Store(path), now: () => now, sessionsDir: "/nowhere" });
+      const key: JobKey = { kind: "test", repo: "headroom", lock: null, filter: null, warm: null, packages: null, command: `GITHUB_TOKEN=${TOKEN} vitest run` };
+      const lease = engine.request({ holder: "headroom", job: `GITHUB_TOKEN=${TOKEN} vitest run --password ${PASSWORD}`, amounts: { memory: 100 }, key });
+      expect(lease.job).toBe("GITHUB_TOKEN=[secret] vitest run --password [secret]");
+      expect(engine.suggest(`GITHUB_TOKEN=${TOKEN} vitest run --password ${PASSWORD}`, "headroom", key).rung).toBeDefined();
+      for (let step = 0; step < 3; step++) {
+        engine.tick();
+        now += 60_000;
+      }
+      engine.release(lease.id, "done", 120);
+      engine.tick();
+      const shown = JSON.stringify([engine.status(), engine.alerts(), engine.get(lease.id)]);
+      engine.close();
+      const stored = allText(path);
+      // The test holds only when the store has the rows: the job, the key and the records of the two processes.
+      expect(stored).toContain("GITHUB_TOKEN=[secret] vitest run --password [secret]");
+      expect(stored).toContain("psql");
+      expect(stored).toContain("Authorization: [secret]");
+      for (const secret of SECRETS) {
+        expect(stored.includes(secret), secret).toBe(false);
+        expect(shown.includes(secret), secret).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts the rows of an older file at the next open, and only the rows with a secret", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
+    try {
+      const path = join(dir, "headroom.db");
+      new Store(path).close();
+      const db = new DatabaseSync(path);
+      const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+      db.prepare("INSERT INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)").run(31, 1, "other", `psql --password ${PASSWORD}`, 1);
+      db.prepare("INSERT INTO process_owners (pid, created, owner, command, first_seen) VALUES (?, ?, ?, ?, ?)").run(32, 1, "other", "vitest run", 1);
+      db.prepare("INSERT INTO leases (id, holder, job, amounts, priority, ttl_ms, state, requested_at, heartbeat_at) VALUES (?, ?, ?, ?, 0, 1, 'released', 1, 1)").run(
+        "l1",
+        "h",
+        `GITHUB_TOKEN=${TOKEN} gh pr list`,
+        "{}",
+      );
+      db.prepare("INSERT INTO lease_keys (lease_id, kind, command, rung, runs) VALUES (?, 'other', ?, 'none', 0)").run("l1", `gh pr list --token ${TOKEN}`);
+      db.prepare("INSERT INTO reap_log (at, pid, created, name, action, private_mb, command, result) VALUES (1, 31, 1, 'psql.exe', 'ask', 1, ?, 'ok')").run(`psql --password ${PASSWORD}`);
+      // The file goes back to the version before the step of H186, as a file of the last release.
+      db.exec(`PRAGMA user_version = ${version - 1}`);
+      db.close();
+      new Store(path).close();
+      const stored = allText(path);
+      for (const secret of SECRETS) expect(stored.includes(secret), secret).toBe(false);
+      expect(stored).toContain("psql --password [secret]");
+      expect(stored).toContain("GITHUB_TOKEN=[secret] gh pr list");
+      expect(stored).toContain("gh pr list --token [secret]");
+      expect(stored).toContain('"command":"vitest run"');
+      const after = new DatabaseSync(path, { readOnly: true });
+      expect((after.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(version);
+      after.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("redacts each column of the schema with the name command or job", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
+    try {
+      const path = join(dir, "headroom.db");
+      new Store(path).close();
+      const db = new DatabaseSync(path, { readOnly: true });
+      const columns = db
+        .prepare("SELECT m.name AS tableName, c.name AS columnName FROM sqlite_master m JOIN pragma_table_info(m.name) c WHERE m.type = 'table'")
+        .all() as { tableName: string; columnName: string }[];
+      db.close();
+      const named = columns.filter((each) => /command|^job$/.test(each.columnName)).map((each) => `${each.tableName}.${each.columnName}`);
+      expect(named.sort()).toEqual(COMMAND_COLUMNS.map(([table, column]) => `${table}.${column}`).sort());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

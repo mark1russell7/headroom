@@ -59,7 +59,7 @@ describe("Store lease keys (H78)", () => {
     expect(store.leaseKey("old-1")).toEqual(key());
     store.close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 4 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
     read.close();
   });
 

@@ -211,6 +211,9 @@ importers:
       '@mark1russell7/sqlite':
         specifier: ^0.3.1
         version: 0.3.6
+      '@mark1russell7/text':
+        specifier: ^0.0.12
+        version: 0.0.12
       koffi:
         specifier: ^3.3.3
         version: 3.3.8
@@ -246,8 +249,8 @@ importers:
         specifier: ^0.2.9
         version: 0.2.9
       '@mark1russell7/text':
-        specifier: ^0.0.7
-        version: 0.0.7
+        specifier: ^0.0.12
+        version: 0.0.12
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.2(zod@4.6.7)
@@ -283,8 +286,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@mark1russell7/text':
-        specifier: ^0.0.7
-        version: 0.0.7
+        specifier: ^0.0.12
+        version: 0.0.12
     devDependencies:
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
@@ -740,12 +743,12 @@ packages:
     engines: {node: '>=22.12'}
     hasBin: true
 
-  '@mark1russell7/text@0.0.2':
-    resolution: {integrity: sha512-m1aIB8X+PDekktzr1fYOp1/7gvlh9iL/2M7ktj/GnmPmVrWin0rTADgTm00dKFdWFRzXraCUYkjyCl3jQZHEVg==}
+  '@mark1russell7/text@0.0.12':
+    resolution: {integrity: sha512-30jXr0d3UlV2pHUNalpwnbxEZoutZACNpu6liDYPEc8grmxqfPaCFGgFFEl9ujrmNShKf/ROw6c6t4qPgFFE5A==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/text@0.0.7':
-    resolution: {integrity: sha512-z77JJNdQLstitCBkuatDxfDyDadNhGjQz+OBitkCQ4om0gsp4AF4ZgYZfsJofVAneo/4sPuQ+6czkxagJuWkPQ==}
+  '@mark1russell7/text@0.0.2':
+    resolution: {integrity: sha512-m1aIB8X+PDekktzr1fYOp1/7gvlh9iL/2M7ktj/GnmPmVrWin0rTADgTm00dKFdWFRzXraCUYkjyCl3jQZHEVg==}
     engines: {node: '>=22.12'}
 
   '@modelcontextprotocol/sdk@1.32.2':
@@ -2033,9 +2036,9 @@ snapshots:
     dependencies:
       '@clack/prompts': 1.8.1
 
-  '@mark1russell7/text@0.0.2': {}
+  '@mark1russell7/text@0.0.12': {}
 
-  '@mark1russell7/text@0.0.7': {}
+  '@mark1russell7/text@0.0.2': {}
 
   '@modelcontextprotocol/sdk@1.32.2(zod@4.6.7)':
     dependencies:

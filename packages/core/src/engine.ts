@@ -102,6 +102,7 @@ import {
   type ResumePlanFile,
   type WindowsReboot,
 } from "./reboot.ts";
+import { redactCommand, redactKey } from "./redact.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
@@ -312,6 +313,16 @@ export interface ConfigChange {
    * base value of one limit back. `null` for the whole change removes all the differences.
    */
   readonly alerts?: AlertRulesChange | null | undefined;
+}
+
+/**
+ * This function redacts a request (H186). The name of its job and the command of its key get a mark in place of each
+ * secret. A request with no secret stays the same object.
+ */
+function redactRequest(request: LeaseRequest): LeaseRequest {
+  const job = redactCommand(request.job);
+  const key = request.key === undefined || request.key === null ? request.key : redactKey(request.key);
+  return job === request.job && key === request.key ? request : { ...request, job, key };
 }
 
 /** This function gives the presence rules from the settings (H33). */
@@ -879,7 +890,9 @@ export class Engine {
       // H48: an orphan gets the owner of its record, with the label `(orphan)`.
       // H182: the records also keep the parent, its start and the session of each process.
       const { owners, ownerOf, sessionOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
-      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#sampler.commandLine?.(pid) ?? null, sessionOf));
+      // H186: a record keeps the command line with a mark in place of each secret. The redaction comes before the cut of a
+      // long line, so a cut cannot keep a part of a secret.
+      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#commandLine(pid), sessionOf));
       this.#handles.read(now, this.#processes);
       // H183: the shadow log of the automatic reap rule. No rule stops a process in this version.
       const shadow = this.#shadow.sample(now, this.#processes, (info) => this.#records.get(info), (pid) => this.#sampler.stdoutKind?.(pid) ?? "unknown");
@@ -963,9 +976,12 @@ export class Engine {
 
   /**
    * This function adds a request and grants it at once when it fits. The past runs of its job give its spawn class (H47).
-   * A request with a key writes the key and the predictions of its lease to the store (H78).
+   * A request with a key writes the key and the predictions of its lease to the store (H78). First, the name of the job
+   * and the command of the key get a mark in place of each secret (H186). Thus the lease, the store and each later read
+   * hold only the redacted text.
    */
-  request(request: LeaseRequest): Lease {
+  request(input: LeaseRequest): Lease {
+    const request = redactRequest(input);
     this.#readPresence(this.#clock());
     const lease = this.#broker.request(request, this.spawnClass(request.job, request.holder, request.spawnHeavy));
     this.#persist([lease]);
@@ -993,14 +1009,17 @@ export class Engine {
    * `predictMemory` with a run. The rungs are the job, its key, its repo, a fit over the repos, then its kind. Without
    * a key, only the runs of the job count, as before H78. Without a run, the amount is `null`.
    * The cores of `--cpu auto` use the rule of before H78 on the peak cores of the job. The amount rounds up to a whole
-   * core, and stays at most the cores that leases can get (H23).
+   * core, and stays at most the cores that leases can get (H23). The store has the redacted names of jobs (H186), so the
+   * reads use the redacted name and key.
    */
-  suggest(job: string, holder?: string, key?: JobKey | null): Suggestion {
+  suggest(rawJob: string, holder?: string, rawKey?: JobKey | null): Suggestion {
+    const job = redactCommand(rawJob);
+    const key = rawKey === undefined || rawKey === null ? null : redactKey(rawKey);
     const ownCores = holder === undefined ? [] : this.#store.corePeaksOf(job, holder);
     const corePeaks = ownCores.length > 0 ? ownCores : this.#store.corePeaksOf(job);
     const cores = suggestCores(corePeaks, this.#leasableCores());
     const cpu = { cores, coreRuns: cores === null ? 0 : corePeaks.length, peakCores: cores === null ? null : Math.max(...corePeaks) };
-    const memory = this.predictMemory(job, holder, key ?? null);
+    const memory = this.predictMemory(job, holder, key);
     return { memoryMb: memory.mb, runs: memory.runs, peakMb: memory.peakMb, rung: memory.rung, ...cpu };
   }
 
@@ -1090,6 +1109,12 @@ export class Engine {
     const run = this.runEstimate(lease.job, lease.holder, lease.amounts, key);
     this.#store.saveLeaseKey(lease.id, key, memory, run);
     this.#rememberKey(lease.id, key);
+  }
+
+  /** This function gives the command line of a process with a mark in place of each secret (H186), or `null` with no read. */
+  #commandLine(pid: number): string | null {
+    const line = this.#sampler.commandLine?.(pid) ?? null;
+    return line === null ? null : redactCommand(line);
   }
 
   /**

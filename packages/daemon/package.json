@@ -21,7 +21,7 @@
     "@mark1russell7/files": "^0.0.3",
     "@mark1russell7/rigor-generators": "^0.2.0",
     "@mark1russell7/rigor-statistics": "^0.2.9",
-    "@mark1russell7/text": "^0.0.7",
+    "@mark1russell7/text": "^0.0.12",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@procedures/client": "^0.55.0",
     "@procedures/peer": "^0.55.0",

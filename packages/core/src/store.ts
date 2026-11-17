@@ -20,6 +20,7 @@ import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } 
 import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.ts";
 import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "./reap.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
+import { redactCommand } from "./redact.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import { traceKindsOf } from "./trace.ts";
 import { FIT_RUNS, isJobKind, KIND_RUNS, PEAK_RUNS, type JobKey, type MemoryPrediction, type Rung, type RunEstimate, type RunSource, type SizedPeak } from "./predict.ts";
@@ -121,7 +122,40 @@ const MIGRATIONS: readonly Migration[] = [
   (db) => {
     db.exec(KEYS_SCHEMA);
   },
+  // H186: each stored command line and each stored name of a job gets a mark in place of each secret. A new text gets the
+  // mark before the store keeps it, so this step changes only the rows of an older version.
+  (db) => {
+    redactStoredCommands(db);
+  },
 ];
+
+/** The columns that keep a command line or the name of a job (H186). */
+export const COMMAND_COLUMNS: readonly (readonly [table: string, column: string])[] = Object.freeze([
+  ["process_owners", "command"],
+  ["reap_shadow", "command"],
+  ["reap_log", "command"],
+  ["leases", "job"],
+  ["lease_keys", "command"],
+]);
+
+/**
+ * This function puts a mark in place of each secret of the texts of `COMMAND_COLUMNS` (H186). It changes only the rows with
+ * a secret, and gives the count of the rows that it changed.
+ */
+export function redactStoredCommands(db: DatabaseSync): number {
+  let changed = 0;
+  for (const [table, column] of COMMAND_COLUMNS) {
+    const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+    const rows = db.prepare(`SELECT rowid AS id, ${column} AS text FROM ${table} WHERE ${column} IS NOT NULL`).all() as { id: number; text: string }[];
+    for (const row of rows) {
+      const redacted = redactCommand(row.text);
+      if (redacted === row.text) continue;
+      update.run(redacted, row.id);
+      changed += 1;
+    }
+  }
+  return changed;
+}
 
 /**
  * The table of H78. Step 4 of the schema makes it. Each lease with a key has one row. The index serves the rungs `key`,
