@@ -26,7 +26,7 @@ defaults:
 
 jobs:
   ci:
-    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@eb7f3517aa8614e338a46acd37ab0c49395be5f9 # main
+    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@2030c7dec9485afebb504772f79f41f23bdb2df7 # main
 
   # The one check of the ruleset of main (CI.md of mark1russell7/template, "The check of the ruleset").
   # It passes only when each job of needs passed, or was skipped by its own if and ALLOW_SKIP names it.
