@@ -660,6 +660,7 @@ On 2026-10-24, the Docker engine stopped to answer, and an MCP server of the gat
 - **Docker**: a `GET /_ping` on the pipe of the engine, `\\.\pipe\docker_engine` on Windows and `/var/run/docker.sock` on Linux. headroom starts no `docker` process. When the pipe does not exist, the state is `absent`, and no alert starts.
 - **The MCP servers of the gateway**: the state of the gateway, with no call. A server that did not start is `down`, with the last error line of its stderr. A server that the gateway stopped for idle is `idle`, not `down`. A server that exited is `idle`, because the next request starts it again. With 3 exits in 10 minutes, it is `down`.
 - **The URLs of the setting `health`**: a `GET` of each URL. An answer with a status below 500 is good. The list has no default, so with no setting the monitor checks no URL.
+- **The hook of the plugin** (H194): a read of `plugins/installed_plugins.json` in the settings folder of Claude Code. The check also reads the `hooks/hooks.json` of each install of the plugin `headroom`. The check is `ok` when each HTTP hook asks the port of this daemon. It is also `ok` for the command hook of a version before 0.2.0. It is `down` when a hook asks another port or host, or when an install has no hook of headroom. A file that cannot be read also gives `down`. With no install, it is `absent`. Its alert is a warning.
 
 Each service has a state: `ok`, `slow` (an answer after more than 1 second), `down`, `idle` or `absent`. `headroom services` shows the state, the latency, the start of the state, the last good check and the last error of each service. `--json` gives the list.
 
@@ -858,8 +859,9 @@ The plugin `headroom` has a hook for the Bash and PowerShell tools. When a sessi
 - The hook is an HTTP hook (H194). Claude Code sends each event to `POST http://127.0.0.1:4730/hooks/pre-tool-use` on the daemon, so a tool call starts no process for the hook. The daemon has the one copy of the rating (`packages/daemon/src/hook-rating.ts`).
 - The route answers only on 127.0.0.1 or localhost, and only a request with the header `x-headroom-client: hook`. A web page cannot send that header to another origin without a CORS preflight, and the daemon answers no preflight.
 - For a light command, the answer is `{}` and the command goes on. Without a daemon, the request fails, and Claude Code lets the tool call go on: the hook has a timeout of 1 second and no `onFailure`.
-- The hook calls the default port 4730. A daemon on a different port (`headroom serve --port`) gets no request from the hook, so the hook refuses no command.
-- Version 0.2.0 of the plugin needs version 0.3.4 or later of the daemon. An older daemon has no route, so the hook refuses no command.
+- With the daemon stopped, Claude Code shows a `PreToolUse:Bash hook error` notice for each Bash or PowerShell call, because a failed HTTP hook is a non-blocking error. The call goes on. The command hook before version 0.2.0 showed no notice.
+- The URL of an HTTP hook takes no environment variable, so the hook calls the default port 4730. A daemon on a different port (`headroom serve --port`) gets no request from the hook, so the hook refuses no command. The service check `hook` tells it: its warning names the port of the hook and the port of the daemon (`headroom services`).
+- Version 0.2.0 of the plugin needs version 0.3.4 or later of the daemon. An older daemon has no route, so the hook refuses no command. Update the daemon first, then the plugin.
 
 To turn it on in Claude Code: `/plugin marketplace add C:\Users\<you>\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
 

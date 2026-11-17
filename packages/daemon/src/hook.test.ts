@@ -2,9 +2,11 @@ import { readFileSync } from "node:fs";
 import { createServer, request, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import type { HostFaceContext } from "@procedures/peer";
+import { hostPolicy, ProcedureRegistry } from "@procedures/client";
+import { createProcedureHost, peerHostOptions, type HostFaceContext } from "@procedures/peer";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DEFAULT_PORT } from "./daemon.ts";
+import { dashboardFace } from "./dashboard.ts";
+import { DEFAULT_PORT, withFaces } from "./daemon.ts";
 import { HOOK_CLIENT, HOOK_HEADER, HOOK_PATH, hookAnswer, hookFace } from "./hook-face.ts";
 import { FALSE_CASES, HEAVY_CASES, LEASE_CASES, VERDICT_COMMANDS } from "./fixtures/hook-commands.ts";
 import { hookOutput, isHeavy, leased, type Status } from "./hook-rating.ts";
@@ -76,7 +78,7 @@ describe("the face of the hook on the daemon (H194)", () => {
   let status: () => Status | null = () => ({ free: { memory: 8000 }, leases: [] });
 
   beforeAll(async () => {
-    const face = hookFace({ status: () => status() })({} as HostFaceContext);
+    const face = hookFace({ status: () => status(), bodyLimit: 1024 })({} as HostFaceContext);
     server = createServer((req, res) => {
       if (face.handler?.(req, res) !== true) {
         res.statusCode = 404;
@@ -148,6 +150,12 @@ describe("the face of the hook on the daemon (H194)", () => {
     expect((await send("{not json")).code).toBe(400);
   });
 
+  it("answers 413 for a body over the limit, and the answer reaches the client", async () => {
+    const answer = await send(JSON.stringify(event("x".repeat(4096))));
+    expect(answer.code).toBe(413);
+    expect(JSON.parse(answer.body)).toEqual({ error: "headroom: the event of the hook is too large." });
+  });
+
   it("does not take a path that is not its own", async () => {
     expect((await send("{}", { path: `${HOOK_PATH}/x` })).code).toBe(404);
   });
@@ -211,5 +219,49 @@ describe("the hook of the plugin (H194)", () => {
     );
     expect(outcome).toBe("ECONNREFUSED");
     expect(performance.now() - started).toBeLessThan(((hook["timeout"] as number) || 1) * 1000);
+  });
+});
+
+describe("the faces of the daemon on its host (H194)", () => {
+  // The options of the host as serve() makes them: the procedures of the peer, then the faces of the daemon.
+  const base = peerHostOptions(
+    { id: "headroom-test", transports: [{ type: "http", port: DEFAULT_PORT, host: "127.0.0.1", basePath: "/api" }], registry: new ProcedureRegistry(), policy: hostPolicy({ token: "t" }) },
+    "headroom",
+  );
+  const tight = (): Status => ({ free: { memory: 1200 }, leases: [] });
+  const options = withFaces(base, { dashboard: dashboardFace(), hook: hookFace({ status: tight }) });
+
+  it("puts the hook and the dashboard on each listener, after the faces of the peer", () => {
+    expect(options.listen?.length ?? 0).toBeGreaterThan(0);
+    for (const listener of options.listen ?? []) expect(listener.faces?.slice(-2)).toEqual(["dashboard", "hook"]);
+    expect(Object.keys(options.faces ?? {})).toEqual([...Object.keys(base.faces ?? {}), "dashboard", "hook"]);
+  });
+
+  it("answers the route of the hook through the handler of the host, next to the dashboard", async () => {
+    // With no listener, the host serves each face on its handler, in the order of the faces.
+    const host = createProcedureHost({ ...options, listen: undefined });
+    const server = createServer((req, res) => {
+      if (!host.handler(req, res)) {
+        res.statusCode = 404;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const post = async (command: string): Promise<unknown> => {
+        const answer = await fetch(`http://127.0.0.1:${port}${HOOK_PATH}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", [HOOK_HEADER]: HOOK_CLIENT },
+          body: JSON.stringify(event(command)),
+        });
+        expect(answer.status).toBe(200);
+        return answer.json();
+      };
+      expect(await post("git status")).toEqual({});
+      expect(await post("pnpm test")).toMatchObject({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

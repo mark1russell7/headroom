@@ -1,6 +1,6 @@
 /**
- * The health of the shared services (H27). The services are the Docker engine, the MCP servers of the gateway and the URLs
- * of the setting `health`.
+ * The health of the shared services (H27). The services are the Docker engine, the MCP servers of the gateway, the URLs of
+ * the setting `health`, and the hook of the plugin (H194).
  *
  * The monitor starts each check every 30 seconds, with a time limit of 3 seconds. It does not start a check again before
  * the last start of the check ends. A check that has not ended at the next round counts as a check with no answer.
@@ -11,8 +11,11 @@
 /** The state of a service at its last check. An MCP server that the gateway stopped on purpose is `idle`. No Docker engine is `absent`. */
 export type ServiceState = "ok" | "slow" | "down" | "idle" | "absent";
 
-/** The type of a check: a ping of the Docker engine, a GET of a URL, or the state of an MCP server. */
-export type ServiceType = "docker" | "url" | "mcp";
+/**
+ * The type of a check. `docker` pings the Docker engine, and `url` makes a GET of a URL. `mcp` reads the state of an MCP
+ * server. `hook` compares the port of the hook of the plugin with the port of the daemon (H194).
+ */
+export type ServiceType = "docker" | "url" | "mcp" | "hook";
 
 /** The result of one check. A check gives no `slow` state, because the monitor compares the latency with its limit. */
 export interface ServiceProbe {
@@ -82,15 +85,15 @@ const MAX_URLS = 20;
 
 /**
  * This function examines the URLs of the setting `health`. It gives the URLs in their normal form, or it throws an error
- * with the cause. The name `docker` is for the Docker engine.
+ * with the cause. The name `docker` is for the Docker engine, and the name `hook` is for the hook of the plugin (H194).
  */
 export function checkHealth(urls: Readonly<Record<string, string>>): Record<string, string> {
   const entries = Object.entries(urls);
   if (entries.length > MAX_URLS) throw new Error(`The setting health has ${entries.length} URLs. The limit is ${MAX_URLS}.`);
   const result: Record<string, string> = {};
   for (const [name, url] of entries) {
-    if (!HEALTH_NAME.test(name) || name === "docker") {
-      throw new Error(`The name "${name}" of a health check is not valid. Use letters, digits, ".", "-" and "_", and not "docker".`);
+    if (!HEALTH_NAME.test(name) || name === "docker" || name === "hook") {
+      throw new Error(`The name "${name}" of a health check is not valid. Use letters, digits, ".", "-" and "_", and not "docker" or "hook".`);
     }
     let parsed: URL;
     try {

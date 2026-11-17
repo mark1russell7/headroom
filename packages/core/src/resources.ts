@@ -1216,6 +1216,8 @@ function serviceText({ measurement }: InstanceFacts): AlertText {
     return { subject, mb: 0, message: `${health.title} answers slowly: ${health.latencyMs ?? 0} ms at the last check, ${health.checks} slow checks in a row.` };
   }
   if (health.type === "mcp") return { subject, mb: 0, message: `${health.title} does not start: ${(health.error ?? "no reason").replace(/\.+$/, "")}.` };
+  // H194: the error of the check of the hook is the whole sentence: the port of the hook and the port of the daemon, or no read.
+  if (health.type === "hook") return { subject, mb: 0, message: health.error ?? `${health.title} does not reach this daemon.` };
   const since = new Date(health.since).toISOString().slice(11, 16);
   const needs = health.needs === null ? "" : ` ${health.needs}`;
   return {
