@@ -2,15 +2,15 @@
  * The start trace of Windows (H188): one job object for each root process, all with one completion port, and a reader
  * thread (`trace-reader.ts`). `trace.ts` tells the design. Only the Windows sampler loads this file.
  *
- * - A job of the trace has only the limit `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. Thus it stops no process, it limits no
- *   resource, and a child with `CREATE_BREAKAWAY_FROM_JOB` can still leave it.
+ * - A job of the trace stops no process and limits no resource. It has only the limit `JOB_OBJECT_LIMIT_BREAKAWAY_OK`,
+ *   so a child with `CREATE_BREAKAWAY_FROM_JOB` can leave it. A held job (H191) has no limit, so no child can leave it.
  * - A job gets its port at its creation, when it has no process. Windows then nests it in the jobs of the root.
  * - The trace closes the handle of a job when the reader tells that its last process ended.
  */
 
 import { Worker } from "node:worker_threads";
 import koffi from "koffi";
-import { TRACE_STOP_KEY, type StartTrace, type TraceBatch, type TraceEvent } from "./trace.ts";
+import { TRACE_STOP_KEY, type StartTrace, type TraceBatch, type TraceCoverOptions, type TraceEvent } from "./trace.ts";
 
 const kernel32 = koffi.load("kernel32.dll");
 const createPort = kernel32.func("intptr_t __stdcall CreateIoCompletionPort(intptr_t file, intptr_t port, uintptr_t key, uint32_t threads)");
@@ -36,9 +36,16 @@ const PROCESS_TERMINATE = 0x0001;
 /** The longest time between two batches of the reader. */
 const POST_EVERY_MS = 1000;
 
-/** The limits of each job: only the right to break away. */
-const LIMITS = new Uint8Array(EXTENDED_LIMIT_SIZE);
-new DataView(LIMITS.buffer).setUint32(LIMIT_FLAGS_OFFSET, JOB_OBJECT_LIMIT_BREAKAWAY_OK, true);
+/** The limits of a job that lets a child break away: only the right to break away. */
+const ALLOW_LIMITS = new Uint8Array(EXTENDED_LIMIT_SIZE);
+new DataView(ALLOW_LIMITS.buffer).setUint32(LIMIT_FLAGS_OFFSET, JOB_OBJECT_LIMIT_BREAKAWAY_OK, true);
+/** The limits of a held job (H191): no limit, so a breakaway fails. */
+const HOLD_LIMITS = new Uint8Array(EXTENDED_LIMIT_SIZE);
+
+/** This function sets the limits of a job. It gives false when Windows refuses. */
+function setLimits(job: number, hold: boolean): boolean {
+  return setInformation(job, EXTENDED_LIMIT_INFORMATION, hold ? HOLD_LIMITS : ALLOW_LIMITS, EXTENDED_LIMIT_SIZE) !== 0;
+}
 
 /** This function starts the trace: it makes the completion port and starts the reader thread. */
 export function windowsStartTrace(): StartTrace {
@@ -69,7 +76,7 @@ export function windowsStartTrace(): StartTrace {
   });
   worker.once("exit", () => closeHandle(port));
   return {
-    cover(pid: number): number | null {
+    cover(pid: number, options: TraceCoverOptions = {}): number | null {
       if (closed || failure !== null) return null;
       const job = Number(createJob(null, null));
       if (job === 0) return null;
@@ -79,7 +86,7 @@ export function windowsStartTrace(): StartTrace {
       view.setBigUint64(0, BigInt(key), true);
       view.setBigInt64(8, BigInt(port), true);
       let assigned = false;
-      if (setInformation(job, EXTENDED_LIMIT_INFORMATION, LIMITS, EXTENDED_LIMIT_SIZE) !== 0 && setInformation(job, ASSOCIATE_COMPLETION_PORT, associate, ASSOCIATE_SIZE) !== 0) {
+      if (setLimits(job, options.hold === true) && setInformation(job, ASSOCIATE_COMPLETION_PORT, associate, ASSOCIATE_SIZE) !== 0) {
         const process = Number(openProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid));
         if (process !== 0) {
           assigned = assignProcess(job, process) !== 0;
@@ -92,6 +99,10 @@ export function windowsStartTrace(): StartTrace {
       }
       jobs.set(key, job);
       return key;
+    },
+    limit(key: number, hold: boolean): boolean {
+      const job = jobs.get(key);
+      return !closed && job !== undefined && setLimits(job, hold);
     },
     drain(): readonly TraceEvent[] {
       const out = events;

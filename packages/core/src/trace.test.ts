@@ -9,6 +9,7 @@ import { Store } from "./store.ts";
 import {
   COVERS_PER_READ,
   DLL_INIT_FAILED,
+  TRACE_HOLD_KINDS,
   TraceBook,
   traceCovers,
   TRACED_KINDS,
@@ -17,6 +18,7 @@ import {
   traceLines,
   withTrace,
   type StartTrace,
+  type TraceCoverOptions,
   type TracedStarts,
   type TraceEvent,
 } from "./trace.ts";
@@ -52,6 +54,14 @@ describe("the setting startTrace (H188)", () => {
     expect(traceKindsOf("mcp,session")).toEqual(["session", "mcp"]);
     // A kind that is not traceable gives the default, so a bad value in the store does not stop the trace.
     expect(traceKindsOf("session,kernel")).toEqual(TRACED_KINDS);
+  });
+
+  it("reads the setting startTraceHold with its own default (H191)", () => {
+    expect(TRACE_HOLD_KINDS).toEqual(["session"]);
+    expect(traceKindsOf(undefined, TRACE_HOLD_KINDS)).toEqual(["session"]);
+    expect(traceKindsOf("off", TRACE_HOLD_KINDS)).toEqual([]);
+    expect(traceKindsOf("mcp,session", TRACE_HOLD_KINDS)).toEqual(["session", "mcp"]);
+    expect(traceKindsOf("session,kernel", TRACE_HOLD_KINDS)).toEqual(["session"]);
   });
 
   it("writes the kinds in their order, and refuses a kind that is not traceable", () => {
@@ -327,6 +337,63 @@ describe("Engine start trace (H188)", () => {
     expect(started).toBe(1);
   });
 
+  it("gives a held job to the held kinds, and changes the open jobs with the setting (H191)", () => {
+    let now = 1_000_000;
+    const list: ProcessInfo[] = [p(4, 0, "System", 0), p(77, 1, "bash.exe", now - MIN), p(78, 1, "node.exe", now - MIN)];
+    const covers: [number, TraceCoverOptions | undefined][] = [];
+    const limits: [number, boolean][] = [];
+    const fake: StartTrace = {
+      cover: (pid, options) => {
+        covers.push([pid, options]);
+        return covers.length;
+      },
+      limit: (key, hold) => {
+        limits.push([key, hold]);
+        return true;
+      },
+      drain: () => [],
+      cpuMs: () => 0,
+      jobs: () => covers.length,
+      failure: () => null,
+      close: () => undefined,
+    };
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => list,
+      processSequence: () => 0,
+      startTrace: () => fake,
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: "/nowhere" });
+    // By default only the sessions are held. These processes have the kind other, so their jobs let a child break away.
+    expect(engine.setConfig({ startTrace: ["other"] }).startTraceHold).toEqual(["session"]);
+    engine.tick();
+    expect(covers).toEqual([
+      [77, { hold: false }],
+      [78, { hold: false }],
+    ]);
+    // A change of the setting changes the limits of each open job.
+    expect(engine.setConfig({ startTraceHold: ["other"] }).startTraceHold).toEqual(["other"]);
+    expect(limits).toEqual([
+      [1, true],
+      [2, true],
+    ]);
+    list.push(p(79, 1, "git.exe", now - MIN));
+    now += 10 * S;
+    engine.tick();
+    expect(covers[2]).toEqual([79, { hold: true }]);
+    // Off takes back the hold of each open job at once.
+    expect(engine.setConfig({ startTraceHold: [] }).startTraceHold).toEqual([]);
+    expect(limits.slice(2)).toEqual([
+      [1, false],
+      [2, false],
+      [3, false],
+    ]);
+    expect(() => engine.setConfig({ startTraceHold: ["kernel"] })).toThrow(RangeError);
+    expect(engine.setConfig({ startTraceHold: null }).startTraceHold).toEqual(["session"]);
+    engine.close();
+  });
+
   it("shows a trace that did not start, and does not try again until a change of the setting", () => {
     let starts = 0;
     let now = 1_000_000;
@@ -355,6 +422,8 @@ describe("Engine start trace (H188)", () => {
 });
 
 // The real trace of Windows: job objects, the completion port and the reader thread.
+/** The limit flag of a job that lets a child break away. */
+const BREAKAWAY_OK = 0x800;
 describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)", () => {
   it("names the children of a covered process with their parent, and gives the exit code of a failed start", async () => {
     const { windowsStartTrace } = await import("./trace-windows.ts");
@@ -396,6 +465,37 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
       expect(trace.cpuMs()).toBeGreaterThanOrEqual(0);
     } finally {
       if (child.exitCode === null) child.kill();
+      trace.close();
+    }
+  }, 30_000);
+
+  it("gives a held job no breakaway, and changes the limits of an open job (H191)", async () => {
+    const { windowsStartTrace } = await import("./trace-windows.ts");
+    const trace = windowsStartTrace();
+    // The child gives the limit flags of its innermost job at each line on its standard input: the job of the trace.
+    const jobs = new URL("./jobs.ts", import.meta.url).href;
+    const script = `import { ownJobFlags } from ${JSON.stringify(jobs)};
+      process.stdin.on("data", () => process.stdout.write(String(ownJobFlags()) + "\\n"));`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["pipe", "pipe", "inherit"] });
+    const flags = async (): Promise<number> => {
+      const line = new Promise<string>((resolve) => child.stdout?.once("data", (chunk) => resolve(String(chunk))));
+      child.stdin?.write("?\n");
+      return Number((await line).trim());
+    };
+    try {
+      await new Promise((resolve) => child.once("spawn", resolve));
+      const key = trace.cover(child.pid ?? 0, { hold: true });
+      expect(key).not.toBeNull();
+      if (key === null) return;
+      expect((await flags()) & BREAKAWAY_OK).toBe(0);
+      expect(trace.limit?.(key, false)).toBe(true);
+      expect((await flags()) & BREAKAWAY_OK).toBe(BREAKAWAY_OK);
+      expect(trace.limit?.(key, true)).toBe(true);
+      expect((await flags()) & BREAKAWAY_OK).toBe(0);
+      // A key that is not open changes nothing.
+      expect(trace.limit?.(key + 1000, false)).toBe(false);
+    } finally {
+      child.kill();
       trace.close();
     }
   }, 30_000);

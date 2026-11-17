@@ -309,6 +309,11 @@ export interface ConfigChange {
    */
   readonly startTrace?: readonly string[] | null | undefined;
   /**
+   * The owner kinds whose jobs of the trace refuse a breakaway (H191). The change also applies to the open jobs. With an empty
+   * list, each job lets a child break away, and `null` gives the default: `session`.
+   */
+  readonly startTraceHold?: readonly string[] | null | undefined;
+  /**
    * A change of the alert limits (H179), merged into the stored differences. A number sets a limit, and `null` gives the
    * base value of one limit back. `null` for the whole change removes all the differences.
    */
@@ -547,6 +552,8 @@ export class Engine {
   #starts: ProcessStarts = NO_STARTS;
   /** The owner kinds of the start trace (H188). An empty list: no trace. */
   #traceKinds: readonly OwnerKind[];
+  /** The owner kinds whose jobs of the trace refuse a breakaway (H191). */
+  #traceHold: readonly OwnerKind[];
   /** The start trace of the platform (H188), or `null` before its start, without a trace and when the setting turns it off. */
   #trace: StartTrace | null = null;
   /** The reason when the start of the trace failed. The trace starts again only after a change of the setting. */
@@ -733,6 +740,7 @@ export class Engine {
     this.#cpuReserve = config.cpuReserve;
     this.#autoDrainMb = config.autoDrainMb;
     this.#traceKinds = config.startTrace;
+    this.#traceHold = config.startTraceHold;
     this.#policy = policyOf(config);
     this.#memory = this.#sampler.memory();
     this.#seedTrends();
@@ -1433,6 +1441,7 @@ export class Engine {
     const reapAuto = change.reapAuto;
     if (reapAuto !== undefined && reapAuto !== null && typeof reapAuto !== "boolean") throw new RangeError("The automatic reap must be true, false or null");
     const startTrace = change.startTrace === undefined || change.startTrace === null ? change.startTrace : traceKindsText(change.startTrace);
+    const startTraceHold = change.startTraceHold === undefined || change.startTraceHold === null ? change.startTraceHold : traceKindsText(change.startTraceHold);
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -1462,6 +1471,10 @@ export class Engine {
     if (startTrace !== undefined) {
       this.#store.setConfig("startTrace", startTrace);
       this.#setTraceKinds(this.#store.config().startTrace);
+    }
+    if (startTraceHold !== undefined) {
+      this.#store.setConfig("startTraceHold", startTraceHold);
+      this.#setTraceHold(this.#store.config().startTraceHold);
     }
     if (alerts !== undefined) {
       // H179: an empty set is no setting. The next sample examines the new limits.
@@ -2444,7 +2457,7 @@ export class Engine {
     this.#book.prune(this.#processes, now);
     if (trace.failure() !== null) return;
     for (const cover of traceCovers(this.#book, { processes: this.#processes, owners: this.#ownership, leases, kinds: this.#traceKinds, self: process.pid, now })) {
-      const key = trace.cover(cover.root.pid);
+      const key = trace.cover(cover.root.pid, { hold: this.#traceHold.includes(cover.root.kind) });
       if (key === null) this.#book.refuse(cover.root.pid, cover.startedAt);
       else this.#book.root(key, cover.root, now);
     }
@@ -2456,6 +2469,17 @@ export class Engine {
     const failure = this.#traceError ?? this.#trace?.failure() ?? null;
     const traced = this.#book.summary(now, { jobs: this.#trace?.jobs() ?? 0, failure }, (spanMs) => (starts.exact ? this.#startTracker.recent(now, spanMs) : null));
     return withTrace(starts, traced);
+  }
+
+  /**
+   * This function changes the owner kinds whose jobs of the trace refuse a breakaway (H191). It also changes the limits of
+   * each open job. Thus `off` takes back a hold at once, also for a program that fails when it cannot break away.
+   */
+  #setTraceHold(kinds: readonly OwnerKind[]): void {
+    this.#traceHold = kinds;
+    const trace = this.#trace;
+    if (trace?.limit === undefined) return;
+    for (const [key, root] of this.#book.roots()) trace.limit(key, kinds.includes(root.kind));
   }
 
   /** This function changes the owner kinds of the start trace (H188). No kinds stops the trace. The processes stay in their jobs. */

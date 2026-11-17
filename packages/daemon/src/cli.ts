@@ -84,6 +84,7 @@ import {
   startUnderShell,
   startsLine,
   thermalLine,
+  TRACE_HOLD_KINDS,
   TRACED_KINDS,
   traceLines,
   thermalLines,
@@ -1296,6 +1297,16 @@ function printConfig(config: Config): void {
         : `start-trace: ${config.startTrace.join(",")}${byDefault}. The daemon puts the processes of these owner kinds and of the leases in job objects, and names each start in their trees.`,
     );
   }
+  // H191: a daemon of an older version has no setting startTraceHold.
+  if (Array.isArray(config.startTraceHold)) {
+    const hold = config.startTraceHold;
+    const byDefault = hold.length === TRACE_HOLD_KINDS.length && TRACE_HOLD_KINDS.every((kind) => hold.includes(kind)) ? " (the default)" : "";
+    console.log(
+      hold.length === 0
+        ? "start-trace-hold: off. Each job of the trace lets a child break away, so the child can leave the trace."
+        : `start-trace-hold: ${hold.join(",")}${byDefault}. The jobs of these owner kinds refuse a breakaway, so their children stay in the trace.`,
+    );
+  }
   // H179: a daemon of an older version has no setting alerts.
   if (config.alerts !== undefined) for (const line of alertsLines(config.alerts)) console.log(line);
 }
@@ -1311,6 +1322,20 @@ async function startTraceConfig(connection: Connection, value: string | undefine
   }
   const kinds = value === undefined ? null : value === "off" ? [] : value.split(",").map((kind) => kind.trim());
   printConfig(await connection.call<Config>(["config", "set"], { startTrace: kinds }));
+  return 0;
+}
+
+/**
+ * `headroom config start-trace-hold <kinds>|off` sets the owner kinds whose jobs of the trace refuse a breakaway (H191).
+ * With `off`, each job lets a child break away, also each open job. `--clear` gives the default: session.
+ */
+async function startTraceHoldConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  if ((value === undefined) === !clear || extra || value === "") {
+    console.error("Usage: headroom config start-trace-hold <kinds>, for example session,mcp, headroom config start-trace-hold off, or headroom config start-trace-hold --clear (the default)");
+    return 2;
+  }
+  const kinds = value === undefined ? null : value === "off" ? [] : value.split(",").map((kind) => kind.trim());
+  printConfig(await connection.call<Config>(["config", "set"], { startTraceHold: kinds }));
   return 0;
 }
 
@@ -1533,9 +1558,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "worktree-auto-clean" || name === "worktrees.autoClean") return worktreeAutoCleanConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "reap-auto" || name === "reapAuto") return reapAutoConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "start-trace" || name === "startTrace") return startTraceConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "start-trace-hold" || name === "startTraceHold") return startTraceHoldConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config start-trace <kinds>|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config start-trace <kinds>|off, headroom config start-trace-hold <kinds>|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }

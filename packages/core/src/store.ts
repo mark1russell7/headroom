@@ -22,7 +22,7 @@ import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { redactCommand } from "./redact.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
-import { traceKindsOf } from "./trace.ts";
+import { TRACE_HOLD_KINDS, traceKindsOf } from "./trace.ts";
 import { FIT_RUNS, isJobKind, KIND_RUNS, PEAK_RUNS, type JobKey, type MemoryPrediction, type Rung, type RunEstimate, type RunSource, type SizedPeak } from "./predict.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
 
@@ -359,6 +359,11 @@ export interface Config {
    */
   readonly startTrace: readonly OwnerKind[];
   /**
+   * The owner kinds whose jobs of the trace refuse a breakaway (H191). Thus the children of their processes stay in the
+   * trace. The default is `session`. With an empty list, each job lets a child break away, as before H191.
+   */
+  readonly startTraceHold: readonly OwnerKind[];
+  /**
    * The alert limits that differ from the defaults (H179), by the names of `AlertRules`. A computer with its own lines (for
    * example a hold of the jobs below 2 GB of available memory) sets them here. The default is no differences.
    */
@@ -542,13 +547,14 @@ export class Store {
       worktreeAutoClean: values.get("worktreeAutoClean") === "on",
       reapAuto: values.get("reapAuto") === "on",
       startTrace: traceKindsOf(values.get("startTrace")),
+      startTraceHold: traceKindsOf(values.get("startTraceHold"), TRACE_HOLD_KINDS),
       alerts: alertRulesOf(values.get("alerts")),
     };
   }
 
   /**
    * This function sets one setting. `null` removes it. The value of `health` and `alerts` is the JSON text of its object. The value of
-   * `presence`, `worktreeAutoClean` and `reapAuto` is `on` or `off`. The value of `startTrace` is `off` or owner kinds with
+   * `presence`, `worktreeAutoClean` and `reapAuto` is `on` or `off`. The value of `startTrace` and `startTraceHold` is `off` or owner kinds with
    * commas. The values of the other settings are numbers as text.
    */
   setConfig(name: keyof Config, value: string | null): void {

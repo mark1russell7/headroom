@@ -249,6 +249,13 @@ const ConfigSetInput = z.object({
     .describe(
       "The owner kinds of the start trace (H188), for example [\"session\", \"mcp\"]. The daemon puts their processes and the processes of the granted leases in job objects, and names each start in their trees. [] turns the trace off. null gives the default: session, mcp, service, docker.",
     ),
+  startTraceHold: z
+    .array(z.string())
+    .nullable()
+    .optional()
+    .describe(
+      "The owner kinds whose jobs of the start trace refuse a breakaway (H191), so the children of their processes stay in the trace. The change also applies to the open jobs. With [], each job lets a child break away. null gives the default: session.",
+    ),
   alerts: AlertsChangeInput.nullable()
     .optional()
     .describe(
@@ -638,7 +645,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .output(anything<Config>())
     .meta({
       description:
-        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175). reapAuto: the automatic reap, which stops no process in this version (H183). startTrace: the owner kinds of the start trace (H188). alerts: the alert limits that differ from the defaults (H179).",
+        "Change the settings of headroom. jobTemp: each job of headroom run gets its TEMP folder under it. health: the URLs to check. spawnHeavy: the limit of a spawn-heavy job. batteryFloor: the battery floor for heavy jobs. usageFile: the usage file for usage<N. rolesFile: the registry of the roles. cpuReserve: the cores kept for Mark. presence, awayAfterMs, busyWaitMs, presentReserve: the presence rules (H33). autoDrainMb: the level of the automatic drain (H34). worktreeAutoClean: the automatic worktree cleanup (H175). reapAuto: the automatic reap, which stops no process in this version (H183). startTrace: the owner kinds of the start trace (H188). startTraceHold: the owner kinds whose jobs of the trace refuse a breakaway (H191). alerts: the alert limits that differ from the defaults (H179).",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: ["headroom"], destructive: false, idempotent: true },
@@ -663,6 +670,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
           worktreeAutoClean: input.worktreeAutoClean,
           reapAuto: input.reapAuto,
           startTrace: input.startTrace,
+          startTraceHold: input.startTraceHold,
           alerts: input.alerts,
         };
         return engine.setConfig(change);
