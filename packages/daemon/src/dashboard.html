@@ -61,14 +61,25 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
 .seg button { font-size: 13px; color: var(--ink-2); background: none; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border); font-weight: 600; }
 
-.alerts { display: grid; gap: 8px; }
-.alert { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 2px 10px; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--warn); border-radius: 10px; padding: 10px 14px; }
+.alerts { display: grid; gap: 6px; }
+/* Each alert is one line: its first sentence. A click opens the rest and a link to its card. */
+.alert { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--warn); border-radius: 10px; padding: 8px 14px; }
 .alert.crit { border-left-color: var(--crit); }
 .alert.serious { border-left-color: var(--serious); }
-.alert svg { grid-row: span 2; margin-top: 2px; }
-.alert .kind { font-weight: 650; text-transform: capitalize; margin-right: 8px; }
+.alert > .head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; list-style: none; }
+.alert > summary.head { cursor: pointer; color: var(--ink); font-size: 14px; }
+.alert > summary.head::-webkit-details-marker { display: none; }
+.alert > summary.head::after { content: ""; flex: none; align-self: center; width: 6px; height: 6px; margin: 0 2px 0 auto; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform 0.15s; }
+.alert[open] > summary.head::after { transform: rotate(45deg); }
+.alert svg { flex: none; align-self: center; }
+.alert .kind { font-weight: 650; text-transform: capitalize; }
 .alert .since { color: var(--muted); font-size: 12px; }
-.alert .msg { overflow-wrap: anywhere; }
+.alert .msg { flex: 1 1 18em; min-width: 0; overflow-wrap: anywhere; }
+.alert .more { display: grid; gap: 6px; justify-items: start; margin: 6px 0 2px 26px; color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
+.alert .more button { border: 1px solid var(--border); background: var(--raise); color: var(--ink); border-radius: 6px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; }
+.urow .lab button.to { flex: none; white-space: nowrap; border: 0; background: none; padding: 0; font: inherit; color: inherit; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.urow .lab > span:last-child { text-align: right; }
+.seg2 > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; }
 .card h2, .sec h2 { margin: 0; font-size: 15px; font-weight: 650; }
@@ -93,6 +104,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; }
 .seg2.dk { color: var(--on-fill-dk); }
 .seg2.free { background: var(--raise); color: var(--ink-2); font-weight: 500; justify-content: flex-end; cursor: default; }
 .seg2.rest, .sw.rest { background: repeating-linear-gradient(135deg, var(--axis) 0 2px, var(--raise) 2px 6px); cursor: default; }
+/* The name on a hatched part has a solid ground, so it can be read over the stripes. */
+.seg2.rest span { background: var(--raise); color: var(--ink-2); padding: 1px 5px; border-radius: 4px; font-weight: 500; }
 .lgs { display: flex; flex-wrap: wrap; gap: 4px; }
 .lg { display: inline-flex; align-items: center; gap: 6px; border: 1px solid transparent; background: none; border-radius: 6px; padding: 3px 8px 3px 6px; font-size: 12px; color: var(--ink-2); cursor: pointer; transition: opacity 0.15s; }
 button.lg:hover { border-color: var(--border); background: var(--raise); }
@@ -191,9 +204,10 @@ td.mono { font-family: var(--mono); font-size: 12px; }
 button.row { border: 0; background: none; padding: 2px 4px; margin: 0 -4px; text-align: left; font-size: 12px; cursor: pointer; }
 button.row:hover { background: var(--raise); }
 .row.own { grid-template-columns: minmax(0, 1fr) 56px auto; }
-.row.own.full { grid-template-columns: minmax(0, 1fr) minmax(40px, 160px) 64px 88px; }
+/* The value column fits a rate as "2,233 a minute" on one line. */
+.row.own.full { grid-template-columns: minmax(0, 1fr) minmax(40px, 160px) 108px 88px; }
 .row > .clip { max-width: none; }
-.row b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.row b { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
 .path { grid-column: 2 / -1; font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 .bar { display: block; height: 8px; border-radius: 0 3px 3px 0; min-width: 2px; background: var(--s1); }
 
@@ -245,6 +259,7 @@ div.owner { cursor: default; }
     <div class="hero" id="hero"><b>-</b><span>connecting to the daemon</span></div>
     <div class="urow"><div class="lab"><span>Memory</span><span id="ramText"></span></div><div class="ubar" id="ramBar"></div></div>
     <div class="urow" id="cpuRow" hidden><div class="lab"><span>Processors</span><span id="cpuText"></span></div><div class="ubar thin" id="cpuBar"></div></div>
+    <div class="urow" id="startRow" hidden><div class="lab"><button type="button" class="to" id="startOpen" title="Open the card of the process starts">Process starts</button><span id="startText"></span></div><div class="ubar thin" id="startBar"></div></div>
     <div class="lgs" id="ownLegend"></div>
     <div class="strip" id="strip"></div>
     <div class="rebootline" id="reboot" role="status" hidden></div>
@@ -637,10 +652,30 @@ function sparkline(values, width = 88, height = 22) {
 }
 
 // ---- the alerts ----
+// The alerts that are open. The set keeps them open over a refresh, which draws the alerts again.
+const openAlerts = new Set();
+/** The first sentence of a text: up to the first ".", "!" or "?" before a space or the end. A dot in a number does not end it. */
+function firstSentence(text) {
+  const m = /^(.*?[.!?])(?=\s|$)/s.exec(text);
+  return m ? m[1] : text;
+}
+/**
+ * One line for each alert: its kind, since when, and the first sentence. An alert with more text is a details element:
+ * a click opens the rest and a link to the card of its resource. Thus four alerts do not fill the first screen of a phone.
+ */
 function renderAlerts() {
   const alerts = state.status?.alerts || [];
-  $("alerts").replaceChildren(...alerts.map((a) => h("div", { class: `alert ${alertLevel(a)}` },
-    ICON.alert(LEVEL[alertLevel(a)][0]), h("div", {}, h("span", { class: "kind", text: a.kind }), h("span", { class: "since", text: `since ${clock(a.since)}` })), h("div", { class: "msg", text: a.message }))));
+  const ids = new Set((state.status?.resources || []).map((r) => r.id));
+  $("alerts").replaceChildren(...alerts.map((a, i) => {
+    const key = a.id ?? `${a.kind}:${i}`, lead = firstSentence(a.message), rest = a.message.slice(lead.length).trim(), card = alertOf(a);
+    const head = [ICON.alert(LEVEL[alertLevel(a)][0]), h("span", { class: "kind", text: a.kind }), h("span", { class: "since", text: `since ${clock(a.since)}` }), h("span", { class: "msg", text: lead })];
+    const link = ids.has(card) ? h("button", { type: "button", text: `Open the card ${resName(state.status.resources.find((r) => r.id === card))}`, onclick: () => openRes(card, true) }) : null;
+    if (!rest && !link) return h("div", { class: `alert ${alertLevel(a)}` }, h("div", { class: "head" }, ...head));
+    const e = h("details", { class: `alert ${alertLevel(a)}`, open: openAlerts.has(key) || null }, h("summary", { class: "head" }, ...head),
+      h("div", { class: "more" }, rest ? h("span", { text: rest }) : null, link));
+    e.addEventListener("toggle", () => { if (e.open) openAlerts.add(key); else openAlerts.delete(key); });
+    return e;
+  }));
 }
 
 // ---- the answer: a stacked bar of the memory and of the processors, by owner ----
@@ -660,14 +695,17 @@ function usageBar(host, parts, rest, free, fmt, restText, restName = "Not counte
   }
   if (rest > total * 0.003) segs.push({ rest: true, value: rest, name: restName });
   if (free > 0) segs.push({ free: true, value: free, name: "Free" });
+  // The gaps of 2 px take width from the parts: a name fits by the width that is left.
+  const Wn = Math.max(1, W - 2 * Math.max(0, segs.length - 1));
   host.replaceChildren(...segs.map((p) => {
     const g = GROUP[p.group];
     const text = p.free ? `${fmt(p.value)} free` : p.owner ? ownerLabel(p.owner) : p.name;
     const lines = p.free ? ["Free", fmt(p.value)] : p.rest ? [restName, fmt(p.value), restText]
       : p.list ? [`${p.name} · ${g.name}`, fmt(p.value), p.list.slice(0, 6).map((o) => ownerLabel(o.owner)).join(", ") + (p.list.length > 6 ? ", …" : "")]
-      : [ownerLabel(p.owner), `${fmt(p.value)} · ${g.name}`, p.o ? `${mb(p.o.privateMb)} private · ${p.o.processes} processes` : null];
+      : [ownerLabel(p.owner), `${fmt(p.value)} · ${g.name}`, p.detail ?? (p.o ? `${mb(p.o.privateMb)} private · ${p.o.processes} processes` : null)];
     const e = h("div", { class: `seg2${p.free ? " free" : p.rest ? " rest" : ""}${g?.dark ? " dk" : ""}`, style: `flex-grow:${p.value};${g ? `background:${g.color}` : ""}`, "data-group": p.group || null, "data-owner": p.owner || null },
-      (p.value / total) * W > text.length * 6.8 + 14 ? h("span", { text }) : null);
+      // A name shows only where it fits: about 7.4 px for each letter of 12 px at weight 600, and the padding of the part.
+      (p.value / total) * Wn > text.length * 7.4 + 16 ? h("span", { text }) : null);
     e.addEventListener("pointermove", (ev) => tipAt(ev, lines));
     e.addEventListener("click", (ev) => { if (g) setFocus(p.owner ? { owner: p.owner } : { group: p.group }); tipAt(ev, lines); });
     return e;
@@ -697,6 +735,18 @@ function renderNow() {
     const caps = capped.length ? ` · capped: ${capped.map((l) => `${l.job.slice(0, 24)} ${amount(l.cpuCap, "cores")}`).join(", ")}` : "";
     $("cpuText").replaceChildren(h("b", { text: amount(cpu.used, "cores") }), ` of ${cpu.capacity} in use${kept}${caps}`);
     usageBar($("cpuBar"), cpuParts, Math.max(0, cpu.used - cpuParts.reduce((a, p) => a + p.value, 0)), Math.max(0, cpu.free ?? 0), (v) => amount(v, "cores"), "The processor time of the owners after the top 10.");
+  }
+  // H29: the process starts of each owner. Each new process leaks kernel memory in the AMD display driver, so the answer shows
+  // who starts them. The bar has no free part: a rate has no capacity. A daemon of an older version or the first read gives no rate.
+  const starts = st.starts && st.starts.spanMs > 0 && st.starts.perMinute > 0 ? st.starts : null;
+  $("startRow").hidden = !starts;
+  if (starts) {
+    const perMin = (v) => amount(v, "per minute");
+    const startParts = starts.owners.map((o) => ({ owner: o.owner, group: groupOf(o.kind), value: o.perMinute, detail: `jobs ${perMin(o.jobsPerMinute)} · own commands ${perMin(o.ownPerMinute)}` }));
+    const named = startParts.reduce((a, p) => a + p.value, 0);
+    $("startText").replaceChildren(h("b", { text: perMin(starts.perMinute) }), starts.exact ? ` · ${Math.round((named / starts.perMinute) * 100)}% named by the top ${startParts.length} owners` : " at least");
+    usageBar($("startBar"), startParts, starts.exact ? Math.max(0, starts.perMinute - named) : 0, 0, perMin,
+      "The starts of the owners after the top 10, and of the short processes that end between two reads (10 s apart), so that no read sees their owner.", "Not named");
   }
   const sum = (list, id) => list.filter((p) => p.group === id).reduce((a, p) => a + p.value, 0);
   $("ownLegend").replaceChildren(...OWN.map((g) => [g, sum(ram, g.id), sum(cpuParts, g.id)]).filter(([, r, c]) => r > 0 || c > 0).map(([g, r, c]) =>
@@ -1290,7 +1340,8 @@ function start() {
 function stop() { timers.forEach(clearInterval); timers = []; }
 // A hidden tab makes no requests, so the dashboard costs nothing when nobody looks at it.
 document.addEventListener("visibilitychange", () => (document.hidden ? stop() : start()));
-for (const id of ["ramBar", "cpuBar", "timeline"]) $(id).addEventListener("pointerleave", hideTip);
+for (const id of ["ramBar", "cpuBar", "startBar", "timeline"]) $(id).addEventListener("pointerleave", hideTip);
+$("startOpen").addEventListener("click", () => openRes("procs", true));
 addEventListener("scroll", hideTip, { passive: true });
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { hideTip(); if (state.focus) setFocus(null); } });
 let lastWidth = 0, resizeTimer = 0;
