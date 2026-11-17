@@ -736,7 +736,8 @@ H29 counts all the starts exactly, from the sequence numbers of Windows. An owne
 **The jobs.** `trace-windows.ts` calls the job API of Windows through koffi.
 
 - `cover(pid)` opens the process, makes a job and puts the process in it.
-- The job has only `JOB_OBJECT_LIMIT_BREAKAWAY_OK`. It has no limit on memory, processors or processes, and a child can break away from it.
+- The job has no limit on memory, processors or processes. By default it has only `JOB_OBJECT_LIMIT_BREAKAWAY_OK`, so a child can break away from it.
+- `cover(pid, { hold: true })` makes a held job (H191). It has no limit at all, so a child cannot break away from it. The section on the hold below tells why.
 - `headroom run --detach` does not need the breakaway. Its relay starts with `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS` set to the shell of the desktop (H190). Thus the relay and the client have only the jobs of the shell.
 - All the jobs share one completion port. The key of each job is its number in the trace. The key 0 stops the reader.
 - The children of a process in a job go into the same job. Windows sends a message for each start (`JOB_OBJECT_MSG_NEW_PROCESS`).
@@ -781,6 +782,16 @@ H29 counts all the starts exactly, from the sequence numbers of Windows. An owne
 - `off` stops the trace and closes all the jobs. `--clear` sets the default again.
 - A kind that is not traceable gives an error. The kinds are `session`, `mcp`, `service`, `docker`, `browser`, `editor`, `system` and `other`.
 - A stored value with a bad kind gives the default, so a bad value does not stop the trace.
+
+**The hold (H191).** On 2026-11-16, the trace named 70 % of all the starts (1,617 of 2,300 a minute). The gap was Git Bash.
+
+- Git Bash starts its children with `CREATE_BREAKAWAY_FROM_JOB` when the job of the process lets them break away. Each job of the trace let them, so these children left the trace.
+- A held job refuses a breakaway. Git Bash then asks for no breakaway, and its children stay in the job.
+- A check on 2026-11-16 put a caller in a job of an editor and a job of the trace. The caller started `bash -c "sleep 2; true"`. bash exited 0 in both arms. The job of the trace counted 5 processes when a breakaway was permitted, and 6 when it was held.
+- The client of `headroom run --detach` still leaves the jobs of the caller in a held job. Its relay has the shell of the desktop as its parent (H190).
+- `headroom config start-trace-hold <kinds>` sets the held kinds, with commas. The default is `session`. A service keeps the breakaway, because its restart helper needs it (`startOutsideJob()`).
+- A change of the setting also changes the limits of each open job (`limit(key, hold)`). Thus `off` takes back a hold at once.
+- The risk: a program that asks for a breakaway with no check of its job fails with `ERROR_ACCESS_DENIED` in a held job. `off` is the remedy.
 
 **A failure.** When the trace does not start or the reader stops, the status gives the failure. An example: `Traced starts: none. The trace stopped: the trace did not start: no port.` The engine does not try again until the setting changes.
 

@@ -161,7 +161,8 @@ H29 gives the exact count of all the starts, but a read every 10 seconds sees fe
 - The daemon puts each process of a traced owner in a job object of its own. All the jobs have one completion port. The children of a process go into its job.
 - Windows then sends a message for each start and each exit in the tree. A reader thread takes the messages.
 - The reader reads the name and the parent of each new process, and keeps a handle until the exit. Thus it gets the exit code, also of a process that lives for 10 ms.
-- The jobs have no limit and do not stop their processes. A child can break away from them. `headroom run --detach` does not need that breakaway (H190).
+- The jobs have no limit and do not stop their processes. `headroom run --detach` does not need a breakaway from them (H190).
+- The jobs of the sessions refuse a breakaway, so the children of Git Bash stay in the trace (H191). The other jobs let a child break away, for example the restart helper of a service.
 - By default, the trace follows the sessions, the MCP servers, the services, Docker and the processes under the granted leases. The browsers and the editors of Mark stay out of it.
 
 The line `Traced starts` of `headroom status` comes after the line `Process starts`, for example:
@@ -176,6 +177,7 @@ Traced starts: 900 a minute, 90 % of all the starts. 12 a minute failed with 0xC
 - The resource `procs` gets 2 more instances. `procs:traced` is the traced starts in one minute. `procs:failed` is the starts that failed with `0xC0000142`.
 - An owner gets the higher of its two rates: its lower bound from the reads, or its traced starts.
 - `headroom config start-trace session,mcp` sets the owner kinds that the trace follows. `off` stops the trace, and `--clear` sets the default again.
+- `headroom config start-trace-hold session` sets the owner kinds whose jobs refuse a breakaway (H191). With `off`, each job lets a child break away, also each open job. `--clear` sets the default again: `session`.
 
 Windows refuses a job for a protected process and for a process of another user. The status counts these refusals.
 

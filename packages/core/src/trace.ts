@@ -7,7 +7,9 @@
  * - A reader thread takes the messages, reads the name and the parent of each new process, and keeps a handle until its
  *   exit. Thus it gets the exit code, also of a process that lives for 10 ms.
  * - This file has the part with no platform: the book that names and counts the starts. `trace-windows.ts` has the jobs.
- * - The jobs have no limit and do not stop their processes. A child can still break away, so `headroom run --detach` works.
+ * - The jobs have no limit and do not stop their processes. A job of a held kind (the setting `startTraceHold`) refuses
+ *   a breakaway, so its children stay in the trace. Each other job lets a child break away, as the restart helper of a service
+ *   needs. `headroom run --detach` needs no breakaway (H190).
  * - Windows refuses a job for a protected process and for a process of another user. The book counts the refusals.
  *
  * Each restart of the daemon puts one more job around a live process, because a job keeps the completion port of its first
@@ -47,13 +49,28 @@ export interface TraceBatch {
 /** The completion key of the packet that stops the reader thread. No job of the trace has it. */
 export const TRACE_STOP_KEY = 0;
 
+/** The options of `StartTrace.cover`. */
+export interface TraceCoverOptions {
+  /**
+   * True: the job refuses a breakaway (H191). Thus a child with `CREATE_BREAKAWAY_FROM_JOB` cannot leave it. Git Bash
+   * asks for that flag only when the job lets it break away. False or no value: the job lets a child break away.
+   */
+  readonly hold?: boolean | undefined;
+}
+
 /** The platform part of the trace. On Windows it is a set of job objects with one completion port. A test gives a fake. */
 export interface StartTrace {
   /**
    * This function puts a live process in a new job of the trace. Its next children go into the same job. It gives the
    * key of the job, or `null` when Windows refuses the process.
    */
-  cover(pid: number): number | null;
+  cover(pid: number, options?: TraceCoverOptions): number | null;
+  /**
+   * This function changes the limits of the open job `key` (H191): true refuses a breakaway, and false lets a child break away. It
+   * gives false when the job is not open or Windows refuses the change. A trace with no such function keeps the limits
+   * of each job from its cover.
+   */
+  limit?(key: number, hold: boolean): boolean;
   /** This function gives the messages that came since its last call, the oldest first. */
   drain(): readonly TraceEvent[];
   /** This function gives the processor time of the reader thread since its start, in ms: the cost of the trace. */
@@ -115,19 +132,26 @@ export const TRACED_KINDS: readonly OwnerKind[] = ["session", "mcp", "service", 
 export const TRACEABLE_KINDS: readonly OwnerKind[] = ["session", "mcp", "service", "docker", "browser", "editor", "system", "other"];
 
 /**
- * This function reads the setting `startTrace`: `off`, or the owner kinds with commas, for example `session,mcp`. No
- * setting, or a value with a kind that is not traceable, gives the default `TRACED_KINDS`.
+ * The owner kinds whose jobs refuse a breakaway by default (H191). The Git Bash of a session gives a breakaway to its
+ * children when the job lets them break away. Thus such a job loses them. A service keeps the breakaway for its restart
+ * helper.
  */
-export function traceKindsOf(value: string | undefined): readonly OwnerKind[] {
-  if (value === undefined || value === "") return TRACED_KINDS;
+export const TRACE_HOLD_KINDS: readonly OwnerKind[] = ["session"];
+
+/**
+ * This function reads a setting of owner kinds: `startTrace` or `startTraceHold` (H191). The value is `off`, or the owner
+ * kinds with commas, for example `session,mcp`. No setting, or a value with a kind that is not traceable, gives `fallback`.
+ */
+export function traceKindsOf(value: string | undefined, fallback: readonly OwnerKind[] = TRACED_KINDS): readonly OwnerKind[] {
+  if (value === undefined || value === "") return fallback;
   if (value === "off") return [];
   const kinds = value.split(",").map((each) => each.trim());
-  if (!kinds.every((kind) => (TRACEABLE_KINDS as readonly string[]).includes(kind))) return TRACED_KINDS;
+  if (!kinds.every((kind) => (TRACEABLE_KINDS as readonly string[]).includes(kind))) return fallback;
   return TRACEABLE_KINDS.filter((kind) => kinds.includes(kind));
 }
 
 /**
- * This function gives the stored value of the setting `startTrace`: `off` for no kinds, or the kinds with commas. It
+ * This function gives the stored value of a setting of owner kinds: `off` for no kinds, or the kinds with commas. It
  * refuses a kind that is not traceable.
  */
 export function traceKindsText(kinds: readonly string[]): string {
@@ -271,6 +295,11 @@ export class TraceBook {
   /** This function keeps a process that Windows refused, so the next reads do not try it again. */
   refuse(pid: number, startedAt: number | undefined): void {
     this.#refused.set(pid, startedAt);
+  }
+
+  /** This function gives the roots of the open jobs, by the key of each job. */
+  roots(): ReadonlyMap<number, TraceRoot> {
+    return this.#roots;
   }
 
   /** This function adds a root: a live process that the daemon put in the job `key`. Its own start is not a traced start. */

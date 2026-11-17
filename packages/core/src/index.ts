@@ -552,6 +552,7 @@ export {
   percentText,
   SOURCES_KEPT,
   sourceText,
+  TRACE_HOLD_KINDS,
   TRACE_STOP_KEY,
   TRACE_WINDOW_MS,
   TRACEABLE_KINDS,
@@ -563,7 +564,7 @@ export {
   traceLines,
   withTrace,
 } from "./trace.ts";
-export type { CoverInput, StartSource, StartTrace, TraceBatch, TraceContext, TraceCover, TracedStarts, TraceEvent, TraceRoot } from "./trace.ts";
+export type { CoverInput, StartSource, StartTrace, TraceBatch, TraceContext, TraceCover, TraceCoverOptions, TracedStarts, TraceEvent, TraceRoot } from "./trace.ts";
 export {
   MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep } from "./store.ts";

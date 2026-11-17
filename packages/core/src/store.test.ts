@@ -48,11 +48,11 @@ describe("Store", () => {
 
   it("keeps the settings, and the usage of an ended lease", () => {
     const store = new Store(":memory:");
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], startTraceHold: ["session"], alerts: {} });
     store.setConfig("jobTemp", "D:\\headroom\\tmp");
-    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: "D:\\headroom\\tmp", health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], startTraceHold: ["session"], alerts: {} });
     store.setConfig("jobTemp", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], startTraceHold: ["session"], alerts: {} });
 
     // H27: the setting health. Without it, the list is empty, so the monitor checks no URL (H57).
     store.setConfig("health", JSON.stringify({ "local-site": "http://127.0.0.1:4731/", mongo: "http://127.0.0.1:8081/" }));
@@ -68,7 +68,7 @@ describe("Store", () => {
     store.setConfig("alerts", "not json");
     expect(store.config().alerts).toEqual({});
     store.setConfig("alerts", null);
-    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], alerts: {} });
+    expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], startTraceHold: ["session"], alerts: {} });
     // H47: the limit of a spawn-heavy job. A value that is not a number above 0 gives the default.
     store.setConfig("spawnHeavy", "1200");
     expect(store.config().spawnHeavy).toBe(1200);
