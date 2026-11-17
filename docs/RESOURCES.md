@@ -227,6 +227,7 @@ The alerts of today go onto the rules with no change to their ids, kinds, messag
 |---|---|---|
 | `memory` | `memory` | Level on free: below 1024 MB. A critical level below `availableCriticalMb`, when it is above 0 (H179). |
 | `cache` | `memory` | Check (H50): the system file cache at 4096 MB or more, with less than 6144 MB available. Critical below 1024 MB available. Clear below 3072 MB of cache, or above 8192 MB available. |
+| `reader` | `memory` | Check (H192): an owner of the kind `system` or `other` with 51200 MB or more of reads in the last hour, with less than 2048 MB available. Clear below 38400 MB of reads, or above 2731 MB available. A `readerMb` of 0 turns it off. |
 | `commit` | `commit` | Level on used: above 90% of the commit limit. |
 | `pool` | `pool` (`pool:nonpaged`) | Level on used: above 3072 MB. Growth of used: more than 500 MB in one hour. |
 | `pool:paged` | `pool` (`pool:paged`) | Level on used: above 4096 MB. Growth of used: more than 500 MB in one hour. |
@@ -1580,6 +1581,22 @@ On 2026-10-25, the available memory fell two times, and the reaper of Claude Cod
 1. Examine the Dev Drive: `fsutil devdrv query D:`. A trusted Dev Drive has Defender in performance mode.
 2. Remove the drive `D:` from the scope of Windows Search. Open Indexing Options with `control.exe srchadmin.dll`, and clear `D:` in the indexed locations. The service stays on for `C:`.
 3. To see the parts of the cache, run RAMMap of Sysinternals: the tab "Use Counts" gives `Metafile` and `Mapped File`. `RAMMap64.exe -Ew` empties the working sets, and `-Es` empties the system working set.
+
+### H192: the reader alert
+
+**The problem.** On the night of 2026-10-25, the system file cache filled 3 times, up to 10.7 GB, with 0.7 GB to 0.9 GB available. `SearchIndexer.exe` had read 2,800 GB since the reboot (`ReadTransferCount` of `Win32_Process`). The next process had read 65 GB. On 2026-11-16, the owner `system` read 45 GB in one hour. The cache alert of H50 comes only when the cache is large, and it gives the readers as one list. It does not tell that one program outside the sessions causes the reads.
+
+**The rule.** The alert `reader` is a check rule of the kind `memory`.
+
+- `heavyReaders()` in `resources.ts` gives its owners. An owner has a kind of `READER_KINDS` (`system` and `other`), and it read `readerMb` or more in the last hour. Less than `readerAvailableMb` is available.
+- The limits are `readerMb` (51200) and `readerAvailableMb` (2048) of `AlertRules`. `headroom config alerts readerMb 0` turns the alert off.
+- An active alert keeps an owner down to 75 % of the read limit, and up to the available limit divided by 0.75.
+- The level is a warning. A low memory has its own alert, `memory`.
+- The engine keeps the readers of the last closed minute (H66), and gives them to the check. Thus the alert names the processes of an owner, also of the owner `other`.
+- The text of a check rule gets the level of its active alert (`InstanceFacts.active`). Thus the text names each owner that the clear limit keeps.
+- For `system:search` and `system:defender`, the text gives the next step: the scope of Windows Search, or a trusted Dev Drive.
+
+**What headroom does not do.** headroom does not stop, pause or slow the reader. The owner of the machine does the next step, with the commands of H50.
 
 ### H78: the key of a job and the memory ladder
 

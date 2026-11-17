@@ -6,6 +6,9 @@
  * - `memory`: little available memory.
  * - `cache`: a large system file cache while little memory is available (H50). Windows does not count the cache as
  *   available memory. The message names the owners that read and wrote most in the last hour.
+ * - `reader`: an owner outside the sessions and their tools reads very much, for example Windows Search (H192). It read
+ *   50 GB or more in the last hour, and less than 2 GB of memory is available. The message names its processes of the
+ *   last minute and the next step. headroom does not stop them.
  * - `commit`: a commit charge near its limit.
  * - `pool`: a large kernel pool (non-paged or paged), or a pool that grows fast. A driver leak shows here.
  * - `desktop`: many processes in the session. The desktop heap can run out, and new processes then fail at their start.
@@ -76,7 +79,7 @@ import type { ServiceHealth } from "./services.ts";
 import type { ProcessStarts } from "./starts.ts";
 import type { ThermalState } from "./thermal.ts";
 import type { BatteryRead, DiskSpace, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
-import type { OwnerCores, OwnerReads, OwnerWrites } from "./counters.ts";
+import type { OwnerCores, OwnerReads, OwnerWrites, ProcessReads } from "./counters.ts";
 
 export { diskSize } from "./units.ts";
 
@@ -85,6 +88,7 @@ export type AlertKind =
   | "runaway" | "orphan" | "memory" | "commit" | "pool" | "desktop" | "disk" | "ports" | "service" | "churn" | "battery" | "cpu" | "heat" | "gpu" | "forecast" | "stop" | "drain"
   | "handles"
   | "cache"
+  | "reader"
   | "docker"
   | "worktree"
   | "reap";
@@ -133,6 +137,13 @@ export interface AlertRules {
   readonly cacheMb: number;
   /** A large system file cache with less available memory than this, in MB, starts a cache warning (H50). The default is 6144. */
   readonly cacheAvailableMb: number;
+  /**
+   * The reads of one hour, in MB, of an owner of the kind `system` or `other` (H192). With less available memory than
+   * `readerAvailableMb`, these reads start a reader warning. The default is 51200. 0 turns the alert off.
+   */
+  readonly readerMb: number;
+  /** A heavy reader with less available memory than this, in MB, starts a reader warning (H192). The default is 2048. */
+  readonly readerAvailableMb: number;
   /** A commit charge above this part of its limit starts an alert. The default is 0.9. */
   readonly commitRatio: number;
   /** A non-paged pool above this size, in MB, starts an alert. The default is 3072. */
@@ -217,6 +228,8 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   availableCriticalMb: 0,
   cacheMb: 4096,
   cacheAvailableMb: 6144,
+  readerMb: 51_200,
+  readerAvailableMb: 2048,
   commitRatio: 0.9,
   poolMb: 3072,
   poolGrowthMb: 500,
@@ -356,6 +369,8 @@ export interface AlertInput {
   readonly writes?: readonly OwnerWrites[] | undefined;
   /** The owners that read most in the last hour (H50). A cache alert names the first 3 above 100 MB. */
   readonly reads?: readonly OwnerReads[] | undefined;
+  /** The processes that read most in the last closed minute (H66). A reader alert names those of its owners (H192). */
+  readonly readers?: readonly ProcessReads[] | undefined;
   /** The TCP connections and the dynamic port range (H24). */
   readonly tcp?: TcpTable | undefined;
   /** The health of each service after the last round of checks (H27). */
@@ -402,7 +417,7 @@ const HOUR_MS = 3_600_000;
 function readingsOf(
   input: Pick<
     AlertInput,
-    | "memory" | "processes" | "load" | "disks" | "writes" | "reads" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
+    | "memory" | "processes" | "load" | "disks" | "writes" | "reads" | "readers" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
     | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles"
   > & {
     readonly leases?: readonly Lease[] | undefined;
@@ -410,7 +425,7 @@ function readingsOf(
 ): Readings {
   return {
     at: input.at ?? 0, memory: input.memory, processes: input.processes, previous: [], disks: input.disks ?? [], load: input.load ?? NO_LOAD,
-    processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, reads: input.reads, tcp: input.tcp, services: input.services, starts: input.starts,
+    processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, reads: input.reads, readers: input.readers, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, gpu: input.gpu, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
     trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal, handles: input.handles,
   };
@@ -539,7 +554,8 @@ export function detect(input: AlertInput, rules: AlertRules = DEFAULT_ALERT_RULE
                   : null;
         if (level === null) continue;
         ids.add(id);
-        const text = rule.text({ measurement, change, readings, owners, level });
+        // H192: the text of a check gets the level of its active alert too, so it names what the clear limit keeps.
+        const text = rule.text({ measurement, change, readings, owners, level, active: activeLevel.get(id) ?? null });
         const severity = rule.severity === true ? { severity: level } : {};
         alerts.push({ id, kind: rule.alert, subject: text.subject, pid: null, mb: text.mb, ...severity, rule: rule.type, message: text.message });
       }

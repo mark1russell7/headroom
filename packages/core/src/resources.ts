@@ -12,7 +12,7 @@ import { childrenOf, jobTreeMb, orphanName } from "./owners.ts";
 import { MB } from "./sampler.ts";
 import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
-import type { OwnerCores, OwnerReads, OwnerWrites } from "./counters.ts";
+import type { OwnerCores, OwnerReads, OwnerWrites, ProcessReads } from "./counters.ts";
 import { coresText, cpuRateOf, CPU_RESERVE_DEFAULT, heldMs, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { splitUses, type DockerStatus } from "./docker.ts";
 import { forecastFrom, rateText, spanText, type Forecast, type ForecastTarget, type Part, type TargetName, type Trend } from "./forecast.ts";
@@ -76,6 +76,8 @@ export interface Readings {
   readonly writes?: readonly OwnerWrites[] | undefined;
   /** The owners that read most in the last hour, from the counter tracker of the engine (H50). The cache alert names them. */
   readonly reads?: readonly OwnerReads[] | undefined;
+  /** The processes that read most in the last closed minute (H66). The reader alert names those of its owners (H192). */
+  readonly readers?: readonly ProcessReads[] | undefined;
   /** The cores of each owner, as an average over the last minute, from the counter tracker of the engine. The cpu kind uses them. */
   readonly cores?: readonly OwnerCores[] | undefined;
   readonly disks: readonly DiskSpace[];
@@ -750,6 +752,15 @@ const MEMORY_RESOURCE: Resource = {
         level: ({ readings, active }) => cacheLevel(readings.memory, limits, active ?? null),
         text: cacheText,
       },
+      {
+        // H192: a program outside the sessions that reads very much fills the file cache. headroom does not stop it.
+        type: "check",
+        alert: "reader",
+        alertId: () => "reader",
+        severity: true,
+        level: ({ readings, active }) => (heavyReaders(readings.reads, readings.memory, limits, active ?? null).length > 0 ? "warning" : null),
+        text: (facts) => readerText(facts, limits),
+      },
     ],
   },
   admit: {
@@ -796,6 +807,52 @@ function cacheText({ readings }: InstanceFacts): AlertText {
       readersText(readings.reads) +
       writersText(readings.writes) +
       " Run jobs that read many files with `headroom run --slot files`, so that they do not run at the same time.",
+  };
+}
+
+/** The owner kinds of the reader alert (H192): the programs outside the sessions and their tools. */
+export const READER_KINDS: readonly OwnerKind[] = ["system", "other"];
+
+/** An active reader alert ends only below this part of its read limit, or above its available limit divided by this part (H192). */
+const READER_CLEAR = 0.75;
+
+/** The next step for the owner of a known file reader (H192). */
+const READER_STEPS: Readonly<Record<string, string>> = {
+  "system:search": "Remove the folders of the jobs from the scope of Windows Search: open Indexing Options with `control.exe srchadmin.dll`.",
+  "system:defender": "Put the folders of the jobs on a trusted Dev Drive, where Defender scans in performance mode.",
+};
+
+/**
+ * This function gives the owners of the reader alert (H192), the largest first. Each owner has a kind of `READER_KINDS`,
+ * and read `readerMb` or more in the last hour, while less than `readerAvailableMb` is available. A `readerMb` of 0
+ * turns the alert off. An active alert keeps an owner down to 75% of the read limit.
+ */
+export function heavyReaders(
+  reads: readonly OwnerReads[] | undefined,
+  memory: SystemMemory,
+  limits: Pick<AlertRules, "readerMb" | "readerAvailableMb">,
+  active: Level | null = null,
+): OwnerReads[] {
+  if (limits.readerMb <= 0) return [];
+  const readLimit = active === null ? limits.readerMb : limits.readerMb * READER_CLEAR;
+  const availableLimit = active === null ? limits.readerAvailableMb : limits.readerAvailableMb / READER_CLEAR;
+  if (memory.availableMb >= availableLimit) return [];
+  return (reads ?? []).filter((each) => READER_KINDS.includes(each.kind) && each.mbLastHour >= readLimit).sort((a, b) => b.mbLastHour - a.mbLastHour);
+}
+
+/** This function gives the text of the reader alert (H192): each owner, its reads, its processes of the last minute and the next step. */
+function readerText({ readings, active }: InstanceFacts, limits: Pick<AlertRules, "readerMb" | "readerAvailableMb">): AlertText {
+  const heavy = heavyReaders(readings.reads, readings.memory, limits, active ?? null);
+  const parts = heavy.map((each) => {
+    const processes = (readings.readers ?? []).filter((reader) => reader.owner === each.owner).map((reader) => `${reader.name} (${reader.pid}) ${diskSize(reader.mb)}`);
+    const minute = processes.length === 0 ? "" : ` In the last minute: ${processes.join(", ")}.`;
+    const step = READER_STEPS[each.owner];
+    return `${each.owner} read ${diskSize(each.mbLastHour)} in the last hour, ${diskSize(each.mbPerMin)} a minute.${minute}${step === undefined ? "" : ` ${step}`}`;
+  });
+  return {
+    subject: "reader",
+    mb: Math.round(heavy[0]?.mbLastHour ?? 0),
+    message: `${parts.join(" ")} Only ${gb(readings.memory.availableMb)} of memory is available, and these reads fill the system file cache. headroom does not stop these programs.`,
   };
 }
 

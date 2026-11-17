@@ -7,7 +7,7 @@ import { changeAlertRules, DEFAULT_ALERT_RULES, detect, type Alert, type AlertRu
 import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { conditionWait, localClock, nextUnmet, USAGE_UNSET, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
-import { CounterTracker, type OwnerCores, type OwnerReads, type OwnerWrites } from "./counters.ts";
+import { CounterTracker, type OwnerCores, type OwnerReads, type OwnerWrites, type ProcessReads } from "./counters.ts";
 import { cpuGroups, LEASE_GROUP, suggestCores, TREE_GROUP, type TrailPoint, type TreeUse } from "./cpu.ts";
 import { gpuRead, gpuStatus, leaseGpuMb, type GpuRead, type GpuStatus } from "./gpu.ts";
 import {
@@ -537,6 +537,8 @@ export class Engine {
   /** The owners that wrote most in the last hour, from the last read of the processes. */
   #writes: readonly OwnerWrites[] = [];
   #reads: readonly OwnerReads[] = [];
+  /** The processes that read most in the last closed minute (H66). The reader alert names them (H192). */
+  #readers: readonly ProcessReads[] = [];
   /** The cores of each owner over the last minute, from the last read of the processes. */
   #cores: readonly OwnerCores[] | undefined;
   /** The CPU group of each process at the last read (H23): a leased job or a process tree. */
@@ -978,7 +980,8 @@ export class Engine {
     if (now - this.#recordedAt >= this.#recordEveryMs) {
       this.#recordedAt = now;
       const minute = this.#closeMinute(now);
-      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, minute.written, minute.read, this.#counters.closeReaders());
+      this.#readers = this.#counters.closeReaders();
+      this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, minute.written, minute.read, this.#readers);
       this.#recordTrends(now);
     }
     if (now - this.#prunedAt >= 3_600_000) {
@@ -1762,7 +1765,7 @@ export class Engine {
     const found = detect(
       {
         memory: this.#memory, processes: this.#processes, ownerOf, kindOf, leases: this.#broker.leases(), poolHourAgoMb, pagedHourAgoMb,
-        load: this.#load, disks, writes: this.#writes, reads: this.#reads, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
+        load: this.#load, disks, writes: this.#writes, reads: this.#reads, readers: this.#readers, tcp: this.#tcp, services: this.#services(), starts: this.#starts,
         battery: this.#battery, meters: this.#meters, cores: this.#cores, thermal: this.#thermal.state(now) ?? undefined, gpu: this.#gpu,
         // H23: the CPU rules read the trails of the counter tracker, and an active alert ends only after its clear time.
         // H36: the GPU rule reads the trail of the used part of each adapter.

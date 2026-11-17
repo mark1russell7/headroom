@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { alertRulesOf, changeAlertRules, DEFAULT_ALERT_RULES, detect, diskLevel, type AlertInput } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
-import { cacheLevel } from "./resources.ts";
+import { cacheLevel, heavyReaders } from "./resources.ts";
 import type { ServiceHealth } from "./services.ts";
 import type { BatteryRead, OwnerKind, ProcessInfo, TcpConnection, TcpTable } from "./types.ts";
 
@@ -427,7 +427,8 @@ describe("cache alerts (H50)", () => {
   it("gives a critical cache alert that names the top readers and writers, next to the memory alert", () => {
     const writes = [{ owner: "session:shop", kind: "session" as const, mbPerMin: 10, mbLastHour: 600 }];
     const alerts = detect({ ...input([], {}), memory: full, reads, writes });
-    expect(alerts.map((alert) => alert.id)).toEqual(["memory", "cache"]);
+    // H192: Windows Search read 50.8 GB in the hour, so the reader alert comes too.
+    expect(alerts.map((alert) => alert.id)).toEqual(["memory", "cache", "reader"]);
     expect(alerts[1]).toStrictEqual({
       id: "cache", kind: "cache", subject: "cache", pid: null, mb: 10_342, severity: "critical", rule: "check",
       message:
@@ -454,6 +455,63 @@ describe("cache alerts (H50)", () => {
     expect(cacheLevel(at(7000, 5000), limits, "warning")).toBe("warning");
     expect(cacheLevel(at(8200, 5000), limits, "warning")).toBeNull();
     expect(cacheLevel(at(900, 5000), limits, "warning")).toBe("critical");
+  });
+});
+
+describe("reader alerts (H192)", () => {
+  // The night of 2026-10-25: Windows Search read about 50 GB in an hour, and 1.0 GB was available.
+  const low = { ...memory, availableMb: 1000 };
+  const reads = [
+    { owner: "session:shop", kind: "session" as const, mbPerMin: 1100, mbLastHour: 61_000 },
+    { owner: "system:search", kind: "system" as const, mbPerMin: 900, mbLastHour: 52_000 },
+    { owner: "other", kind: "other" as const, mbPerMin: 10, mbLastHour: 700 },
+  ];
+  const readers = [
+    { pid: 4120, name: "SearchIndexer.exe", owner: "system:search", mb: 870 },
+    { pid: 77, name: "node.exe", owner: "session:shop", mb: 1100 },
+  ];
+
+  it("names an owner outside the sessions, its processes of the last minute and the next step, and not a session", () => {
+    const alerts = detect({ ...input([], {}), memory: low, reads, readers });
+    expect(alerts.map((alert) => alert.id)).toEqual(["memory", "reader"]);
+    expect(alerts[1]).toStrictEqual({
+      id: "reader", kind: "reader", subject: "reader", pid: null, mb: 52_000, severity: "warning", rule: "check",
+      message:
+        "system:search read 50.8 GB in the last hour, 900 MB a minute. In the last minute: SearchIndexer.exe (4120) 870 MB. " +
+        "Remove the folders of the jobs from the scope of Windows Search: open Indexing Options with `control.exe srchadmin.dll`. " +
+        "Only 1.0 GB of memory is available, and these reads fill the system file cache. headroom does not stop these programs.",
+    });
+  });
+
+  it("names each heavy owner, the largest first, also an owner with no known program", () => {
+    const other = { owner: "other", kind: "other" as const, mbPerMin: 1000, mbLastHour: 70_000 };
+    const alert = detect({ ...input([], {}), memory: low, reads: [...reads, other] }).find((each) => each.id === "reader");
+    expect(alert?.mb).toBe(70_000);
+    expect(alert?.message).toMatch(/^other read 68\.4 GB in the last hour, 1000 MB a minute\. system:search read 50\.8 GB/);
+  });
+
+  it("gives no alert with 2 GB or more available, with a smaller read, or with the limit 0", () => {
+    expect(detect({ ...input([], {}), memory: { ...memory, availableMb: 2048 }, reads }).map((alert) => alert.id)).toEqual([]);
+    expect(detect({ ...input([], {}), memory: low, reads: [{ ...reads[1]!, mbLastHour: 51_000 }] }).map((alert) => alert.id)).toEqual(["memory"]);
+    expect(detect({ ...input([], {}), memory: low, reads }, { ...DEFAULT_ALERT_RULES, readerMb: 0 }).map((alert) => alert.id)).toEqual(["memory"]);
+  });
+
+  it("keeps an active alert until the reads fall below 75% of the limit or the available memory rises past the limit", () => {
+    const limits = DEFAULT_ALERT_RULES;
+    const search = (mbLastHour: number) => [{ owner: "system:search", kind: "system" as const, mbPerMin: 500, mbLastHour }];
+    expect(heavyReaders(search(40_000), low, limits)).toEqual([]);
+    expect(heavyReaders(search(40_000), low, limits, "warning").map((each) => each.owner)).toEqual(["system:search"]);
+    expect(heavyReaders(search(38_000), low, limits, "warning")).toEqual([]);
+    expect(heavyReaders(search(60_000), { ...memory, availableMb: 2500 }, limits)).toEqual([]);
+    expect(heavyReaders(search(60_000), { ...memory, availableMb: 2500 }, limits, "warning").map((each) => each.owner)).toEqual(["system:search"]);
+    expect(heavyReaders(search(60_000), { ...memory, availableMb: 2800 }, limits, "warning")).toEqual([]);
+    expect(heavyReaders(undefined, low, limits)).toEqual([]);
+  });
+
+  it("names in the text of an active alert the owner that the clear limit keeps", () => {
+    const kept = [{ owner: "system:defender", kind: "system" as const, mbPerMin: 600, mbLastHour: 45_000 }];
+    const alert = detect({ ...input([], {}), memory: low, reads: kept, active: [{ id: "reader", severity: "warning" }] }).find((each) => each.id === "reader");
+    expect(alert?.message).toContain("system:defender read 43.9 GB in the last hour, 600 MB a minute. Put the folders of the jobs on a trusted Dev Drive");
   });
 });
 
