@@ -699,6 +699,10 @@ On 2026-10-24, a pool trace showed a leak in the AMD display driver `amdkmdag.sy
 - Windows gives each new process the next sequence number. `NtQueryInformationProcess(ProcessSequenceNumber)` gives the number of one process with `PROCESS_QUERY_LIMITED_INFORMATION`.
 - At each read of the processes, the sampler reads the number of the newest process. It tries at most 4 processes, because a short process can end before the read.
 - The change of the number between two reads is the exact count of starts. The number keeps its highest value, so an ended newest process gives no negative count.
+- A read can get no number, for example when the 4 processes end before the read opens them. Such a read keeps the last number and its time. The next read with a number counts the starts of the miss too.
+- The rate of a window is exact when a read of the window has a count. It is the sum of the counts over the time that they cover.
+- `sequenceMisses` of `Status.starts` gives the reads of the window with no number.
+- Until 2026-11-17, a miss cleared the last number, and the next read also got no count. One miss in 10 minutes made the rate a lower bound for 10 minutes. The status then gave no coverage of the trace.
 - On 2026-10-24, two processes that started one after the other had numbers with a difference of 1.
 - `UniqueProcessKey` of `SYSTEM_PROCESS_INFORMATION` is 0 with `SystemProcessInformation`, and the process ID with `SystemExtendedProcessInformation`. Thus it is not a count.
 - Linux gives no cheap exact count of processes. The `processes` line of `/proc/stat` counts each fork, also each thread. Thus Linux uses the lower bound.

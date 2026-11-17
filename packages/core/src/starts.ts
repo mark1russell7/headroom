@@ -50,6 +50,11 @@ export interface ProcessStarts {
   readonly perMinute: number;
   /** True: `perMinute` comes from the sequence numbers of Windows, and it is exact. False: it is a lower bound. */
   readonly exact: boolean;
+  /**
+   * The reads in the window with no sequence number, after a first read with one. The next read with a number counts the
+   * starts of the miss too, so a miss does not make the rate a lower bound.
+   */
+  readonly sequenceMisses?: number;
   /** The time that the reads cover, at most 10 minutes. The churn alert needs the full window. */
   readonly spanMs: number;
   /** The owners, the most starts first. */
@@ -94,8 +99,15 @@ export function isNewProcess(info: ProcessInfo, before: { readonly startedAt: nu
 interface StartRead {
   readonly at: number;
   readonly spanMs: number;
-  /** The exact starts of the computer since the previous read, from the sequence numbers, or `undefined`. */
+  /**
+   * The exact starts of the computer since the last read with a sequence number, or `undefined`. After a miss, this count
+   * covers more time than `spanMs`.
+   */
   readonly starts: number | undefined;
+  /** The time that `starts` covers: the time since the last read with a sequence number. */
+  readonly startsSpanMs: number;
+  /** True for a read with no sequence number after a read with one. */
+  readonly missed: boolean;
   /** The new processes outside the leases, by owner. */
   readonly own: ReadonlyMap<string, number>;
   /** The new processes in each lease, by lease and owner. */
@@ -137,6 +149,8 @@ export class StartTracker {
   #last = new Map<number, number | undefined>();
   #lastAt: number | null = null;
   #lastSequence: number | undefined;
+  /** The time of the last read with a sequence number. */
+  #lastSequenceAt: number | null = null;
   #reads: StartRead[] = [];
   readonly #kinds = new Map<string, OwnerKind>();
   readonly #jobs = new Map<string, JobReports>();
@@ -176,13 +190,21 @@ export class StartTracker {
         add(byOwner, owner, 1);
       }
       // The newest live process can be older than the newest process of the previous read, so the number keeps its highest value.
-      const starts = sequence === undefined || this.#lastSequence === undefined ? undefined : Math.max(0, sequence - this.#lastSequence);
-      this.#reads = [...this.#reads.filter((each) => at - each.at < this.#windowMs), { at, spanMs: at - previousAt, starts, own, leased }];
+      const known = sequence !== undefined && this.#lastSequence !== undefined && this.#lastSequenceAt !== null;
+      const starts = known ? Math.max(0, sequence - (this.#lastSequence ?? sequence)) : undefined;
+      const startsSpanMs = known ? at - (this.#lastSequenceAt ?? at) : 0;
+      const missed = sequence === undefined && this.#lastSequence !== undefined;
+      this.#reads = [...this.#reads.filter((each) => at - each.at < this.#windowMs), { at, spanMs: at - previousAt, starts, startsSpanMs, missed, own, leased }];
     }
     // Only the live processes stay, so the map does not grow.
     this.#last = new Map(processes.map((info) => [info.pid, info.startedAt]));
     this.#lastAt = at;
-    this.#lastSequence = sequence === undefined ? undefined : Math.max(sequence, this.#lastSequence ?? sequence);
+    // 2026-11-17: a read with no number cleared the last number, so one miss made the next read miss too. The window then
+    // gave a lower bound for 10 minutes. A miss keeps the last number and its time.
+    if (sequence !== undefined) {
+      this.#lastSequence = Math.max(sequence, this.#lastSequence ?? sequence);
+      this.#lastSequenceAt = at;
+    }
     this.#prune(at);
   }
 
@@ -220,6 +242,7 @@ export class StartTracker {
   gap(at: number): void {
     this.#lastAt = null;
     this.#lastSequence = undefined;
+    this.#lastSequenceAt = null;
     for (const entry of this.#jobs.values()) {
       const last = entry.points.at(-1);
       entry.points = last === undefined ? [] : [[at, last[1]]];
@@ -234,8 +257,12 @@ export class StartTracker {
     const own = new Map<string, number>();
     const leased = new Map<string, Map<string, number>>();
     let exactStarts = 0;
+    let exactSpanMs = 0;
+    let misses = 0;
     for (const each of reads) {
       exactStarts += each.starts ?? 0;
+      if (each.starts !== undefined) exactSpanMs += each.startsSpanMs;
+      if (each.missed) misses++;
       for (const [owner, count] of each.own) add(own, owner, count);
       for (const [lease, byOwner] of each.leased) {
         let sums = leased.get(lease);
@@ -271,11 +298,13 @@ export class StartTracker {
       .filter((each) => each.perMinute > 0)
       .sort((a, b) => b.perMinute - a.perMinute)
       .slice(0, OWNERS_KEPT);
-    const exact = reads.length > 0 && reads.every((each) => each.starts !== undefined);
+    // The rate is exact when a read of the window has a count from the sequence numbers. It covers the time of its counts.
+    const exact = exactSpanMs > 0;
     const lowerBound = [...own.values()].reduce((sum, count) => sum + rate(count), 0) + [...jobsOf.values()].reduce((sum, value) => sum + value, 0);
     return {
-      perMinute: round(exact ? rate(exactStarts) : lowerBound),
+      perMinute: round(exact ? (exactStarts * MINUTE_MS) / exactSpanMs : lowerBound),
       exact,
+      sequenceMisses: misses,
       spanMs,
       owners,
       jobs: jobs.sort((a, b) => b.perMinute - a.perMinute || b.processes - a.processes),
@@ -284,20 +313,18 @@ export class StartTracker {
 
   /**
    * This function gives the starts of the computer in one minute over the reads of the last `windowMs`, as a whole number.
-   * It gives `null` before two reads. The rate is exact when each read has a sequence number. Otherwise, it is a lower
-   * bound: the new processes that the reads found.
+   * It gives `null` before two reads. The rate is exact when a read of the window has a count from the sequence numbers.
+   * Otherwise, it is a lower bound: the new processes that the reads found.
    */
   recent(now: number, windowMs: number = RECENT_STARTS_MS): number | null {
     const reads = this.#reads.filter((each) => now - each.at < windowMs);
     const spanMs = reads.reduce((sum, each) => sum + each.spanMs, 0);
     if (spanMs <= 0) return null;
-    const exact = reads.every((each) => each.starts !== undefined);
+    const counted = reads.filter((each) => each.starts !== undefined);
+    const countedMs = counted.reduce((sum, each) => sum + each.startsSpanMs, 0);
+    if (countedMs > 0) return Math.round((counted.reduce((sum, each) => sum + (each.starts ?? 0), 0) * MINUTE_MS) / countedMs);
     let count = 0;
     for (const each of reads) {
-      if (exact) {
-        count += each.starts ?? 0;
-        continue;
-      }
       for (const found of each.own.values()) count += found;
       for (const byOwner of each.leased.values()) for (const found of byOwner.values()) count += found;
     }
