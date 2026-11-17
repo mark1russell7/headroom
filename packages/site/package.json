@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@headroom/site",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "The GitHub Pages site of headroom: a lease simulator that runs the lease broker of the core in the browser.",
@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@headroom/core": "workspace:*",
-    "@mark1russell7/text": "^0.0.7"
+    "@mark1russell7/text": "^0.0.12"
   },
   "devDependencies": {
     "@mark1russell7/cue": "github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7",

@@ -1610,3 +1610,27 @@ These were the open questions. The session decided each one as a technical call.
 | Does headroom prune Docker? | No. The alert gives the size and the commands. | A prune removes the images and the cache of all the sessions. The owner of the work decides. |
 | Does the sampler read the memory of each protected process? | Yes (H49): the private memory and the private working set of each process, from one read of `SystemProcessInformation`. | The read opens no process, so it needs no admin rights. The private working sets add up to less than the RAM in use, because a shared page is in no process. |
 | What is the memory in RAM of a Windows process? | Its private working set (H49), as the column "Memory" of Task Manager. | The full working set counts a shared page one time for each process that maps it. On 2026-10-25, the full working sets added up to 3.2 GB more than the memory in use. |
+
+### H186: no secret in the stored texts
+
+A command line or the name of a job can hold a token, a password or a key. Examples are `GITHUB_TOKEN=... gh pr list`, `curl -u admin:...` and `mysql --password=...`. Before H186, headroom stored such texts as they came. Review finding 5 of #215 found it.
+
+**The redaction.** `redactCommand()` in `redact.ts` puts the mark `[secret]` in place of each secret. The rest of the text does not change, and a second pass changes nothing.
+
+- The shapes come from the home of redaction, `@mark1russell7/text/redact` 0.0.12.
+- The tokens of known services are found by their shape (`SECRET_SHAPES`).
+- The other secrets are found by their context (`CONTEXT_SHAPES`). The contexts are a parameter or a flag with the name of a secret, the user part of a URL, an Authorization header and `curl -u`.
+- A match keeps the name of the parameter or the flag. Only the value gets the mark.
+
+**Where.** The engine redacts each text before the store keeps it or a reader shows it:
+
+- The name of the job of a lease, and the command of its key (H78).
+- The command line of each owner record (H48, H182).
+- Thus also the shadow log and the log of `headroom reap` (H183), the alerts and the dashboard.
+
+**The step of the schema.** Step 5 redacts the rows of an older file. It changes only the rows with a secret. The columns are in `COMMAND_COLUMNS` of `store.ts`: `process_owners.command`, `reap_shadow.command`, `reap_log.command`, `leases.job` and `lease_keys.command`.
+
+**The gates.**
+
+- A test puts fixture secrets in each path and holds that no fixture secret reaches any table.
+- A test fails when a table gets a new column with the name `command` or `job` that is not in `COMMAND_COLUMNS`.
