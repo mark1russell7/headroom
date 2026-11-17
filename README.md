@@ -855,7 +855,11 @@ The plugin `headroom` has a hook for the Bash and PowerShell tools. When a sessi
 - The hook reads the command words of each part of the line, not the text (H55). The text of a quoted string or of a comment does not count, so `git commit -m "fix vitest"` is light. A shell that runs its argument is different: `bash -c "pnpm test"` is heavy. `sh -c`, `powershell -Command`, `pwsh -Command` and `cmd /c` are the same.
 - A text reader is light, whatever its arguments say. The text readers are `grep`, `rg`, `git grep`, `sed`, `cat`, `echo`, `head`, `tail`, `ls`, `Select-String` and `Get-Content`.
 - The body of a here-document is text when its program only takes text (`cat > a.md <<'EOF'`, `gh pr create --body-file - <<'EOF'`, `git commit -F -`) and the shell runs no part of it (H181). A body that a shell reads stays in the rating: `bash <<'EOF'` and `cat <<'EOF' | bash` are heavy when the body is heavy.
-- Without a daemon, or for a light command, the hook does nothing. It adds approximately 65 ms to each command.
+- The hook is an HTTP hook (H194). Claude Code sends each event to `POST http://127.0.0.1:4730/hooks/pre-tool-use` on the daemon, so a tool call starts no process for the hook. The daemon has the one copy of the rating (`packages/daemon/src/hook-rating.ts`).
+- The route answers only on 127.0.0.1 or localhost, and only a request with the header `x-headroom-client: hook`. A web page cannot send that header to another origin without a CORS preflight, and the daemon answers no preflight.
+- For a light command, the answer is `{}` and the command goes on. Without a daemon, the request fails, and Claude Code lets the tool call go on: the hook has a timeout of 1 second and no `onFailure`.
+- The hook calls the default port 4730. A daemon on a different port (`headroom serve --port`) gets no request from the hook, so the hook refuses no command.
+- Version 0.2.0 of the plugin needs version 0.3.4 or later of the daemon. An older daemon has no route, so the hook refuses no command.
 
 To turn it on in Claude Code: `/plugin marketplace add C:\Users\<you>\git\headroom`, then `/plugin install headroom@headroom`. To turn it off: `/plugin disable headroom@headroom`.
 

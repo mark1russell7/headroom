@@ -1,10 +1,16 @@
 {
   "name": "headroom",
-  "description": "A hook that sends a heavy command (tests, builds, Playwright, Docker builds) through headroom run when the memory of the computer is tight.",
+  "version": "0.2.0",
+  "description": "A hook that sends a heavy command (tests, builds, Playwright, Docker builds) through headroom run when the memory of the computer is tight. The hook asks the daemon over HTTP, so it starts no process.",
   "author": {
     "name": "Mark Russell"
   },
   "repository": "https://github.com/mark1russell7/headroom",
   "license": "MIT",
-  "keywords": ["headroom", "memory", "leases", "hooks"]
+  "keywords": [
+    "headroom",
+    "memory",
+    "leases",
+    "hooks"
+  ]
 }

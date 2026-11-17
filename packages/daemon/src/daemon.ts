@@ -13,6 +13,7 @@ import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { CLIENT_TITLE, DeferredStarts, launchClient } from "./deferred.ts";
 import { dashboardFace } from "./dashboard.ts";
+import { hookFace } from "./hook-face.ts";
 import { McpGateway } from "./gateway.ts";
 import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
@@ -149,14 +150,15 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
     "headroom",
   );
-  // The MCP gateway and the dashboard are faces on the same listener as the procedures: /mcp/<name> and / next to /api.
+  // The MCP gateway, the dashboard and the hook (H194) are faces on the same listener as the procedures: /mcp/<name>, / and
+  // /hooks/pre-tool-use next to /api.
   const started = await runProcedureHost({
     name: "headroom",
     mode: options.mode ?? "foreground",
     host: {
       ...base,
-      faces: { ...base.faces, mcp: gateway.face(), dashboard: dashboardFace() },
-      listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), "mcp", "dashboard"] })),
+      faces: { ...base.faces, mcp: gateway.face(), dashboard: dashboardFace(), hook: hookFace({ status: () => engine.status() }) },
+      listen: base.listen?.map((listener) => ({ ...listener, faces: [...(listener.faces ?? []), "mcp", "dashboard", "hook"] })),
     },
     log,
   });

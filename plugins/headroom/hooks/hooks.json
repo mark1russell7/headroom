@@ -5,9 +5,12 @@
         "matcher": "Bash|PowerShell",
         "hooks": [
           {
-            "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/route.ts\"",
-            "timeout": 5
+            "type": "http",
+            "url": "http://127.0.0.1:4730/hooks/pre-tool-use",
+            "timeout": 1,
+            "headers": {
+              "x-headroom-client": "hook"
+            }
           }
         ]
       }

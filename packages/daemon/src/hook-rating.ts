@@ -1,30 +1,28 @@
 /**
- * The hook of headroom (H8): a PreToolUse hook for the Bash and PowerShell tools of Claude Code.
+ * The rating of the hook of headroom (H8): the verdict for one command of the Bash or PowerShell tool of Claude Code.
+ * The daemon gives it on `POST /hooks/pre-tool-use` (`hook-face.ts`). The plugin calls that route as an HTTP hook, so a
+ * tool call starts no process for the hook (H194). This file is the one copy of the rating.
  *
  * - A heavy command (tests, builds, Playwright, Docker builds, recursive pnpm) that does not run under
  *   `headroom run` goes on only when the memory has room for it.
  * - When the memory is tight, the hook refuses the command and tells the session the form under a
  *   lease: `headroom run --mem auto -- <command>`. The session sends that form, and the permission
  *   rules of the user apply to it as to each command. The hook does not approve a command itself.
- * - When the daemon does not answer, or the command is light, the hook writes nothing: the command goes on.
+ * - When the command is light, the verdict is empty: the command goes on. When the daemon does not answer, Claude Code
+ *   lets the tool call go on.
  * - The rating reads the command words of each part of the line, not the text (H55). The text of a quoted string or of
  *   a comment does not count, unless the part is a shell that runs its argument (`bash -c`). A text reader (`grep`,
  *   `cat`, `echo`) is not heavy, whatever its arguments say.
  * - The body of a here-document is text when its program only writes text (`cat > a.md <<'EOF'`, `gh pr create
  *   --body-file -`) and the shell does not run a part of it. A body that a shell reads (`bash <<'EOF'`) stays in the rating.
  *
- * It uses no package, and it gives up after 1 second, so a session does not wait for it. Node starts this file
- * directly, so it uses only the types that Node can remove.
+ * The functions are pure: the face gives the status of the engine, and the rating reads no file and no network.
  */
 
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-
-/** The status of the daemon that the hook reads: the free memory and the leases. */
+/** The status of the daemon that the rating reads: the free memory and the leases. */
 export interface Status {
-  free?: { memory?: number };
-  leases?: { state: string; reason?: string | null }[];
+  readonly free?: { readonly memory?: number };
+  readonly leases?: readonly { readonly state: string; readonly reason?: string | null }[];
 }
 
 /** The commands that need a lease: the test runners, the builds, the browsers and the container builds. */
@@ -442,35 +440,21 @@ export function decide(command: string, status: Status | null): string | null {
   );
 }
 
-/** This function reads the status of the daemon, or gives `null` when no daemon answers in time. */
-async function status(): Promise<Status | null> {
-  try {
-    const home = process.env["HEADROOM_HOME"] ?? join(homedir(), ".headroom");
-    const { endpoint, token } = JSON.parse(readFileSync(join(home, "daemon.json"), "utf8")) as { endpoint: string; token: string };
-    const res = await fetch(`${new URL(endpoint).origin}/api/resources/status`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: "{}",
-      signal: AbortSignal.timeout(1000),
-    });
-    return res.ok ? ((await res.json()) as Status) : null;
-  } catch {
-    return null;
-  }
-}
+/** The answer of the hook to Claude Code: a refusal of the tool call, or an empty object that lets it go on. */
+export type HookOutput =
+  | { readonly hookSpecificOutput: { readonly hookEventName: "PreToolUse"; readonly permissionDecision: "deny"; readonly permissionDecisionReason: string } }
+  | Record<string, never>;
 
-async function main(): Promise<void> {
-  let input = "";
-  for await (const chunk of process.stdin) input += chunk;
-  const event = JSON.parse(input || "{}") as { tool_name?: string; tool_input?: { command?: string } };
-  const command = String(event.tool_input?.command ?? "");
-  // A light command goes on at once, with no request to the daemon.
-  if (!isHeavy(command) || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return;
-  const reason = decide(command, await status());
-  if (!reason) return;
-  process.stdout.write(
-    JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }),
-  );
+/**
+ * This function gives the answer of the hook for one PreToolUse event. A light command goes on at once. The function
+ * reads the status only for a heavy command, because the status of the engine costs more than the rating.
+ */
+export function hookOutput(event: unknown, status: () => Status | null): HookOutput {
+  // The same reading of the command as the old process hook: a value that is not a string becomes its text.
+  const input = (event as { tool_input?: { command?: unknown } } | null)?.tool_input;
+  const command = String(input?.command ?? "");
+  if (!isHeavy(command) || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return {};
+  const reason = decide(command, status());
+  if (!reason) return {};
+  return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
 }
-
-if (import.meta.main) await main().catch(() => undefined);
