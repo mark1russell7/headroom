@@ -219,15 +219,19 @@ export const COMMAND_COLUMNS: readonly (readonly [table: string, column: string]
   ["reap_log", "command"],
   ["leases", "job"],
   ["lease_keys", "command"],
+  ["peak_holders", "command"],
 ]);
 
 /**
  * This function puts a mark in place of each secret of the texts of `COMMAND_COLUMNS` (H186). It changes only the rows with
- * a secret, and gives the count of the rows that it changed.
+ * a secret, and gives the count of the rows that it changed. It skips a column that the file does not have yet, because a
+ * later step of the schema makes it. For example, step 5 runs before step 8 makes `peak_holders`.
  */
 export function redactStoredCommands(db: DatabaseSync): number {
   let changed = 0;
+  const has = db.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?");
   for (const [table, column] of COMMAND_COLUMNS) {
+    if (has.get(table, column) === undefined) continue;
     const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
     const rows = db.prepare(`SELECT rowid AS id, ${column} AS text FROM ${table} WHERE ${column} IS NOT NULL`).all() as { id: number; text: string }[];
     for (const row of rows) {
@@ -1224,7 +1228,7 @@ export class Store {
       }));
   }
 
-  /** This function writes the memory peaks of one minute (H62 part 5). */
+  /** This function writes the memory peaks of one minute (H62 part 5). Each command gets a mark in place of each secret (H186). */
   saveMemoryPeaks(at: number, peaks: readonly MemoryPeak[]): void {
     if (peaks.length === 0) return;
     const insert = this.#db.prepare(
@@ -1237,7 +1241,7 @@ export class Store {
     transaction(this.#db, () => {
       for (const peak of peaks) {
         insert.run(at, peak.kind, peak.key, peak.name, peak.owner, peak.pid, peak.created, peak.lease, Math.round(peak.peakMb * 10) / 10);
-        holder.run(peak.kind, peak.key, peak.command, at);
+        holder.run(peak.kind, peak.key, peak.command === null ? null : redactCommand(peak.command), at);
       }
     });
   }
