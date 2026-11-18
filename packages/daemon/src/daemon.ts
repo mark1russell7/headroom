@@ -22,7 +22,8 @@ import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
 import { readSummary } from "./disk-report.ts";
 import { announceDaemon, databasePath, diskReportPath, headroomHome, leaseEndsDir, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
-import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
+import { HOOK_MEASURE_BUDGET_MS, NativeImages, nativeRefusal } from "./native-paths.ts";
+import { diskProcedures, gatewayProcedures, nativeProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { keepStartsBeforeStop } from "./starts-before-stop.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
@@ -167,8 +168,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   // H64: a detached job that waits is a row here, with no process. The client starts at the grant.
   const service = serviceCommand();
   const deferred = new DeferredStarts({ leases: engine, launch: launchClient(service.node, service.cli, CLIENT_TITLE) });
+  // H203: one cache of the native images of the folders, for the hook and for `headroom run`.
+  const nativeImages = new NativeImages();
   const registry = daemonRegistry([
     ...resourceProcedures(engine, () => idle.pending(), deferred),
+    ...nativeProcedures(nativeImages),
     ...gatewayProcedures(engine, gateway),
     ...serviceProcedures(idle),
     ...diskProcedures(() => readSummary(diskReportPath())),
@@ -191,7 +195,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const started = await runProcedureHost({
     name: "headroom",
     mode: options.mode ?? "foreground",
-    host: withFaces(base, { mcp: gateway.face(), dashboard: dashboardFace(), hook: hookFace({ status: () => engine.status() }) }),
+    host: withFaces(base, { mcp: gateway.face(), dashboard: dashboardFace(), hook: hookFace({
+        status: () => engine.status(),
+        native: (command, cwd) => nativeRefusal(nativeImages, { command, cwd, budgetMs: HOOK_MEASURE_BUDGET_MS }),
+      }),
+    }),
     log,
   });
   if (started.life.state !== "running") {
