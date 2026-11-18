@@ -9,7 +9,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { programName } from "./owners.ts";
+import { programName, sameStart } from "./owners.ts";
 import type { ProcessLink, SessionInfo, TcpEndpoints } from "./types.ts";
 
 /** The input of `resources.peer`: the two ports that the site sees on its loopback connection. */
@@ -294,10 +294,6 @@ export function isLoopback(address: string): boolean {
   return address === "::1" || address.startsWith("127.") || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(address) || /^::ffff:127\./.test(address);
 }
 
-/** This function tells if two starts are the same start. An unknown start matches each start. */
-export function sameStart(a: number | undefined, b: number | undefined): boolean {
-  return a === undefined || b === undefined || Math.abs(a - b) <= 1;
-}
 
 /**
  * This function tells if a process can be the parent of a child. The parent must start at or before the child. A later
