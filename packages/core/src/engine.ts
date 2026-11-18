@@ -60,6 +60,7 @@ import {
   resourceOf,
   rooms,
   withKinds,
+  leaseUses,
   type JobUsage,
   type Measurement,
   type Owners,
@@ -114,6 +115,7 @@ import { readLeaseEnd, sweepLeaseEnds } from "./ends.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
 import { TraceBook, traceCovers, traceKindsText, withTrace, type StartTrace } from "./trace.ts";
 import { diskSize } from "./units.ts";
+import type { LeaseUse } from "./lease-use.ts";
 import {
   MEMORY,
   type BatteryRead,
@@ -252,6 +254,11 @@ export interface Status {
    * version gives none.
    */
   readonly startCap?: StartCapStatus;
+  /**
+   * The use of each granted lease with a memory amount against its stated memory (H62). Each row has the use at the last
+   * read, the peak since the grant and the over flag. A daemon of an older version gives none.
+   */
+  readonly leaseUse?: readonly LeaseUse[];
   /**
    * The power state (H30): the power source, the power mode, the lid and the efficiency mode of the jobs. It also has the
    * power request that keeps the computer awake, and the last sleep. The battery and the power are entries of `resources`.
@@ -1624,6 +1631,8 @@ export class Engine {
       free: this.#broker.free(capacity),
       pools: { ...capacity.pools },
       leases: this.#broker.leases().filter(isActive),
+      // H62: the use of each granted lease against its stated memory, with the same rule as the over alert.
+      leaseUse: leaseUses({ leases: this.#broker.leases().filter((lease) => lease.state === "granted"), processes: this.#processes, leasePeaks: this.#leasePeaks() }, this.#alertRules),
       owners: this.#owners,
       unattributedMb: this.#unattributedMb,
       sessions: this.#sessions,
@@ -1848,6 +1857,8 @@ export class Engine {
         recordOf: (info) => this.#records.get(info),
         // H38: the Docker alerts read the last disk read of the engine.
         docker: this.#docker,
+        // H62: the over rule compares the memory peak of each granted lease with its stated memory.
+        leasePeaks: this.#leasePeaks(),
       },
       this.#alertRules,
     );
@@ -1873,6 +1884,16 @@ export class Engine {
       this.#ended = [{ ...alert, endedAt: now }, ...this.#ended].slice(0, 50);
     }
     for (const alert of found) this.#alerts.set(alert.id, { ...alert, since: this.#alerts.get(alert.id)?.since ?? now });
+  }
+
+  /** This function gives the memory peak of each granted lease since its grant, by lease id (H62). */
+  #leasePeaks(): Map<string, number> {
+    const peaks = new Map<string, number>();
+    for (const lease of this.#broker.leases()) {
+      const peak = lease.state === "granted" ? this.#broker.peakOf(lease.id, "memory") : null;
+      if (peak !== null) peaks.set(lease.id, peak);
+    }
+    return peaks;
   }
 
   /**

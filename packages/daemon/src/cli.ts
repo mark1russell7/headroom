@@ -143,7 +143,7 @@ import { runRefusal } from "./native-paths.ts";
 import { AUTO_DEFAULT_MB, leaseReportLines, readLeaseReport, REPORT_USAGE } from "./lease-report.ts";
 import { ALERTS_USAGE, alertsChange, alertsLines } from "./alerts-cli.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
-import { leaseRow, problemLines, rolesFileLine, SET_ROLES_FILE, usageFileLine } from "./status-lines.ts";
+import { leaseRow, leaseUseText, problemLines, rolesFileLine, SET_ROLES_FILE, usageFileLine } from "./status-lines.ts";
 import * as service from "./service.ts";
 
 const HELP = `headroom: the memory and job broker of this computer
@@ -446,7 +446,9 @@ function printStatus(status: DaemonStatus): void {
   for (const lease of status.leases) {
     const amounts = Object.entries(lease.amounts).map(([name, amount]) => `${name} ${amountText(name, amount)}`).join(", ");
     // H36: the GPU memory of the job and its peak.
-    console.log(leaseRow(lease, amounts, leaseGpuText(lease, status.gpu)));
+    // H62: the memory use of a granted lease against its stated memory.
+    const use = leaseUseText(status.leaseUse?.find((each) => each.id === lease.id));
+    console.log(leaseRow(lease, amounts, leaseGpuText(lease, status.gpu), use));
   }
   console.log("\nMemory by owner (private, then in RAM now):");
   for (const owner of status.owners.slice(0, 14)) {

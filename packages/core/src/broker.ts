@@ -491,6 +491,14 @@ export class Broker {
     return this.#free(capacity, []);
   }
 
+  /**
+   * This function gives the measured peak of an id of a granted lease since its grant, or `null` before its first measure
+   * (H62). A restart of the daemon starts each peak again.
+   */
+  peakOf(leaseId: string, id: ResourceId): number | null {
+    return this.#peaks.get(leaseId)?.get(id)?.peak ?? null;
+  }
+
   #free(capacity: Capacity, more: Iterable<ResourceId>, now = this.#now()): Record<string, number> {
     const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
     const base = this.#baseRooms(capacity);

@@ -3,7 +3,7 @@
  * file because `cli.ts` starts its command at each import, so a test cannot import it.
  */
 
-import { conditionsText, NO_USAGE_FILE_WAIT, unmetText, type Lease } from "@headroom/core";
+import { conditionsText, diskSize, NO_USAGE_FILE_WAIT, unmetText, type Lease, type LeaseUse } from "@headroom/core";
 
 /** The command that sets the registry of the roles, as an instruction. */
 export const SET_ROLES_FILE = "Set it with: headroom config roles-file <path>";
@@ -18,12 +18,24 @@ export function problemLines(leases: readonly Lease[]): string[] {
 
 /**
  * This function gives the row of one lease in `headroom status`. It shows the conditions of the lease (H31), and the reason of
- * a wait. A granted lease that runs without one of its conditions says so.
+ * a wait. A granted lease that runs without one of its conditions says so. A granted lease shows its memory use (H62).
  */
-export function leaseRow(lease: Lease, amounts: string, gpu: string | null): string {
+export function leaseRow(lease: Lease, amounts: string, gpu: string | null, use: string | null = null): string {
   const conditions = conditionsText(lease.conditions);
   const note = (lease.unmet?.until === null ? unmetText(lease.unmet) : null) ?? lease.reason;
-  return `  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${conditions === null ? "" : `  [${conditions}]`}${gpu === null ? "" : `  ${gpu}`}${note ? `  (${note})` : ""}`;
+  return `  ${lease.state.padEnd(8)} ${lease.holder.padEnd(14)} ${lease.job.slice(0, 40).padEnd(40)} ${amounts}${use === null ? "" : `  ${use}`}${conditions === null ? "" : `  [${conditions}]`}${gpu === null ? "" : `  ${gpu}`}${note ? `  (${note})` : ""}`;
+}
+
+/**
+ * This function gives the memory use of a granted lease for its row (H62), for example "uses 1.2 GB, peak 3.0 GB, over:
+ * 6.1 times its amount". It gives `null` with no use, for example from a daemon of an older version.
+ */
+export function leaseUseText(use: LeaseUse | undefined): string | null {
+  if (use === undefined || (use.usedMb === null && use.peakMb === null)) return null;
+  const parts = [use.usedMb === null ? "no measure now" : `uses ${diskSize(use.usedMb)}`];
+  if (use.peakMb !== null) parts.push(`peak ${diskSize(use.peakMb)}`);
+  const text = parts.join(", ");
+  return use.over ? `${text}, over: ${use.times ?? "many"} times its amount` : text;
 }
 
 /** This function gives the line of the setting `usageFile` for `headroom config`. */

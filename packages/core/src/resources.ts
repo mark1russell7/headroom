@@ -25,6 +25,7 @@ import { heatHolds, heatMessage, heatOwners, type ThermalState } from "./thermal
 import { percentText, sourceText, type TracedStarts } from "./trace.ts";
 import { gainAt, handlesText } from "./handles.ts";
 import type { ProcessRecord } from "./orphans.ts";
+import { leaseUse, overText, type LeaseUse, type OverRules } from "./lease-use.ts";
 
 /** One instance of a resource: `memory`, `cpu`, `disk:D:` or `browser`. A lease amount names it. */
 export type ResourceId = string;
@@ -119,6 +120,8 @@ export interface Readings {
   readonly trees?: readonly TreeUse[] | undefined;
   /** The cores of each granted lease over the last minute, by lease id (H23). The CPU alert names the leased jobs. */
   readonly leaseCores?: ReadonlyMap<string, number> | undefined;
+  /** The memory peak of each granted lease since its grant, in MB, by lease id (H62). The over rule reads it. */
+  readonly leasePeaks?: ReadonlyMap<string, number> | undefined;
   /** The forecasts of each instance, the nearest first (H32). The forecast rules read them. */
   readonly forecasts?: ReadonlyMap<ResourceId, readonly Forecast[]> | undefined;
   /**
@@ -761,6 +764,14 @@ const MEMORY_RESOURCE: Resource = {
         level: ({ readings, active }) => (heavyReaders(readings.reads, readings.memory, limits, active ?? null).length > 0 ? "warning" : null),
         text: (facts) => readerText(facts, limits),
       },
+      {
+        // H62: a granted lease that uses far more memory than it states. The text names the leases, the largest excess first.
+        type: "check",
+        alert: "over",
+        alertId: () => "over",
+        level: ({ readings }) => (leaseUses(readings, limits).some((use) => use.over) ? "warning" : null),
+        text: ({ readings }) => overText(leaseUses(readings, limits)),
+      },
     ],
   },
   admit: {
@@ -774,6 +785,18 @@ const MEMORY_RESOURCE: Resource = {
   // The target is the limit of the memory alert: 1 GB available.
   forecast: LEVEL_TARGETS,
 };
+
+/**
+ * This function gives the use of each granted lease with a memory amount (H62). The use is the memory of its job tree at
+ * this read. The peak is the largest use since the grant. A job tree with a container client has no measure (H187), so its use is `null`.
+ */
+export function leaseUses(readings: Pick<Readings, "leases" | "processes" | "leasePeaks">, rules: OverRules): LeaseUse[] {
+  return (readings.leases ?? []).flatMap((lease) => {
+    const used = lease.pid === null ? null : jobTreeMb(lease.pid, readings.processes);
+    const use = leaseUse(lease, used, readings.leasePeaks?.get(lease.id) ?? null, rules);
+    return use === null ? [] : [use];
+  });
+}
 
 /** An active cache alert ends only below this part of its cache limit, or above its available limit divided by this part (H50). */
 const CACHE_CLEAR = 0.75;
