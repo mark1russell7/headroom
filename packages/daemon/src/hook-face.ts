@@ -12,12 +12,14 @@
  * - The route has no token, because the URL and the headers of the hook are the same for each session. Thus each process
  *   of this computer can read the free memory and the reasons of the waiting leases in a refusal. On a computer of one user,
  *   that is acceptable: the dashboard on the same port shows more.
+ * - The gate of long native paths (H203) comes first. A command that runs node in a folder with a native image path over
+ *   the limit gets a refusal. This applies also under `headroom run` and with a lot of free memory. See `native-paths.ts`.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { hostNameOf, isLoopbackHost } from "@procedures/client";
 import type { HostFaceFactory } from "@procedures/peer";
-import { hookOutput, type Status } from "./hook-rating.ts";
+import { denied, hookOutput, type Status } from "./hook-rating.ts";
 
 /** The path of the route of the hook. */
 export const HOOK_PATH = "/hooks/pre-tool-use";
@@ -32,6 +34,11 @@ export interface HookFaceOptions {
   readonly status: () => Status | null;
   /** The largest body that the route reads. The default is {@link HOOK_BODY_LIMIT}. */
   readonly bodyLimit?: number | undefined;
+  /**
+   * The gate of long native paths (H203): the refusal of a command line in its folder, or `null`. A failure lets the
+   * command go on. With no gate, each command goes on.
+   */
+  readonly native?: ((command: string, cwd: string | null) => Promise<string | null>) | undefined;
 }
 
 function answer(res: ServerResponse, code: number, body: string, type: string): void {
@@ -77,6 +84,28 @@ export function hookAnswer(body: string, status: () => Status | null): { readonl
   return { code: 200, json: JSON.stringify(hookOutput(event, safeStatus)) };
 }
 
+/**
+ * This function gives the verdict for the body of one request, with the gate of long native paths (H203) before the rating
+ * of memory. A failure of the gate lets the command go on.
+ */
+export async function hookVerdict(
+  body: string,
+  options: Pick<HookFaceOptions, "status" | "native">,
+): Promise<{ readonly code: number; readonly json: string }> {
+  const rated = hookAnswer(body, options.status);
+  if (rated.code !== 200 || options.native === undefined) return rated;
+  const event = JSON.parse(body === "" ? "{}" : body) as { tool_input?: { command?: unknown }; cwd?: unknown } | null;
+  const command = event?.tool_input?.command;
+  if (typeof command !== "string" || command.trim() === "") return rated;
+  const cwd = typeof event?.cwd === "string" && event.cwd !== "" ? event.cwd : null;
+  const gate = options.native;
+  // A gate that throws, also before its promise, lets the command go on.
+  const refusal = await Promise.resolve()
+    .then(() => gate(command, cwd))
+    .catch(() => null);
+  return refusal === null ? rated : { code: 200, json: JSON.stringify(denied(refusal)) };
+}
+
 /** This function gives the face of the hook for the host of the daemon. */
 export function hookFace(options: HookFaceOptions): HostFaceFactory {
   return () => ({
@@ -97,12 +126,12 @@ export function hookFace(options: HookFaceOptions): HostFaceFactory {
         return true;
       }
       readBody(req, options.bodyLimit ?? HOOK_BODY_LIMIT).then(
-        (body) => {
+        async (body) => {
           if (body === null) {
             answer(res, 413, JSON.stringify({ error: "headroom: the event of the hook is too large." }), "application/json");
             return;
           }
-          const { code, json } = hookAnswer(body, options.status);
+          const { code, json } = await hookVerdict(body, options);
           answer(res, code, json, "application/json");
         },
         () => {

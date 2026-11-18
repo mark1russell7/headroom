@@ -135,9 +135,10 @@ import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
 import { worktreeCommand } from "./worktree-cli.ts";
-import type { DaemonStatus, RenewAnswer } from "./procedures.ts";
+import type { DaemonStatus, NativeAnswer, RenewAnswer } from "./procedures.ts";
 import { autoSlots, BROWSER_SLOT } from "./slots.ts";
 import { keyOfRun, memoryAutoLine } from "./job-key.ts";
+import { runRefusal } from "./native-paths.ts";
 import { AUTO_DEFAULT_MB, leaseReportLines, readLeaseReport, REPORT_USAGE } from "./lease-report.ts";
 import { ALERTS_USAGE, alertsChange, alertsLines } from "./alerts-cli.ts";
 import { DEFAULT_HEALTH_TEXT, healthChange, healthLines, servicesCommand, servicesLine, SERVICES_USAGE } from "./services-cli.ts";
@@ -859,6 +860,18 @@ async function run(argv: string[]): Promise<number> {
   if (detach && log !== null && adopt !== undefined) return startDetached(log);
 
   let connection = connect() ?? (await afterPlannedRestart()) ?? (adopt === undefined ? null : await adoptedDaemon(values.wait));
+  // H203: a command that runs node in a folder with a native image path over the limit does not start, with no lease.
+  // The daemon keeps the cache of the walks. With no daemon, or a daemon of an older version, this process walks the folders.
+  const asked = connection;
+  const refusal = await runRefusal(
+    positionals,
+    process.cwd(),
+    asked === null ? null : (input) => asked.call<NativeAnswer>(["resources", "native"], input),
+  );
+  if (refusal !== null) {
+    console.error(refusal);
+    return NOT_STARTED;
+  }
   if (detach && log !== null && !connection) return startDetached(log);
   // A job of the daemon queue never runs without its lease (deferred.ts handOff).
   if (!connection && adopt !== undefined) {

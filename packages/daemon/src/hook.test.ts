@@ -7,7 +7,7 @@ import { createProcedureHost, peerHostOptions, type HostFaceContext } from "@pro
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dashboardFace } from "./dashboard.ts";
 import { DEFAULT_PORT, withFaces } from "./daemon.ts";
-import { HOOK_CLIENT, HOOK_HEADER, HOOK_PATH, hookAnswer, hookFace } from "./hook-face.ts";
+import { HOOK_CLIENT, HOOK_HEADER, HOOK_PATH, hookAnswer, hookFace, hookVerdict } from "./hook-face.ts";
 import { FALSE_CASES, HEAVY_CASES, LEASE_CASES, VERDICT_COMMANDS } from "./fixtures/hook-commands.ts";
 import { hookOutput, isHeavy, leased, type Status } from "./hook-rating.ts";
 
@@ -260,6 +260,68 @@ describe("the faces of the daemon on its host (H194)", () => {
       };
       expect(await post("git status")).toEqual({});
       expect(await post("pnpm test")).toMatchObject({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } });
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe("the gate of long native paths in the hook (H203)", () => {
+  const free = (): Status => ({ free: { memory: 8000 }, leases: [] });
+  const reasonOf = (json: string): string | undefined =>
+    (JSON.parse(json) as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason;
+
+  it("refuses a light command with a lot of free memory when the gate refuses it, and gives the gate the folder of the event", async () => {
+    const seen: [string, string | null][] = [];
+    const native = async (command: string, cwd: string | null): Promise<string | null> => (seen.push([command, cwd]), "the path is too long");
+    const body = JSON.stringify({ ...(event("pnpm -v") as object), cwd: "D:\git\app" });
+    const verdict = await hookVerdict(body, { status: free, native });
+    expect(verdict.code).toBe(200);
+    expect(reasonOf(verdict.json)).toBe("the path is too long");
+    expect(seen).toEqual([["pnpm -v", "D:\git\app"]]);
+  });
+
+  it("lets the command go on when the gate throws, rejects or lets it go", async () => {
+    const body = JSON.stringify(event("pnpm test"));
+    const throws = (): Promise<string | null> => {
+      throw new Error("no walk");
+    };
+    expect(await hookVerdict(body, { status: free, native: throws })).toEqual({ code: 200, json: "{}" });
+    expect(await hookVerdict(body, { status: free, native: () => Promise.reject(new Error("no walk")) })).toEqual({ code: 200, json: "{}" });
+    expect(await hookVerdict(body, { status: free, native: async () => null })).toEqual({ code: 200, json: "{}" });
+  });
+
+  it("asks the gate nothing for an event with no command or a bad body, and keeps the refusal for memory", async () => {
+    const asked: string[] = [];
+    const native = async (command: string): Promise<string | null> => (asked.push(command), null);
+    expect(await hookVerdict(JSON.stringify({ tool_input: {} }), { status: free, native })).toEqual({ code: 200, json: "{}" });
+    expect((await hookVerdict("{", { status: free, native })).code).toBe(400);
+    expect(asked).toEqual([]);
+    const tight = await hookVerdict(JSON.stringify(event("pnpm exec vitest run")), { status: () => ({ free: { memory: 1200 }, leases: [] }), native });
+    expect(reasonOf(tight.json)).toContain("only 1200 MB is free for a lease");
+  });
+
+  it("gives the refusal of the gate through the route of the daemon", async () => {
+    const face = hookFace({ status: free, native: async () => "the path is too long" })({} as HostFaceContext);
+    const server = createServer((req, res) => {
+      if (face.handler?.(req, res) !== true) {
+        res.statusCode = 404;
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, method: "POST", path: HOOK_PATH, headers: { [HOOK_HEADER]: HOOK_CLIENT } }, (res) => {
+          let text = "";
+          res.on("data", (chunk: Buffer) => (text += chunk.toString("utf8")));
+          res.on("end", () => resolve(text));
+        });
+        req.on("error", reject);
+        req.end(JSON.stringify(event("pnpm test")));
+      });
+      expect(reasonOf(body)).toBe("the path is too long");
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
