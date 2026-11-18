@@ -244,7 +244,7 @@ describe("the search of the exits of a batch (H206)", () => {
     while (at < T0 + 40 * MIN) {
       at += draw.int(1, 4000);
       const pid = draw.int(1, 30);
-      const start = row(at, pid, draw.int(1, 30), "C:\x.exe", `x ${pid}`, draw.chance(0.1) ? { created: null } : {});
+      const start = row(at, pid, draw.int(1, 30), "C:\\x.exe", `x ${pid}`, draw.chance(0.1) ? { created: null } : {});
       starts.push(start);
       if (draw.chance(0.15)) continue;
       const life = draw.chance(0.2) ? draw.int(START_LOG_EXIT_SPAN_MS, 3 * START_LOG_EXIT_SPAN_MS) : draw.int(0, 30 * S);
@@ -269,9 +269,12 @@ describe("the search of the exits of a batch (H206)", () => {
       const from = T0 + draw.int(0, 30 * MIN);
       const batch = startsBetween(db, from, from + draw.int(0, 10 * MIN));
       expect(batch.length).toBeGreaterThan(0);
+      // `startsOfPid` keeps the search of one start: the reference. One read for each pid.
+      const reference = new Map<number, ReturnType<typeof startsOfPid>>();
       for (const start of batch) {
-        // `startsOfPid` keeps the search of one start: the reference.
-        const one = startsOfPid(db, start.pid, 10_000).find((each) => each.at === start.at && each.created === start.created);
+        const ofPid = reference.get(start.pid) ?? startsOfPid(db, start.pid, 10_000);
+        reference.set(start.pid, ofPid);
+        const one = ofPid.find((each) => each.at === start.at && each.created === start.created);
         expect(start.exit, `seed ${seed}, pid ${start.pid} at ${start.at - T0} ms`).toEqual(one?.exit);
       }
       db.close();
@@ -279,13 +282,14 @@ describe("the search of the exits of a batch (H206)", () => {
       rmSync(`${path}-wal`, { force: true });
       rmSync(`${path}-shm`, { force: true });
     }
-  });
+    // 20 logs of 40 minutes: more than the default limit of 5 seconds on a busy computer.
+  }, 60_000);
 
   it("reads no row after `until`: an exit of the next boot is not the exit of an old process with its pid", () => {
     const writer = new StartLogWriter(path, { now: () => T0 });
-    writer.write([row(T0, 7, 1, "C:\old.exe", "old")], []);
+    writer.write([row(T0, 7, 1, "C:\\old.exe", "old")], []);
     // The boot after a bugcheck: a new process 7, and an exit of pid 7 with no creation time.
-    writer.write([row(T0 + 10 * MIN, 7, 1, "C:\new.exe", "new", { created: msFiletime(T0 + 9 * MIN) })], [ended(T0 + 11 * MIN, 7, 0)]);
+    writer.write([row(T0 + 10 * MIN, 7, 1, "C:\\new.exe", "new", { created: msFiletime(T0 + 9 * MIN) })], [ended(T0 + 11 * MIN, 7, 0)]);
     writer.close();
     const db = openStartLog(path);
     expect(startsBetween(db, T0, T0, undefined, T0)).toMatchObject([{ command: "old", exit: null }]);
