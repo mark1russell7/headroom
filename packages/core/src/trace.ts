@@ -22,7 +22,7 @@
  */
 
 import type { Lease } from "./broker.ts";
-import type { StartLogStats } from "./start-log.ts";
+import { START_LOG_SLOW_MS, type StartLogStats } from "./start-log.ts";
 import type { Owners } from "./resources.ts";
 import { holderOwner, type OwnerStarts, type ProcessStarts } from "./starts.ts";
 import type { OwnerKind, ProcessInfo } from "./types.ts";
@@ -528,6 +528,13 @@ export function traceLines(traced: TracedStarts | null | undefined, limit = 5): 
   return lines;
 }
 
+/** This function writes the sentence of the slow steps of the start log (H199), or an empty text for none. */
+function slowText(steps: number): string {
+  if (steps === 0) return "";
+  const what = steps === 1 ? "1 step of the log was slow" : `${steps.toLocaleString("en-US")} steps of the log were slow`;
+  return ` ${what} (above ${START_LOG_SLOW_MS} ms): headroom starts --slow gives each one with its cause.`;
+}
+
 /** This function writes the line of the start log (H193), or `null` when the trace writes no log. */
 export function startLogText(log: StartLogStats | null | undefined): string | null {
   if (log === null || log === undefined) return null;
@@ -538,6 +545,21 @@ export function startLogText(log: StartLogStats | null | undefined): string | nu
   const commands = percentText(log.withCommand / log.starts);
   return (
     `Start log: ${log.starts.toLocaleString("en-US")} starts and ${log.exits.toLocaleString("en-US")} exits since the start of the daemon, ${commands} with a command line.${adopted} ` +
-    `The longest time from the creation of a new process to its row on the disk was ${log.slowestLagMs.toLocaleString("en-US")} ms. headroom starts --top ranks the starters.`
+    `${lagText(log)} headroom starts --top ranks the starters.` +
+    slowText(log.slowSteps)
   );
+}
+
+/** This function writes a time in ms with one decimal under 10 ms, and the separators of thousands. */
+function spreadMs(ms: number): string {
+  return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms).toLocaleString("en-US")} ms`;
+}
+
+/** This function writes the sentence of the lag of the start log: its spread (H199), or only the longest for an older trace. */
+function lagText(log: StartLogStats): string {
+  const lag = log.lagSpread;
+  if (lag === null || lag === undefined) return `The longest time from the creation of a new process to its row on the disk was ${log.slowestLagMs.toLocaleString("en-US")} ms.`;
+  const write = log.writeSpread;
+  const commits = write === null || write === undefined ? "" : ` A commit took ${spreadMs(write.p50)} at the median, ${spreadMs(write.p99)} at p99 and ${spreadMs(write.max)} at most.`;
+  return `The time from the creation of a new process to its row on the disk was ${spreadMs(lag.p50)} at the median, ${spreadMs(lag.p99)} at p99 and ${spreadMs(lag.max)} at most.${commits}`;
 }

@@ -267,7 +267,7 @@ describe("the traced starts in the starts, the status and the alert (H188)", () 
   });
 
   it("adds the line of the start log (H193)", () => {
-    const log = { path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, adopted: 0, exits: 12_380, commits: 9000, writeMs: 4100, slowestWriteMs: 38, slowestLagMs: 141, failure: null };
+    const log = { path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, adopted: 0, exits: 12_380, commits: 9000, writeMs: 4100, slowestWriteMs: 38, slowestLagMs: 141, checkpoints: 40, slowestCheckpointMs: 12, slowSteps: 0, failure: null };
     expect(traceLines({ ...traced, log }).at(-1)).toBe(
       "  Start log: 12,400 starts and 12,380 exits since the start of the daemon, 99 % with a command line. The longest time from the creation of a new process to its row on the disk was 141 ms. headroom starts --top ranks the starters.",
     );
@@ -278,6 +278,28 @@ describe("the traced starts in the starts, the status and the alert (H188)", () 
       "Start log: the start log stopped at a write: disk I/O error. 12,400 starts are in starts.db.",
     );
     expect(startLogText(null)).toBeNull();
+  });
+
+  it("names the slow steps of the start log (H199)", () => {
+    const log = { path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, adopted: 0, exits: 12_380, commits: 9000, writeMs: 4100, slowestWriteMs: 1200, slowestLagMs: 12_840, checkpoints: 40, slowestCheckpointMs: 900, slowSteps: 3, failure: null };
+    expect(startLogText(log)).toBe(
+      "Start log: 12,400 starts and 12,380 exits since the start of the daemon, 99 % with a command line. The longest time from the creation of a new process to its row on the disk was 12,840 ms. headroom starts --top ranks the starters. 3 steps of the log were slow (above 500 ms): headroom starts --slow gives each one with its cause.",
+    );
+    expect(startLogText({ ...log, slowSteps: 1 })).toContain(" 1 step of the log was slow (above 500 ms)");
+  });
+
+  it("gives the spread of the lag and of the commits of the start log (H199)", () => {
+    const log = {
+      path: "starts.db", starts: 12_400, withCommand: 12_276, withCreated: 12_400, adopted: 0, exits: 12_380, commits: 9000, writeMs: 4100,
+      slowestWriteMs: 1564, slowestLagMs: 2327, checkpoints: 40, slowestCheckpointMs: 12, slowSteps: 0, failure: null,
+      lagSpread: { count: 12_400, p50: 61.2, p99: 240.4, max: 2327 },
+      writeSpread: { count: 9000, p50: 2.34, p99: 31.6, max: 1564 },
+    };
+    expect(startLogText(log)).toBe(
+      "Start log: 12,400 starts and 12,380 exits since the start of the daemon, 99 % with a command line. The time from the creation of a new process to its row on the disk was 61 ms at the median, 240 ms at p99 and 2,327 ms at most. A commit took 2.3 ms at the median, 32 ms at p99 and 1,564 ms at most. headroom starts --top ranks the starters.",
+    );
+    expect(startLogText({ ...log, writeSpread: null })).toContain("2,327 ms at most. headroom starts --top");
+    expect(startLogText({ ...log, lagSpread: null })).toContain("The longest time from the creation of a new process to its row on the disk was 2,327 ms.");
   });
 
   it("gives the instances procs:traced and procs:failed, and the churn alert names the sources", () => {

@@ -469,7 +469,13 @@ export class Store {
 
   constructor(path: string) {
     this.#db = openDatabase(path, { synchronous: "NORMAL", busyTimeoutMs: 5000, makeFolder: true });
-    migrate(this.#db, MIGRATIONS, { name: "headroom" });
+    // A step of the migration can fail. Then the store closes the file, so the file is not held open.
+    try {
+      migrate(this.#db, MIGRATIONS, { name: "headroom" });
+    } catch (error) {
+      this.#db.close();
+      throw error;
+    }
   }
 
   /** This function writes a lease, new or changed. */
@@ -1175,4 +1181,20 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["peak_gpu_mb"] === null || row["peak_gpu_mb"] === undefined ? {} : { peakGpuMb: Number(row["peak_gpu_mb"]) }),
     ...(row["cancelled_by"] === null || row["cancelled_by"] === undefined ? {} : { cancelledBy: String(row["cancelled_by"]) }),
   };
+}
+
+/**
+ * This function reads the 1-minute samples of resource instances from `from` to `to` from a store file, the oldest
+ * first (H199). It opens the file read-only, so a command reads the samples with no daemon. `ids` limits the instances.
+ */
+export function readResourceSamples(path: string, from: number, to: number, ids: readonly string[] | null = null): ResourceRow[] {
+  const db = openDatabase(path, { readOnly: true, busyTimeoutMs: 2000 });
+  try {
+    const only = ids === null ? "" : ` AND id IN (${ids.map(() => "?").join(", ")})`;
+    const rows = db.prepare(`SELECT at, id, capacity, used, free FROM resource_samples WHERE at >= ? AND at <= ?${only} ORDER BY at, id`).all(from, to, ...(ids ?? []));
+    const nullable = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
+    return rows.map((row) => ({ at: Number(row["at"]), id: String(row["id"]), capacity: nullable(row["capacity"]), used: nullable(row["used"]), free: nullable(row["free"]) }));
+  } finally {
+    db.close();
+  }
 }

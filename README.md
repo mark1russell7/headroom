@@ -203,9 +203,18 @@ The command `headroom starts` reads the file, so it needs no daemon:
 
 - `headroom starts <pid> --at <time>` gives the program, the command line, the exit and the parents of the pid of a dump.
 - `headroom starts --top --hours 1` ranks the starters of the last hour, by program and by the command line of the parent. `--hours 24` gives the day.
+- `headroom starts --slow --hours 24` gives the spread of the lag and of the commit time over the span (H199). It also lists each slow step of the writer with its cause.
 - `--json` gives the rows as data.
 
-Each start is one more chance for the bug of the driver, so the fleet cuts the top starters. The line `Start log` of `headroom status` gives the count of the starts and of the adoptions. It also gives the longest time from the creation of a new process to its row on the disk.
+Each start is one more chance for the bug of the driver, so the fleet cuts the top starters. The line `Start log` of `headroom status` gives the count of the starts and of the adoptions. It also gives the median, the p99 and the longest time from the creation of a new process to its row on the disk. It gives the same values for the time of a commit.
+
+The writer keeps a histogram of the lag and of the commit time (H199). Each histogram has a relative error of 1 %. The writer adds a row to the table `spreads` at the first commit after each 10 minutes, and at its close. Thus `--slow` merges the rows of the span, and a restart of the daemon loses no part of the spread. A slow step is a commit, a copy of the WAL or a prune that took more than 500 ms. A commit with a lag above 500 ms is a slow step too. Its cause is the largest part of its lag:
+
+- `late-message`: the message of the job came late to the reader.
+- `queued`: the rows waited in the reader before the commit.
+- `slow-commit`: the commit itself was slow.
+
+`--slow` also gives the state of the system in the minute of each step, from the samples of the store. These are the free memory, the free commit, the cores in use and the traced starts a minute. The store has no sample of the disk I/O, so a slow disk shows only as a slow commit.
 
 The limits: the log has only the processes of the trace. A reuse of a pid shows only when the trace saw the exit of the old process. Thus the log cannot prove that no reuse came.
 
