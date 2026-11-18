@@ -14,8 +14,12 @@ import {
   NativeImages,
   nativeRefusal,
   ntPathLength,
+  refusalRow,
   runRefusal,
 } from "./native-paths.ts";
+import { nativeProcedures, type NativeAnswer, type RefusalsAnswer } from "./procedures.ts";
+import type { NativeRefusalInput } from "@headroom/core";
+import type { AnyProcedure } from "@procedures/client";
 
 const WINDOWS = process.platform === "win32";
 /** An absolute folder of the system: the commands of the tests use it. */
@@ -264,5 +268,53 @@ describe("the check of headroom run (H203)", () => {
     const sent: unknown[] = [];
     await runRefusal(["pnpm", "exec", "vitest", "run", "a b"], ROOT, async (input) => (sent.push(input), { refusal: null }));
     expect(sent).toEqual([{ command: 'pnpm exec vitest run "a b"', cwd: ROOT }]);
+  });
+});
+
+describe("the log of the refusals of the gate (H203)", () => {
+  /** This function calls one procedure of `nativeProcedures` as the host does: the parse of the input, then the handler. */
+  const caller = (procedures: readonly AnyProcedure[], path: string) => {
+    const procedure = procedures.find((each) => each.path.join(".") === path);
+    if (procedure === undefined) throw new Error(`no procedure ${path}`);
+    return async <T>(input: unknown): Promise<T> => {
+      const parsed = (procedure.input as unknown as { parse(value: unknown): unknown }).parse(input);
+      return (await (procedure.handler as unknown as (value: unknown, context: unknown) => Promise<T>)(parsed, {})) as T;
+    };
+  };
+
+  it("gives the row of a refusal with the folder, the length and the source, and no command line", () => {
+    const long: LongPath = { root: at("wt"), image: at("wt", "a.node"), ntLength: 288, relativeLength: 100, basis: "main checkout", mainCheckout: at("app"), limit: 240 };
+    expect(refusalRow(long, "hook", { sessionId: "6f1c-kestrel" })).toEqual({
+      source: "hook", session: undefined, sessionId: "6f1c-kestrel", folder: at("wt"), ntLength: 288, limit: 240, basis: "main checkout",
+    });
+    expect(refusalRow(long, "run", { session: "otter" })).toMatchObject({ source: "run", session: "otter", sessionId: null });
+  });
+
+  it("writes a refusal of headroom run with its holder, writes nothing for a call with no holder, and counts the rows", async () => {
+    const { root, nodeModules, image } = workspace();
+    const { find } = fakeFind({ [nodeModules]: [image] });
+    const images = new NativeImages({ find, platform: "win32", limit: ntPathLength(image) - 1, defaultRelative: 0 });
+    const rows: NativeRefusalInput[] = [];
+    const log = { record: (entry: NativeRefusalInput) => rows.push(entry), counts: (from: number, to: number) => [{ session: "otter", source: "run" as const, refusals: rows.length, folders: 1, longest: 0, firstAt: from, lastAt: to }] };
+    const procedures = nativeProcedures(images, log, () => 10 * 86_400_000);
+    const native = caller(procedures, "resources.native");
+    const answer = await native<NativeAnswer>({ command: "pnpm test", cwd: root, holder: "otter" });
+    expect(answer.refusal).toContain(`runs node in ${root}`);
+    expect(rows).toEqual([{ source: "run", session: "otter", sessionId: null, folder: root, ntLength: ntPathLength(image), limit: ntPathLength(image) - 1, basis: "measured" }]);
+    // A check with no holder, for example of an older client, is not a refusal of a job: no row.
+    expect((await native<NativeAnswer>({ command: "pnpm test", cwd: root })).refusal).not.toBeNull();
+    expect(rows).toHaveLength(1);
+    // A store that throws does not change the answer.
+    const broken = nativeProcedures(images, { ...log, record: () => { throw new Error("read-only store"); } });
+    expect((await caller(broken, "resources.native")<NativeAnswer>({ command: "pnpm test", cwd: root, holder: "otter" })).refusal).not.toBeNull();
+    // The default range of the counts is the last 7 days.
+    const refusals = caller(procedures, "resources.refusals");
+    expect(await refusals<RefusalsAnswer>({})).toMatchObject({ from: 3 * 86_400_000, to: 10 * 86_400_000, counts: [{ session: "otter", refusals: 1 }] });
+    expect(await refusals<RefusalsAnswer>({ from: 5, to: 9 })).toMatchObject({ from: 5, to: 9 });
+  });
+
+  it("gives no procedure of counts and writes nothing with no log", async () => {
+    const procedures = nativeProcedures(new NativeImages({ platform: "linux" }));
+    expect(procedures.map((each) => each.path.join("."))).toEqual(["resources.native"]);
   });
 });

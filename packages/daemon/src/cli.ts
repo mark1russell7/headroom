@@ -862,11 +862,14 @@ async function run(argv: string[]): Promise<number> {
   let connection = connect() ?? (await afterPlannedRestart()) ?? (adopt === undefined ? null : await adoptedDaemon(values.wait));
   // H203: a command that runs node in a folder with a native image path over the limit does not start, with no lease.
   // The daemon keeps the cache of the walks. With no daemon, or a daemon of an older version, this process walks the folders.
+  // The holder goes with the check, so a refusal goes in the log of refusals under its name. The lease uses it too.
   const asked = connection;
+  let holderValue: string | undefined;
+  const holderNow = async (): Promise<string> => (holderValue ??= values.holder ?? (await holderOf()));
   const refusal = await runRefusal(
     positionals,
     process.cwd(),
-    asked === null ? null : (input) => asked.call<NativeAnswer>(["resources", "native"], input),
+    asked === null ? null : async (input) => asked.call<NativeAnswer>(["resources", "native"], { ...input, holder: await holderNow() }),
   );
   if (refusal !== null) {
     console.error(refusal);
@@ -894,7 +897,7 @@ async function run(argv: string[]): Promise<number> {
     return 2;
   }
   Object.assign(amounts, disks);
-  const holder = values.holder ?? (await holderOf());
+  const holder = await holderNow();
   // H78: the typed key of the job, from the command and the files of its folder. The daemon matches its fields. Each
   // lease with a key writes it to the store, so a later job with a new name finds the runs of the same key.
   const key = keyOfRun(positionals, process.cwd());

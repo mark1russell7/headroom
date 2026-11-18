@@ -1158,3 +1158,33 @@ describe("Engine alert limits as a setting (H179)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("Engine log of the refusals of long native paths (H203)", () => {
+  it("names the session of a refusal from its session ID, and keeps a name that the caller gives", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-refusals-"));
+    const sessions = join(dir, "sessions");
+    mkdirSync(sessions);
+    writeFileSync(join(sessions, "kestrel.json"), JSON.stringify({ pid: 100, name: "kestrel", sessionId: "6f1c-kestrel" }));
+    const now = 1_000_000;
+    const sampler: Sampler = {
+      memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+      processes: () => [{ pid: 100, ppid: 4, name: "claude.exe", privateMb: 400, workingMb: 400 }],
+      close: () => undefined,
+    };
+    const engine = new Engine({ sampler, store: new Store(":memory:"), now: () => now, sessionsDir: sessions });
+    engine.tick();
+    const long = { folder: "C:\Temp\scratchpad\wt-a", ntLength: 288, limit: 240, basis: "main checkout" };
+    expect(engine.recordNativeRefusal({ ...long, source: "hook", sessionId: "6f1c-kestrel" })).toEqual({ ...long, at: now, source: "hook", session: "kestrel", sessionId: "6f1c-kestrel" });
+    // A session ID that no session file has gives no name. The row keeps the ID.
+    expect(engine.recordNativeRefusal({ ...long, source: "hook", sessionId: "0b3c-unknown" })).toMatchObject({ session: null, sessionId: "0b3c-unknown" });
+    // The holder of headroom run is the name.
+    expect(engine.recordNativeRefusal({ ...long, source: "run", session: "otter", sessionId: null, at: now + 5 })).toMatchObject({ at: now + 5, session: "otter" });
+    expect(engine.nativeRefusalCounts(now, now + 10).map((row) => [row.session, row.source, row.refusals])).toEqual([
+      [null, "hook", 1],
+      ["kestrel", "hook", 1],
+      ["otter", "run", 1],
+    ]);
+    engine.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

@@ -2,11 +2,11 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
-import { nativeRefusal, type NativeImages } from "./native-paths.ts";
+import { longPathRefusal, nativeLongPath, refusalRow, type NativeImages } from "./native-paths.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -815,8 +815,20 @@ const NativeInput = z.object({
   command: z.string().min(1).max(200_000).describe("The command line, for example pnpm test"),
   cwd: z.string().min(1).max(4000).describe("The absolute folder where the command starts"),
   budgetMs: z.number().int().min(0).max(600_000).optional().describe("The longest wait for a walk of the native images in ms. Default: no limit."),
+  holder: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("The holder of the command of headroom run. With a holder, a refusal goes in the log of refusals under its name."),
 });
 type NativeInput = z.infer<typeof NativeInput>;
+
+const RefusalsInput = z.object({
+  from: z.number().int().min(0).optional().describe("The start of the range in ms since the epoch. Default: 7 days before the end."),
+  to: z.number().int().min(0).optional().describe("The end of the range in ms since the epoch. Default: now."),
+});
+type RefusalsInput = z.infer<typeof RefusalsInput>;
 
 /** The answer of `resources native`: the refusal of the command for a long native path, or `null` (H203). */
 export interface NativeAnswer {
@@ -824,8 +836,27 @@ export interface NativeAnswer {
   readonly limit: number;
 }
 
-/** This function gives the procedure of the gate of long native paths (H203). The daemon keeps the cache of the walks. */
-export function nativeProcedures(images: NativeImages): AnyProcedure[] {
+/** The answer of `resources refusals`: the refusals of the gate of long native paths for each session and source (H203). */
+export interface RefusalsAnswer {
+  readonly from: number;
+  readonly to: number;
+  readonly counts: readonly NativeRefusalCount[];
+}
+
+/** The log of the refusals of long native paths (H203): the engine writes and counts the rows. */
+export interface RefusalLog {
+  record(entry: NativeRefusalInput): unknown;
+  counts(from: number, to: number): readonly NativeRefusalCount[];
+}
+
+/** The default range of `resources refusals`: 7 days, the range of the score of the gate. */
+export const REFUSALS_RANGE_MS: number = 7 * 86_400_000;
+
+/**
+ * This function gives the procedures of the gate of long native paths (H203). The daemon keeps the cache of the walks.
+ * With a log, each refusal of `headroom run` (a call with a holder) is a row of the log, and `resources refusals` counts them.
+ */
+export function nativeProcedures(images: NativeImages, log?: RefusalLog, now: () => number = Date.now): AnyProcedure[] {
   const native = createProcedure()
     .path(["resources", "native"])
     .input(zodAdapter<NativeInput>(NativeInput))
@@ -835,12 +866,42 @@ export function nativeProcedures(images: NativeImages): AnyProcedure[] {
         "Check a command for a native image path over the limit (H203): a command that runs node in a folder whose longest .node, .exe or .dll has an NT path over 240 characters gets a refusal.",
       args: ["command", "cwd"],
       output: "json",
-      effects: { reads: ["files"], writes: [], destructive: false },
+      effects: { reads: ["files"], writes: log === undefined ? [] : ["headroom"], destructive: false },
     })
-    .handler(async (input: NativeInput): Promise<NativeAnswer> => ({ refusal: await nativeRefusal(images, input), limit: images.limit }))
+    .handler(async (input: NativeInput): Promise<NativeAnswer> => {
+      const long = await nativeLongPath(images, input);
+      if (long !== null && input.holder !== undefined && log !== undefined) {
+        // A failed write of the log does not change the answer: the command still gets its refusal.
+        try {
+          log.record(refusalRow(long, "run", { session: input.holder }));
+        } catch {
+          // The store is not writable. The refusal goes on.
+        }
+      }
+      return { refusal: long === null ? null : longPathRefusal(long), limit: images.limit };
+    })
+    .build() as AnyProcedure;
+  if (log === undefined) return [native];
+
+  const refusals = createProcedure()
+    .path(["resources", "refusals"])
+    .input(zodAdapter<RefusalsInput>(RefusalsInput))
+    .output(anything<RefusalsAnswer>())
+    .meta({
+      description:
+        "Count the refusals of the gate of long native paths (H203) for each session and source (hook or run) in a range. Default: the last 7 days.",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (input: RefusalsInput): Promise<RefusalsAnswer> => {
+      const to = input.to ?? now();
+      const from = input.from ?? to - REFUSALS_RANGE_MS;
+      return { from, to, counts: log.counts(from, to) };
+    })
     .build() as AnyProcedure;
 
-  return [native];
+  return [native, refusals];
 }
 
 /** This function gives the usage of a release with only the fields that have a value. */

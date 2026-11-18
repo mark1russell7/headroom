@@ -126,14 +126,14 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 5, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 6, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
@@ -143,11 +143,13 @@ describe("Store", () => {
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'reap_%' ORDER BY name").all()).toEqual([{ name: "reap_log" }, { name: "reap_shadow" }]);
     // H78: step 4 makes the table of the keys and its index for the ladder.
     expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lease_keys%' ORDER BY name").all()).toEqual([{ name: "lease_keys" }, { name: "lease_keys_ladder" }]);
+    // H203: step 6 makes the log of the refusals of long native paths and its index.
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'native_refusals%' ORDER BY name").all()).toEqual([{ name: "native_refusals" }, { name: "native_refusals_at" }]);
     expect(read.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 6 });
     again.close();
   });
 
@@ -279,6 +281,41 @@ describe("Store reap tables (H183)", () => {
     store.prune(0, 0, 6000);
     expect(store.reapShadow()).toEqual([]);
     expect(store.reapLog()).toEqual([]);
+    store.close();
+  });
+});
+
+describe("Store log of the refusals of long native paths (H203)", () => {
+  /** A refusal of the hook: a worktree in the scratchpad gives a binding path of 288 characters. */
+  const refusal = (at: number, session: string | null, source: "hook" | "run" = "hook", folder = "C:\\Temp\\scratchpad\\wt-a", ntLength = 288) =>
+    ({ at, source, session, sessionId: session === null ? "0b3c" : `id-${session}`, folder, ntLength, limit: 240, basis: "main checkout" }) as const;
+
+  it("counts the refusals of each session and source in a range, the session with the most first", () => {
+    const store = new Store(":memory:");
+    store.saveNativeRefusal(refusal(1000, "kestrel"));
+    store.saveNativeRefusal(refusal(2000, "kestrel", "hook", "C:\\Temp\\scratchpad\\wt-b", 301));
+    store.saveNativeRefusal(refusal(3000, "kestrel", "run"));
+    store.saveNativeRefusal(refusal(4000, "otter"));
+    store.saveNativeRefusal(refusal(5000, null));
+    store.saveNativeRefusal(refusal(9000, "otter"));
+    expect(store.nativeRefusalCounts(0, 9000)).toEqual([
+      { session: "kestrel", source: "hook", refusals: 2, folders: 2, longest: 301, firstAt: 1000, lastAt: 2000 },
+      { session: null, source: "hook", refusals: 1, folders: 1, longest: 288, firstAt: 5000, lastAt: 5000 },
+      { session: "kestrel", source: "run", refusals: 1, folders: 1, longest: 288, firstAt: 3000, lastAt: 3000 },
+      { session: "otter", source: "hook", refusals: 1, folders: 1, longest: 288, firstAt: 4000, lastAt: 4000 },
+    ]);
+    // The start of the range counts, the end does not.
+    expect(store.nativeRefusalCounts(4000, 9001).map((row) => [row.session, row.refusals])).toEqual([["otter", 2], [null, 1]]);
+    expect(store.nativeRefusalCounts(9001, 20_000)).toEqual([]);
+    store.close();
+  });
+
+  it("removes the refusals before the third time of the prune, with the reap log", () => {
+    const store = new Store(":memory:");
+    store.saveNativeRefusal(refusal(1000, "kestrel"));
+    store.saveNativeRefusal(refusal(5000, "kestrel"));
+    store.prune(9000, 9000, 3000);
+    expect(store.nativeRefusalCounts(0, 10_000)).toMatchObject([{ session: "kestrel", refusals: 1, firstAt: 5000 }]);
     store.close();
   });
 });

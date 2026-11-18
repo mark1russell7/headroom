@@ -128,7 +128,64 @@ const MIGRATIONS: readonly Migration[] = [
   (db) => {
     redactStoredCommands(db);
   },
+  // H203: the log of the refusals of the gate of long native paths, for a count of the refusals of each session.
+  (db) => {
+    db.exec(REFUSAL_SCHEMA);
+  },
 ];
+
+/** The table of the refusals of the gate of long native paths (H203). Step 6 of the schema makes it. */
+const REFUSAL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS native_refusals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, source TEXT NOT NULL, session TEXT, session_id TEXT,
+  folder TEXT NOT NULL, nt_length INTEGER NOT NULL, path_limit INTEGER NOT NULL, basis TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS native_refusals_at ON native_refusals (at);
+`;
+
+/**
+ * One refusal of the gate of long native paths (H203). The command ran node in a folder with a native image path over the
+ * limit, so it did not start. The row keeps no command line, because a command line can hold a secret.
+ */
+export interface NativeRefusalEntry {
+  readonly at: number;
+  /** `hook`: the PreToolUse hook of a session refused a command. `run`: `headroom run` refused its command. */
+  readonly source: "hook" | "run";
+  /** The name of the session, or `null` when no session is known. */
+  readonly session: string | null;
+  /** The ID of the session, or `null` when the caller gave none. */
+  readonly sessionId: string | null;
+  /** The folder of the long path: the folder where the command runs node, or the folder of its lockfile. */
+  readonly folder: string;
+  /** The length of the NT path of the longest native image. */
+  readonly ntLength: number;
+  /** The limit of the gate at the refusal. */
+  readonly limit: number;
+  /** The source of the length: `measured`, `main checkout` or `prior`. */
+  readonly basis: string;
+}
+
+/**
+ * The input of `Engine.recordNativeRefusal` (H203). A refusal with no time gets the time of the engine. A refusal with no
+ * session name gets the name of the session file with its session ID.
+ */
+export type NativeRefusalInput = Omit<NativeRefusalEntry, "at" | "session"> & {
+  readonly at?: number | undefined;
+  readonly session?: string | null | undefined;
+};
+
+/** The refusals of one session from one source in a time range (H203). */
+export interface NativeRefusalCount {
+  readonly session: string | null;
+  readonly source: "hook" | "run";
+  readonly refusals: number;
+  /** The count of the different folders of the refusals. */
+  readonly folders: number;
+  /** The longest NT path of the refusals. */
+  readonly longest: number;
+  readonly firstAt: number;
+  readonly lastAt: number;
+}
 
 /** The columns that keep a command line or the name of a job (H186). */
 export const COMMAND_COLUMNS: readonly (readonly [table: string, column: string])[] = Object.freeze([
@@ -1100,10 +1157,40 @@ export class Store {
       .map(reapEntry);
   }
 
+  /** This function writes one row of the log of the refusals of long native paths (H203). */
+  saveNativeRefusal(entry: NativeRefusalEntry): void {
+    this.#db
+      .prepare("INSERT INTO native_refusals (at, source, session, session_id, folder, nt_length, path_limit, basis) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(entry.at, entry.source, entry.session, entry.sessionId, entry.folder, entry.ntLength, entry.limit, entry.basis);
+  }
+
+  /**
+   * This function counts the refusals of long native paths (H203) at or after `from` and before `to`, for each session and
+   * source. The session with the most refusals comes first. A refusal with no known session counts under the session `null`.
+   */
+  nativeRefusalCounts(from: number, to: number): NativeRefusalCount[] {
+    return this.#db
+      .prepare(
+        `SELECT session, source, COUNT(*) AS refusals, COUNT(DISTINCT folder) AS folders, MAX(nt_length) AS longest,
+         MIN(at) AS first_at, MAX(at) AS last_at FROM native_refusals WHERE at >= ? AND at < ?
+         GROUP BY session, source ORDER BY refusals DESC, session`,
+      )
+      .all(from, to)
+      .map((row) => ({
+        session: row["session"] === null || row["session"] === undefined ? null : String(row["session"]),
+        source: row["source"] === "run" ? "run" : "hook",
+        refusals: Number(row["refusals"]),
+        folders: Number(row["folders"]),
+        longest: Number(row["longest"]),
+        firstAt: Number(row["first_at"]),
+        lastAt: Number(row["last_at"]),
+      }));
+  }
+
   /**
    * This function removes the samples older than a time, and the leases that ended before the second time. The second
-   * time is the first time by default. The rows of the shadow log and of the reap log go before the third time (H183),
-   * by default the second time.
+   * time is the first time by default. The rows of the shadow log, of the reap log (H183) and of the refusals (H203) go
+   * before the third time. The third time is the second time by default.
    */
   prune(before: number, leasesBefore: number = before, reapBefore: number = leasesBefore): void {
     this.#db.prepare("DELETE FROM sleeps WHERE to_at < ?").run(before);
@@ -1116,6 +1203,7 @@ export class Store {
     this.#db.prepare("DELETE FROM lease_keys WHERE lease_id NOT IN (SELECT id FROM leases)").run();
     this.#db.prepare("DELETE FROM reap_shadow WHERE last_at < ?").run(reapBefore);
     this.#db.prepare("DELETE FROM reap_log WHERE at < ?").run(reapBefore);
+    this.#db.prepare("DELETE FROM native_refusals WHERE at < ?").run(reapBefore);
   }
 
   /** This function closes the database. */
