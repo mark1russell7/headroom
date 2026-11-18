@@ -401,10 +401,22 @@ interface StartRecord {
   readonly parentCommand: string | null;
 }
 
-/** This function adds the exit to a start: the first exit of its pid after it, before the next start of the pid. */
-function withExit(db: DatabaseSync, record: StartRecord): LoggedStart {
-  const next = db.prepare("SELECT at FROM starts WHERE rowid > ? AND pid = ? ORDER BY rowid LIMIT 1").get(record.id, record.pid) as { at: number } | undefined;
-  const from = firstRowFrom(db, "exits", record.at);
+/** This function gives the logged start of a record, with its exit when the exit comes before the next start of the pid. */
+function loggedStart(record: StartRecord, exit: { readonly at: number; readonly code: number | null } | undefined, next: { readonly at: number } | undefined): LoggedStart {
+  const ended = exit !== undefined && (next === undefined || exit.at <= next.at) ? { at: exit.at, exitCode: exit.code } : null;
+  const { id: _id, ...rest } = record;
+  return { ...rest, adopted: record.adopted === 1, createdAt: record.created === null ? null : filetimeMs(BigInt(record.created)), exit: ended };
+}
+
+/**
+ * This function adds the exit to a start: the first exit of its pid after it, before the next start of the pid. The search
+ * of a batch (`withExits`) gives `after`: the last rows that it read. Then this search reads only the newer rows.
+ */
+function withExit(db: DatabaseSync, record: StartRecord, after: { readonly startRow: number; readonly exitRow: number } | null = null): LoggedStart {
+  const next = db.prepare("SELECT at FROM starts WHERE rowid > ? AND pid = ? ORDER BY rowid LIMIT 1").get(Math.max(record.id, after?.startRow ?? 0), record.pid) as
+    | { at: number }
+    | undefined;
+  const from = Math.max(firstRowFrom(db, "exits", record.at), after === null ? 0 : after.exitRow + 1);
   // An exit with another creation time is of another process with the pid. An exit with no creation time is of a process
   // whose handle the reader did not hold: it joins by the time only.
   const exit = (
@@ -412,9 +424,80 @@ function withExit(db: DatabaseSync, record: StartRecord): LoggedStart {
       ? db.prepare("SELECT at, code FROM exits WHERE rowid >= ? AND pid = ? AND created IS NULL ORDER BY rowid LIMIT 1").get(from, record.pid)
       : db.prepare("SELECT at, code FROM exits WHERE rowid >= ? AND pid = ? AND (created IS NULL OR created = ?) ORDER BY rowid LIMIT 1").get(from, record.pid, BigInt(record.created))
   ) as { at: number; code: number | null } | undefined;
-  const ended = exit !== undefined && (next === undefined || exit.at <= next.at) ? { at: exit.at, exitCode: exit.code } : null;
-  const { id: _id, ...rest } = record;
-  return { ...rest, adopted: record.adopted === 1, createdAt: record.created === null ? null : filetimeMs(BigInt(record.created)), exit: ended };
+  return loggedStart(record, exit, next);
+}
+
+/** When a search gives no end, the search of the exits of a batch reads the rows of this time after its last start. */
+export const START_LOG_EXIT_SPAN_MS = 600_000;
+
+/** This function gives the first index from 0 to `length` where `below` is false. `below` is true for a prefix only. */
+function lowerBound(length: number, below: (index: number) => boolean): number {
+  let low = 0;
+  let high = length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (below(middle)) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+/**
+ * This function adds the exits to the starts of a search, the oldest first, with one read of a range of rowids in each
+ * table. Before 2026-11-18, each start read the rows after it, to its exit or to the end of the log. On a log of 1.3 million
+ * rows, that took 168 ms for each start, and 15 minutes for the 4314 starts before a bugcheck.
+ *
+ * - `until` is the time of the last row that the search reads. Each newer row is out of the search. After a stop, the rows
+ *   of the next boot have new processes with the old pids.
+ * - With no `until`, the search reads the rows to `START_LOG_EXIT_SPAN_MS` after the last start. A start with no exit and
+ *   no next start in that span gets the search of one start (`withExit`), from the end of the span.
+ */
+function withExits(db: DatabaseSync, records: readonly StartRecord[], until: number | undefined): LoggedStart[] {
+  const first = records[0];
+  const last = records.at(-1);
+  if (first === undefined || last === undefined) return [];
+  const end = Math.max(until ?? last.at + START_LOG_EXIT_SPAN_MS, last.at);
+  const startEnd = lastRowBefore(db, "starts", end + 1) ?? last.id;
+  const exitFrom = firstRowFrom(db, "exits", first.at);
+  const exitEnd = lastRowBefore(db, "exits", end + 1) ?? exitFrom - 1;
+  // The next start of the pid of each start: a walk from the newest row, which keeps the oldest start of each pid seen.
+  const starts = db.prepare("SELECT rowid AS id, at, pid FROM starts WHERE rowid >= ? AND rowid <= ? ORDER BY rowid DESC").all(first.id, startEnd) as {
+    id: number;
+    at: number;
+    pid: number;
+  }[];
+  const ids = new Set(records.map((record) => record.id));
+  const seen = new Map<number, { readonly at: number }>();
+  const nextOf = new Map<number, { readonly at: number }>();
+  for (const row of starts) {
+    const next = seen.get(row.pid);
+    if (next !== undefined && ids.has(row.id)) nextOf.set(row.id, next);
+    seen.set(row.pid, { at: row.at });
+  }
+  const exits = db.prepare("SELECT at, pid, code, CAST(created AS TEXT) AS created FROM exits WHERE rowid >= ? AND rowid <= ? ORDER BY rowid").all(exitFrom, exitEnd) as {
+    at: number;
+    pid: number;
+    code: number | null;
+    created: string | null;
+  }[];
+  const exitsOf = new Map<number, number[]>();
+  exits.forEach((exit, index) => {
+    const list = exitsOf.get(exit.pid);
+    if (list === undefined) exitsOf.set(exit.pid, [index]);
+    else list.push(index);
+  });
+  return records.map((record) => {
+    // The first exit of the pid at or after the start, with the creation rule of `withExit`.
+    const from = lowerBound(exits.length, (index) => (exits[index]?.at ?? Infinity) < record.at);
+    const list = exitsOf.get(record.pid) ?? [];
+    const exit = list
+      .slice(lowerBound(list.length, (index) => (list[index] ?? Infinity) < from))
+      .map((index) => exits[index])
+      .find((each) => each !== undefined && (record.created === null ? each.created === null : each.created === null || each.created === record.created));
+    const next = nextOf.get(record.id);
+    if (until === undefined && exit === undefined && next === undefined) return withExit(db, record, { startRow: startEnd, exitRow: exitEnd });
+    return loggedStart(record, exit, next);
+  });
 }
 
 /** This function gives the starts of a pid in the log, the newest first, each with its exit. */
@@ -443,11 +526,20 @@ export function parentsOf(db: DatabaseSync, start: LoggedStart, depth = 8): Logg
   return parents;
 }
 
-/** This function gives the starts with a time from `from` to `to`, the oldest first, with their exits. */
-export function startsBetween(db: DatabaseSync, from: number, to: number, limit = 100_000): LoggedStart[] {
+/**
+ * This function gives the starts with a time from `from` to `to`, the oldest first, with their exits. The search of the
+ * exits reads no row after `until`, when it is given (see `withExits`).
+ */
+export function startsBetween(db: DatabaseSync, from: number, to: number, limit = 100_000, until?: number): LoggedStart[] {
   const first = firstRowFrom(db, "starts", from);
   const records = db.prepare(`SELECT ${START_COLUMNS} WHERE s.rowid >= ? AND s.at <= ? ORDER BY s.rowid LIMIT ?`).all(first, to, limit) as unknown as StartRecord[];
-  return records.map((record) => withExit(db, record));
+  return withExits(db, records, until);
+}
+
+/** This function gives the time of the newest start before `before`, or `null`. It is a binary search on the rowid, not a scan. */
+export function lastStartBefore(db: DatabaseSync, before: number): number | null {
+  const row = lastRowBefore(db, "starts", before);
+  return row === null ? null : (db.prepare("SELECT at FROM starts WHERE rowid = ?").get(row) as { at: number }).at;
 }
 
 /** One line of a ranking: a text and its starts. */

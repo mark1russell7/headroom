@@ -2,13 +2,16 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { random } from "@mark1russell7/rigor-generators";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   filetimeMs,
+  lastStartBefore,
   msFiletime,
   openStartLog,
   parentsOf,
   rankStarters,
+  START_LOG_EXIT_SPAN_MS,
   START_LOG_KEEP_MS,
   startLogSpan,
   StartLogWriter,
@@ -224,6 +227,83 @@ describe("the reads of the start log (H193)", () => {
     const db = openStartLog(path);
     expect(rankStarters(db, HOUR)).toBeNull();
     expect(startLogSpan(db)).toEqual({ from: null, to: null, starts: 0, exits: 0 });
+    db.close();
+  });
+});
+
+describe("the search of the exits of a batch (H206)", () => {
+  /**
+   * A log of 40 minutes from a seed: 30 pids, so each pid gets new processes. Some exits come more than the span of the
+   * batch after their start, some have no creation time, and some have the creation time of another process.
+   */
+  function randomLog(seed: string): void {
+    const draw = random(seed);
+    const starts: StartRow[] = [];
+    const exits: ExitRow[] = [];
+    let at = T0;
+    while (at < T0 + 40 * MIN) {
+      at += draw.int(1, 4000);
+      const pid = draw.int(1, 30);
+      const start = row(at, pid, draw.int(1, 30), "C:\x.exe", `x ${pid}`, draw.chance(0.1) ? { created: null } : {});
+      starts.push(start);
+      if (draw.chance(0.15)) continue;
+      const life = draw.chance(0.2) ? draw.int(START_LOG_EXIT_SPAN_MS, 3 * START_LOG_EXIT_SPAN_MS) : draw.int(0, 30 * S);
+      const created = draw.chance(0.2) ? null : draw.chance(0.05) ? msFiletime(at + 7) : start.created;
+      exits.push(ended(at + life, pid, draw.int(0, 2), created));
+    }
+    exits.sort((a, b) => a.at - b.at);
+    // The writer gets the rows in the order of time, in batches of 20 seconds, as the reader thread writes them.
+    const writer = new StartLogWriter(path, { now: () => T0 });
+    for (let from = T0; from < T0 + 80 * MIN; from += 20 * S) {
+      const inBatch = (each: { at: number }): boolean => each.at >= from && each.at < from + 20 * S;
+      writer.write(starts.filter(inBatch), exits.filter(inBatch));
+    }
+    writer.close();
+  }
+
+  it("gives the exits of the search of one start, for 20 seeds", () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      randomLog(`h206-${seed}`);
+      const db = openStartLog(path);
+      const draw = random(`h206-window-${seed}`);
+      const from = T0 + draw.int(0, 30 * MIN);
+      const batch = startsBetween(db, from, from + draw.int(0, 10 * MIN));
+      expect(batch.length).toBeGreaterThan(0);
+      for (const start of batch) {
+        // `startsOfPid` keeps the search of one start: the reference.
+        const one = startsOfPid(db, start.pid, 10_000).find((each) => each.at === start.at && each.created === start.created);
+        expect(start.exit, `seed ${seed}, pid ${start.pid} at ${start.at - T0} ms`).toEqual(one?.exit);
+      }
+      db.close();
+      rmSync(path, { force: true });
+      rmSync(`${path}-wal`, { force: true });
+      rmSync(`${path}-shm`, { force: true });
+    }
+  });
+
+  it("reads no row after `until`: an exit of the next boot is not the exit of an old process with its pid", () => {
+    const writer = new StartLogWriter(path, { now: () => T0 });
+    writer.write([row(T0, 7, 1, "C:\old.exe", "old")], []);
+    // The boot after a bugcheck: a new process 7, and an exit of pid 7 with no creation time.
+    writer.write([row(T0 + 10 * MIN, 7, 1, "C:\new.exe", "new", { created: msFiletime(T0 + 9 * MIN) })], [ended(T0 + 11 * MIN, 7, 0)]);
+    writer.close();
+    const db = openStartLog(path);
+    expect(startsBetween(db, T0, T0, undefined, T0)).toMatchObject([{ command: "old", exit: null }]);
+    // With no end, the next start of pid 7 comes before the exit, so the exit is not of the old process either.
+    expect(startsBetween(db, T0, T0)).toMatchObject([{ command: "old", exit: null }]);
+    db.close();
+  });
+
+  it("gives the newest start before a time with a binary search", () => {
+    const writer = new StartLogWriter(path, { now: () => T0 });
+    writer.write([row(T0, 1, null, null, null), row(T0 + S, 2, null, null, null)], []);
+    writer.write([row(T0 + 5 * S, 3, null, null, null)], []);
+    writer.close();
+    const db = openStartLog(path);
+    expect(lastStartBefore(db, T0)).toBeNull();
+    expect(lastStartBefore(db, T0 + 1)).toBe(T0);
+    expect(lastStartBefore(db, T0 + 5 * S)).toBe(T0 + S);
+    expect(lastStartBefore(db, T0 + HOUR)).toBe(T0 + 5 * S);
     db.close();
   });
 });

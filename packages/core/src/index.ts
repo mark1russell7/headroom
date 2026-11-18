@@ -587,10 +587,12 @@ export {
 export type { CoverInput, StartSource, StartTrace, StartTraceOptions, TraceBatch, TraceContext, TraceCover, TraceCoverOptions, TracedStarts, TraceEvent, TraceRoot } from "./trace.ts";
 export {
   filetimeMs,
+  lastStartBefore,
   msFiletime,
   openStartLog,
   parentsOf,
   rankStarters,
+  START_LOG_EXIT_SPAN_MS,
   START_LOG_KEEP_MS,
   START_LOG_PRUNE_EVERY_MS,
   START_LOG_REUSE_MS,

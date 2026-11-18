@@ -13,6 +13,7 @@ import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
 import { CLIENT_TITLE, DeferredStarts, launchClient } from "./deferred.ts";
 import { dashboardFace } from "./dashboard.ts";
+import { openEarlyListener } from "./early-listener.ts";
 import { hookCheck } from "./hook-check.ts";
 import { hookFace } from "./hook-face.ts";
 import { McpGateway } from "./gateway.ts";
@@ -22,7 +23,7 @@ import { readSummary } from "./disk-report.ts";
 import { announceDaemon, databasePath, diskReportPath, headroomHome, leaseEndsDir, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
 import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
-import { writeStartsBeforeStop } from "./starts-cli.ts";
+import { keepStartsBeforeStop } from "./starts-before-stop.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
 import { defaultRoots, readWorktreePlan, readWorktreeRecord, worktreeRulesKey } from "./worktree-cli.ts";
 import { launchClean, WorktreeSchedule } from "./worktree-schedule.ts";
@@ -93,11 +94,17 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const unclean = running && running.pid !== process.pid && running.pid !== planned ? running.pid : null;
   if (planned !== null && running?.pid === planned) log(`The planned restart stopped the daemon before this one (process ${planned}).`);
   process.title = DAEMON_TITLE;
+  // H206: the port answers before the store, the sampler and the engine open. On 2026-11-18, the work before the bind took
+  // 15 minutes after a bugcheck, and each hook call of each session got a refused connection.
+  const port = options.port ?? DEFAULT_PORT;
+  const host = "127.0.0.1";
+  const early = await openEarlyListener({ port, host });
+  const earlyAt = process.uptime();
+  if (early instanceof Error) log(`The early listener did not bind ${host}:${port}: ${early.message}. The port answers when the daemon runs.`);
 
   const store = new Store(databasePath());
   const gateway = new McpGateway({ specs: () => store.mcpServers(), log });
   // H27: Docker, the URLs of the setting health, the MCP servers of the gateway and the hook (H194), every 30 seconds.
-  const port = options.port ?? DEFAULT_PORT;
   // H194: the check of the hook compares the port of the hook of each install of the plugin with the port of this daemon.
   const hook = hookCheck({ port });
   const monitor = new ServiceMonitor({ checks: () => serviceChecks(store.config().health, gateway.list(), undefined, [hook]) });
@@ -135,13 +142,6 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       message: `The daemon before this one (process ${unclean}) stopped without a clean stop${after}. Another process can have stopped it.`,
     });
     log(`The daemon before this one (process ${unclean}) stopped without a clean stop.`);
-    // H193: a bugcheck is an unclean stop. The starts of its last 2 minutes stay in a file after the 24 hours of the log.
-    try {
-      const kept = writeStartsBeforeStop(startLogPath(), headroomHome(), startedAt);
-      if (kept !== null) log(`The ${kept.starts} starts of the 2 minutes before the stop are in ${kept.file}.`);
-    } catch (error) {
-      log(`The starts before the stop were not kept: ${error instanceof Error ? error.message : String(error)}`);
-    }
   }
   // `headroom service restart --when-idle`: the daemon waits for an idle queue, and then it restarts itself.
   let stopSelf = (): void => undefined;
@@ -171,7 +171,6 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     ...diskProcedures(() => readSummary(diskReportPath())),
   ]);
 
-  const host = "127.0.0.1";
   const token = randomBytes(32).toString("hex");
   const base = peerHostOptions(
     { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
@@ -179,6 +178,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   );
   // The MCP gateway, the dashboard and the hook (H194) are faces on the same listener as the procedures: /mcp/<name>, / and
   // /hooks/pre-tool-use next to /api.
+  const engineAt = process.uptime();
+  if (!(early instanceof Error)) {
+    await early.close();
+    if (early.answered() > 0) log(`The early listener answered ${early.answered()} hook calls with no decision.`);
+  }
   const started = await runProcedureHost({
     name: "headroom",
     mode: options.mode ?? "foreground",
@@ -195,6 +199,20 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
 
   announceDaemon({ pid: process.pid, endpoint: `http://${host}:${port}/api`, token, startedAt: new Date().toISOString() }, planned);
   log(`headroom runs at http://${host}:${port}/api (process ${process.pid})`);
+  const seconds = (value: number): string => `${value.toFixed(1)} s`;
+  log(
+    `The start took ${seconds(process.uptime())} from the start of the process: the early listener at ${early instanceof Error ? "no bind" : seconds(earlyAt)}, the engine at ${seconds(engineAt)}.`,
+  );
+  if (unclean !== null) {
+    // H193: a bugcheck is an unclean stop. The starts of its last 2 minutes stay in a file after the 24 hours of the log. H206:
+    // a worker thread reads them after the bind, so the hook and the procedures answer during the read.
+    keepStartsBeforeStop({ path: startLogPath(), folder: headroomHome(), before: startedAt }).then(
+      (kept) => {
+        if (kept !== null) log(`The ${kept.starts} starts of the 2 minutes before the stop are in ${kept.file}.`);
+      },
+      (error: unknown) => log(`The starts before the stop were not kept: ${error instanceof Error ? error.message : String(error)}`),
+    );
+  }
   stopSelf = () => void started.life.shutdown("the restart for an idle queue", { code: 0 });
   const tick = (): void => {
     try {

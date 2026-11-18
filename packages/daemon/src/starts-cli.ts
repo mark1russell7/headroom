@@ -7,13 +7,14 @@
  *   of the parent. The span is the last hour or the last `n` hours. The fleet cuts the top starters.
  *
  * The daemon also calls `writeStartsBeforeStop` after an unclean stop, for example a bugcheck. It keeps the starts of the
- * last 2 minutes before the stop in a JSON file, so they stay after the 24 hours of the log.
+ * last 2 minutes before the stop in a JSON file, so they stay after the 24 hours of the log. The daemon calls it in a worker
+ * thread after it binds its port (`starts-before-stop.ts`).
  */
 
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { openStartLog, parentsOf, rankStarters, startLogSpan, startsBetween, startsOfPid, type LoggedStart, type RankedStarter } from "@headroom/core";
+import { lastStartBefore, openStartLog, parentsOf, rankStarters, startLogSpan, startsBetween, startsOfPid, type LoggedStart, type RankedStarter } from "@headroom/core";
 
 export const STARTS_USAGE = "headroom starts <pid> [--at <time>] [--json] | headroom starts --top [--hours <n>] [--json]";
 
@@ -164,14 +165,17 @@ export function startsCommand(args: readonly string[], path: string, output: Sta
  * This function keeps the starts of the last 2 minutes before an unclean stop in a JSON file of `folder`. The log
  * deletes them after 24 hours. `before` is the start of the new daemon: each older row is from the daemon that
  * stopped. It gives the file and the count of starts, or `null` when the log has no start.
+ *
+ * - The newest start before `before` is a binary search on the rowid. Before H206 it was a scan of the log (4.5 s).
+ * - The search of the exits reads no row after the stop. The rows after it are of the next boot, with new processes.
  */
 export function writeStartsBeforeStop(path: string, folder: string, before: number): { readonly file: string; readonly starts: number } | null {
   if (!existsSync(path)) return null;
   const db = openStartLog(path);
   try {
-    const last = (db.prepare("SELECT max(at) AS at FROM starts WHERE at < ?").get(before) as { at: number | null }).at;
+    const last = lastStartBefore(db, before);
     if (last === null) return null;
-    const starts = startsBetween(db, last - BEFORE_STOP_MS, last);
+    const starts = startsBetween(db, last - BEFORE_STOP_MS, last, undefined, last);
     const file = join(folder, `starts-before-${new Date(last).toISOString().replace(/[:.]/g, "-")}.json`);
     writeFileSync(file, `${JSON.stringify({ from: last - BEFORE_STOP_MS, to: last, starts }, null, 2)}\n`);
     return { file, starts: starts.length };
