@@ -179,8 +179,10 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   // The MCP gateway, the dashboard and the hook (H194) are faces on the same listener as the procedures: /mcp/<name>, / and
   // /hooks/pre-tool-use next to /api.
   const engineAt = process.uptime();
+  let closedAt: number | null = null;
   if (!(early instanceof Error)) {
     await early.close();
+    closedAt = process.uptime();
     if (early.answered() > 0) log(`The early listener answered ${early.answered()} hook calls with no decision.`);
   }
   const started = await runProcedureHost({
@@ -201,7 +203,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   log(`headroom runs at http://${host}:${port}/api (process ${process.pid})`);
   const seconds = (value: number): string => `${value.toFixed(1)} s`;
   log(
-    `The start took ${seconds(process.uptime())} from the start of the process: the early listener at ${early instanceof Error ? "no bind" : seconds(earlyAt)}, the engine at ${seconds(engineAt)}.`,
+    `The start took ${seconds(process.uptime())} from the start of the process: the early listener at ${early instanceof Error ? "no bind" : seconds(earlyAt)}, the engine at ${seconds(engineAt)}, the close of the early listener at ${closedAt === null ? "no close" : seconds(closedAt)}.`,
   );
   if (unclean !== null) {
     // H193: a bugcheck is an unclean stop. The starts of its last 2 minutes stay in a file after the 24 hours of the log. H206:
