@@ -4,7 +4,7 @@
  */
 
 import { changeAlertRules, DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type AlertRulesChange, type DiskInput } from "./alerts.ts";
-import { Broker, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
+import { Broker, HEAD_WAIT_DEFAULT_MS, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { conditionWait, localClock, nextUnmet, USAGE_UNSET, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerReads, type OwnerWrites, type ProcessReads } from "./counters.ts";
@@ -21,7 +21,8 @@ import {
   type DockerShare,
   type DockerStatus,
 } from "./docker.ts";
-import { NO_STARTS, StartTracker, type ProcessStarts } from "./starts.ts";
+import { NO_STARTS, RECENT_STARTS_MS, StartTracker, type ProcessStarts } from "./starts.ts";
+import { checkStartCap, START_CAP_WAIT_START, startCapConflict, type StartCap, type StartCapFacts, type StartCapStatus } from "./start-cap.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, MIN_ID_PREFIX, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
@@ -105,7 +106,7 @@ import {
 import { redactCommand, redactKey } from "./redact.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
-import { learnSpawn, leaseRate, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
+import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
 import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
@@ -240,6 +241,12 @@ export interface Status {
    */
   readonly starts: ProcessStarts;
   /**
+   * The cap on the process starts at the grant of a lease (H197). It has the steps, the time since the boot and the starts of
+   * the computer in one minute over the last 2 minutes. It also has the leases that wait for it. A daemon of an older
+   * version gives none.
+   */
+  readonly startCap?: StartCapStatus;
+  /**
    * The power state (H30): the power source, the power mode, the lid and the efficiency mode of the jobs. It also has the
    * power request that keeps the computer awake, and the last sleep. The battery and the power are entries of `resources`.
    */
@@ -318,6 +325,11 @@ export interface ConfigChange {
    * list, each job lets a child break away, and `null` gives the default: `session`.
    */
   readonly startTraceHold?: readonly string[] | null | undefined;
+  /**
+   * The cap on the process starts at the grant of a lease (H197): steps by the time since the boot, the first at 0 ms. An
+   * empty list turns the cap off, and `null` gives the default.
+   */
+  readonly startCap?: readonly { readonly afterMs: number; readonly perMinute: number }[] | null | undefined;
   /**
    * A change of the alert limits (H179), merged into the stored differences. A number sets a limit, and `null` gives the
    * base value of one limit back. `null` for the whole change removes all the differences.
@@ -459,6 +471,8 @@ const DISK_MIN_SPAN_MS = 10 * 60_000;
 /** The time between two searches for large files while a disk alert is active. */
 const FILES_EVERY_MS = 5 * 60_000;
 const FILES_SINCE_MS = 2 * 3_600_000;
+/** The time after which the engine reads the first runs again for the start cap (H197). */
+const FIRST_RUNS_READ_MS = 10 * 60_000;
 /** The time that the engine keeps a read of the reboot keys of the registry (H34). */
 const REGISTRY_EVERY_MS = 5 * 60_000;
 /** The alerts of a drain that the engine keeps from the state of the drain, not from `detect()` (H34). */
@@ -622,7 +636,9 @@ export class Engine {
   /** The reader of the usage file for `usage<N` (H31), with its cache of 30 seconds. */
   readonly #usage: UsageReader;
   /** The facts of the conditions at one time, so one tick reads the settings one time (H31). It also keeps the limit of H47. */
-  #facts: { readonly at: number; readonly facts: ConditionFacts; readonly floor: number; readonly spawnHeavy: number } | null = null;
+  #facts: { readonly at: number; readonly facts: ConditionFacts; readonly floor: number; readonly spawnHeavy: number; readonly startCap: StartCap } | null = null;
+  /** The expected start rate of a job with no runs and the time of its read (H197). The engine reads it again after 10 minutes. */
+  #firstRuns: { readonly at: number; readonly rate: number | null } | null = null;
   /**
    * The points of the last hour of each instance with a fit forecast (H32), one for each sample of the store, the oldest
    * first. A start of the daemon reads them from the store. A wake empties them, because a fit does not span a sleep.
@@ -710,7 +726,9 @@ export class Engine {
       // H178: the expected run time of a job, for the reservation of a first request after its long wait.
       runMs: (lease) => this.#runMs(lease),
       // H47: beside a browser test, the sum of the start rates of the other leases stays at or below the limit.
-      groupConflict: (lease, granted, before) => startsSumConflict(lease, granted, before, (each) => this.#startRate(each), this.#conditionFacts().spawnHeavy),
+      // H197: the starts of the computer, the unseen part of the new leases and this lease stay at or under the start cap.
+      groupConflict: (lease, granted, before) =>
+        startsSumConflict(lease, granted, before, (each) => this.#startRate(each), this.#conditionFacts().spawnHeavy) ?? startCapConflict(lease, granted, this.#startCapFacts()),
       // H31: a lease waits until each of its conditions holds, and a heavy lease waits on a low battery.
       // H34: in a planned drain, a lease waits for the reboot, unless its job runs with --during-drain.
       condition: (lease) => {
@@ -1452,6 +1470,7 @@ export class Engine {
     if (reapAuto !== undefined && reapAuto !== null && typeof reapAuto !== "boolean") throw new RangeError("The automatic reap must be true, false or null");
     const startTrace = change.startTrace === undefined || change.startTrace === null ? change.startTrace : traceKindsText(change.startTrace);
     const startTraceHold = change.startTraceHold === undefined || change.startTraceHold === null ? change.startTraceHold : traceKindsText(change.startTraceHold);
+    const startCap = change.startCap === undefined || change.startCap === null ? change.startCap : checkStartCap(change.startCap);
     if (jobTemp !== undefined) this.#store.setConfig("jobTemp", jobTemp);
     if (health !== undefined) this.#store.setConfig("health", health);
     if (limit !== undefined) this.#store.setConfig("spawnHeavy", limit === null ? null : String(limit));
@@ -1486,6 +1505,8 @@ export class Engine {
       this.#store.setConfig("startTraceHold", startTraceHold);
       this.#setTraceHold(this.#store.config().startTraceHold);
     }
+    // H197: an empty list is a setting: the cap off.
+    if (startCap !== undefined) this.#store.setConfig("startCap", startCap === null ? null : JSON.stringify(startCap));
     if (alerts !== undefined) {
       // H179: an empty set is no setting. The next sample examines the new limits.
       this.#store.setConfig("alerts", alerts === null || Object.keys(alerts).length === 0 ? null : JSON.stringify(alerts));
@@ -1501,8 +1522,8 @@ export class Engine {
       this.#readPresence(this.#now(), true);
     }
     // H31: a new floor or a new usage file can let a waiting lease start. H23: a smaller CPU reserve can too. H47: a higher
-    // limit can too. H33: a change of the presence rules can too.
-    if (floor !== undefined || usageFile !== undefined || reserve !== undefined || limit !== undefined || presence) {
+    // limit can too. H33: a change of the presence rules can too. H197: a higher start cap can too.
+    if (floor !== undefined || usageFile !== undefined || reserve !== undefined || limit !== undefined || presence || startCap !== undefined) {
       this.#facts = null;
       this.#persist(this.#broker.tick(this.capacity()));
     }
@@ -1576,6 +1597,7 @@ export class Engine {
       reads: this.#reads,
       tcp: this.#tcp === undefined ? null : tcpSummary(this.#tcp),
       starts: this.#starts,
+      startCap: this.#startCapStatus(),
       power: this.powerStatus(),
       cpuReserve: this.#reserveNow(),
       presence: presenceStatus(this.#presence, this.#policy),
@@ -2106,7 +2128,7 @@ export class Engine {
    * This function gives the facts of the conditions at this time, and the battery floor (H31). It reads the settings one
    * time for each time. Only a condition that reads the usage reads the usage file, and the reader keeps it for 30 seconds.
    */
-  #conditionFacts(): { readonly facts: ConditionFacts; readonly floor: number; readonly spawnHeavy: number } {
+  #conditionFacts(): { readonly facts: ConditionFacts; readonly floor: number; readonly spawnHeavy: number; readonly startCap: StartCap } {
     const now = this.#now();
     if (this.#facts !== null && this.#facts.at === now) return this.#facts;
     const config = this.#store.config();
@@ -2129,7 +2151,7 @@ export class Engine {
         return starts;
       },
     };
-    this.#facts = { at: now, facts, floor: config.batteryFloor, spawnHeavy: config.spawnHeavy };
+    this.#facts = { at: now, facts, floor: config.batteryFloor, spawnHeavy: config.spawnHeavy, startCap: config.startCap };
     return this.#facts;
   }
 
@@ -2139,6 +2161,42 @@ export class Engine {
    */
   #startRate(lease: Lease): number {
     return leaseRate(lease, lease.state === "granted" ? windowRate(this.#startTracker.points(lease.id)) : null);
+  }
+
+  /**
+   * This function gives the facts of the start cap at this time (H197). Without a known boot, the time since the boot is
+   * long, so the cap after the slow start applies.
+   */
+  #startCapFacts(): StartCapFacts {
+    const { facts, spawnHeavy, startCap } = this.#conditionFacts();
+    return {
+      now: facts.now,
+      machine: facts.starts,
+      sinceBootMs: facts.now - this.#bootedAt,
+      cap: startCap,
+      prior: this.#firstRunRate(facts.now) ?? spawnHeavy,
+      heavyLimit: spawnHeavy,
+      windowMs: RECENT_STARTS_MS,
+      progressMs: HEAD_WAIT_DEFAULT_MS,
+    };
+  }
+
+  /**
+   * This function gives the expected start rate of a job with no runs (H197). It is the 90th percentile of the real peaks
+   * of the last first runs. It reads the store again after 10 minutes, or after a clock that went back. It gives `null` with no
+   * first runs.
+   */
+  #firstRunRate(now: number): number | null {
+    const last = this.#firstRuns;
+    if (last === null || now - last.at >= FIRST_RUNS_READ_MS || now < last.at) this.#firstRuns = { at: now, rate: percentile90(this.#store.firstRunPeaks()) };
+    return this.#firstRuns?.rate ?? null;
+  }
+
+  /** This function gives the start cap for the status (H197). */
+  #startCapStatus(): StartCapStatus {
+    const facts = this.#startCapFacts();
+    const waiting = this.#broker.leases().filter((lease) => lease.state === "waiting" && lease.reason?.startsWith(START_CAP_WAIT_START) === true).length;
+    return { steps: facts.cap, sinceBootMs: facts.sinceBootMs, machine: facts.machine, waiting, prior: Math.round(facts.prior) };
   }
 
   /**

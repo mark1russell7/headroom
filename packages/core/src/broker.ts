@@ -66,6 +66,12 @@ export interface JobExit {
 }
 
 /** A lease and its history. */
+/**
+ * The default head wait (H178): after this wait, the first request keeps its place. The start cap uses it too (H197): after
+ * it, a request stops counting its own start rate.
+ */
+export const HEAD_WAIT_DEFAULT_MS = 600_000;
+
 export interface Lease {
   readonly id: string;
   readonly holder: string;
@@ -291,7 +297,7 @@ export class Broker {
     this.#longRunMs = options.longRunMs ?? 1_800_000;
     this.#reserveMb = options.reserveMb ?? 1024;
     this.#agingMs = options.agingMs ?? 60_000;
-    this.#headWaitMs = options.headWaitMs ?? 600_000;
+    this.#headWaitMs = options.headWaitMs ?? HEAD_WAIT_DEFAULT_MS;
     this.#runMs = options.runMs ?? (() => null);
     this.#backfillMs = options.backfillMs ?? 600_000;
     this.#defaultTtlMs = options.defaultTtlMs ?? 300_000;

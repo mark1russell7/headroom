@@ -46,6 +46,31 @@ export function mountOf(path: string, mounts: readonly string[], platform: NodeJ
   return inside.sort((a, b) => b.length - a.length)[0] ?? null;
 }
 
+/**
+ * This function reads the steps of a start cap (H197): `<perMinute>@<time after the boot>` with commas, for example
+ * `1822@0,3500@60m`. A time is as `parseTime` reads it. It gives `null` for a text that is not steps. The daemon checks the
+ * order and the values of the steps.
+ */
+export function parseStartCap(text: string): { afterMs: number; perMinute: number }[] | null {
+  const steps: { afterMs: number; perMinute: number }[] = [];
+  for (const part of text.split(",")) {
+    const match = /^\s*(\d+)\s*@\s*(\S+)\s*$/.exec(part);
+    if (match?.[1] === undefined || match[2] === undefined) return null;
+    try {
+      steps.push({ afterMs: parseTime(match[2]), perMinute: Number(match[1]) });
+    } catch {
+      return null;
+    }
+  }
+  return steps;
+}
+
+/** This function gives the text of the steps of a start cap (H197), as `parseStartCap` reads it, for example `1822@0,3500@60m`. */
+export function startCapText(steps: readonly { readonly afterMs: number; readonly perMinute: number }[]): string {
+  const timeText = (ms: number): string => (ms === 0 ? "0" : ms % 60_000 === 0 ? `${ms / 60_000}m` : ms % 1000 === 0 ? `${ms / 1000}s` : `${ms}ms`);
+  return steps.map((step) => `${step.perMinute}@${timeText(step.afterMs)}`).join(",");
+}
+
 /** This function reads a time: `30s`, `10m`, `2h` or a count of milliseconds. It gives milliseconds. */
 export function parseTime(text: string): number {
   const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i.exec(text.trim());

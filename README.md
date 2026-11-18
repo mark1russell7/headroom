@@ -235,6 +235,23 @@ waits for the other jobs to start fewer processes: tsc (client) 400 and vitest (
 
 These reasons do not start with `waits for memory`, so the hook of the plugin does not count them. `docs/RESOURCES.md` gives the rules.
 
+### The start cap (H197)
+
+A lease also waits while the computer starts too many processes. All 5 bugchecks of 2026-11-15 to 2026-11-17 came when the start rate was in its highest 8 %.
+
+- **The sum.** The starts of the computer in the last 2 minutes, plus the expected rate of this job. Each new lease also adds the part of its starts that the window does not hold yet.
+- **The cap.** The default is 3,500 starts a minute, and 1,822 in the first hour after a boot. `headroom config start-cap 2000@0,3000@60m` sets other steps. `off` turns the cap off, and `--clear` sets the default again.
+- **The expected rate.** The learned peak of the job (H47). A job with no runs counts as the 90th percentile of the last 200 first runs of other jobs.
+- **No wait.** A light job, at most 1 % of the cap, does not wait. After 10 minutes, a lease stops counting its own rate. Then it starts when the computer and the new leases are under the cap.
+- A job that runs is not slowed or stopped. The cap changes no setting of the system.
+
+```text
+Start cap: 3,500 a minute. The computer starts 2,246 a minute. 2 leases wait for it.
+waits for the start cap: the computer starts 3,100 a minute, new jobs add 400 and this job adds 600. The sum of 4,100 is above the cap of 3,500.
+```
+
+`docs/RESOURCES.md` gives the data of the default values and their limits.
+
 ### Handles and orphans (H48)
 
 On 2026-10-25, a subagent started `find / -name ... | head -3` in Git Bash. The Bash call ended after 2 minutes, but `find.exe` stayed as an orphan. It held 1.3 million handles, and the paged pool grew 593 MB in one hour. The daemon gave no alert, and after a restart it did not know the owner. Thus headroom watches the handles and keeps the owners of orphans:

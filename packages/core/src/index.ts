@@ -109,6 +109,22 @@ export {
 } from "./spawn.ts";
 export type { SpawnClass, SpawnSource } from "./spawn.ts";
 export {
+  capAt,
+  checkStartCap,
+  expectedRate,
+  FIRST_RUNS,
+  START_CAP_DEFAULT,
+  START_CAP_LIGHT_SHARE,
+  START_CAP_STEPS_MAX,
+  START_CAP_WAIT_START,
+  startCapConflict,
+  startCapLine,
+  startCapOf,
+  startCapSum,
+  unseenRate,
+} from "./start-cap.ts";
+export type { StartCap, StartCapFacts, StartCapStatus, StartCapStep, StartCapSum } from "./start-cap.ts";
+export {
   BATTERY_FLOOR_DEFAULT,
   checksOf,
   COOL_MS,

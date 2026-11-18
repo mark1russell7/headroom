@@ -53,6 +53,18 @@ describe("the procedure config.set", () => {
     each.close();
   });
 
+  it("carries the start cap to the engine, and refuses a wrong cap at the schema or in the engine (H197)", async () => {
+    const each = engine();
+    const procedures = resourceProcedures(each);
+    expect((await configSet(procedures, { startCap: [{ afterMs: 0, perMinute: 2500 }] })).startCap).toEqual([{ afterMs: 0, perMinute: 2500 }]);
+    expect(each.status().startCap?.steps).toEqual([{ afterMs: 0, perMinute: 2500 }]);
+    expect((await configSet(procedures, { startCap: [] })).startCap).toEqual([]);
+    await expect(configSet(procedures, { startCap: [{ afterMs: 0, perMinute: 0 }] })).rejects.toThrow();
+    await expect(configSet(procedures, { startCap: [{ afterMs: 5, perMinute: 1000 }] })).rejects.toThrow(/first step/);
+    expect((await configSet(procedures, { startCap: null })).startCap).toEqual([{ afterMs: 0, perMinute: 1822 }, { afterMs: 3_600_000, perMinute: 3500 }]);
+    each.close();
+  });
+
   it("refuses a setting that it does not know, so that a setting is not dropped with no error", async () => {
     const each = engine();
     await expect(configSet(resourceProcedures(each), { noSuchSetting: 1 })).rejects.toThrow();
