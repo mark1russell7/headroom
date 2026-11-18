@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -300,6 +300,16 @@ const HistoryInput = z.object({
 });
 type HistoryInput = z.infer<typeof HistoryInput>;
 
+const PeaksInput = z.object({
+  minutes: z.number().int().positive().max(10_080).default(60).describe("The length of the window in minutes (default: 60)"),
+  minMb: z.number().nonnegative().default(0).describe("The least peak in MB of a minute that counts (default: 0, each kept minute)"),
+  lease: z.string().min(1).max(200).optional().describe("Only the minutes of this lease ID"),
+  limit: z.number().int().positive().max(500).default(30).describe("The most holders in the answer (default: 30)"),
+  kind: z.enum(["process", "container"]).default("process").describe("The kind of the holder of the key: process or container"),
+  key: z.string().min(1).max(200).optional().describe("The key of one holder, for example 4120:1763491200000. The answer then also gives its minutes."),
+});
+type PeaksInput = z.infer<typeof PeaksInput>;
+
 const PoolInput = z.object({
   name: z.string().min(1).max(64).refine((name) => name !== "memory", "The memory is measured, not configured").describe("The name of the pool"),
   capacity: z.number().describe("The capacity. A capacity below 0 removes the pool, and then its capacity is 1."),
@@ -545,6 +555,21 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .handler(async (input: HistoryInput): Promise<History> => engine.history(Date.now() - input.minutes * 60_000, input.step * 60_000))
     .build() as AnyProcedure;
 
+  const peaks = createProcedure()
+    .path(["resources", "peaks"])
+    .input(zodAdapter<PeaksInput>(PeaksInput))
+    .output(anything<PeaksAnswer>())
+    .meta({
+      description: "Give the memory peaks of the large processes and containers of the last minutes, the largest first (H62)",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (input: PeaksInput): Promise<PeaksAnswer> =>
+      engine.peaks(Date.now() - input.minutes * 60_000, { minMb: input.minMb, lease: input.lease, limit: input.limit, kind: input.kind, key: input.key }),
+    )
+    .build() as AnyProcedure;
+
   const pool = createProcedure()
     .path(["resources", "pool"])
     .input(zodAdapter<PoolInput>(PoolInput))
@@ -771,7 +796,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .handler(async (): Promise<ReapEntry[]> => engine.reapLog())
     .build() as AnyProcedure;
 
-  return [status, lease, defer, adopt, wait, release, cancel, job, renew, history, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain, reapList, reap, reapShadow, reapLog];
+  return [status, lease, defer, adopt, wait, release, cancel, job, renew, history, peaks, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain, reapList, reap, reapShadow, reapLog];
 }
 
 const RestartWhenIdleInput = z.object({

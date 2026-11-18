@@ -126,14 +126,14 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 7, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 8, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 8 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
@@ -145,11 +145,15 @@ describe("Store", () => {
     expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lease_keys%' ORDER BY name").all()).toEqual([{ name: "lease_keys" }, { name: "lease_keys_ladder" }]);
     // H203: step 6 makes the log of the refusals of long native paths and its index.
     expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'native_refusals%' ORDER BY name").all()).toEqual([{ name: "native_refusals" }, { name: "native_refusals_at" }]);
+    // H62 part 5: step 8 makes the tables of the memory peaks and of their holders.
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%peak%' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()).toEqual([
+      { name: "memory_peaks" }, { name: "memory_peaks_key" }, { name: "peak_holders" },
+    ]);
     expect(read.prepare("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 8 });
     again.close();
   });
 

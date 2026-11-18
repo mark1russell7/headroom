@@ -24,6 +24,7 @@ import {
   type DockerStatus,
 } from "./docker.ts";
 import { leaseContainers, type LeaseContainers } from "./lease-containers.ts";
+import { PEAK_LIMIT, PEAK_MIN_MB, PeakTracker, type PeakKind, type PeaksAnswer } from "./memory-peaks.ts";
 import { NO_STARTS, RATE_STEP_MAX_MS, RECENT_STARTS_MS, startCost, startsFromRates, StartTracker, type ProcessStarts, type RatePoint, type StartCost } from "./starts.ts";
 import { checkStartCap, START_CAP_WAIT_START, startCapConflict, type StartCap, type StartCapFacts, type StartCapStatus } from "./start-cap.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
@@ -152,6 +153,8 @@ export interface EngineOptions {
   readonly recordEveryMs?: number | undefined;
   /** The time that the store keeps the samples and the ended leases. The default is 7 days. */
   readonly retentionMs?: number | undefined;
+  /** The least private memory in MB of a process or a container that the minute peaks keep (H62 part 5). The default is 512 MB. */
+  readonly peakMinMb?: number | undefined;
   /** The folder of the Claude Code session files. */
   readonly sessionsDir?: string | undefined;
   /** This function gives the process of each server of the MCP gateway, with the name of the server. */
@@ -542,6 +545,9 @@ export class Engine {
   readonly #bootedAt: number;
   readonly #recordEveryMs: number;
   readonly #retentionMs: number;
+  /** H62 part 5: the memory peaks of the large processes and containers in the minute. */
+  readonly #peaks: PeakTracker;
+  readonly #peakMinMb: number;
   readonly #sessionsDir: string;
   readonly #startLogPath: string | null;
   readonly #leaseEndsDir: string | null;
@@ -721,6 +727,8 @@ export class Engine {
     this.#processEveryMs = options.processEveryMs ?? 10_000;
     this.#recordEveryMs = options.recordEveryMs ?? 60_000;
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
+    this.#peakMinMb = options.peakMinMb ?? PEAK_MIN_MB;
+    this.#peaks = new PeakTracker(this.#peakMinMb, PEAK_LIMIT);
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#startLogPath = options.startLogPath ?? null;
     this.#leaseEndsDir = options.leaseEndsDir ?? null;
@@ -989,6 +997,9 @@ export class Engine {
       this.#cores = docker === null ? cores : splitCores(cores, docker.shares);
       this.#docker =
         docker === null ? null : dockerStatus({ ...docker, processes: this.#processes, owners: this.#owners, cores: this.#cores, rolesState: this.#roles.state });
+      // H62 part 5: the minute keeps the peak of each large process and container, with its owner and its lease.
+      this.#peaks.observeProcesses(this.#processes, ownerOf, this.#ownership.leaseOf, (info) => this.#records.get(info)?.command ?? null);
+      if (this.#docker !== null) this.#peaks.observeContainers(this.#docker.containers, this.#leaseContainers(this.#broker.leases())?.leaseOf);
       this.#leaseCores = new Map([...this.#counters.groupCores(now, LEASE_GROUP)].map(([group, cores]) => [group.slice(LEASE_GROUP.length), cores]));
       this.#recordPeakCores();
       this.#startTracker.read(now, this.#processes, this.#ownership, this.#sampler.processSequence?.(), this.#broker.leases());
@@ -1035,6 +1046,7 @@ export class Engine {
       const minute = this.#closeMinute(now);
       this.#readers = this.#counters.closeReaders();
       this.#store.saveSample(now, this.#memory, this.#owners, this.#load, this.#measurements, minute.written, minute.read, this.#readers);
+      this.#store.saveMemoryPeaks(now, this.#peaks.close());
       this.#recordTrends(now);
     }
     if (now - this.#prunedAt >= 3_600_000) {
@@ -1695,6 +1707,19 @@ export class Engine {
       resources,
       sleeps: this.#store.sleepsSince(since),
     };
+  }
+
+  /**
+   * This function gives the memory peaks since a time (H62 part 5): each large process and container with its largest
+   * minute. `key` with `kind` also gives the minutes of one holder.
+   */
+  peaks(
+    since: number,
+    options: { readonly minMb?: number; readonly lease?: string | undefined; readonly limit?: number; readonly kind?: PeakKind; readonly key?: string | undefined } = {},
+  ): PeaksAnswer {
+    const peaks = this.#store.peaksSince(since, { minMb: options.minMb ?? 0, lease: options.lease, limit: options.limit ?? 50 });
+    const trail = options.key === undefined ? undefined : this.#store.peakTrail(options.kind ?? "process", options.key, since);
+    return { minMb: this.#peakMinMb, limit: PEAK_LIMIT, peaks, ...(trail === undefined ? {} : { trail }) };
   }
 
   /** This function calls the listener with the leases that change. It gives a function that removes the listener. */

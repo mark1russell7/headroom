@@ -586,6 +586,8 @@ export { isOver, leaseUse, overText } from "./lease-use.ts";
 export type { LeaseUse, OverRules } from "./lease-use.ts";
 export { leaseContainers, leaseMemoryMb } from "./lease-containers.ts";
 export type { LeaseContainerFrom, LeaseContainers, LeaseContainerUse, LeasedContainer } from "./lease-containers.ts";
+export { PEAK_LIMIT, PEAK_MIN_MB, PeakTracker } from "./memory-peaks.ts";
+export type { MemoryPeak, PeakContainer, PeakKind, PeakPoint, PeaksAnswer, PeakSummary } from "./memory-peaks.ts";
 export {
   COVER_AFTER_MS,
   COVERS_PER_READ,

@@ -132,6 +132,43 @@ describe("the secrets of a command line never reach the store (H186)", () => {
     }
   });
 
+  it("keeps no fixture secret of the command of a memory peak (H62 part 5)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
+    try {
+      let now = 1_800_000_000_000;
+      const big = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb, startedAt: now - 60_000 });
+      const sampler: Sampler = {
+        memory: () => ({ totalMb: 28_000, availableMb: 9000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 900, kernelNonpagedMb: 1000 }),
+        processes: () => [big(4, 0, "System", 1), big(21, 4, "psql.exe", 900)],
+        commandLine: (pid) => (pid === 21 ? `psql "postgres://app:${PG}@db/app" --password ${LOGIN_SECRET}` : null),
+        close: () => undefined,
+      };
+      const path = join(dir, "headroom.db");
+      const store = new Store(path);
+      const engine = new Engine({ sampler, store, now: () => now, sessionsDir: "/nowhere" });
+      for (let step = 0; step < 2; step++) {
+        engine.tick();
+        now += 60_000;
+      }
+      // A caller of the store that gives a raw command line also gets the mark.
+      const raw = `curl -H "Authorization: Bearer ${TOKEN}" https://h`;
+      store.saveMemoryPeaks(now, [{ kind: "process", key: "22:1", name: "curl.exe", owner: null, pid: 22, created: 1, lease: null, peakMb: 600, command: raw }]);
+      const shown = JSON.stringify(engine.peaks(0));
+      engine.close();
+      const stored = allText(path);
+      // The test holds only when the store has the two holders with their commands.
+      expect(stored).toContain("psql.exe");
+      expect(stored).toContain("--password [secret]");
+      expect(stored).toContain("Authorization: [secret]");
+      for (const secret of SECRETS) {
+        expect(stored.includes(secret), secret).toBe(false);
+        expect(shown.includes(secret), secret).toBe(false);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("redacts each column of the schema with the name command or job", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
     try {
