@@ -35,6 +35,19 @@ describe("detect", () => {
     expect(alerts[0]?.message).toBe("grep.exe (2) of session:shop holds 15.6 GB with no lease");
   });
 
+  it("flags a granted lease that uses far more memory than it states (H62)", () => {
+    const processes = [p(1, 0, "claude.exe", 500), p(3, 1, "node.exe", 300), p(4, 3, "mongod.exe", 2800)];
+    const owners: Record<number, [string, OwnerKind]> = { 1: ["session:shop", "session"], 3: ["session:shop", "session"], 4: ["session:shop", "session"] };
+    const stack: Lease = { ...lease(3), id: "l2", holder: "shop", job: "share-stack", amounts: { memory: 500 } };
+    const alerts = detect(input(processes, owners, { leases: [stack], leasePeaks: new Map([["l2", 3300]]) }));
+    expect(alerts.map((alert) => alert.id)).toEqual(["over"]);
+    expect(alerts[0]).toMatchObject({ kind: "over", subject: "share-stack", mb: 2800, pid: null });
+    expect(alerts[0]?.message).toContain("The lease share-stack of shop states 500 MB and used up to 3.2 GB, 6.6 times its amount.");
+    // A use under 2 times the amount gives no alert, and a higher factor in the rules turns the alert off for this lease.
+    expect(detect(input(processes, owners, { leases: [{ ...stack, amounts: { memory: 2048 } }] })).map((alert) => alert.id)).toEqual([]);
+    expect(detect(input(processes, owners, { leases: [stack], leasePeaks: new Map([["l2", 3300]]) }), { ...DEFAULT_ALERT_RULES, overFactor: 8 })).toEqual([]);
+  });
+
   it("flags a large orphan with no owner", () => {
     const alerts = detect(input([p(7, 99, "grep.exe", 2000), p(8, 99, "M365Copilot.exe", 90)], { 7: ["other", "other"], 8: ["other", "other"] }));
     expect(alerts.map((alert) => alert.id)).toEqual(["orphan:7"]);

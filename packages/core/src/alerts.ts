@@ -41,6 +41,8 @@
  *   the prune commands. headroom does not run them.
  * - `drain`: a planned drain or an automatic drain for a reboot (H34). The alert `drain` names the running jobs. The alert
  *   `drain:ready` tells that no job runs. The event `drain:ended` tells why a drain ended. The engine keeps them, not `detect()`.
+ * - `over`: a granted lease with a memory peak of 2 times its stated memory or more, and at least 1 GB above it (H62). The
+ *   message names the 3 largest excesses. The free memory for new leases counts this use already (H187).
  *
  * The alerts only report. headroom does not stop a process for an alert.
  *
@@ -91,7 +93,8 @@ export type AlertKind =
   | "reader"
   | "docker"
   | "worktree"
-  | "reap";
+  | "reap"
+  | "over";
 
 /** The level of an alert. Only some kinds set it. */
 export type AlertSeverity = "warning" | "critical";
@@ -218,6 +221,10 @@ export interface AlertRules {
   readonly dockerBuildCacheMb: number;
   /** Docker images with no container above this size, in MB, start a Docker warning (H38). The default is 10240. */
   readonly dockerUnusedImagesMb: number;
+  /** A granted lease with a memory peak of this many times its stated memory or more is over (H62). The default is 2. */
+  readonly overFactor: number;
+  /** The peak of an over lease is at least this many MB above its stated memory (H62). The default is 1024. */
+  readonly overMinMb: number;
 }
 
 /** The default limits. */
@@ -267,6 +274,8 @@ export const DEFAULT_ALERT_RULES: AlertRules = {
   handlesClearMs: 120_000,
   dockerBuildCacheMb: 20_480,
   dockerUnusedImagesMb: 10_240,
+  overFactor: 2,
+  overMinMb: 1024,
 };
 
 /**
@@ -407,6 +416,8 @@ export interface AlertInput {
   readonly recordOf?: ((info: ProcessInfo) => ProcessRecord | undefined) | undefined;
   /** The containers and the disk use of Docker (H38). The Docker alerts read the disk use. */
   readonly docker?: DockerStatus | null | undefined;
+  /** The memory peak of each granted lease since its grant, in MB, by lease id (H62). The over rule reads it. */
+  readonly leasePeaks?: ReadonlyMap<string, number> | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -418,7 +429,7 @@ function readingsOf(
   input: Pick<
     AlertInput,
     | "memory" | "processes" | "load" | "disks" | "writes" | "reads" | "readers" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
-    | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles"
+    | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles" | "leasePeaks"
   > & {
     readonly leases?: readonly Lease[] | undefined;
   },
@@ -428,6 +439,7 @@ function readingsOf(
     processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, reads: input.reads, readers: input.readers, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, gpu: input.gpu, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
     trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal, handles: input.handles,
+    leasePeaks: input.leasePeaks,
   };
 }
 

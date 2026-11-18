@@ -342,6 +342,7 @@ export {
   measure,
   reserveOf,
   RESOURCES,
+  leaseUses,
   resourceOf,
   roomOf,
   rooms,
@@ -578,6 +579,8 @@ export {
   topStartsText,
 } from "./starts.ts";
 export type { JobStarts, OwnerStarts, ProcessStarts, RatePoint, StartCost } from "./starts.ts";
+export { isOver, leaseUse, overText } from "./lease-use.ts";
+export type { LeaseUse, OverRules } from "./lease-use.ts";
 export {
   COVER_AFTER_MS,
   COVERS_PER_READ,
