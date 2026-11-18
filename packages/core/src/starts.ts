@@ -378,3 +378,67 @@ export function startsLine(starts: ProcessStarts, limit = 3): string | null {
   const named = most === "" ? "" : ` Most${starts.exact ? " (at least)" : ""}: ${most}.`;
   return `Process starts: ${countText(starts.perMinute)} a minute${starts.exact ? "" : " (at least)"}.${named}`;
 }
+
+/** One sample of the start rate (the instance `procs`): the time in ms since the epoch, and the starts in one minute, or `null`. */
+export type RatePoint = readonly [at: number, perMinute: number | null];
+
+/** The longest step between two samples of the start rate that counts. A longer step is a gap, for example a sleep or a stop of the daemon. */
+export const RATE_STEP_MAX_MS: number = 5 * MINUTE_MS;
+
+/**
+ * This function counts the process starts from `from` to `to` (H63). The input is the samples of the start rate, the oldest
+ * first, for example the instance `procs` of the store, one sample each minute. Each step between two samples counts the
+ * rate of its later sample over the part of the step in the window. A step longer than `RATE_STEP_MAX_MS` or with no rate
+ * is a gap. The count covers the gaps at the rate of the steps, but it gives `null` when the steps cover less than 90 % of
+ * the window.
+ */
+export function startsFromRates(points: readonly RatePoint[], from: number, to: number): number | null {
+  if (!(to > from)) return null;
+  let count = 0;
+  let coveredMs = 0;
+  for (let i = 1; i < points.length; i++) {
+    const [before] = points[i - 1] as RatePoint;
+    const [at, perMinute] = points[i] as RatePoint;
+    if (perMinute === null || at - before > RATE_STEP_MAX_MS || at <= from || before >= to) continue;
+    const stepMs = Math.min(at, to) - Math.max(before, from);
+    count += (perMinute * stepMs) / MINUTE_MS;
+    coveredMs += stepMs;
+  }
+  return coveredMs >= 0.9 * (to - from) ? (count * (to - from)) / coveredMs : null;
+}
+
+/** The growth of the two kernel pools against the process starts in one window (H63). */
+export interface StartCost {
+  /** The length of the window in minutes: the last hour, or less after a start of the computer or a wake. */
+  readonly minutes: number;
+  /** The growth of the non-paged pool and the paged pool together in the window, in MB. It is negative when the pools fell. */
+  readonly growthMb: number;
+  /** The process starts in the window. */
+  readonly starts: number;
+  /** The growth for each start in bytes, or `null` with no starts or no growth. */
+  readonly bytesPerStart: number | null;
+}
+
+/** This function gives the cost of a process start in kernel memory from the growth of the pools and the starts of one window (H63). */
+export function startCost(minutes: number, growthMb: number, starts: number): StartCost {
+  const bytesPerStart = starts >= 1 && growthMb > 0 ? Math.round((growthMb * 1_048_576) / starts) : null;
+  return { minutes: Math.round(minutes), growthMb: Math.round(growthMb), starts: Math.round(starts), bytesPerStart };
+}
+
+/** This function writes a size in bytes for a person: "870 B", "3.6 KB". */
+function bytesText(bytes: number): string {
+  return bytes < 1024 ? `${Math.round(bytes)} B` : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+/**
+ * This function gives the text of the cost of a process start (H63), for example "Process starts: 84,200 in the last 60
+ * minutes. The kernel pools grew 310 MB in that time, 3.8 KB for each start. Fewer starts slow this growth with no reboot."
+ */
+export function startCostText(cost: StartCost): string {
+  const head = `Process starts: ${countText(cost.starts)} in the last ${cost.minutes} minutes.`;
+  if (cost.bytesPerStart !== null) {
+    return `${head} The kernel pools grew ${countText(cost.growthMb)} MB in that time, ${bytesText(cost.bytesPerStart)} for each start. Fewer starts slow this growth with no reboot.`;
+  }
+  if (cost.growthMb < 0) return `${head} The kernel pools fell ${countText(-cost.growthMb)} MB in that time.`;
+  return `${head} The kernel pools did not grow in that time.`;
+}

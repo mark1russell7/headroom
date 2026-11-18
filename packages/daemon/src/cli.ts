@@ -63,6 +63,7 @@ import {
   drainHeavyWhy,
   BATTERY_FLOOR_DEFAULT,
   coresText,
+  drainCancelLines,
   drainLine,
   localClock,
   nextClock,
@@ -1700,6 +1701,11 @@ async function drainCommand(argv: string[]): Promise<number> {
       console.log(`The automatic drain of ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
       if (level > 0) console.log(`The automatic rule starts no new drain until the kernel pools fall under ${mb(level - AUTO_DRAIN_MARGIN_MB)}, or until a reboot.`);
     } else console.log(`The drain for the reboot at ${whenText(drain.at, now)} is cancelled. The waiting jobs start when they fit.`);
+    // H63: the current level of the pools and the cost of a process start. A daemon older than the reboot budget gives no lines.
+    if (drain !== null) {
+      const reboot = (await connection.call<DaemonStatus>(["resources", "status"], {})).reboot;
+      if (reboot !== undefined) for (const line of drainCancelLines(reboot)) console.log(line);
+    }
     return 0;
   }
   if (drain === null) {

@@ -295,6 +295,7 @@ export {
   drainHolds,
   drainLine,
   drainName,
+  drainCancelLines,
   drainReason,
   drainStatus,
   drainWait,
@@ -561,8 +562,22 @@ export {
 } from "./services.ts";
 export type { ServiceCheck, ServiceHealth, ServiceMonitorOptions, ServiceProbe, ServiceState, ServiceType } from "./services.ts";
 export type { Sampler } from "./sampler.ts";
-export { countText, isNewProcess, NO_STARTS, ownerStartsText, StartTracker, RECENT_STARTS_MS, startsLine, STARTS_WINDOW_MS, topStartsText } from "./starts.ts";
-export type { JobStarts, OwnerStarts, ProcessStarts } from "./starts.ts";
+export {
+  countText,
+  isNewProcess,
+  NO_STARTS,
+  ownerStartsText,
+  RATE_STEP_MAX_MS,
+  StartTracker,
+  RECENT_STARTS_MS,
+  startCost,
+  startCostText,
+  startsFromRates,
+  startsLine,
+  STARTS_WINDOW_MS,
+  topStartsText,
+} from "./starts.ts";
+export type { JobStarts, OwnerStarts, ProcessStarts, RatePoint, StartCost } from "./starts.ts";
 export {
   COVER_AFTER_MS,
   COVERS_PER_READ,

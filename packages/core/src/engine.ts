@@ -21,7 +21,7 @@ import {
   type DockerShare,
   type DockerStatus,
 } from "./docker.ts";
-import { NO_STARTS, RECENT_STARTS_MS, StartTracker, type ProcessStarts } from "./starts.ts";
+import { NO_STARTS, RATE_STEP_MAX_MS, RECENT_STARTS_MS, startCost, startsFromRates, StartTracker, type ProcessStarts, type RatePoint, type StartCost } from "./starts.ts";
 import { checkStartCap, START_CAP_WAIT_START, startCapConflict, type StartCap, type StartCapFacts, type StartCapStatus } from "./start-cap.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, MIN_ID_PREFIX, type JobQuery, type JobState } from "./job-state.ts";
@@ -659,6 +659,8 @@ export class Engine {
   readonly #resumePlan: () => ResumePlanFile | null;
   /** The growth of each kernel pool over the last hour, in MB, from the last check of the alerts (H34). */
   #poolGrowth: { readonly nonpaged: number | null; readonly paged: number | null } = { nonpaged: null, paged: null };
+  /** The growth of the two pools against the process starts of the same hour (H63), or `null`. */
+  #startCost: StartCost | null = null;
   /** The last read of the reboot keys of the registry, and its time (H34). */
   #windowsReboot: { readonly at: number; readonly value: WindowsReboot | null } | null = null;
   /** The level of the automatic drain in MB from the settings, or 0 for off (H34). */
@@ -1816,6 +1818,15 @@ export class Engine {
       nonpaged: poolHourAgoMb === undefined ? null : Math.round(this.#memory.kernelNonpagedMb - poolHourAgoMb),
       paged: pagedHourAgoMb === undefined ? null : Math.round(this.#memory.kernelPagedMb - pagedHourAgoMb),
     };
+    // H63: the growth of the two pools against the process starts of the same window. The starts come from the samples of
+    // the instance `procs`, one each minute. The read starts one step early, so the first step of the window counts.
+    this.#startCost = null;
+    if (hourOld) {
+      const rates = this.#store.resourceSince("procs", first.at - RATE_STEP_MAX_MS).map((row): RatePoint => [row.at, row.used]);
+      const starts = startsFromRates(rates, first.at, now);
+      const growthMb = this.#memory.kernelNonpagedMb + this.#memory.kernelPagedMb - first.kernelNonpagedMb - first.kernelPagedMb;
+      if (starts !== null) this.#startCost = startCost((now - first.at) / 60_000, growthMb, starts);
+    }
     const disks: DiskInput[] = this.#disks.map((disk) => {
       const { droppedMb, windowMinutes } = this.#diskWindow(disk.mount);
       return { ...disk, droppedMb, windowMinutes };
@@ -2536,6 +2547,7 @@ export class Engine {
       bootedAt: this.#bootedAt > 0 ? this.#bootedAt : null,
       drain: this.drain(),
       resumePlan: plan,
+      startCost: this.#startCost,
     });
   }
 
