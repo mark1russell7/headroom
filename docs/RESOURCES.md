@@ -1386,7 +1386,8 @@ waits for the start cap: the computer starts 1,350 a minute and this job adds 60
 
 **Limits.**
 
-- The link comes from 5 cases. The start rate can be a symptom of the cause and not the cause. The failed starts of H188 before each bugcheck are the next test.
+- The link comes from 5 cases. The start rate can be a symptom of the cause and not the cause.
+- **The test of H188.** When a system fails, it can stop new processes with `0xC0000142`, and the callers can start them again. No traced start failed with that code before 4 bugchecks (475 samples of `procs:failed` from 2026-11-17 00:44Z). The start log had none in 543,711 exits, also before the bugcheck of 22:48Z. Other NTSTATUS codes were in the log, so it can read such a code. The event logs of Windows had none too. Thus the high rate is not a retry storm of a system that fails. A decline that does not show as `0xC0000142` is not tested.
 - The values come from 5 hours of the start log. Derive them again when the log has 7 days.
 - Only the leases wait. The starts of the sessions, the services and Docker go on. In the log, the leases made 14 % to 30 % of the starts.
 - Without a read of the starts, no lease waits.
