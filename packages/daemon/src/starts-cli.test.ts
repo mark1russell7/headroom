@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { msFiletime, StartLogWriter, type StartRow } from "@headroom/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { keepStartsBeforeStop } from "./starts-before-stop.ts";
 import { startsCommand, writeStartsBeforeStop, type StartsOutput } from "./starts-cli.ts";
 
 const S = 1000;
@@ -101,5 +102,14 @@ describe("the starts before an unclean stop (H193)", () => {
     expect(saved.starts.map((start) => start.pid)).toEqual([15400, 4100, 31368, 31368]);
     expect(writeStartsBeforeStop(path, folder, T0 - 120 * S)).toBeNull();
     expect(writeStartsBeforeStop(join(folder, "none.db"), folder, T0)).toBeNull();
+  });
+
+  it("writes the same file in a worker thread, after the bind of the daemon (H206)", async () => {
+    const kept = await keepStartsBeforeStop({ path, folder, before: T0 + 30 * S });
+    expect(kept?.starts).toBe(4);
+    const saved = JSON.parse(readFileSync(kept!.file, "utf8")) as { to: number; starts: { pid: number }[] };
+    expect(saved.to).toBe(T0);
+    expect(saved.starts.map((start) => start.pid)).toEqual([15400, 4100, 31368, 31368]);
+    await expect(keepStartsBeforeStop({ path: join(folder, "none.db"), folder, before: T0 })).resolves.toBeNull();
   });
 });
