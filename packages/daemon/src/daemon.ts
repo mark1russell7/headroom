@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom, WORKTREE_IDLE_MS } from "@headroom/core";
-import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
+import { defineModule, hostPolicy, manifestProcedure, ProcedureRegistry, REGISTRY_READ_EFFECTS, registerModules, withEffects, type AnyProcedure } from "@procedures/client";
 import { peerHostOptions, type HostFaceFactory, type ProcedureHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
@@ -38,6 +38,21 @@ const SWEEP_EVERY_MS = 10 * 60_000;
 
 /** The time between two checks of the schedule of the worktree cleanup (H175). The first check comes after this time too. */
 const WORKTREE_CHECK_MS = 5 * 60_000;
+
+/**
+ * This function gives the registry of the daemon: the procedures of the daemon and `procedure.manifest`. The manifest lists
+ * each procedure that the policy of the host exposes, with its schemas and effects. A procedures server reads it, and
+ * forwards each call of a daemon procedure to the daemon over HTTP (`peerModule` of `@procedures/client`). The manifest
+ * only reads the registry.
+ */
+export function daemonRegistry(procedures: readonly AnyProcedure[]): ProcedureRegistry {
+  const registry = new ProcedureRegistry();
+  registerModules(registry, [
+    defineModule("@headroom/daemon", [...procedures]),
+    defineModule("@headroom/manifest", withEffects(REGISTRY_READ_EFFECTS, [manifestProcedure])),
+  ]);
+  return registry;
+}
 
 /** This function adds faces to the options of the host, and puts each of them on each listener of the host (H194). */
 export function withFaces(base: ProcedureHostOptions, faces: Readonly<Record<string, HostFaceFactory>>): ProcedureHostOptions {
@@ -149,14 +164,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   // H64: a detached job that waits is a row here, with no process. The client starts at the grant.
   const service = serviceCommand();
   const deferred = new DeferredStarts({ leases: engine, launch: launchClient(service.node, service.cli, CLIENT_TITLE) });
-  const registry = new ProcedureRegistry();
-  registerModules(registry, [
-    defineModule("@headroom/daemon", [
-      ...resourceProcedures(engine, () => idle.pending(), deferred),
-      ...gatewayProcedures(engine, gateway),
-      ...serviceProcedures(idle),
-      ...diskProcedures(() => readSummary(diskReportPath())),
-    ]),
+  const registry = daemonRegistry([
+    ...resourceProcedures(engine, () => idle.pending(), deferred),
+    ...gatewayProcedures(engine, gateway),
+    ...serviceProcedures(idle),
+    ...diskProcedures(() => readSummary(diskReportPath())),
   ]);
 
   const host = "127.0.0.1";
