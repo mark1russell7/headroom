@@ -14,7 +14,8 @@
   },
   "include": [
     "src/**/*",
-    "*.config.ts"
+    "*.config.ts",
+    "../../plugins/**/*.ts"
   ],
   "exclude": []
 }
