@@ -16,11 +16,11 @@
   },
   "dependencies": {
     "@headroom/core": "workspace:*",
-    "@mark1russell7/text": "^0.0.13"
+    "@mark1russell7/text": "^0.0.16"
   },
   "devDependencies": {
     "@mark1russell7/cue": "github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7",
-    "@mark1russell7/site-pages": "^0.7.0",
+    "@mark1russell7/site-pages": "^0.8.0",
     "@types/node": "^26.6.4",
     "typescript": "^7.0.2",
     "vite": "^8.3.5",
