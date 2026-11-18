@@ -197,7 +197,12 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     mode: options.mode ?? "foreground",
     host: withFaces(base, { mcp: gateway.face(), dashboard: dashboardFace(), hook: hookFace({
         status: () => engine.status(),
-        native: (command, cwd) => nativeRefusal(nativeImages, { command, cwd, budgetMs: HOOK_MEASURE_BUDGET_MS }),
+        native: async (command, cwd) => {
+          const refusal = await nativeRefusal(nativeImages, { command, cwd, budgetMs: HOOK_MEASURE_BUDGET_MS });
+          // Each refusal is a line of the log, so a count of the refusals and of their folders needs no new store.
+          if (refusal !== null) log(`The hook refused a command for a long native path (H203): ${refusal.slice(0, 400)}`);
+          return refusal;
+        },
       }),
     }),
     log,
