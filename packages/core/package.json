@@ -1,13 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@headroom/core",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:windows": "vitest run src/enforce.test.ts src/ends.test.ts src/temp.test.ts src/trace.test.ts src/windows-process-facts.test.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json"
   },
   "devDependencies": {

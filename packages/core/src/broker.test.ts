@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
-import { Broker, NO_REJOIN_REASON, type Capacity, type Lease } from "./broker.ts";
+import { Broker, NO_REJOIN_REASON, RECORDED_END_NOTE, type Capacity, type Lease } from "./broker.ts";
+import type { LeaseEnd } from "./ends.ts";
 import { rooms } from "./resources.ts";
 
-function setup(options: { alive?: Set<number>; used?: number; use?: (lease: Lease) => number | null; runMs?: Record<string, number>; longRunMs?: number } = {}) {
+function setup(
+  options: { alive?: Set<number>; used?: number; use?: (lease: Lease) => number | null; runMs?: Record<string, number>; longRunMs?: number; ends?: Map<string, LeaseEnd> } = {},
+) {
   let now = 1_000_000;
   let next = 0;
   const broker = new Broker({
@@ -18,6 +21,7 @@ function setup(options: { alive?: Set<number>; used?: number; use?: (lease: Leas
     runMs: (lease) => options.runMs?.[lease.job] ?? null,
     backfillMs: 600_000,
     defaultTtlMs: 300_000,
+    endOf: (lease) => options.ends?.get(lease.id) ?? null,
   });
   return { broker, advance: (ms: number) => (now += ms) };
 }
@@ -285,6 +289,63 @@ describe("Broker", () => {
     broker.tick(cap(8000));
     expect(broker.get(lease.id)?.state).toBe("expired");
     expect(broker.get(lease.id)?.reason).toBe("the process exited");
+  });
+
+  describe("the end record of a client (H202)", () => {
+    it("ends a lease whose process exited as released, with the exit, the use and the time of the record", () => {
+      const alive = new Set([10]);
+      const ends = new Map<string, LeaseEnd>();
+      const { broker, advance } = setup({ alive, ends });
+      const lease = broker.request({ holder: "shop", job: "build", amounts: { memory: 1000 }, pid: 10 });
+      broker.tick(cap(8000));
+      advance(5000);
+      ends.set(lease.id, { id: lease.id, at: 1_003_000, reason: "the job ended with code 5, peak 200 MB", peakMb: 200, usage: { cpuMs: 40 }, exitCode: 5, processes: 3 });
+      alive.delete(10);
+      advance(5000);
+      broker.tick(cap(8000));
+      expect(broker.get(lease.id)).toMatchObject({
+        state: "released",
+        endedAt: 1_003_000,
+        reason: `the job ended with code 5, peak 200 MB ${RECORDED_END_NOTE}`,
+        exitCode: 5,
+        peakMb: 200,
+        usage: { cpuMs: 40 },
+        processes: 3,
+      });
+    });
+
+    it("keeps the signal of a job that a signal stopped, and takes the time of the tick for a record from the future", () => {
+      const alive = new Set([10]);
+      const ends = new Map<string, LeaseEnd>();
+      const { broker } = setup({ alive, ends });
+      const lease = broker.request({ holder: "shop", job: "build", amounts: { memory: 1000 }, pid: 10 });
+      broker.tick(cap(8000));
+      ends.set(lease.id, { id: lease.id, at: 9_000_000, reason: "the job ended with signal SIGTERM", signal: "SIGTERM" });
+      alive.delete(10);
+      broker.tick(cap(8000));
+      const ended = broker.get(lease.id);
+      expect(ended).toMatchObject({ state: "released", endedAt: 1_000_000, signal: "SIGTERM" });
+      expect(ended?.exitCode).toBeUndefined();
+    });
+
+    it("reads no record while the process runs, and expires a lease with no record as before", () => {
+      const alive = new Set([10, 11]);
+      const ends = new Map<string, LeaseEnd>();
+      let reads = 0;
+      const { broker } = setup({ alive, ends });
+      const runs = broker.request({ holder: "shop", job: "build", amounts: { memory: 1000 }, pid: 10 });
+      const gone = broker.request({ holder: "shop", job: "test", amounts: { memory: 1000 }, pid: 11 });
+      ends.set(runs.id, { id: runs.id, at: 1_000_000, reason: "the job ended with code 0", exitCode: 0 });
+      const get = ends.get.bind(ends);
+      ends.get = (id) => ((reads += 1), get(id));
+      broker.tick(cap(8000));
+      expect(reads).toBe(0);
+      expect(broker.get(runs.id)?.state).toBe("granted");
+      alive.delete(11);
+      broker.tick(cap(8000));
+      expect(reads).toBe(1);
+      expect(broker.get(gone.id)).toMatchObject({ state: "expired", reason: "the process exited" });
+    });
   });
 
   it("ends a lease without a process when its heartbeat stops, and keeps a renewed one", () => {

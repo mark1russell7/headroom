@@ -21,7 +21,7 @@ import { createServer, connect as connectPipe, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ShellStart } from "@headroom/core";
+import type { ShellStart, StartedProcess } from "@headroom/core";
 import { headroomHome } from "./paths.ts";
 import { quoteArgument } from "./winshell.ts";
 
@@ -182,14 +182,49 @@ export interface RelayRequest {
   readonly waitMs: number;
 }
 
-/** This function starts the relay, which then connects to the pipe. On Windows, it is `startUnderShell` of the core. */
-export type RelayLaunch = (pipe: string) => Promise<ShellStart>;
+/** The start of a relay. */
+export type RelayStart =
+  /** The relay has the shell as its parent process, so it has the jobs of the shell. */
+  | (ShellStart & { readonly kind: "started" })
+  /** The shell did not start the relay, for the reason `why`. The relay started with a breakaway from the jobs of the caller. */
+  | { readonly kind: "breakaway"; readonly pid: number; readonly why: string }
+  /** The relay runs in the jobs of the caller, for the reason `why`: the shell did not start it, and a job refused the breakaway. */
+  | { readonly kind: "inside"; readonly pid: number; readonly why: string }
+  /** No relay started. The caller starts the client itself. */
+  | { readonly kind: "unavailable"; readonly reason: string };
+
+/** This function starts the relay, which then connects to the pipe. On Windows, it is `windowsRelayLaunch`. */
+export type RelayLaunch = (pipe: string) => Promise<RelayStart>;
+
+/** The two starts of a process outside the jobs of the caller on Windows: `startUnderShell` and `startOutsideJob` of the core. */
+export interface OutsideStarts {
+  readonly underShell: (commandLine: string, cwd: string, env: Readonly<Record<string, string | undefined>>) => Promise<ShellStart>;
+  readonly outsideJob: (commandLine: string, cwd: string) => Promise<StartedProcess>;
+}
+
+/**
+ * This function gives the start of the relay on Windows (H190, H202). The shell starts the relay first, so the relay
+ * leaves the jobs and the process tree of the caller. When the shell does not start it, for example on a computer with no
+ * desktop shell, the relay starts with `CREATE_BREAKAWAY_FROM_JOB`. When a job refuses the breakaway, the relay starts in
+ * the jobs of the caller, and the route tells why. Each start has the folder `cwd` and the environment of this process.
+ */
+export function windowsRelayLaunch(starts: OutsideStarts, cwd: string): RelayLaunch {
+  return async (pipe) => {
+    const line = relayCommandLine(pipe);
+    const shell = await starts.underShell(line, cwd, process.env);
+    if (shell.kind === "started") return shell;
+    const outside = await starts.outsideJob(line, cwd);
+    return outside.breakaway ? { kind: "breakaway", pid: outside.pid, why: shell.reason } : { kind: "inside", pid: outside.pid, why: `${shell.reason}, and a job refused the breakaway` };
+  };
+}
 
 /** Where the client of a detached run started. */
 export type DetachRoute =
   /** Outside each job of the caller: the parent process of the relay is the shell. */
   | { readonly kind: "shell"; readonly relayPid: number; readonly shellPid: number }
-  /** In the jobs of the caller, as a child of this process. `reason` tells why, or is `null` on a platform with no relay. */
+  /** Outside each job of the caller: the relay broke away from the jobs, because the shell did not start it, for the reason `why`. */
+  | { readonly kind: "breakaway"; readonly relayPid: number; readonly why: string }
+  /** In the jobs of the caller. `reason` tells why, or is `null` on a platform with no relay. */
   | { readonly kind: "caller"; readonly reason: string | null };
 
 /** The start of a detached client, and where it started. */
@@ -320,7 +355,7 @@ export async function startDetachedClient(entry: string, args: readonly string[]
     close();
     return inCaller(`the pipe of the relay did not open: ${opened}`);
   }
-  const launched = await options.launch(pipe).catch((error: unknown): ShellStart => ({ kind: "unavailable", reason: error instanceof Error ? error.message : String(error) }));
+  const launched = await options.launch(pipe).catch((error: unknown): RelayStart => ({ kind: "unavailable", reason: error instanceof Error ? error.message : String(error) }));
   if (launched.kind === "unavailable") {
     close();
     return inCaller(launched.reason);
@@ -344,7 +379,10 @@ export async function startDetachedClient(entry: string, args: readonly string[]
   socket.write(`${JSON.stringify(request)}\n`);
   const answer = await readLine(socket, waitMs + (options.marginMs ?? RELAY_MARGIN_MS));
   socket.destroy();
-  return { start: answer === null ? { kind: "pending" } : parseStart(answer), route: { kind: "shell", relayPid: launched.pid, shellPid: launched.shellPid } };
+  const start = answer === null ? ({ kind: "pending" } as const) : parseStart(answer);
+  if (launched.kind === "started") return { start, route: { kind: "shell", relayPid: launched.pid, shellPid: launched.shellPid } };
+  if (launched.kind === "breakaway") return { start, route: { kind: "breakaway", relayPid: launched.pid, why: launched.why } };
+  return { start, route: { kind: "caller", reason: launched.why } };
 }
 
 /**
@@ -377,6 +415,9 @@ export async function runRelay(pipe: string, start: typeof startClient = startCl
 export function routeLine(job: string, route: DetachRoute): string | null {
   if (route.kind === "shell") {
     return `headroom: the client of job ${job} runs outside the jobs of the caller. Its relay (process ${route.relayPid}) has the shell (process ${route.shellPid}) as its parent.`;
+  }
+  if (route.kind === "breakaway") {
+    return `headroom: the client of job ${job} runs outside the jobs of the caller. Its relay (process ${route.relayPid}) broke away from the jobs, because the shell did not start it: ${route.why}.`;
   }
   if (route.reason === null) return null;
   return `headroom: the client of job ${job} runs in the jobs of the caller, because ${route.reason}. A job of the caller that stops its processes when it closes, for example the job of an editor, also stops this client.`;

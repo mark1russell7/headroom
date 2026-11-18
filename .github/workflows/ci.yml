@@ -28,6 +28,20 @@ jobs:
   ci:
     uses: mark1russell7/template/.github/workflows/reusable-ci.yml@2030c7dec9485afebb504772f79f41f23bdb2df7 # main
 
+  # The tests of the Windows code: job objects, the relay of a detached client, and a restart of the daemon with jobs that
+  # run (H202). The job ci runs on Linux only, and there these tests skip. The script test:windows names the files.
+  windows:
+    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@2030c7dec9485afebb504772f79f41f23bdb2df7 # main
+    with:
+      os: '["windows-latest"]'
+      scripts: test:windows
+      recursive-scripts: ""
+      changesets: false
+      release-check: false
+      release-window: false
+      coverage-on-main: false
+      timeout-minutes: 20
+
   # The site of .github/site.json: the build, the site check and the probe, with no deploy (CI.md of the
   # template, "The site config"). The Pages workflow deploys the same site from main.
   site:
@@ -42,7 +56,7 @@ jobs:
   ci-ok:
     name: CI OK
     if: ${{ !cancelled() }}
-    needs: [ci, site]
+    needs: [ci, windows, site]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}

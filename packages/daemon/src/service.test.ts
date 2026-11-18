@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { helperCommandLine, pendingLine, systemdArg, systemdUnit, windowsArg, windowsTaskXml, type ServiceCommand } from "./service.ts";
+import { acrossLines, helperCommandLine, pendingLine, runningJobs, systemdArg, systemdUnit, windowsArg, windowsTaskXml, type ServiceCommand } from "./service.ts";
 
 const command: ServiceCommand = {
   node: "C:\\Program Files\\nodejs\\node.exe",
@@ -61,4 +61,37 @@ describe("systemdUnit", () => {
     expect(unit).toContain("Restart=on-failure");
   });
   it("escapes a backslash and a quote", () => expect(systemdArg('a\\"b')).toBe('"a\\\\\\"b"'));
+});
+
+describe("the jobs across a restart (H202)", () => {
+  const leases = [
+    { id: "a1", job: "build", pid: 10, state: "granted" },
+    { id: "a2", job: "serve", pid: 11, state: "granted" },
+    { id: "w1", job: "later", pid: 12, state: "waiting" },
+    { id: "g1", job: "no-process", pid: null, state: "granted" },
+    { id: "r1", job: "done", pid: 13, state: "released" },
+  ] as const;
+
+  it("takes the granted leases with a process, and no other lease", () => {
+    expect(runningJobs(leases)).toEqual([
+      { id: "a1", job: "build", pid: 10 },
+      { id: "a2", job: "serve", pid: 11 },
+    ]);
+  });
+
+  it("has no line when no job runs", () => {
+    expect(acrossLines([], () => true)).toEqual({ before: null, after: null });
+  });
+
+  it("names the jobs before the restart, and tells that each still runs after it", () => {
+    const lines = acrossLines(runningJobs(leases), () => true);
+    expect(lines.before).toBe("2 jobs run across the restart: build (process 10), serve (process 11).");
+    expect(lines.after).toBe("The 2 jobs that ran before the restart still run.");
+  });
+
+  it("names each job that ended in the restart, with its lease for the exit", () => {
+    expect(acrossLines(runningJobs(leases), (pid) => pid !== 11).after).toBe(
+      "1 of 2 jobs still run. These jobs ended in the restart: serve (lease a2). The command headroom job <lease> tells the exit of each.",
+    );
+  });
 });
