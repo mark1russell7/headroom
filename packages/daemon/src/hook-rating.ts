@@ -48,7 +48,7 @@ export const TIGHT_MB = 4096;
 const READERS: ReadonlySet<string> = new Set(["grep", "rg", "sed", "cat", "echo", "head", "tail", "ls", "select-string", "get-content"]);
 
 /** The shells that run their argument as a command, with the option that tells them to do this. */
-const SHELLS: ReadonlyMap<string, RegExp> = new Map([
+export const SHELLS: ReadonlyMap<string, RegExp> = new Map([
   ["bash", /^-[A-Za-z]*c$/],
   ["sh", /^-[A-Za-z]*c$/],
   ["powershell", /^-c(?:ommand)?$/i],
@@ -401,6 +401,16 @@ function isHeavyPart(part: Part): boolean {
   return HEAVY.some((pattern) => pattern.test(text));
 }
 
+/**
+ * This function gives the words of each part of a line that runs a program (H203). A comment and the body of a here-document
+ * of text are not parts. A quoted string is one word, without its quotes.
+ */
+export function commandWords(command: string): string[][] {
+  return partsOf(command)
+    .filter((part) => part.text.trim() !== "")
+    .map(wordsOf);
+}
+
 /** This function tells if a command line has a heavy part. */
 export function isHeavy(command: string): boolean {
   return partsOf(command).some(isHeavyPart);
@@ -455,6 +465,10 @@ export function hookOutput(event: unknown, status: () => Status | null): HookOut
   const command = String(input?.command ?? "");
   if (!isHeavy(command) || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return {};
   const reason = decide(command, status());
-  if (!reason) return {};
+  return reason ? denied(reason) : {};
+}
+
+/** This function gives the answer of the hook that refuses a tool call, with the reason that the session reads. */
+export function denied(reason: string): HookOutput {
   return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
 }

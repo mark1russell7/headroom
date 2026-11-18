@@ -6,6 +6,7 @@ import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type Canc
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
+import { nativeRefusal, type NativeImages } from "./native-paths.ts";
 import type { IdleRestart, IdleRestartState, PendingRestart } from "./restart.ts";
 import { createProcedure, zodAdapter, type AnyProcedure, type ProcedureContext } from "@procedures/client";
 import { z } from "zod";
@@ -808,6 +809,38 @@ export function diskProcedures(summary: () => ReportSummary | null): AnyProcedur
     .build() as AnyProcedure;
 
   return [report];
+}
+
+const NativeInput = z.object({
+  command: z.string().min(1).max(200_000).describe("The command line, for example pnpm test"),
+  cwd: z.string().min(1).max(4000).describe("The absolute folder where the command starts"),
+  budgetMs: z.number().int().min(0).max(600_000).optional().describe("The longest wait for a walk of the native images in ms. Default: no limit."),
+});
+type NativeInput = z.infer<typeof NativeInput>;
+
+/** The answer of `resources native`: the refusal of the command for a long native path, or `null` (H203). */
+export interface NativeAnswer {
+  readonly refusal: string | null;
+  readonly limit: number;
+}
+
+/** This function gives the procedure of the gate of long native paths (H203). The daemon keeps the cache of the walks. */
+export function nativeProcedures(images: NativeImages): AnyProcedure[] {
+  const native = createProcedure()
+    .path(["resources", "native"])
+    .input(zodAdapter<NativeInput>(NativeInput))
+    .output(anything<NativeAnswer>())
+    .meta({
+      description:
+        "Check a command for a native image path over the limit (H203): a command that runs node in a folder whose longest .node, .exe or .dll has an NT path over 240 characters gets a refusal.",
+      args: ["command", "cwd"],
+      output: "json",
+      effects: { reads: ["files"], writes: [], destructive: false },
+    })
+    .handler(async (input: NativeInput): Promise<NativeAnswer> => ({ refusal: await nativeRefusal(images, input), limit: images.limit }))
+    .build() as AnyProcedure;
+
+  return [native];
 }
 
 /** This function gives the usage of a release with only the fields that have a value. */
