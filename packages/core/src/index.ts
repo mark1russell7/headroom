@@ -189,7 +189,7 @@ export {
   RUNGS,
 } from "./predict.ts";
 export type { AmountRule, JobKey, JobKind, MemoryPrediction, PackagesFit, PeakReads, Rung, RunEstimate, RunReads, RunSource, SizedPeak } from "./predict.ts";
-export { keyedLeases } from "./store.ts";
+export { keyedLeases, readResourceSamples } from "./store.ts";
 export type { KeyedLease, KeyScope, LeaseKeyRow } from "./store.ts";
 export { chooseRule, holdsGates, holdsOver, measureRows, OVER_GATE, RATIO_GATE, replayLeases } from "./replay.ts";
 export type { AmountMeasures, ChosenRule, ReplayOptions, ReplayRow, RuleResult } from "./replay.ts";
@@ -591,16 +591,40 @@ export {
   openStartLog,
   parentsOf,
   rankStarters,
+  slowStepCause,
+  slowStepsBetween,
+  spreadOf,
+  START_LOG_CHECKPOINT_EVERY_MS,
   START_LOG_KEEP_MS,
   START_LOG_PRUNE_EVERY_MS,
+  START_LOG_SLOW_MS,
+  START_LOG_SPREAD_EVERY_MS,
   START_LOG_REUSE_MS,
   START_LOG_WRITE_EVERY_MS,
   startLogSpan,
+  startLogSpreads,
   StartLogWriter,
   startsBetween,
   startsOfPid,
 } from "./start-log.ts";
-export type { ExitRow, LoggedStart, RankedStarter, StartLogSpan, StartLogStats, StartLogWriterOptions, StartRanking, StartRow } from "./start-log.ts";
+export type {
+  ExitRow,
+  LoggedStart,
+  RankedStarter,
+  SlowCause,
+  SlowCauseKind,
+  SlowStep,
+  SlowStepContext,
+  SlowStepKind,
+  SpreadKind,
+  StartLogSpan,
+  StartLogSpread,
+  StartLogSpreads,
+  StartLogStats,
+  StartLogWriterOptions,
+  StartRanking,
+  StartRow,
+} from "./start-log.ts";
 export {
   MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
 export type { Config, MemoryRow, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep } from "./store.ts";

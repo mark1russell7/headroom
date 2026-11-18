@@ -875,6 +875,33 @@ On 2026-11-15 and 2026-11-16, 4 bugchecks stopped this computer, each with the c
 
 **The gates after the deploy.** At least 90 % of the start rows have a command line. The longest time from the creation of a new process to its commit stays under 251 ms.
 
+### H199: the spread of the lag of the start log
+
+The longest lag of the live log of H193 was 2,327 ms, and its longest commit took 1,564 ms. Four bugchecks came 251 ms to 525 ms after the creation of the process. Thus a bugcheck during a slow commit can lose the row of the process. The longest lag is one value, so it cannot tell a rare stall from a slow log.
+
+**The histograms.** The writer keeps two histograms of `@mark1russell7/rigor-statistics`, each with a relative error of 1 %.
+
+- The lag is the time from the creation of a new process to the end of the commit of its row. An adoption and a row with no creation time do not count.
+- The commit time is the time of each commit of the writer, from its start to its end.
+- `headroom status` gives the median, the p99 and the longest value of each, since the start of the daemon.
+
+**The table `spreads`.** Step 4 of the schema of the log adds it. A row has the end and the start of its period and the kind (`lag` or `write`). It also has the count, the p50, the p99, the maximum and the histogram as JSON.
+
+- The writer adds the rows of a period at the first commit after 10 minutes (`START_LOG_SPREAD_EVERY_MS`), in the transaction of that commit. It adds the rows of the last period at its close.
+- A histogram merges with another one of the same relative error. Thus `startLogSpreads` gives the spread of any span of the log, across the restarts of the daemon.
+- The prune deletes the rows of the table with the other rows of the log. A row of another shape or of another relative error does not count.
+- A crash loses at most the last 10 minutes of the histograms. The rows of the starts stay.
+
+**The slow steps.** `headroom starts --slow [--hours <n>]` gives the spread of the span and each slow step of the writer, the newest 50 at most. A slow step is a commit, a copy of the WAL or a prune that took more than 500 ms. A commit with a lag above 500 ms is a slow step too.
+
+- The lag of a commit has three parts. The first is the time before the reader got the message. The second is the wait of the rows in the reader, and the third is the commit.
+- The largest part names the cause: `late-message`, `queued` or `slow-commit`. A copy of the WAL and a prune are their own causes.
+- The command reads the samples of the store in the minute of each step. These are the free memory, the free commit, the cores in use and the traced starts a minute. A sample counts when it is less than 90 s from the step.
+- The store has no sample of the disk I/O. Thus a slow disk shows only as a slow commit with a normal state of the memory and of the processors.
+- When the store cannot be read, the command gives the causes and says that the state of the system is not known.
+
+**Part 2.** After the deploy, the p99 of the lag over 24 hours decides the next step. If it is above 250 ms, a change brings it below that value, and a gate holds it. The prediction goes in the log before the read.
+
 ### H30: battery and power
 
 Mark asked for the battery as a resource on battery power. An event or a cheap read tells the daemon when the state changes.

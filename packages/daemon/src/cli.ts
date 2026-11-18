@@ -19,7 +19,7 @@
  * - `headroom presence [--json]`: the state of Mark at the laptop, and its history (H33).
  * - `headroom ports [--json]`: the listening TCP ports, with the process and the owner of each port (H24).
  * - `headroom gpu [--json]`: each GPU adapter with its memory, its use and its owners, and the leased jobs (H36).
- * - `headroom starts <pid> [--at <time>] | --top [--hours <n>]`: the start log: the program of a pid, and the top starters (H193).
+ * - `headroom starts <pid> [--at <time>] | --top|--slow [--hours <n>]`: the start log: the program of a pid, the top starters (H193), and the slow steps with their causes (H199).
  * - `headroom docker [--json]`: each container with its owner, its memory and its cores, the VM and the disk use of Docker (H38).
  * - `headroom disk report [--drive C:] [--deep] [--json]`: what uses the space of each drive (H21).
  * - `headroom disk clean [--apply] [--json]`: a dry run of the safe cleanup. With `--apply`, it deletes only disposable data (H21).
@@ -67,6 +67,7 @@ import {
   localClock,
   nextClock,
   rebootLines,
+  readResourceSamples,
   CPU_AUTO_DEFAULT,
   CPU_RESERVE_DEFAULT,
   MEMORY_RESERVE_DEFAULT_MB,
@@ -123,7 +124,7 @@ import { mcpCommand } from "./gateway-cli.ts";
 import { diskCommand } from "./disk-cli.ts";
 import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, routeLine, startDetachedClient, tellParent, waitForDaemon, windowsRelayLaunch } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
-import { STARTS_USAGE, startsCommand } from "./starts-cli.ts";
+import { SLOW_SAMPLE_IDS, STARTS_USAGE, startsCommand } from "./starts-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
 import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
@@ -249,6 +250,7 @@ const HELP = `headroom: the memory and job broker of this computer
   ${STARTS_USAGE}
                The start log: each start of the trace with its command line and its exit, kept 24 hours.
                A pid of a crash dump gives its program and its parents. --top ranks the starters.
+               --slow gives the spread of the lag and each slow step of the log with its cause.
   ${DOCKER_USAGE}                  (each container: its owner, memory and cores; the VM and the disk use)
   headroom disk report [--drive C:] [--deep] [--json]
                What uses the space: the temp folders, the caches, the disk images, node_modules and more.
@@ -1851,7 +1853,16 @@ async function main(argv: string[]): Promise<number> {
     case "gpu":
       return gpuCommand(rest, connect());
     case "starts":
-      return startsCommand(rest, startLogPath());
+      return startsCommand(rest, startLogPath(), undefined, {
+        // The store can be missing or locked. Then --slow gives the causes without the state of the system.
+        samples: (from, to) => {
+          try {
+            return readResourceSamples(databasePath(), from, to, SLOW_SAMPLE_IDS);
+          } catch {
+            return null;
+          }
+        },
+      });
     case "docker":
       return dockerCommand(rest, connect());
     case "disk":

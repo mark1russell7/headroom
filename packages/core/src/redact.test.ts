@@ -169,6 +169,15 @@ function start(at: number, pid: number, command: string, parentCommand: string |
 /** The first 8 bytes of the SHA-256 of a text, as the start log keeps it. */
 const hashOf = (text: string): bigint => createHash("sha256").update(text).digest().readBigInt64LE(0);
 
+/**
+ * The first step of the schema of the start log, as the first version wrote it. A step that a file can have does not
+ * change, so a test makes a true file of the first version from it.
+ */
+const FIRST_STEP = `CREATE TABLE texts (id INTEGER PRIMARY KEY, hash INTEGER UNIQUE, text TEXT NOT NULL, last INTEGER NOT NULL);
+  CREATE TABLE starts (at INTEGER NOT NULL, key INTEGER NOT NULL, pid INTEGER NOT NULL, ppid INTEGER, created INTEGER,
+    image INTEGER, command INTEGER, parent_command INTEGER, reuse_ms INTEGER);
+  CREATE TABLE exits (at INTEGER NOT NULL, key INTEGER NOT NULL, pid INTEGER NOT NULL, code INTEGER, created INTEGER);`;
+
 describe("the secrets of a command line never reach the start log (H186, H193)", () => {
   const T0 = Date.UTC(2026, 10, 17, 21, 0, 0);
 
@@ -198,16 +207,22 @@ describe("the secrets of a command line never reach the start log (H186, H193)",
     const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
     try {
       const path = join(dir, "starts.db");
-      const first = new StartLogWriter(path, { now: () => T0 });
-      first.write([start(T0, 21, "mysql --password=[secret] -u root")], []);
-      first.close();
+      // A file of the first version: the tables of the first step, and each text as it came, with the hash of that text.
+      // The first text has a mark in place of its secret, as the writer of that version kept it.
       const db = new DatabaseSync(path);
-      const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-      // The texts of a file of the first version: each one as it came, with the hash of that text.
+      db.exec(FIRST_STEP);
       const insert = db.prepare("INSERT INTO texts (hash, text, last) VALUES (?, ?, ?)");
-      for (const text of [`mysql --password=${LOGIN_SECRET} -u root`, `gh pr list --token ${TOKEN}`, "vitest run"]) insert.run(hashOf(text), text, T0);
-      db.exec(`PRAGMA user_version = ${version - 1}`);
+      for (const text of ["mysql --password=[secret] -u root", `mysql --password=${LOGIN_SECRET} -u root`, `gh pr list --token ${TOKEN}`, "vitest run"]) {
+        insert.run(hashOf(text), text, T0);
+      }
+      db.exec("PRAGMA user_version = 1");
       db.close();
+      // The version of a new file is the count of all the steps.
+      const fresh = join(dir, "fresh.db");
+      new StartLogWriter(fresh, { now: () => T0 }).close();
+      const opened = new DatabaseSync(fresh, { readOnly: true });
+      const version = (opened.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+      opened.close();
       const second = new StartLogWriter(path, { now: () => T0 + 1000 });
       // A new text with the same redaction finds a text of the file, and the unique hash does not refuse it.
       second.write([start(T0 + 1000, 22, `mysql --password=${PG} -u root`)], []);

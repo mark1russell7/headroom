@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Broker } from "./broker.ts";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -151,12 +151,15 @@ describe("Store", () => {
     again.close();
   });
 
-  it("refuses a file of a newer version of headroom", () => {
-    const path = join(mkdtempSync(join(tmpdir(), "headroom-newer-")), "new.db");
+  it("refuses a file of a newer version of headroom, and does not hold the file open", () => {
+    const folder = mkdtempSync(join(tmpdir(), "headroom-newer-"));
+    const path = join(folder, "new.db");
     const newer = new DatabaseSync(path);
     newer.exec("PRAGMA user_version = 99");
     newer.close();
     expect(() => new Store(path)).toThrow(/headroom/);
+    // On Windows, a folder with a file that a process holds open cannot be removed.
+    expect(() => rmSync(folder, { recursive: true, force: true })).not.toThrow();
   });
 
   it("makes the folder of a new file, and a store in memory has the same schema", () => {

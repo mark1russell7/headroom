@@ -5,6 +5,9 @@
  *   its parents and the reuse of the pid before it. A crash dump gives the pid and the time.
  * - `headroom starts --top [--hours <n>] [--json]`: the starters with the most starts, by program and by the command line
  *   of the parent. The span is the last hour or the last `n` hours. The fleet cuts the top starters.
+ * - `headroom starts --slow [--hours <n>] [--json]` (H199): the spread of the lag and of the commit time over the span,
+ *   and each slow step of the writer with its cause. The 1-minute samples of the store tell the state of the system in
+ *   the minute of each step.
  *
  * The daemon also calls `writeStartsBeforeStop` after an unclean stop, for example a bugcheck. It keeps the starts of the
  * last 2 minutes before the stop in a JSON file, so they stay after the 24 hours of the log.
@@ -13,15 +16,47 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { openStartLog, parentsOf, rankStarters, startLogSpan, startsBetween, startsOfPid, type LoggedStart, type RankedStarter } from "@headroom/core";
+import {
+  openStartLog,
+  parentsOf,
+  rankStarters,
+  slowStepCause,
+  slowStepsBetween,
+  START_LOG_SLOW_MS,
+  startLogSpan,
+  startLogSpreads,
+  startsBetween,
+  startsOfPid,
+  type LoggedStart,
+  type RankedStarter,
+  type ResourceRow,
+  type SlowCause,
+  type SlowStep,
+  type SlowStepContext,
+  type StartLogSpread,
+  type StartLogSpreads,
+} from "@headroom/core";
 
-export const STARTS_USAGE = "headroom starts <pid> [--at <time>] [--json] | headroom starts --top [--hours <n>] [--json]";
+export const STARTS_USAGE = "headroom starts <pid> [--at <time>] [--json] | headroom starts --top|--slow [--hours <n>] [--json]";
 
 /** The outputs of the command. The tests replace them. */
 export interface StartsOutput {
   readonly out: (text: string) => void;
   readonly err: (text: string) => void;
 }
+
+/** The sources of `headroom starts` besides the start log. The tests replace them. */
+export interface StartsSources {
+  /** The clock: the end of the span of `--slow`. */
+  readonly now?: (() => number) | undefined;
+  /** The 1-minute samples of the store from `from` to `to`, or `null` when the store cannot be read. */
+  readonly samples?: ((from: number, to: number) => readonly ResourceRow[] | null) | undefined;
+}
+
+/** The samples that tell the state of the system in the minute of a slow step. */
+export const SLOW_SAMPLE_IDS: readonly string[] = ["memory", "commit", "cpu", "procs:traced"];
+/** The farthest sample from a slow step that tells its state: the samples come each minute. */
+const SAMPLE_NEAR_MS = 90_000;
 
 const CONSOLE: StartsOutput = { out: (text) => console.log(text), err: (text) => console.error(text) };
 const HOUR_MS = 3_600_000;
@@ -86,20 +121,26 @@ function rankLines(title: string, starters: readonly RankedStarter[]): string[] 
 }
 
 /** This function runs `headroom starts`. `path` is the file of the start log. */
-export function startsCommand(args: readonly string[], path: string, output: StartsOutput = CONSOLE): number {
+export function startsCommand(args: readonly string[], path: string, output: StartsOutput = CONSOLE, sources: StartsSources = {}): number {
   let parsed;
   try {
-    parsed = parseArgs({ args: [...args], allowPositionals: true, options: { top: { type: "boolean" }, hours: { type: "string" }, at: { type: "string" }, json: { type: "boolean" } } });
+    parsed = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      options: { top: { type: "boolean" }, slow: { type: "boolean" }, hours: { type: "string" }, at: { type: "string" }, json: { type: "boolean" } },
+    });
   } catch (error) {
     output.err(`${error instanceof Error ? error.message : String(error)}\nUsage: ${STARTS_USAGE}`);
     return 2;
   }
   const { values, positionals } = parsed;
   const top = values.top === true;
+  const slow = values.slow === true;
   const hours = values.hours === undefined ? 1 : Number(values.hours);
   const pid = positionals.length === 1 ? Number(positionals[0]) : Number.NaN;
   const at = values.at === undefined ? null : Date.parse(values.at);
-  const usable = top ? positionals.length === 0 && hours > 0 && hours <= 24 && values.at === undefined : Number.isInteger(pid) && pid > 0 && values.hours === undefined && (at === null || !Number.isNaN(at));
+  const spanned = top || slow;
+  const usable = top && slow ? false : spanned ? positionals.length === 0 && hours > 0 && hours <= 24 && values.at === undefined : Number.isInteger(pid) && pid > 0 && values.hours === undefined && (at === null || !Number.isNaN(at));
   if (!usable) {
     output.err(`Usage: ${STARTS_USAGE}`);
     return 2;
@@ -110,6 +151,7 @@ export function startsCommand(args: readonly string[], path: string, output: Sta
   }
   const db = openStartLog(path);
   try {
+    if (slow) return slowCommand(db, hours, values.json === true, output, sources);
     if (top) {
       const ranking = rankStarters(db, hours * HOUR_MS, TOP);
       if (values.json === true) {
@@ -158,6 +200,94 @@ export function startsCommand(args: readonly string[], path: string, output: Sta
   } finally {
     db.close();
   }
+}
+
+type StartLogDb = ReturnType<typeof openStartLog>;
+
+/** A slow step of the writer with its cause, and the state of the system in its minute (H199). */
+export interface ExplainedSlowStep extends SlowStep {
+  readonly cause: SlowCause;
+  readonly context: SlowStepContext | null;
+}
+
+/** The most slow steps in the text of `--slow`. `--json` gives all of them. */
+const SLOW_SHOWN = 50;
+
+/**
+ * This function gives the state of the system at a time: the nearest sample of each instance, at most 90 s away. It
+ * gives `null` when no sample is near.
+ */
+export function contextAt(samples: readonly ResourceRow[], at: number): SlowStepContext | null {
+  const nearest = new Map<string, ResourceRow>();
+  for (const row of samples) {
+    const distance = Math.abs(row.at - at);
+    if (distance > SAMPLE_NEAR_MS) continue;
+    const before = nearest.get(row.id);
+    if (before === undefined || distance < Math.abs(before.at - at)) nearest.set(row.id, row);
+  }
+  if (nearest.size === 0) return null;
+  const cpu = nearest.get("cpu");
+  return {
+    memoryFreeMb: nearest.get("memory")?.free ?? null,
+    commitFreeMb: nearest.get("commit")?.free ?? null,
+    coresUsed: cpu?.used ?? null,
+    cores: cpu?.capacity ?? null,
+    tracedPerMinute: nearest.get("procs:traced")?.used ?? null,
+  };
+}
+
+/** This function writes a time in ms: with one decimal under 10 ms, else with the separators of thousands. */
+function spreadMs(ms: number): string {
+  return ms < 10 ? `${ms.toFixed(1)} ms` : `${Math.round(ms).toLocaleString("en-US")} ms`;
+}
+
+/** This function writes a spread: "61 ms at the median, 240 ms at p99 and 2,327 ms at most (12,400 starts)". */
+function spreadText(spread: StartLogSpread, unit: string): string {
+  return `${spreadMs(spread.p50)} at the median, ${spreadMs(spread.p99)} at p99 and ${spreadMs(spread.max)} at most (${spread.count.toLocaleString("en-US")} ${unit})`;
+}
+
+/** This function writes the lines of the spreads of a span. */
+function spreadLines(spreads: StartLogSpreads, from: number): string[] {
+  if (spreads.lag === null && spreads.write === null) return ["  The log has no histogram of this span. The writer writes the histograms of each 10 minutes."];
+  const lines: string[] = [];
+  if (spreads.lag !== null) lines.push(`  The time from the creation of a new process to its row on the disk: ${spreadText(spreads.lag, "starts")}.`);
+  if (spreads.write !== null) lines.push(`  The time of a commit: ${spreadText(spreads.write, "commits")}.`);
+  if (spreads.from !== null && spreads.from > from + 600_000) lines.push(`  The histograms start at ${timeText(spreads.from)}: the log has no older histogram.`);
+  return lines;
+}
+
+/** This function writes the line of a slow step. */
+function slowLine(step: ExplainedSlowStep): string {
+  const lag = step.lagMs === null ? "" : `, lag ${step.lagMs.toLocaleString("en-US")} ms`;
+  return `  ${timeText(step.at)}  ${step.kind} ${spreadMs(step.ms)}${lag}: ${step.cause.text}`;
+}
+
+/** This function runs `headroom starts --slow` (H199): the spreads of the span, and each slow step with its cause. */
+function slowCommand(db: StartLogDb, hours: number, json: boolean, output: StartsOutput, sources: StartsSources): number {
+  const to = (sources.now ?? Date.now)();
+  const from = to - hours * HOUR_MS;
+  const spreads = startLogSpreads(db, from, to);
+  const steps = slowStepsBetween(db, from, to);
+  const samples = steps.length === 0 ? [] : (sources.samples?.(from - SAMPLE_NEAR_MS, to + SAMPLE_NEAR_MS) ?? null);
+  const explained: ExplainedSlowStep[] = steps.map((step) => {
+    const context = samples === null ? null : contextAt(samples, step.at);
+    return { ...step, cause: slowStepCause(step, context), context };
+  });
+  if (json) {
+    output.out(JSON.stringify({ from, to, spreads, steps: explained }, null, 2));
+    return 0;
+  }
+  const span = `${timeText(from).slice(0, 16)} to ${timeText(to).slice(11, 16)} UTC`;
+  const lines = [`The start log over the last ${hours} h (${span}):`, ...spreadLines(spreads, from)];
+  if (explained.length === 0) lines.push(`No step of the writer was slow (above ${START_LOG_SLOW_MS} ms).`);
+  else {
+    const what = explained.length === 1 ? "1 step of the writer was slow" : `${explained.length.toLocaleString("en-US")} steps of the writer were slow`;
+    lines.push(`${what} (above ${START_LOG_SLOW_MS} ms, or a commit with a lag above it):`, ...explained.slice(-SLOW_SHOWN).map(slowLine));
+    if (explained.length > SLOW_SHOWN) lines.push(`  ${explained.length - SLOW_SHOWN} older slow steps are in the span. --json gives all of them.`);
+    if (samples === null) lines.push("The samples of the store were not read, so the state of the system in each minute is not known.");
+  }
+  output.out(lines.join("\n"));
+  return 0;
 }
 
 /**

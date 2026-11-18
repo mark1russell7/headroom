@@ -18,7 +18,7 @@
 
 import { parentPort, workerData } from "node:worker_threads";
 import koffi from "koffi";
-import { filetimeMs, START_LOG_PRUNE_EVERY_MS, START_LOG_REUSE_MS, StartLogWriter, type ExitRow, type StartLogStats, type StartRow } from "./start-log.ts";
+import { filetimeMs, START_LOG_CHECKPOINT_EVERY_MS, START_LOG_PRUNE_EVERY_MS, START_LOG_REUSE_MS, StartLogWriter, type ExitRow, type StartLogStats, type StartRow } from "./start-log.ts";
 import type { TraceBatch, TraceEvent } from "./trace.ts";
 import { closeProcess, commandLine, createTime, exitCode, imagePath, openQuery, parentPid } from "./windows-process-facts.ts";
 
@@ -157,7 +157,7 @@ function openLog(path: string | null): Log {
   }
 }
 
-/** This function runs one step of the log: a write, or a prune. An error closes the writer and keeps its reason. */
+/** This function runs one step of the log: a write, a copy of the WAL or a prune. An error closes the writer and keeps its reason. */
 function logStep(log: Log, step: (writer: StartLogWriter) => void, what: string): void {
   const writer = log.writer;
   if (writer === null) return;
@@ -180,7 +180,7 @@ function logStats(log: Log): StartLogStats | undefined {
   if (log.writer !== null) return log.writer.stats();
   if (log.last !== null) return { ...log.last, failure: log.failure };
   if (log.failure === null) return undefined;
-  return { path: data.logPath ?? "", starts: 0, withCommand: 0, withCreated: 0, adopted: 0, exits: 0, commits: 0, writeMs: 0, slowestWriteMs: 0, slowestLagMs: 0, failure: log.failure };
+  return { path: data.logPath ?? "", starts: 0, withCommand: 0, withCreated: 0, adopted: 0, exits: 0, commits: 0, writeMs: 0, slowestWriteMs: 0, slowestLagMs: 0, checkpoints: 0, slowestCheckpointMs: 0, slowSteps: 0, lagSpread: null, writeSpread: null, failure: log.failure };
 }
 
 function run(): void {
@@ -190,6 +190,7 @@ function run(): void {
   let batch: TraceEvent[] = [];
   let postedAt = Date.now();
   let prunedAt = 0;
+  let checkpointedAt = Date.now();
   let starts: StartRow[] = [];
   let exits: ExitRow[] = [];
   /** The time of the oldest message whose row waits for its commit. */
@@ -228,6 +229,11 @@ function run(): void {
       starts = [];
       exits = [];
       waitingSince = null;
+    }
+    // The copy of the WAL comes after the commit, so its time does not delay the rows of the commit (H199).
+    if (at - checkpointedAt >= START_LOG_CHECKPOINT_EVERY_MS) {
+      logStep(log, (writer) => writer.checkpoint(), "checkpoint");
+      checkpointedAt = at;
     }
     if (at - prunedAt >= START_LOG_PRUNE_EVERY_MS) {
       logStep(log, (writer) => writer.prune(), "prune");

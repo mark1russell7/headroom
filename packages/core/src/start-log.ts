@@ -12,10 +12,27 @@
  *   rowid. Each index costs writes of pages at each commit.
  * - The log keeps 24 hours, counted back from its newest row. Thus a long stop after a crash does not empty it.
  * - It covers only the processes of the trace: the jobs of the traced owner kinds.
+ * - The writer copies the WAL into the file in a step of its own, after a commit (H199). Thus a slow copy does not delay the
+ *   rows of a commit, and its time is known. SQLite copies it in a commit only as a last resort, at `BACKSTOP_FRAMES`.
+ * - Each step of the writer (a commit, a copy of the WAL or a prune) that takes more than `START_LOG_SLOW_MS` gets a row
+ *   in the table `slow_steps` (H199). A commit with a lag above that time gets a row too. The row splits the lag into its
+ *   parts, so it shows the cause. The next transaction writes the row, so it costs no sync of its own.
+ * - The writer keeps a histogram of the lag of each new process and one of the time of each commit (H199). Each
+ *   `START_LOG_SPREAD_EVERY_MS`, a commit also writes the histograms of the time since the last row of the table
+ *   `spreads`. A merge of these rows gives the quantiles of any time, also across restarts of the daemon.
  */
 
 import { createHash } from "node:crypto";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
+import {
+  addAllToHistogram,
+  addToHistogram,
+  emptyHistogram,
+  histogramQuantile,
+  mergeHistograms,
+  type Histogram,
+  type HistogramBucket,
+} from "@mark1russell7/rigor-statistics";
 import { migrate, openDatabase, transaction, type Migration } from "@mark1russell7/sqlite";
 import { redactCommand } from "./redact.ts";
 
@@ -40,6 +57,22 @@ const FILETIME_UNIX = 116_444_736_000_000_000n;
  * 1 s after its creation counts as a start: it is a new process.
  */
 export const START_LOG_ADOPT_MS = 1_000;
+/** A step of the writer that takes more time than this, or a commit with a lag above it, gets a row in `slow_steps`. */
+export const START_LOG_SLOW_MS = 500;
+/**
+ * The time between two copies of the WAL into the file. The trace writes at most 10 commits a second, of a few pages each.
+ * Thus a copy has fewer than 1,000 pages, the point where SQLite copies by default.
+ */
+export const START_LOG_CHECKPOINT_EVERY_MS = 10_000;
+/** The count of pages in the WAL where SQLite copies it in a commit. It is a backstop for a writer that does not copy. */
+const BACKSTOP_FRAMES = 10_000;
+/** The most slow steps that wait in the memory for the next transaction. An older one goes when a new one comes. */
+const PENDING_SLOW = 1_000;
+/**
+ * The time of the histograms in one row of `spreads` (H199). A commit after this time since the last row writes the next
+ * rows. A row of 10 minutes is small, and a bugcheck loses at most the histograms of 10 minutes.
+ */
+export const START_LOG_SPREAD_EVERY_MS = 600_000;
 
 /**
  * This function gives the SQL test of an adoption over the columns of `starts`. It reads only the stored time and creation
@@ -100,8 +133,82 @@ export interface StartLogStats {
   readonly slowestWriteMs: number;
   /** The longest time from the creation of a new process to the commit of its row, in ms: what a bugcheck can lose. */
   readonly slowestLagMs: number;
+  /** The copies of the WAL into the file. */
+  readonly checkpoints: number;
+  /** The longest copy of the WAL, in ms. */
+  readonly slowestCheckpointMs: number;
+  /** The steps with a row in `slow_steps`: each step above `START_LOG_SLOW_MS`, and each commit with a lag above it. */
+  readonly slowSteps: number;
+  /**
+   * The spread of the time from the creation of each new process to the commit of its row, since the start of the writer
+   * (H199). `null` before the first new process with a creation time. An older trace gives no field.
+   */
+  readonly lagSpread?: StartLogSpread | null;
+  /** The spread of the time of each commit since the start of the writer (H199). `null` before the first commit. */
+  readonly writeSpread?: StartLogSpread | null;
   /** The reason when the writer stopped with an error, or `null` while it writes. */
   readonly failure: string | null;
+}
+
+/** The kinds of the histograms of the writer: the lag of each new process, and the time of each commit. */
+export type SpreadKind = "lag" | "write";
+
+/**
+ * The spread of a histogram (H199), in ms. The quantiles have the relative error of the histogram (1 %), and the
+ * nearest-rank rule of rigor-statistics. `max` is exact.
+ */
+export interface StartLogSpread {
+  /** The count of the values. */
+  readonly count: number;
+  readonly p50: number;
+  readonly p99: number;
+  readonly max: number;
+}
+
+/** This function gives the spread of a histogram, rounded to 0.1 ms, or `null` for an empty histogram. */
+export function spreadOf(histogram: Histogram): StartLogSpread | null {
+  if (histogram.n === 0) return null;
+  const tenth = (value: number): number => Math.round(value * 10) / 10;
+  return {
+    count: histogram.n,
+    p50: tenth(histogramQuantile(histogram, 0.5)),
+    p99: tenth(histogramQuantile(histogram, 0.99)),
+    max: tenth(histogram.max),
+  };
+}
+
+/** The kinds of the steps of the writer. */
+export type SlowStepKind = "commit" | "checkpoint" | "prune";
+
+/**
+ * A slow step of the writer (H199). Each part of the lag of a commit is a column, so the row shows the cause:
+ *
+ * - `messageLagMs` large: the message of the job came late. The system was slow before the reader got it.
+ * - `queuedMs` large: the rows waited in the reader before the commit started, for example after a slow step before.
+ * - `ms` large: the commit itself was slow. Many `texts` is a large write. Few is a slow disk.
+ */
+export interface SlowStep {
+  /** The end of the step, in ms since the Unix epoch. */
+  readonly at: number;
+  readonly kind: SlowStepKind;
+  /** The time of the step, in ms. */
+  readonly ms: number;
+  /** A commit: the start rows that it wrote. A prune: the start rows that it deleted. */
+  readonly starts: number | null;
+  /** A commit: the exit rows that it wrote. A prune: the exit rows that it deleted. */
+  readonly exits: number | null;
+  /** A commit: the new texts that it wrote. A prune: the texts that it deleted. */
+  readonly texts: number | null;
+  /** A copy of the WAL: the pages in the WAL. */
+  readonly frames: number | null;
+  /** A copy of the WAL: the pages that it copied into the file. */
+  readonly checkpointed: number | null;
+  /** A commit: the longest time from the creation of a new process to the end of the commit. */
+  readonly lagMs: number | null;
+  /** A commit: the longest time from the creation of a new process to the message of its job. */
+  readonly messageLagMs: number | null;
+  /** A commit: the time from the oldest message of its rows to the start of the commit. */
+  readonly queuedMs: number | null;
 }
 
 /**
@@ -114,6 +221,10 @@ const MIGRATIONS: readonly Migration<DatabaseSync>[] = [
      image INTEGER, command INTEGER, parent_command INTEGER, reuse_ms INTEGER);
    CREATE TABLE exits (at INTEGER NOT NULL, key INTEGER NOT NULL, pid INTEGER NOT NULL, code INTEGER, created INTEGER);`,
   redactTexts,
+  `CREATE TABLE slow_steps (at INTEGER NOT NULL, kind TEXT NOT NULL, ms REAL NOT NULL, starts INTEGER, exits INTEGER, texts INTEGER,
+     frames INTEGER, checkpointed INTEGER, lag_ms INTEGER, message_lag_ms INTEGER, queued_ms INTEGER);`,
+  `CREATE TABLE spreads (at INTEGER NOT NULL, since INTEGER NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, p50 REAL NOT NULL,
+     p99 REAL NOT NULL, max REAL NOT NULL, histogram TEXT NOT NULL);`,
 ];
 
 /** This function gives the first 8 bytes of the SHA-256 of a text, as a signed 64-bit integer. */
@@ -148,7 +259,7 @@ export function msFiletime(ms: number): bigint {
 }
 
 /** The tables of the log. A name goes into SQL, so it comes only from this list. */
-type LogTable = "starts" | "exits";
+type LogTable = "starts" | "exits" | "slow_steps" | "spreads";
 
 /**
  * This function gives the last rowid of a table with `at` before `cutoff`, or `null`. The rows come in the order of
@@ -184,6 +295,8 @@ function firstRowFrom(db: DatabaseSync, table: LogTable, from: number): number {
 export interface StartLogWriterOptions {
   /** The clock. A test gives its own. */
   readonly now?: (() => number) | undefined;
+  /** The monotonic clock that times each step, in ms (`performance.now` by default). A test gives its own. */
+  readonly monotonic?: (() => number) | undefined;
   readonly keepMs?: number | undefined;
 }
 
@@ -192,37 +305,98 @@ export class StartLogWriter {
   readonly #path: string;
   readonly #db: DatabaseSync;
   readonly #now: () => number;
+  readonly #monotonic: () => number;
   readonly #keepMs: number;
   readonly #insertStart: StatementSync;
   readonly #insertExit: StatementSync;
   readonly #findText: StatementSync;
   readonly #insertText: StatementSync;
   readonly #touchText: StatementSync;
+  readonly #insertSlow: StatementSync;
+  readonly #insertSpread: StatementSync;
   /** The id of each text and the time of its last use in the file, by its text. */
   readonly #texts = new Map<string, { id: number; last: number }>();
+  /** The slow steps that wait for the next transaction. */
+  #pendingSlow: SlowStep[] = [];
+  #newTexts = 0;
   #starts = 0;
   #withCommand = 0;
   #withCreated = 0;
   #adopted = 0;
   #exits = 0;
   #commits = 0;
+  /** The commits at the last copy of the WAL. */
+  #commitsAtCheckpoint = 0;
   #writeMs = 0;
   #slowestWriteMs = 0;
   #slowestLagMs = 0;
+  #checkpoints = 0;
+  #slowestCheckpointMs = 0;
+  #slowSteps = 0;
+  /** The histograms since the start of the writer. */
+  #lag: Histogram = emptyHistogram();
+  #write: Histogram = emptyHistogram();
+  /** The histograms since the last rows of `spreads`, and the start of their time. */
+  #periodLag: Histogram = emptyHistogram();
+  #periodWrite: Histogram = emptyHistogram();
+  #periodSince: number;
 
   constructor(path: string, options: StartLogWriterOptions = {}) {
     this.#path = path;
     this.#now = options.now ?? Date.now;
+    this.#monotonic = options.monotonic ?? (() => performance.now());
     this.#keepMs = options.keepMs ?? START_LOG_KEEP_MS;
+    this.#periodSince = this.#now();
     this.#db = openDatabase(path, { synchronous: "FULL", busyTimeoutMs: 1000, makeFolder: true });
-    migrate(this.#db, MIGRATIONS);
-    this.#insertStart = this.#db.prepare(
-      "INSERT INTO starts (at, key, pid, ppid, created, image, command, parent_command, reuse_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    this.#insertExit = this.#db.prepare("INSERT INTO exits (at, key, pid, code, created) VALUES (?, ?, ?, ?, ?)");
-    this.#findText = this.#db.prepare("SELECT id, text, last FROM texts WHERE hash = ?");
-    this.#insertText = this.#db.prepare("INSERT INTO texts (hash, text, last) VALUES (?, ?, ?)");
-    this.#touchText = this.#db.prepare("UPDATE texts SET last = ? WHERE id = ?");
+    // A step of the migration or a statement can fail. Then the writer closes the file, so the file is not held open.
+    try {
+      migrate(this.#db, MIGRATIONS);
+      this.#db.exec(`PRAGMA wal_autocheckpoint = ${BACKSTOP_FRAMES}`);
+      this.#insertStart = this.#db.prepare(
+        "INSERT INTO starts (at, key, pid, ppid, created, image, command, parent_command, reuse_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      this.#insertExit = this.#db.prepare("INSERT INTO exits (at, key, pid, code, created) VALUES (?, ?, ?, ?, ?)");
+      this.#findText = this.#db.prepare("SELECT id, text, last FROM texts WHERE hash = ?");
+      this.#insertText = this.#db.prepare("INSERT INTO texts (hash, text, last) VALUES (?, ?, ?)");
+      this.#touchText = this.#db.prepare("UPDATE texts SET last = ? WHERE id = ?");
+      this.#insertSlow = this.#db.prepare(
+        `INSERT INTO slow_steps (at, kind, ms, starts, exits, texts, frames, checkpointed, lag_ms, message_lag_ms, queued_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      this.#insertSpread = this.#db.prepare("INSERT INTO spreads (at, since, kind, n, p50, p99, max, histogram) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    } catch (error) {
+      this.#db.close();
+      throw error;
+    }
+  }
+
+  /**
+   * This function writes the histograms since the last rows of `spreads`, and starts the next time. It runs inside a
+   * transaction. An empty histogram gets no row.
+   */
+  #flushSpreads(at: number): void {
+    for (const [kind, histogram] of [["lag", this.#periodLag], ["write", this.#periodWrite]] as const) {
+      const spread = spreadOf(histogram);
+      if (spread === null) continue;
+      this.#insertSpread.run(at, this.#periodSince, kind, spread.count, spread.p50, spread.p99, spread.max, JSON.stringify(histogram));
+    }
+    this.#periodLag = emptyHistogram();
+    this.#periodWrite = emptyHistogram();
+    this.#periodSince = at;
+  }
+
+  /** This function keeps a slow step for the next transaction. */
+  #slow(step: SlowStep): void {
+    this.#slowSteps++;
+    if (this.#pendingSlow.length >= PENDING_SLOW) this.#pendingSlow.shift();
+    this.#pendingSlow.push(step);
+  }
+
+  /** This function writes the slow steps that wait. It runs inside a transaction. */
+  #flushSlow(): void {
+    for (const s of this.#pendingSlow) {
+      this.#insertSlow.run(s.at, s.kind, s.ms, s.starts, s.exits, s.texts, s.frames, s.checkpointed, s.lagMs, s.messageLagMs, s.queuedMs);
+    }
   }
 
   /**
@@ -252,17 +426,23 @@ export class StartLogWriter {
     } else {
       // A different text with the same hash gets no hash, so the search never finds it. The memory still finds it.
       entry = { id: Number(this.#insertText.run(found === undefined ? hash : null, stored, now).lastInsertRowid), last: now };
+      this.#newTexts++;
     }
     if (this.#texts.size >= CACHED_TEXTS) this.#texts.clear();
     this.#texts.set(text, entry);
     return entry.id;
   }
 
-  /** This function writes the rows in one transaction. When it ends, the rows are on the disk. */
+  /**
+   * This function writes the rows in one transaction, with the slow steps that wait. When it ends, the rows are on the
+   * disk. A commit above `START_LOG_SLOW_MS`, or with a lag above it, waits for the next transaction as a slow step.
+   */
   write(starts: readonly StartRow[], exits: readonly ExitRow[]): void {
     if (starts.length === 0 && exits.length === 0) return;
-    const begin = performance.now();
+    const begin = this.#monotonic();
     const now = this.#now();
+    const textsBefore = this.#newTexts;
+    const spreadsDue = now - this.#periodSince >= START_LOG_SPREAD_EVERY_MS;
     transaction(this.#db, () => {
       for (const row of starts) {
         this.#insertStart.run(
@@ -271,14 +451,23 @@ export class StartLogWriter {
         );
       }
       for (const row of exits) this.#insertExit.run(row.at, row.key, row.pid, row.exitCode, row.created);
+      this.#flushSlow();
+      if (spreadsDue) this.#flushSpreads(now);
     });
-    const ms = performance.now() - begin;
+    this.#pendingSlow = [];
+    const ms = this.#monotonic() - begin;
     const end = this.#now();
     this.#commits++;
     this.#writeMs += ms;
     this.#slowestWriteMs = Math.max(this.#slowestWriteMs, ms);
     this.#exits += exits.length;
+    let lagMs: number | null = null;
+    let messageLagMs: number | null = null;
+    const lags: number[] = [];
+    let oldest = Infinity;
+    for (const row of exits) oldest = Math.min(oldest, row.at);
     for (const row of starts) {
+      oldest = Math.min(oldest, row.at);
       const createdMs = row.created === null ? null : filetimeMs(row.created);
       // The age of an adopted process is no delay of the log (2026-11-17: 4,956,209 ms at the start of the daemon).
       if (createdMs !== null && row.at - createdMs > START_LOG_ADOPT_MS) {
@@ -289,8 +478,52 @@ export class StartLogWriter {
       if (row.command !== null) this.#withCommand++;
       if (createdMs === null) continue;
       this.#withCreated++;
-      this.#slowestLagMs = Math.max(this.#slowestLagMs, end - createdMs);
+      lags.push(end - createdMs);
+      lagMs = Math.max(lagMs ?? -Infinity, end - createdMs);
+      messageLagMs = Math.max(messageLagMs ?? -Infinity, row.at - createdMs);
     }
+    if (lagMs !== null) this.#slowestLagMs = Math.max(this.#slowestLagMs, lagMs);
+    this.#lag = addAllToHistogram(this.#lag, lags);
+    this.#periodLag = addAllToHistogram(this.#periodLag, lags);
+    this.#write = addToHistogram(this.#write, ms);
+    this.#periodWrite = addToHistogram(this.#periodWrite, ms);
+    if (ms <= START_LOG_SLOW_MS && (lagMs === null || lagMs <= START_LOG_SLOW_MS)) return;
+    this.#slow({
+      at: end,
+      kind: "commit",
+      ms: Math.round(ms * 10) / 10,
+      starts: starts.length,
+      exits: exits.length,
+      texts: this.#newTexts - textsBefore,
+      frames: null,
+      checkpointed: null,
+      lagMs: lagMs === null ? null : Math.round(lagMs),
+      messageLagMs: messageLagMs === null ? null : Math.round(messageLagMs),
+      queuedMs: Math.max(0, Math.round(now - oldest)),
+    });
+  }
+
+  /**
+   * This function copies the pages of the WAL into the file, with no wait for a reader (a PASSIVE checkpoint). The caller
+   * runs it after a commit, so a slow copy does not delay the rows of the commit. It does nothing when no commit came
+   * since the last copy. It gives the pages in the WAL and the pages that it copied, or `null` for no copy.
+   */
+  checkpoint(): { readonly frames: number; readonly checkpointed: number } | null {
+    if (this.#commits === this.#commitsAtCheckpoint) return null;
+    const begin = this.#monotonic();
+    const row = this.#db.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as { busy: number; log: number; checkpointed: number };
+    const ms = this.#monotonic() - begin;
+    this.#commitsAtCheckpoint = this.#commits;
+    this.#checkpoints++;
+    this.#slowestCheckpointMs = Math.max(this.#slowestCheckpointMs, ms);
+    const result = { frames: row.log, checkpointed: row.checkpointed };
+    if (ms > START_LOG_SLOW_MS) {
+      this.#slow({
+        at: this.#now(), kind: "checkpoint", ms: Math.round(ms * 10) / 10, starts: null, exits: null, texts: null,
+        frames: result.frames, checkpointed: result.checkpointed, lagMs: null, messageLagMs: null, queuedMs: null,
+      });
+    }
+    return result;
   }
 
   /**
@@ -304,6 +537,7 @@ export class StartLogWriter {
     );
     if (newest === 0) return { starts: 0, exits: 0, texts: 0 };
     const cutoff = newest - this.#keepMs;
+    const begin = this.#monotonic();
     const result = transaction(this.#db, () => {
       const count = (table: LogTable): number => {
         const last = lastRowBefore(this.#db, table, cutoff);
@@ -311,11 +545,22 @@ export class StartLogWriter {
       };
       const starts = count("starts");
       const exits = count("exits");
+      count("slow_steps");
+      count("spreads");
       // A kept row is at or after the cutoff, and the last use of each of its texts is at most TOUCH_EVERY_MS before it.
       const texts = Number(this.#db.prepare("DELETE FROM texts WHERE last < ?").run(cutoff - TOUCH_EVERY_MS).changes);
+      this.#flushSlow();
       return { starts, exits, texts };
     });
+    this.#pendingSlow = [];
+    const ms = this.#monotonic() - begin;
     if (result.texts > 0) this.#texts.clear();
+    if (ms > START_LOG_SLOW_MS) {
+      this.#slow({
+        at: this.#now(), kind: "prune", ms: Math.round(ms * 10) / 10, starts: result.starts, exits: result.exits, texts: result.texts,
+        frames: null, checkpointed: null, lagMs: null, messageLagMs: null, queuedMs: null,
+      });
+    }
     return result;
   }
 
@@ -332,12 +577,28 @@ export class StartLogWriter {
       writeMs: Math.round(this.#writeMs * 10) / 10,
       slowestWriteMs: Math.round(this.#slowestWriteMs * 10) / 10,
       slowestLagMs: Math.round(this.#slowestLagMs),
+      checkpoints: this.#checkpoints,
+      slowestCheckpointMs: Math.round(this.#slowestCheckpointMs * 10) / 10,
+      slowSteps: this.#slowSteps,
+      lagSpread: spreadOf(this.#lag),
+      writeSpread: spreadOf(this.#write),
       failure,
     };
   }
 
+  /** This function writes the slow steps that wait and the histograms of the last time, and closes the file. */
   close(): void {
-    this.#db.close();
+    try {
+      if (this.#pendingSlow.length > 0 || this.#periodLag.n > 0 || this.#periodWrite.n > 0) {
+        transaction(this.#db, () => {
+          this.#flushSlow();
+          this.#flushSpreads(this.#now());
+        });
+      }
+      this.#pendingSlow = [];
+    } finally {
+      this.#db.close();
+    }
   }
 }
 
@@ -448,6 +709,161 @@ export function startsBetween(db: DatabaseSync, from: number, to: number, limit 
   const first = firstRowFrom(db, "starts", from);
   const records = db.prepare(`SELECT ${START_COLUMNS} WHERE s.rowid >= ? AND s.at <= ? ORDER BY s.rowid LIMIT ?`).all(first, to, limit) as unknown as StartRecord[];
   return records.map((record) => withExit(db, record));
+}
+
+/**
+ * This function gives the slow steps of the writer from `from` to `to`, in the order of time (H199). A file of an older
+ * version has no table of slow steps: it gives none.
+ */
+export function slowStepsBetween(db: DatabaseSync, from: number, to: number, limit = 10_000): SlowStep[] {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'slow_steps'").get() === undefined) return [];
+  const first = firstRowFrom(db, "slow_steps", from);
+  return db
+    .prepare(
+      `SELECT at, kind, ms, starts, exits, texts, frames, checkpointed, lag_ms AS lagMs, message_lag_ms AS messageLagMs, queued_ms AS queuedMs
+       FROM slow_steps WHERE rowid >= ? AND at <= ? ORDER BY rowid LIMIT ?`,
+    )
+    .all(first, to, limit) as unknown as SlowStep[];
+}
+
+/** This function reads a histogram of a row of `spreads`, or `null` for a text of another shape. */
+function storedHistogram(text: string): Histogram | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const h = value as Record<string, unknown>;
+  const numbers = ["relativeError", "n", "sum", "min", "max", "zeros"].every((key) => typeof h[key] === "number");
+  const bucket = (item: unknown): boolean => {
+    if (typeof item !== "object" || item === null) return false;
+    const { index, count } = item as Record<string, unknown>;
+    return Number.isInteger(index) && Number.isInteger(count) && (count as number) > 0;
+  };
+  const buckets = (list: unknown): list is HistogramBucket[] => Array.isArray(list) && list.every(bucket);
+  return numbers && buckets(h["positive"]) && buckets(h["negative"]) ? (h as unknown as Histogram) : null;
+}
+
+/** The spreads of the start log over a time (H199). */
+export interface StartLogSpreads {
+  /** The start of the first row and the end of the last row that the merge has, or `null` for no row. */
+  readonly from: number | null;
+  readonly to: number | null;
+  readonly lag: StartLogSpread | null;
+  readonly write: StartLogSpread | null;
+}
+
+/**
+ * This function merges the rows of `spreads` that end from `from` to `to` (H199). Each row has 10 minutes, so the time of
+ * the merge can start up to 10 minutes before `from`. A row of another shape, or with another relative error, does not
+ * count. A file of an older version has no table of spreads: it gives no spread.
+ */
+export function startLogSpreads(db: DatabaseSync, from: number, to: number): StartLogSpreads {
+  const none: StartLogSpreads = { from: null, to: null, lag: null, write: null };
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spreads'").get() === undefined) return none;
+  const first = firstRowFrom(db, "spreads", from);
+  const rows = db.prepare("SELECT at, since, kind, histogram FROM spreads WHERE rowid >= ? AND at <= ? ORDER BY rowid").all(first, to) as {
+    at: number;
+    since: number;
+    kind: string;
+    histogram: string;
+  }[];
+  const merged = new Map<SpreadKind, Histogram>();
+  let start: number | null = null;
+  let end: number | null = null;
+  for (const row of rows) {
+    if (row.kind !== "lag" && row.kind !== "write") continue;
+    const histogram = storedHistogram(row.histogram);
+    if (histogram === null) continue;
+    const before = merged.get(row.kind) ?? emptyHistogram(histogram.relativeError);
+    if (before.relativeError !== histogram.relativeError) continue;
+    merged.set(row.kind, mergeHistograms(before, histogram));
+    start = Math.min(start ?? row.since, row.since);
+    end = Math.max(end ?? row.at, row.at);
+  }
+  const spread = (kind: SpreadKind): StartLogSpread | null => {
+    const histogram = merged.get(kind);
+    return histogram === undefined ? null : spreadOf(histogram);
+  };
+  return { from: start, to: end, lag: spread("lag"), write: spread("write") };
+}
+
+/**
+ * The state of the system in the minute of a slow step (H199), from the 1-minute samples of the store. Each field is
+ * `null` when no sample is near.
+ */
+export interface SlowStepContext {
+  readonly memoryFreeMb: number | null;
+  readonly commitFreeMb: number | null;
+  readonly coresUsed: number | null;
+  readonly cores: number | null;
+  /** The starts of the trace in one minute. */
+  readonly tracedPerMinute: number | null;
+}
+
+/**
+ * The part of the lag that names the cause of a slow step:
+ *
+ * - `late-message`: the message of the job came late. The system was slow before the reader got it.
+ * - `queued`: the rows waited in the reader before the commit started, for example behind a slow step.
+ * - `slow-commit`: the commit itself was the largest part.
+ * - `checkpoint` and `prune`: a step of its own was slow.
+ */
+export type SlowCauseKind = "late-message" | "queued" | "slow-commit" | "checkpoint" | "prune";
+
+/** The cause of a slow step, with its text. */
+export interface SlowCause {
+  readonly kind: SlowCauseKind;
+  readonly text: string;
+}
+
+/** This function writes a count of ms with the separators of thousands. */
+function msText(ms: number): string {
+  return `${Math.round(ms).toLocaleString("en-US")} ms`;
+}
+
+/** This function writes the state of the system in the minute of a step, or an empty text for no sample. */
+function contextText(context: SlowStepContext | null): string {
+  if (context === null) return "";
+  const parts: string[] = [];
+  const gb = (mb: number): string => `${(mb / 1024).toFixed(1)} GB`;
+  if (context.memoryFreeMb !== null) parts.push(`${gb(context.memoryFreeMb)} of memory free`);
+  if (context.commitFreeMb !== null) parts.push(`${gb(context.commitFreeMb)} of commit free`);
+  if (context.coresUsed !== null) parts.push(`${context.coresUsed.toFixed(1)}${context.cores === null ? "" : ` of ${context.cores}`} cores in use`);
+  if (context.tracedPerMinute !== null) parts.push(`${Math.round(context.tracedPerMinute).toLocaleString("en-US")} traced starts a minute`);
+  return parts.length === 0 ? "" : ` In that minute: ${parts.join(", ")}.`;
+}
+
+/**
+ * This function names the cause of a slow step (H199). For a commit, the largest part of its lag names it: the late
+ * message, the wait in the reader or the commit. The samples of the minute tell the state of the system.
+ */
+export function slowStepCause(step: SlowStep, context: SlowStepContext | null = null): SlowCause {
+  const state = contextText(context);
+  if (step.kind === "checkpoint") {
+    return { kind: "checkpoint", text: `The copy of the WAL took ${msText(step.ms)} for ${(step.frames ?? 0).toLocaleString("en-US")} pages.${state}` };
+  }
+  if (step.kind === "prune") {
+    const rows = (step.starts ?? 0) + (step.exits ?? 0);
+    return { kind: "prune", text: `The prune took ${msText(step.ms)} for ${rows.toLocaleString("en-US")} rows and ${(step.texts ?? 0).toLocaleString("en-US")} texts.${state}` };
+  }
+  const parts: readonly [SlowCauseKind, number][] = [
+    ["late-message", step.messageLagMs ?? 0],
+    ["queued", step.queuedMs ?? 0],
+    ["slow-commit", step.ms],
+  ];
+  const [kind, ms] = parts.reduce((largest, part) => (part[1] > largest[1] ? part : largest));
+  const lag = step.lagMs === null ? "" : ` of the lag of ${msText(step.lagMs)}`;
+  const rows = `${step.starts ?? 0} starts, ${step.exits ?? 0} exits and ${step.texts ?? 0} new texts`;
+  const what =
+    kind === "late-message"
+      ? `The message of the job came late: ${msText(ms)}${lag} passed before the reader got it.`
+      : kind === "queued"
+        ? `The rows waited in the reader: ${msText(ms)}${lag} passed before the commit started.`
+        : `The commit itself was slow: ${msText(ms)}${lag}, for ${rows}.`;
+  return { kind, text: `${what}${state}` };
 }
 
 /** One line of a ranking: a text and its starts. */

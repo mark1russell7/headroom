@@ -1,9 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { msFiletime, StartLogWriter, type StartRow } from "@headroom/core";
+import { msFiletime, StartLogWriter, type ResourceRow, type StartRow } from "@headroom/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { startsCommand, writeStartsBeforeStop, type StartsOutput } from "./starts-cli.ts";
+import { startsCommand, writeStartsBeforeStop, type ExplainedSlowStep, type StartsOutput } from "./starts-cli.ts";
 
 const S = 1000;
 const T0 = Date.UTC(2026, 10, 16, 7, 10, 16, 413);
@@ -84,11 +84,71 @@ describe("headroom starts (H193)", () => {
   });
 
   it("refuses wrong arguments", () => {
-    for (const args of [[], ["abc"], ["--top", "--hours", "25"], ["--top", "12"], ["12", "--at", "never"], ["--nope"]]) {
+    for (const args of [[], ["abc"], ["--top", "--hours", "25"], ["--top", "12"], ["12", "--at", "never"], ["--nope"], ["--top", "--slow"], ["--slow", "--hours", "0"], ["--slow", "12"]]) {
       const output = capture();
       expect(startsCommand(args, path, output)).toBe(2);
       expect(output.errors.join("\n")).toContain("Usage: headroom starts");
     }
+  });
+});
+
+describe("the slow steps of the start log (H199)", () => {
+  // The log of the setup has 2 commits with a lag above 500 ms: the rows waited 60 s and 2 s before their commit at T0.
+  const samples: ResourceRow[] = [
+    { at: T0 - 20 * S, id: "memory", capacity: 28_310, used: 26_774, free: 1536 },
+    { at: T0 - 20 * S, id: "cpu", capacity: 16, used: 15.4, free: 0.6 },
+    // This sample is more than 90 s from each step, so it tells nothing about them.
+    { at: T0 - 200 * S, id: "commit", capacity: 56_982, used: 46_372, free: 10_610 },
+  ];
+
+  it("gives the spread of the lag, and each slow step with its cause and the state of the system in its minute", () => {
+    const output = capture();
+    const asked: number[][] = [];
+    const sources = { now: () => T0 + S, samples: (from: number, to: number) => (asked.push([from, to]), samples) };
+    expect(startsCommand(["--slow"], path, output, sources)).toBe(0);
+    const text = output.lines.join("\n");
+    expect(asked).toEqual([[T0 + S - 3600 * S - 90 * S, T0 + S + 90 * S]]);
+    expect(text).toContain("The start log over the last 1 h (2026-11-16 06:10 to 07:10 UTC):");
+    // The lags are 30 ms, 2,030 ms and 60,030 ms. The adoption of explorer.exe does not count.
+    expect(text).toMatch(/The time from the creation of a new process to its row on the disk: 2,0\d\d ms at the median, 60,030 ms at p99 and 60,030 ms at most \(3 starts\)\./);
+    expect(text).toMatch(/The time of a commit: .+ \(4 commits\)\./);
+    expect(text).toContain("2 steps of the writer were slow (above 500 ms, or a commit with a lag above it):");
+    expect(text).toContain(
+      "lag 60,030 ms: The rows waited in the reader: 60,000 ms of the lag of 60,030 ms passed before the commit started. In that minute: 1.5 GB of memory free, 15.4 of 16 cores in use.",
+    );
+    expect(text).toContain("lag 2,030 ms: The rows waited in the reader: 2,000 ms of the lag of 2,030 ms passed before the commit started.");
+  });
+
+  it("gives the spreads and the explained steps as JSON", () => {
+    const output = capture();
+    expect(startsCommand(["--slow", "--hours", "24", "--json"], path, output, { now: () => T0 + S, samples: () => samples })).toBe(0);
+    const report = JSON.parse(output.lines.join("\n")) as { from: number; to: number; spreads: { lag: { count: number; max: number } }; steps: ExplainedSlowStep[] };
+    expect(report.to - report.from).toBe(24 * 3600 * S);
+    expect(report.spreads.lag).toMatchObject({ count: 3, max: 60_030 });
+    expect(report.steps.map((step) => [step.kind, step.cause.kind, step.context?.memoryFreeMb, step.context?.commitFreeMb])).toEqual([
+      ["commit", "queued", 1536, null],
+      ["commit", "queued", 1536, null],
+    ]);
+  });
+
+  it("gives the causes without the state of the system when the store cannot be read, and says so", () => {
+    const output = capture();
+    expect(startsCommand(["--slow"], path, output, { now: () => T0 + S, samples: () => null })).toBe(0);
+    const text = output.lines.join("\n");
+    expect(text).toContain("passed before the commit started.\n");
+    expect(text).toContain("The samples of the store were not read, so the state of the system in each minute is not known.");
+  });
+
+  it("says when no step was slow and the log has no histogram of the span", () => {
+    const output = capture();
+    expect(startsCommand(["--slow"], path, output, { now: () => T0 + 5 * 3600 * S })).toBe(0);
+    expect(output.lines.join("\n")).toBe(
+      [
+        "The start log over the last 1 h (2026-11-16 11:10 to 12:10 UTC):",
+        "  The log has no histogram of this span. The writer writes the histograms of each 10 minutes.",
+        "No step of the writer was slow (above 500 ms).",
+      ].join("\n"),
+    );
   });
 });
 
