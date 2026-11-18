@@ -130,6 +130,10 @@ export const RUN_CASES: readonly string[] = [
   "git commit -m \"fix the vitest config\"",
   "echo vitest",
   "git grep -E \"vitest|jest\" origin/main && pnpm test",
+  // H208: a detached run, a run with a wait shorter than the default timeout, and --detach as an argument of the command.
+  "headroom run --detach --job tests --mem 2g -- pnpm test",
+  "headroom run --wait 1m --mem 2g -- pnpm test",
+  "headroom run --mem 2g -- pnpm test --detach",
 ];
 
 /** Each command of the golden verdicts, in a fixed order with no duplicate. */

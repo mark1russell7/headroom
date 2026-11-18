@@ -132,6 +132,7 @@ import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseStartCap, parseTime, startCapText } from "./parse.ts";
+import { RUN_OPTIONS, RUN_WAIT_DEFAULT } from "./run-options.ts";
 import { dashboardKey, databasePath, leaseEndsDir, readDiscovery, readPlannedStop, startLogPath } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
@@ -694,7 +695,7 @@ async function afterPlannedRestart(): Promise<Connection | null> {
 /** The wait of an adopted job for a daemon: the wait of the job (`--wait`, 30 minutes by default). */
 async function adoptedDaemon(wait: string | undefined): Promise<Connection | null> {
   console.error("headroom: the daemon does not answer. The job of the queue waits for a daemon, and it does not run without its lease.");
-  return waitForDaemon(Date.now() + parseTime(wait ?? "30m"), async () => {
+  return waitForDaemon(Date.now() + parseTime(wait ?? RUN_WAIT_DEFAULT), async () => {
     const discovery = readDiscovery();
     return discovery && (await answers(discovery)) ? connectTo(discovery) : null;
   });
@@ -744,33 +745,8 @@ async function run(argv: string[]): Promise<number> {
     args: argv,
     allowPositionals: true,
     tokens: true,
-    options: {
-      mem: { type: "string" },
-      cpu: { type: "string" },
-      slot: { type: "string", multiple: true },
-      holder: { type: "string" },
-      job: { type: "string" },
-      priority: { type: "string" },
-      wait: { type: "string" },
-      disk: { type: "string", multiple: true },
-      limit: { type: "boolean" },
-      keep: { type: "boolean" },
-      "keep-temp": { type: "boolean" },
-      "no-auto-slot": { type: "boolean" },
-      "force-disk": { type: "boolean" },
-      "no-eco": { type: "boolean" },
-      log: { type: "string" },
-      "spawn-heavy": { type: "boolean" },
-      "no-spawn-heavy": { type: "boolean" },
-      when: { type: "string", multiple: true },
-      timing: { type: "boolean" },
-      "battery-ok": { type: "boolean" },
-      "during-drain": { type: "boolean" },
-      "ignore-presence": { type: "boolean" },
-      detach: { type: "boolean" },
-      "detached-client": { type: "boolean" },
-      adopt: { type: "string" },
-    },
+    // H208: the guard of foreground runs in the hook reads a run with the same table.
+    options: RUN_OPTIONS,
   });
   if (positionals.length === 0) {
     console.error("headroom run needs a command after --. Example: headroom run --mem 2g -- pnpm test");
@@ -956,7 +932,7 @@ async function run(argv: string[]): Promise<number> {
     const args = ["--holder", holder, "--log", log, ...argv.filter((_, index) => !detachAt.has(index))];
     const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
     const deferred = await connection
-      .call<Lease>(["resources", "defer"], { ...withoutProcess, log, start: { args, cwd: process.cwd(), env, waitMs: parseTime(values.wait ?? "30m") } })
+      .call<Lease>(["resources", "defer"], { ...withoutProcess, log, start: { args, cwd: process.cwd(), env, waitMs: parseTime(values.wait ?? RUN_WAIT_DEFAULT) } })
       .catch((error: unknown) => {
         appendFileSync(log, `headroom: the daemon did not take the queue of this job, so its client waits: ${error instanceof Error ? error.message : String(error)}\n`);
         return null;
@@ -1008,7 +984,7 @@ async function run(argv: string[]): Promise<number> {
   }
   // H64: the client of a shell gives up its place when that shell ends. A detached job has no shell on purpose.
   const shellGone = detachedClient || adopt !== undefined ? (): boolean => false : shellWatch(process.env);
-  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? "30m"), shellGone);
+  const { lease, connection: latest } = await waitForGrant(connection, first, Date.now() + parseTime(values.wait ?? RUN_WAIT_DEFAULT), shellGone);
   if ((lease.state === "waiting" || lease.state === "granted") && shellGone()) {
     await latest.call(["resources", "release"], { id: lease.id, reason: "the shell of the job ended" });
     console.error(`headroom: the shell of ${job} ended. Nothing ran.`);

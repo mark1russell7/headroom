@@ -15,9 +15,17 @@
  *   `cat`, `echo`) is not heavy, whatever its arguments say.
  * - The body of a here-document is text when its program only writes text (`cat > a.md <<'EOF'`, `gh pr create
  *   --body-file -`) and the shell does not run a part of it. A body that a shell reads (`bash <<'EOF'`) stays in the rating.
+ * - A `headroom run` waits for its grant in the foreground of a tool call (H208). While a lease waits for memory, the hook
+ *   refuses a run with no `--detach` whose `--wait` is not shorter than the timeout of the call. At the timeout, Claude
+ *   Code moves the call to the background, and the stop of idle background shells ends the job with no exit code.
  *
  * The functions are pure: the face gives the status of the engine, and the rating reads no file and no network.
  */
+
+import { parseArgs } from "node:util";
+import { elapsedText } from "@headroom/core";
+import { parseTime } from "./parse.ts";
+import { RUN_OPTIONS, RUN_WAIT_DEFAULT } from "./run-options.ts";
 
 /** The status of the daemon that the rating reads: the free memory and the leases. */
 export interface Status {
@@ -46,6 +54,9 @@ export const HEAVY: RegExp[] = [
   /\bgo\s+test\b/,
   /\bpytest\b/,
 ];
+
+/** A command line with `headroom run` in its text. The rating of a heavy command leaves such a line to the guard of runs. */
+const HEADROOM_RUN = /\bheadroom(?:\.cmd)?\s+run\b/;
 
 /** Below this amount free for a lease, in MB, the hook asks for a lease. */
 export const TIGHT_MB = 4096;
@@ -442,17 +453,116 @@ export function leased(command: string): string {
 
 /** This function makes the decision for one command. It gives the reason to refuse the command, or `null` to let it go on. */
 export function decide(command: string, status: Status | null): string | null {
-  if (!command || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return null;
+  if (!command || HEADROOM_RUN.test(command)) return null;
   if (!isHeavy(command)) return null;
   if (!status) return null;
   const free = Math.max(0, Math.round(status.free?.memory ?? 0));
-  // Only a lease that waits for memory counts. A lease that waits for a slot, for example the browser, does not stop other jobs.
-  const waiting = (status.leases ?? []).filter((lease) => lease.state === "waiting" && /^waits for memory\b/.test(lease.reason ?? "")).length;
+  const waiting = waitingForMemory(status);
   if (free >= TIGHT_MB && waiting === 0) return null;
   const why = waiting > 0 ? `${waiting} job${waiting === 1 ? "" : "s"} already wait for memory` : `only ${free} MB is free for a lease`;
   return (
     `headroom: this is a heavy command, and ${why}. Run it under a lease, so it waits for room and does not push ` +
     `other sessions out of memory. Send it again as: ${leased(command)}`
+  );
+}
+
+/**
+ * This function counts the leases that wait for memory. A lease that waits for a slot, for example the browser, does not
+ * stop other jobs, so it does not count.
+ */
+function waitingForMemory(status: Status): number {
+  return (status.leases ?? []).filter((lease) => lease.state === "waiting" && /^waits for memory\b/.test(lease.reason ?? "")).length;
+}
+
+/** The timeout of a call of the Bash or PowerShell tool of Claude Code when the call gives none, in ms. */
+export const CALL_TIMEOUT_DEFAULT_MS = 120_000;
+
+/** The longest timeout of a call of the Bash or PowerShell tool of Claude Code, in ms. */
+export const CALL_TIMEOUT_MAX_MS = 600_000;
+
+/** The limits of one tool call that the guard of foreground runs reads (H208). */
+export interface ToolCall {
+  /** The timeout of the call, in ms. At this time, Claude Code moves the call to the background. */
+  readonly timeoutMs: number;
+  /** This value is true when the call starts in the background (`run_in_background`). */
+  readonly background: boolean;
+}
+
+/**
+ * This function reads the limits of a tool call from its input: `timeout` and `run_in_background`. A timeout that is not a
+ * positive number gives the default, and a timeout above the largest value gives the largest value.
+ */
+export function toolCallOf(input: { readonly timeout?: unknown; readonly run_in_background?: unknown } | null | undefined): ToolCall {
+  const timeout = input?.timeout;
+  const valid = typeof timeout === "number" && Number.isFinite(timeout) && timeout > 0;
+  return { timeoutMs: valid ? Math.min(timeout, CALL_TIMEOUT_MAX_MS) : CALL_TIMEOUT_DEFAULT_MS, background: input?.run_in_background === true };
+}
+
+/** One `headroom run` of a command line, with its options before `--` (H208). */
+export interface RunPart {
+  /** This value is true when the run returns at once and the job continues as a detached process (`--detach`). */
+  readonly detach: boolean;
+  /** The longest wait of the run for its grant, in ms (`--wait`, 30 minutes by default). */
+  readonly waitMs: number;
+  /** The name of the job (`--job`), or `null`. */
+  readonly job: string | null;
+}
+
+/**
+ * This function gives each `headroom run` of a command line, with the options that the command line tool reads (H208). The
+ * function reads the options with the table of the tool, so an option after `--` is an argument of the command. The list
+ * has no run that the tool refuses at once: an unknown option, no command, `--detach` with no `--job` or a wrong `--wait`.
+ * Such a run does not wait for a grant.
+ */
+export function runParts(command: string): RunPart[] {
+  if (!HEADROOM_RUN.test(command)) return [];
+  const runs: RunPart[] = [];
+  for (const words of commandWords(command)) {
+    // The call operator of PowerShell: `& headroom run ...`.
+    const at = words[0] === "&" ? 1 : 0;
+    if (programName(words[at] ?? "") !== "headroom" || words[at + 1] !== "run") continue;
+    try {
+      const { values, positionals } = parseArgs({ args: words.slice(at + 2), options: RUN_OPTIONS, allowPositionals: true });
+      const detach = values.detach === true;
+      if (positionals.length === 0 || (detach && values.job === undefined)) continue;
+      runs.push({ detach, waitMs: parseTime(values.wait ?? RUN_WAIT_DEFAULT), job: values.job ?? null });
+    } catch {
+      // The tool refuses this run before it asks for a lease, so the run does not wait.
+    }
+  }
+  return runs;
+}
+
+/**
+ * This function guards a `headroom run` that waits for its grant in the foreground of a tool call (H208). At the timeout of
+ * the call, Claude Code moves the call to the background. There, the stop of idle background shells ends the job with no
+ * exit code. Thus while a lease waits for memory, the function refuses a run with no `--detach` whose `--wait` is not shorter
+ * than the timeout. A call that starts in the background has no time in the foreground, so each wait counts. The function
+ * reads the status only for such a run. It gives the reason to refuse the command, or `null` to let it go on.
+ */
+export function foregroundRunReason(command: string, call: ToolCall, status: () => Status | null): string | null {
+  const risky = runParts(command).filter((run) => !run.detach && (call.background || run.waitMs >= call.timeoutMs));
+  const first = risky[0];
+  if (first === undefined) return null;
+  const read = status();
+  if (!read) return null;
+  const waiting = waitingForMemory(read);
+  if (waiting === 0) return null;
+  const jobs = waiting === 1 ? "1 job already waits for memory" : `${waiting} jobs already wait for memory`;
+  const name = first.job ?? "<name>";
+  const form = command.replace(HEADROOM_RUN, (run) => `${run} --detach${first.job === null ? " --job <name>" : ""}`);
+  const detached = `Send it as a detached job: ${form}. Then "headroom job ${name}" gives its state.`;
+  if (call.background) {
+    return (
+      `headroom: ${jobs}, and this tool call starts in the background. There, the stop of idle background shells ends ` +
+      `a job that waits, with no exit code. ${detached}`
+    );
+  }
+  return (
+    `headroom: ${jobs}. This headroom run waits up to ${elapsedText(first.waitMs)} for its grant, and the tool call ends at ` +
+    `${elapsedText(call.timeoutMs)}. At that time, Claude Code moves the call to the background, and the stop of idle ` +
+    `background shells ends the job with no exit code. ${detached} Or give a --wait shorter than the timeout of the call, ` +
+    `for example --wait 8m with a timeout of 600000.`
   );
 }
 
@@ -462,14 +572,17 @@ export type HookOutput =
   | Record<string, never>;
 
 /**
- * This function gives the answer of the hook for one PreToolUse event. A light command goes on at once. The function
- * reads the status only for a heavy command, because the status of the engine costs more than the rating.
+ * This function gives the answer of the hook for one PreToolUse event. A light command goes on at once. The status of the
+ * engine costs more than the rating. Thus the function reads it only for a heavy command, or for a `headroom run` that
+ * waits in the foreground (H208).
  */
 export function hookOutput(event: unknown, status: () => Status | null): HookOutput {
   // The same reading of the command as the old process hook: a value that is not a string becomes its text.
-  const input = (event as { tool_input?: { command?: unknown } } | null)?.tool_input;
+  const input = (event as { tool_input?: { command?: unknown; timeout?: unknown; run_in_background?: unknown } } | null)?.tool_input;
   const command = String(input?.command ?? "");
-  if (!isHeavy(command) || /\bheadroom(?:\.cmd)?\s+run\b/.test(command)) return {};
+  const run = foregroundRunReason(command, toolCallOf(input), status);
+  if (run) return denied(run);
+  if (!isHeavy(command) || HEADROOM_RUN.test(command)) return {};
   const reason = decide(command, status());
   return reason ? denied(reason) : {};
 }
