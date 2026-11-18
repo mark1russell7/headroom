@@ -6,7 +6,7 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
-import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom } from "@headroom/core";
+import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom, WORKTREE_IDLE_MS } from "@headroom/core";
 import { defineModule, hostPolicy, ProcedureRegistry, registerModules } from "@procedures/client";
 import { peerHostOptions, type HostFaceFactory, type ProcedureHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
@@ -24,7 +24,7 @@ import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedure
 import { IdleRestart } from "./restart.ts";
 import { writeStartsBeforeStop } from "./starts-cli.ts";
 import { resumePlanFile, writeResumePlan } from "./resume.ts";
-import { defaultRoots, readWorktreePlan, readWorktreeRecord, worktreeVersion } from "./worktree-cli.ts";
+import { defaultRoots, readWorktreePlan, readWorktreeRecord, worktreeRulesKey } from "./worktree-cli.ts";
 import { launchClean, WorktreeSchedule } from "./worktree-schedule.ts";
 
 /** The default port of the daemon. */
@@ -219,7 +219,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     roots: () => roots,
     disks: () => engine.status().disks,
     autoClean: () => engine.config().worktreeAutoClean,
-    version: worktreeVersion(),
+    key: () => worktreeRulesKey({ roots, idleMs: WORKTREE_IDLE_MS }),
     launch: launchClean(service.node, service.cli),
     record: () => readWorktreeRecord(),
     plan: () => readWorktreePlan(),

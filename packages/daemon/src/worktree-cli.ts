@@ -4,7 +4,8 @@
  * - `headroom worktree list` gives the state of each worktree, with counts for each state and each repository.
  * - `headroom worktree clean` removes the trees whose work is on a remote, and the `node_modules` folders of the idle trees.
  *   One run changes at most 20 trees, waits 5 seconds between two trees, and stops when less than 2 GB of memory is available.
- *   A dry run writes the plan to `~/.headroom/worktree-plan.json`.
+ *   A dry run writes the plan to `~/.headroom/worktree-plan.json`, with the key of its rules.
+ * - `--git-gap <time>` sets the least time between the starts of two git commands of the scan. The daemon gives 500 ms.
  * - `headroom worktree remove <path>` removes one tree when its work is on a remote. A session starts it after its merge.
  *
  * The command runs in its own process. The daemon starts the dry run first. It starts the real cleanup only when the setting
@@ -15,6 +16,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writ
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { canonicalHash } from "@mark1russell7/rigor-generators";
 import {
   cleanWorktrees,
   createSampler,
@@ -24,14 +26,17 @@ import {
   freeSpace,
   isInside,
   nodeRunner,
+  pathKey,
   removeWorktree,
   samePath,
   scanWorktrees,
   summarize,
   WORKTREE_BATCH_MAX,
+  WORKTREE_IDLE_MS,
   WORKTREE_MIN_FREE_MB,
   WORKTREE_PAUSE_MS,
   WORKTREE_STATES,
+  worktreeRulesSource,
   type CleanAction,
   type CleanResult,
   type CleanStop,
@@ -46,7 +51,7 @@ import { parseMemory, parseTime } from "./parse.ts";
 import { headroomHome, worktreeLogPath, worktreePlanPath, worktreeSummaryPath } from "./paths.ts";
 
 export const WORKTREE_USAGE =
-  "headroom worktree list [--root <folder>]... [--idle 24h] [--sizes] [--json] | clean [--dry-run] [--max 20] [--min-free-mem 2g] [--pause 5s] [--idle 24h] [--root <folder>]... [--json] | remove <path> [--root <folder>]...";
+  "headroom worktree list [--root <folder>]... [--idle 24h] [--git-gap 0ms] [--sizes] [--json] | clean [--dry-run] [--max 20] [--min-free-mem 2g] [--pause 5s] [--idle 24h] [--git-gap 0ms] [--root <folder>]... [--json] | remove <path> [--root <folder>]...";
 
 /** The outputs of the command. The tests replace them. */
 export interface WorktreeOutput {
@@ -75,15 +80,17 @@ export interface WorktreeRecord extends WorktreeSummary {
   };
 }
 
-/** The plan of the cleanup in `~/.headroom/worktree-plan.json`: the actions of a dry run, and the version that wrote it. */
+/** The plan of the cleanup in `~/.headroom/worktree-plan.json`: the actions of a dry run, the version that wrote it, and the key of its rules. */
 export interface WorktreePlan extends WorktreeSummary {
   readonly version: string;
+  /** The key of the rules and the settings of the scan (`worktreeRulesKey`). A plan from before H198 has none. */
+  readonly key?: string | undefined;
   readonly plan: { readonly remove: number; readonly nodeModules: number; readonly prune: number; readonly skipped: number };
   readonly actions: readonly CleanAction[];
   readonly orphans: readonly Orphan[];
 }
 
-/** This function gives the version of the daemon package, or `unknown`. A new version writes a new plan before a removal. */
+/** This function gives the version of the daemon package, or `unknown`. The plan names it for the reader. The key of the plan is `worktreeRulesKey`. */
 export function worktreeVersion(): string {
   try {
     const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
@@ -91,6 +98,21 @@ export function worktreeVersion(): string {
   } catch {
     return "unknown";
   }
+}
+
+/** The settings of a scan that change its plan. */
+export interface RulesSettings {
+  readonly roots: readonly string[];
+  readonly idleMs: number;
+}
+
+/**
+ * This function gives the key of a plan (H198). The key is the first 16 hex characters of a content hash. The hash covers
+ * the rules (the source of the core module of the cleanup) and the settings of the scan. A new version with the same rules gives the same key, so
+ * a restart or an update starts no new dry run. A change of a rule, of a root or of the idle time gives a new key.
+ */
+export function worktreeRulesKey(settings: RulesSettings, rules: string = worktreeRulesSource()): string {
+  return canonicalHash({ rules, roots: settings.roots.map((root) => pathKey(root)), idleMs: settings.idleMs }).slice(0, 16);
 }
 
 /** This function gives the default root: the real folder of `~/git`, or no root. */
@@ -206,10 +228,11 @@ function okCount(result: CleanResult, action: CleanAction["action"]): number {
 }
 
 /** This function gives the plan of a dry run. */
-export function planOf(scan: WorktreeScan, result: CleanResult, version: string): WorktreePlan {
+export function planOf(scan: WorktreeScan, result: CleanResult, version: string, key: string): WorktreePlan {
   return {
     ...summarize(scan),
     version,
+    key,
     plan: { remove: okCount(result, "remove"), nodeModules: okCount(result, "node_modules"), prune: okCount(result, "prune"), skipped: okCount(result, "skip") },
     actions: result.actions,
     orphans: scan.orphans,
@@ -256,32 +279,34 @@ function record(scan: WorktreeScan, result: CleanResult): void {
 }
 
 /** The options of `list` and `clean`. */
-interface ScanArgs {
+interface ScanArgs extends RulesSettings {
   readonly roots: string[];
-  readonly idleMs: number;
+  readonly gitGapMs: number;
 }
 
-/** This function reads `--root` and `--idle`, or gives the message of an error. */
-function scanArgs(values: { root?: string[] | undefined; idle?: string | undefined }): ScanArgs | string {
+/** This function reads `--root`, `--idle` and `--git-gap`, or gives the message of an error. */
+function scanArgs(values: { root?: string[] | undefined; idle?: string | undefined; "git-gap"?: string | undefined }): ScanArgs | string {
   const roots = (values.root ?? []).length > 0 ? (values.root ?? []).map(realOrAbsolute) : defaultRoots();
   if (roots.length === 0) return "No root. Give a folder of repositories with --root.";
   const missing = roots.filter((root) => !existsSync(root));
   if (missing.length > 0) return `The root ${missing.join(", ")} does not exist.`;
   try {
-    return { roots, idleMs: values.idle === undefined ? 24 * 3_600_000 : parseTime(values.idle) };
+    const idleMs = values.idle === undefined ? WORKTREE_IDLE_MS : parseTime(values.idle);
+    const gitGapMs = values["git-gap"] === undefined ? 0 : parseTime(values["git-gap"]);
+    return { roots, idleMs, gitGapMs };
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
 }
 
-const SCAN_OPTIONS = { root: { type: "string", multiple: true }, idle: { type: "string" }, json: { type: "boolean" } } as const;
+const SCAN_OPTIONS = { root: { type: "string", multiple: true }, idle: { type: "string" }, "git-gap": { type: "string" }, json: { type: "boolean" } } as const;
 
 /** This function gives the output of `headroom worktree list`, and its exit code. */
 async function listCommand(argv: readonly string[], runner: WorktreeRunner, output: WorktreeOutput): Promise<number> {
   const { values } = parseArgs({ args: [...argv], options: { ...SCAN_OPTIONS, sizes: { type: "boolean" } } });
   const args = scanArgs(values);
   if (typeof args === "string") return (output.err(`headroom worktree list: ${args}`), 2);
-  const scan = await scanWorktrees({ roots: args.roots, runner, idleMs: args.idleMs, sizes: values.sizes === true });
+  const scan = await scanWorktrees({ roots: args.roots, runner, idleMs: args.idleMs, gitGapMs: args.gitGapMs, sizes: values.sizes === true });
   if (values.json === true) output.out(JSON.stringify({ summary: summarize(scan), ...scan }, null, 2));
   else for (const line of listLines(scan)) output.out(line);
   return 0;
@@ -334,10 +359,10 @@ async function cleanCommand(argv: readonly string[], runner: WorktreeRunner, out
   if (typeof args === "string" || typeof limits === "string") return (output.err(`headroom worktree clean: ${typeof args === "string" ? args : limits}`), 2);
   const dryRun = values["dry-run"] === true;
   const availableMb = dryRun ? undefined : await memory();
-  const scan = await scanWorktrees({ roots: args.roots, runner, idleMs: args.idleMs });
+  const scan = await scanWorktrees({ roots: args.roots, runner, idleMs: args.idleMs, gitGapMs: args.gitGapMs });
   const result = await cleanWorktrees(scan, { runner, dryRun, ...limits, availableMb });
   if (!dryRun) record(scan, result);
-  const planPath = dryRun ? writePlan(planOf(scan, result, worktreeVersion())) : null;
+  const planPath = dryRun ? writePlan(planOf(scan, result, worktreeVersion(), worktreeRulesKey(args))) : null;
   if (values.json === true) output.out(JSON.stringify({ summary: summarize(scan), ...result, orphans: scan.orphans }, null, 2));
   else {
     for (const line of cleanLines(result, scan)) output.out(line);
