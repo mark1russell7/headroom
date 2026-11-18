@@ -64,6 +64,17 @@ describe("the container starts (H62)", () => {
     expect(isHeavy(command)).toBe(false);
   });
 
+  it("rates a command with many options and no verb in linear time", () => {
+    // Each `--o1` matched in two ways before the fix. The time doubled with each option: 3.5 ms at 16 options, 48 ms at 20.
+    const options = Array.from({ length: 40 }, (_, index) => `--o${index}`).join(" ");
+    const started = performance.now();
+    expect(isHeavy(`docker ${options} ps`)).toBe(false);
+    expect(isHeavy(`docker compose ${options} logs`)).toBe(false);
+    expect(isHeavy(`docker-compose ${options} ps`)).toBe(false);
+    expect(isHeavy(`docker ${options} run mongo:7`)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("refuses a container start below the room of a lease, and tells the form that waits for its room", () => {
     const tight: Status = { free: { memory: 1500 }, leases: [] };
     expect(decide("docker compose up -d", tight)).toContain("Send it again as: headroom run --mem auto -- docker compose up -d");

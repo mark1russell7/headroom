@@ -39,8 +39,9 @@ export const HEAVY: RegExp[] = [
   /\bturbo\s+run\b/,
   /\bnx\s+(?:run-many|affected)\b/,
   // The options before the verb, for example `--context x` or `-f a.yml`, do not hide it. A file `up.yml` is not the verb `up`.
-  /\b(?:docker|podman|nerdctl)(?:\s+--?[\w-]+(?:[=\s]+(?!-)\S+)?)*\s+(?:build|buildx\s+build|(?:container\s+)?(?:run|start|restart)|compose(?:\s+--?[\w-]+(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart))(?![\w.-])/,
-  /\b(?:docker|podman)-compose(?:\s+--?[\w-]+(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart)(?![\w.-])/,
+  // An option starts with a word character after its hyphens, so the regex reads each option in one way only: no backtrack grows.
+  /\b(?:docker|podman|nerdctl)(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:build|buildx\s+build|(?:container\s+)?(?:run|start|restart)|compose(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart))(?![\w.-])/,
+  /\b(?:docker|podman)-compose(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart)(?![\w.-])/,
   /\bcargo\s+(?:build|test)\b/,
   /\bgo\s+test\b/,
   /\bpytest\b/,
