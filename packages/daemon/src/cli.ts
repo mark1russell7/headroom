@@ -80,9 +80,11 @@ import {
   presenceLine,
   stateText,
   readSessions,
+  removeLeaseEnd,
   SPAWN_HEAVY_DEFAULT,
   spawnClassText,
   spawnLine,
+  startOutsideJob,
   startUnderShell,
   startCapLine,
   START_CAP_DEFAULT,
@@ -94,6 +96,7 @@ import {
   thermalLines,
   SUM_WAIT_START,
   unattributedRow,
+  writeLeaseEnd,
   type Alert,
   type Alerts,
   type Config,
@@ -118,7 +121,7 @@ import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
 import { diskCommand } from "./disk-cli.ts";
-import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, relayCommandLine, routeLine, startDetachedClient, tellParent, waitForDaemon } from "./detach.ts";
+import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, routeLine, startDetachedClient, tellParent, waitForDaemon, windowsRelayLaunch } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { STARTS_USAGE, startsCommand } from "./starts-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
@@ -127,7 +130,7 @@ import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseStartCap, parseTime, startCapText } from "./parse.ts";
-import { dashboardKey, databasePath, readDiscovery, readPlannedStop, startLogPath } from "./paths.ts";
+import { dashboardKey, databasePath, leaseEndsDir, readDiscovery, readPlannedStop, startLogPath } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
 import { windowsCommand } from "./winshell.ts";
@@ -837,9 +840,10 @@ async function run(argv: string[]): Promise<number> {
   const detachAt = new Set(tokens.flatMap((token) => (token.kind === "option" && token.name === "detach" ? [token.index] : [])));
   // H56: the detached process is this same code, without --detach. It gives each message of the run to the log.
   // H190: on Windows, a relay with the shell as its parent starts the client, so the client leaves the jobs of the caller.
-  // The daemon starts an adopted client (H64), and the children of the daemon are in no job of a session: so no relay.
+  // H202: an adopted client (H64) takes the relay too. The children of the daemon have the jobs of the daemon, for example
+  // the job of the scheduled task. A restart of the daemon ends that job, and before this change it also ended the client.
   const startDetached = async (client: string): Promise<number> => {
-    const launch = process.platform === "win32" && adopt === undefined ? (pipe: string) => startUnderShell(relayCommandLine(pipe), process.cwd(), process.env) : null;
+    const launch = process.platform === "win32" ? windowsRelayLaunch({ underShell: startUnderShell, outsideJob: startOutsideJob }, process.cwd()) : null;
     const { start, route } = await startDetachedClient(import.meta.filename, clientArgs(argv, detachAt, values.holder ?? (await holderOf()), client), client, { launch });
     const where = routeLine(job, route);
     if (where !== null) {
@@ -851,7 +855,7 @@ async function run(argv: string[]): Promise<number> {
     else console.error(line);
     return code;
   };
-  // H64: the daemon starts this path at the grant. Then this process exits, so the client is not in the tree of the daemon.
+  // H64: the daemon starts this path at the grant. Then this process exits. The relay keeps the client out of the jobs of the daemon (H202).
   if (detach && log !== null && adopt !== undefined) return startDetached(log);
 
   let connection = connect() ?? (await afterPlannedRestart()) ?? (adopt === undefined ? null : await adoptedDaemon(values.wait));
@@ -1017,19 +1021,23 @@ async function run(argv: string[]): Promise<number> {
   const peak = peakMb === null ? "" : `, peak ${mb(peakMb)}`;
   const ended = exit.code === null && exit.signal !== null ? `the job ended with signal ${exit.signal}` : `the job ended with code ${code}`;
   const usage: JobUsage = { ...(peakMb === null ? {} : { peakMb }), ...(tempMb === null ? {} : { tempMb }), ...(cpuMs === null ? {} : { cpuMs }) };
+  const release = {
+    id: lease.id,
+    reason: `${ended}${peak}`,
+    ...(peakMb === null ? {} : { peakMb }),
+    ...(Object.keys(usage).length === 0 ? {} : { usage }),
+    // H26: the exit of the job, for `headroom job`. A job that a signal stopped has no exit code.
+    ...(exit.code === null ? {} : { exitCode: exit.code }),
+    ...(exit.signal === null ? {} : { signal: exit.signal }),
+    ...(processes === null ? {} : { processes }),
+  };
+  // H202: the end record keeps the exit when no daemon answers the release, for example during a restart of the daemon.
+  const recorded = writeLeaseEnd(leaseEndsDir(), { ...release, at: Date.now() });
   try {
-    await (connect() ?? latest).call(["resources", "release"], {
-      id: lease.id,
-      reason: `${ended}${peak}`,
-      ...(peakMb === null ? {} : { peakMb }),
-      ...(Object.keys(usage).length === 0 ? {} : { usage }),
-      // H26: the exit of the job, for `headroom job`. A job that a signal stopped has no exit code.
-      ...(exit.code === null ? {} : { exitCode: exit.code }),
-      ...(exit.signal === null ? {} : { signal: exit.signal }),
-      ...(processes === null ? {} : { processes }),
-    });
+    await (connect() ?? latest).call(["resources", "release"], release);
+    if (recorded) removeLeaseEnd(leaseEndsDir(), lease.id);
   } catch {
-    // The daemon ends the lease anyway when this process exits.
+    // The daemon ends the lease anyway when this process exits. It reads the end record first.
   }
   return code;
 }

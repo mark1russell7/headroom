@@ -22,6 +22,11 @@ export function startLogPath(): string {
   return join(headroomHome(), "starts.db");
 }
 
+/** The folder of the end records of jobs (H202): a client writes the end of its job there before its release. */
+export function leaseEndsDir(): string {
+  return join(headroomHome(), "ends");
+}
+
 /** The discovery file of the running daemon. Only this user can read it, because it holds the token. */
 export function discoveryPath(): string {
   return join(headroomHome(), "daemon.json");

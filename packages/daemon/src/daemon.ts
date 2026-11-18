@@ -19,7 +19,7 @@ import { McpGateway } from "./gateway.ts";
 import { dockerGet, serviceChecks } from "./health.ts";
 import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
 import { readSummary } from "./disk-report.ts";
-import { announceDaemon, databasePath, diskReportPath, headroomHome, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
+import { announceDaemon, databasePath, diskReportPath, headroomHome, leaseEndsDir, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
 import { diskProcedures, gatewayProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { writeStartsBeforeStop } from "./starts-cli.ts";
@@ -105,6 +105,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
     resumePlan: () => resumePlanFile(),
     // H193: the start trace writes each start with its command line to its own file, so the rows stay after a bugcheck.
     startLogPath: startLogPath(),
+    // H202: a job that ends while no daemon answers keeps its exit in an end record.
+    leaseEndsDir: leaseEndsDir(),
   });
   if (unclean !== null) {
     const last = engine.history(Date.now() - 86_400_000).memory.at(-1)?.at;
@@ -209,6 +211,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       if (removed.length > 0) log(`Removed the temp folders of ${removed.length} ended leases: ${removed.join(", ")}`);
     } catch (error) {
       log(`The sweep of the temp folders failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      engine.sweepLeaseEnds();
+    } catch (error) {
+      log(`The sweep of the end records failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   sweep();

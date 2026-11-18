@@ -9,6 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { leaseConditions, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
+import type { LeaseEnd } from "./ends.ts";
 import type { JobUsage, ResourceId, Room } from "./resources.ts";
 import type { SpawnClass } from "./spawn.ts";
 import type { JobKey } from "./predict.ts";
@@ -222,6 +223,12 @@ export interface BrokerOptions {
    * The default gives `null`.
    */
   readonly condition?: ((lease: Lease) => string | null) | undefined;
+  /**
+   * This function gives the end that the client of a lease wrote before its release, or `null` (H202). The broker reads it
+   * when the process of an active lease exited. Thus a job that ended while the daemon did not answer keeps its exit. The
+   * default gives `null`.
+   */
+  readonly endOf?: ((lease: Lease) => LeaseEnd | null) | undefined;
 }
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
@@ -231,6 +238,31 @@ export const LONG_HOLD_MARGIN = 1.25;
 
 /** The reason of a waiting lease from the store that no client called for in its heartbeat limit after a restart of the daemon. */
 export const NO_REJOIN_REASON = "no client came back after a restart of the daemon";
+
+/** The reason of a lease whose process exited with no release. */
+const EXITED = "the process exited";
+
+/** The note after the reason of a lease that ended by the end record of its client (H202). */
+export const RECORDED_END_NOTE = "(from the end record: the daemon did not answer the release)";
+
+/**
+ * This function gives a granted lease, ended by the end record of its client (H202). The end time is the time of the
+ * record, unless the record is from the future or from before the grant. A lease that waited is cancelled.
+ */
+function endedLease(lease: Lease, end: LeaseEnd, now: number): Lease {
+  const start = lease.grantedAt ?? lease.requestedAt;
+  return {
+    ...lease,
+    state: lease.state === "waiting" ? "cancelled" : "released",
+    endedAt: end.at >= start && end.at <= now ? end.at : now,
+    reason: `${end.reason} ${RECORDED_END_NOTE}`,
+    peakMb: end.peakMb ?? null,
+    ...(end.usage === undefined ? {} : { usage: end.usage }),
+    ...(end.exitCode === undefined ? {} : { exitCode: end.exitCode }),
+    ...(end.signal === undefined ? {} : { signal: end.signal }),
+    ...processesOf(lease, end.processes),
+  };
+}
 
 /** This function gives the field `processes` of a report. A count only grows, so a smaller count keeps the count of the lease. */
 function processesOf(lease: Lease, processes: number | undefined): { processes?: number } {
@@ -278,6 +310,7 @@ export class Broker {
   readonly #conflict: (lease: Lease, other: Lease) => string | null;
   readonly #groupConflict: (lease: Lease, granted: readonly Lease[], before: readonly Lease[]) => string | null;
   readonly #condition: (lease: Lease) => string | null;
+  readonly #recordedEnd: (lease: Lease) => LeaseEnd | null;
   /** The waiting leases that waited for a condition at the last tick (H31). */
   readonly #held = new Set<string>();
   /**
@@ -304,6 +337,7 @@ export class Broker {
     this.#conflict = options.conflict ?? (() => null);
     this.#groupConflict = options.groupConflict ?? (() => null);
     this.#condition = options.condition ?? (() => null);
+    this.#recordedEnd = options.endOf ?? (() => null);
   }
 
   /**
@@ -500,10 +534,15 @@ export class Broker {
     for (const lease of this.#leases.values()) {
       if (!isActive(lease)) continue;
       const reason = this.#endOf(lease, now);
-      if (reason !== null) {
-        this.#held.delete(lease.id);
-        changed.push(this.#set({ ...lease, state: "expired", endedAt: now, reason }));
+      if (reason === null) continue;
+      this.#held.delete(lease.id);
+      // H202: the client wrote the end of its job, and the daemon did not answer its release. The lease ends as released.
+      const end = reason === EXITED ? this.#recordedEnd(lease) : null;
+      if (end !== null) {
+        changed.push(this.#set(endedLease(lease, end, now)));
+        continue;
       }
+      changed.push(this.#set({ ...lease, state: "expired", endedAt: now, reason }));
     }
 
     const waiting = [...this.#leases.values()]
@@ -559,7 +598,7 @@ export class Broker {
    * the daemon also ends when its client does not call in that limit.
    */
   #endOf(lease: Lease, now: number): string | null {
-    if (lease.pid !== null && !this.#isAlive(lease.pid)) return "the process exited";
+    if (lease.pid !== null && !this.#isAlive(lease.pid)) return EXITED;
     if (now - lease.heartbeatAt <= lease.ttlMs) return null;
     if (this.#rejoin.has(lease.id)) return NO_REJOIN_REASON;
     return lease.pid === null ? "no heartbeat" : null;

@@ -110,6 +110,7 @@ import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, st
 import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
 import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
+import { readLeaseEnd, sweepLeaseEnds } from "./ends.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
 import { TraceBook, traceCovers, traceKindsText, withTrace, type StartTrace } from "./trace.ts";
 import { diskSize } from "./units.ts";
@@ -188,6 +189,11 @@ export interface EngineOptions {
    * creation time. The rows stay after a bugcheck. `null` or no value writes no log.
    */
   readonly startLogPath?: string | null | undefined;
+  /**
+   * The folder of the end records of jobs (H202). A client writes the end of its job there before its release. The broker
+   * reads it when the process of a lease exited with no release. `null` or no value reads no records.
+   */
+  readonly leaseEndsDir?: string | null | undefined;
 }
 
 /** One fixed drive, with the speed at which its free space decreases. */
@@ -528,6 +534,7 @@ export class Engine {
   readonly #retentionMs: number;
   readonly #sessionsDir: string;
   readonly #startLogPath: string | null;
+  readonly #leaseEndsDir: string | null;
   readonly #servers: () => ReadonlyMap<number, string>;
   readonly #services: () => readonly ServiceHealth[];
   readonly #listeners = new Set<(changed: readonly Lease[]) => void>();
@@ -700,6 +707,7 @@ export class Engine {
     this.#retentionMs = options.retentionMs ?? 7 * 24 * 3_600_000;
     this.#sessionsDir = options.sessionsDir ?? sessionsDir();
     this.#startLogPath = options.startLogPath ?? null;
+    this.#leaseEndsDir = options.leaseEndsDir ?? null;
     this.#servers = options.servers ?? (() => new Map());
     this.#services = options.services ?? (() => []);
     this.#baseAlertRules = options.alertRules ?? DEFAULT_ALERT_RULES;
@@ -738,6 +746,8 @@ export class Engine {
         // H33: while Mark is busy, a new heavy lease waits, for at most the busy wait.
         return conditionWait(lease, facts, floor) ?? presenceWait(lease, this.#presence.current, this.#policy, facts.now);
       },
+      // H202: a job that ended while the daemon did not answer keeps the exit from the end record of its client.
+      endOf: (lease) => (this.#leaseEndsDir === null ? null : readLeaseEnd(this.#leaseEndsDir, lease.id)),
     });
     this.#broker.restore(this.#store.activeLeases());
     this.#bootedAt = this.#sampler.bootedAt?.() ?? 0;
@@ -1553,6 +1563,15 @@ export class Engine {
     const root = this.#store.config().jobTemp;
     if (root === null) return [];
     return sweepJobTemp(root, (id) => {
+      const lease = this.#store.lease(id);
+      return lease !== null && !isActive(lease);
+    });
+  }
+
+  /** This function removes the end records of the leases that ended (H202). It gives their IDs. */
+  sweepLeaseEnds(): string[] {
+    if (this.#leaseEndsDir === null) return [];
+    return sweepLeaseEnds(this.#leaseEndsDir, (id) => {
       const lease = this.#store.lease(id);
       return lease !== null && !isActive(lease);
     });

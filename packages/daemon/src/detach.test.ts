@@ -4,7 +4,23 @@ import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { clientArgs, detachedLine, noDaemonLine, relayCommandLine, relayPipePath, routeLine, runRelay, RELAY_MAX_WAIT_MS, startDetachedClient, waitForDaemon, type ClientStart, type RelayLaunch } from "./detach.ts";
+import {
+  clientArgs,
+  detachedLine,
+  noDaemonLine,
+  relayCommandLine,
+  relayPipePath,
+  routeLine,
+  runRelay,
+  RELAY_MAX_WAIT_MS,
+  startDetachedClient,
+  waitForDaemon,
+  windowsRelayLaunch,
+  type ClientStart,
+  type OutsideStarts,
+  type RelayLaunch,
+  type RelayStart,
+} from "./detach.ts";
 
 // The command itself, started as a user starts it. Its daemon has its own folder and port.
 const cli = join(import.meta.dirname, "cli.ts");
@@ -252,6 +268,12 @@ describe("the line about the place of a detached client", () => {
     );
   });
 
+  it("names the relay that broke away from the jobs of the caller, and why the shell did not start it (H202)", () => {
+    expect(routeLine("build", { kind: "breakaway", relayPid: 41, why: "no shell window" })).toBe(
+      "headroom: the client of job build runs outside the jobs of the caller. Its relay (process 41) broke away from the jobs, because the shell did not start it: no shell window.",
+    );
+  });
+
   it("tells why the client stays in the jobs of the caller, and has no line on a platform with no relay", () => {
     expect(routeLine("build", { kind: "caller", reason: "no shell window" })).toContain("runs in the jobs of the caller, because no shell window.");
     expect(routeLine("build", { kind: "caller", reason: null })).toBeNull();
@@ -296,6 +318,25 @@ describe("the start of a detached client through a relay (H190)", () => {
     expect(relay.calls).toEqual([[ENTRY, ARGS, LOG, 2000]]);
     expect(direct.calls).toEqual([]);
     expect(await ran).toBe(0);
+  });
+
+  it("gives the route of a relay that broke away, and of a relay in the jobs of the caller, with the reason (H202)", { timeout: 20000 }, async () => {
+    for (const [launched, route] of [
+      [{ kind: "breakaway", pid: 51, why: "no shell window" }, { kind: "breakaway", relayPid: 51, why: "no shell window" }],
+      [{ kind: "inside", pid: 52, why: "no shell window, and a job refused the breakaway" }, { kind: "caller", reason: "no shell window, and a job refused the breakaway" }],
+    ] as const) {
+      const direct = fakeStart({ kind: "lease", lease: "direct" });
+      const relay = fakeStart({ kind: "lease", lease: "from-relay" });
+      let ran: Promise<number> = Promise.resolve(-1);
+      const launch: RelayLaunch = async (pipe) => {
+        ran = runRelay(pipe, relay.start, 5000);
+        return launched;
+      };
+      const started = await startDetachedClient(ENTRY, ARGS, LOG, { launch, waitMs: 2000, pipe: relayPipePath(), direct: direct.start });
+      expect(started).toEqual({ start: { kind: "lease", lease: "from-relay" }, route });
+      expect(direct.calls).toEqual([]);
+      expect(await ran).toBe(0);
+    }
   });
 
   it("starts the client in the jobs of the caller when the relay cannot start, and tells why", async () => {
@@ -410,5 +451,36 @@ describe("the relay (H190)", () => {
     const relay = fakeStart({ kind: "lease", lease: "x" });
     expect(await runRelay(relayPipePath(), relay.start, 3000)).toBe(1);
     expect(relay.calls).toEqual([]);
+  });
+});
+
+describe("the start of the relay on Windows (H190, H202)", () => {
+  /** The two starts in a test: each keeps its calls and gives its result. */
+  function starts(shell: RelayStart & ({ kind: "started" } | { kind: "unavailable" }), breakaway: boolean): { readonly calls: string[]; readonly starts: OutsideStarts } {
+    const calls: string[] = [];
+    return {
+      calls,
+      starts: {
+        underShell: async (line, cwd) => (calls.push(`shell ${cwd} ${line}`), shell),
+        outsideJob: async (line, cwd) => (calls.push(`outside ${cwd} ${line}`), { pid: 77, breakaway, jobFlags: 0x800 }),
+      },
+    };
+  }
+
+  it("starts the relay under the shell first, and does not try the breakaway after a start", async () => {
+    const fake = starts(STARTED, true);
+    expect(await windowsRelayLaunch(fake.starts, "D:/work")("p1")).toEqual(STARTED);
+    expect(fake.calls).toEqual([`shell D:/work ${relayCommandLine("p1")}`]);
+  });
+
+  it("starts the relay with a breakaway when the shell does not start it, and keeps the reason of the shell", async () => {
+    const fake = starts({ kind: "unavailable", reason: "no shell window" }, true);
+    expect(await windowsRelayLaunch(fake.starts, "D:/work")("p2")).toEqual({ kind: "breakaway", pid: 77, why: "no shell window" });
+    expect(fake.calls).toEqual([`shell D:/work ${relayCommandLine("p2")}`, `outside D:/work ${relayCommandLine("p2")}`]);
+  });
+
+  it("tells that the relay runs in the jobs of the caller when a job refuses the breakaway", async () => {
+    const fake = starts({ kind: "unavailable", reason: "no shell window" }, false);
+    expect(await windowsRelayLaunch(fake.starts, "D:/work")("p3")).toEqual({ kind: "inside", pid: 77, why: "no shell window, and a job refused the breakaway" });
   });
 });

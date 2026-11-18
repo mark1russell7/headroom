@@ -11,6 +11,7 @@
     "package": "template package",
     "template": "template repo",
     "test": "pnpm -r run test",
+    "test:windows": "pnpm -r --if-present run test:windows",
     "typecheck": "pnpm -r run typecheck",
     "lint:ste": "ste-lint",
     "headroom": "node packages/daemon/src/cli.ts",

@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
-import { processIsAlive, startOutsideJob, waitsForRoom, type Status } from "@headroom/core";
+import { processIsAlive, startOutsideJob, waitsForRoom, type Lease, type Status } from "@headroom/core";
 import { answers, connect, connectTo, isNetworkError } from "./client.ts";
 import { killTree } from "./gateway.ts";
 import { headroomHome, logPath, readDiscovery, takePlannedStop, writePlannedStop } from "./paths.ts";
@@ -219,6 +219,46 @@ export interface RestartOptions {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** A job with a process that runs at a restart (H202). */
+export interface RunningJob {
+  readonly id: string;
+  readonly job: string;
+  readonly pid: number;
+}
+
+/** This function gives the jobs with a process among the leases. A granted lease with no process has no job that runs yet. */
+export function runningJobs(leases: readonly Pick<Lease, "id" | "job" | "pid" | "state">[]): RunningJob[] {
+  return leases.flatMap((lease) => (lease.state === "granted" && lease.pid !== null ? [{ id: lease.id, job: lease.job, pid: lease.pid }] : []));
+}
+
+/**
+ * This function gives the lines about the jobs across a restart (H202). One line comes before the stop of the daemon,
+ * and one line comes after the start of the new daemon. A job that ended in the restart can have ended by itself. Thus
+ * the line names the command that tells its exit.
+ */
+export function acrossLines(running: readonly RunningJob[], isAlive: (pid: number) => boolean): { readonly before: string | null; readonly after: string | null } {
+  if (running.length === 0) return { before: null, after: null };
+  const names = running.map((each) => `${each.job} (process ${each.pid})`).join(", ");
+  const ended = running.filter((each) => !isAlive(each.pid));
+  const kept = running.length - ended.length;
+  const after =
+    ended.length === 0
+      ? `The ${running.length} jobs that ran before the restart still run.`
+      : `${kept} of ${running.length} jobs still run. These jobs ended in the restart: ${ended.map((each) => `${each.job} (lease ${each.id})`).join(", ")}. The command headroom job <lease> tells the exit of each.`;
+  return { before: `${running.length} jobs run across the restart: ${names}.`, after };
+}
+
+/** This function reads the jobs that run from the daemon, or gives none when it does not answer. */
+async function readRunningJobs(): Promise<RunningJob[]> {
+  const connection = connect();
+  if (!connection) return [];
+  try {
+    return runningJobs((await connection.call<Status>(["resources", "status"], {})).leases);
+  } catch {
+    return [];
+  }
+}
+
 /** This function waits until a process exits. It gives false when the process is still alive at the end of the time. */
 async function exited(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
@@ -251,6 +291,10 @@ export async function restart(options: RestartOptions = {}): Promise<number> {
     await sleep(30_000);
   }
   let oldPid = readDiscovery()?.pid ?? null;
+  // H202: the jobs that run keep running across the restart. The restart names them, and checks them after the restart.
+  const running = options.after === undefined ? await readRunningJobs() : [];
+  const before = acrossLines(running, () => true).before;
+  if (before !== null) say(before);
   if (options.after !== undefined) {
     oldPid = options.after;
     if (!(await exited(options.after, 30_000))) {
@@ -278,9 +322,11 @@ export async function restart(options: RestartOptions = {}): Promise<number> {
   }
   for (let attempt = 1; attempt <= 60; attempt++) {
     await sleep(1000);
-    const running = readDiscovery();
-    if (running && running.pid !== oldPid && (await answers(running))) {
-      say(`headroom restarted: process ${running.pid}.`);
+    const fresh = readDiscovery();
+    if (fresh && fresh.pid !== oldPid && (await answers(fresh))) {
+      say(`headroom restarted: process ${fresh.pid}.`);
+      const after = acrossLines(running, processIsAlive).after;
+      if (after !== null) say(after);
       return 0;
     }
     // The task ignores a start while its old instance still ends (IgnoreNew). Thus the restart starts the task again.

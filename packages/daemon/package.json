@@ -1,13 +1,14 @@
 {
   "$schema": "https://json.schemastore.org/package",
   "name": "@headroom/daemon",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:windows": "vitest run src/restart-job.test.ts src/detach.test.ts src/winshell.test.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json"
   },
   "devDependencies": {

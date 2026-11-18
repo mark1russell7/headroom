@@ -136,7 +136,8 @@ export class DeferredStarts {
 
 /**
  * This function gives the start of a client. The daemon starts `headroom run --detach --adopt <id>`, and that process starts
- * the client and exits. Thus the client is not in the process tree of the daemon, and a restart of the daemon does not stop it.
+ * the client and exits. That process has the jobs of the daemon. On Windows, it starts the client through the relay, so the
+ * client leaves the process tree and the jobs of the daemon (H202). Thus a restart of the daemon does not stop the client.
  */
 export function launchClient(node: string, cli: string, title: string): DeferredOptions["launch"] {
   return (id, start, failedOnce) => {

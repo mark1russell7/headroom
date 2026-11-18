@@ -29,6 +29,8 @@ The command line of the daemon has the title `headroom-daemon`. The command line
 
 On Windows, a scheduled task starts the daemon at logon and every 2 minutes when it stopped. The log is `~/.headroom/daemon.log`. On Linux, a systemd user unit starts it. `headroom service restart` loads a new version: it waits until no lease waits, and it marks the stop as planned, so no `stop` alert starts. `headroom service uninstall` stops the daemon and removes the service. To start the daemon in a terminal, use `headroom serve`.
 
+The jobs that run continue across a restart (H202). `headroom service restart` names them before the stop, and tells which still run after it. A job that ends during the restart keeps its exit code. Its client writes the end to a file in `~/.headroom/ends` before its release, and the new daemon reads that file.
+
 When leases wait for a long time, use `headroom service restart --when-idle` to load a new version. The command does not wait. The daemon restarts itself at its first tick with no waiting lease. `headroom status` shows the restart that waits, and `--cancel` cancels it. During a planned restart, `headroom run` waits for the new daemon.
 
 Run a heavy job under a lease. The job waits until the memory is free. When the daemon does not run, the job runs at once with a warning.
@@ -761,8 +763,9 @@ Claude Code stops a background shell when the runtime gives memory pressure "cri
 - Without a daemon, the job runs without a lease, as a foreground run does. Then `headroom job` has no state of it, so read the log.
 - On Windows, a child process is in each job of its parent. An editor can keep its processes in a job that stops them when the editor closes. Thus a client that the run starts itself can stop with the editor.
 - So the run starts that client through a relay, which has the shell of the desktop as its parent process (H190). The client is then in none of the jobs of the caller. The log tells where the client started.
-- When Windows refuses, the client starts in the jobs of the caller, and the run tells why on stderr and in the log. For example, Windows refuses when the run is elevated and the shell is not.
-- A client that the daemon starts (H64) is already outside the jobs of the caller, so it needs no relay.
+- When the shell does not start the relay, the relay starts with a breakaway from the jobs of the caller. This occurs on a computer with no desktop shell, for example.
+- When Windows also refuses the breakaway, the client starts in the jobs of the caller. The run tells why on stderr and in the log. For example, Windows refuses when the run is elevated and the shell is not.
+- A client that the daemon starts (H64) also starts through the relay (H202). Without the relay, the client is in the jobs of the daemon. On 2026-11-18, the job of the scheduled task ended an adopted client at a restart of the daemon.
 
 A session can take its queued job off the queue with `headroom cancel`, for example after its subagent ended:
 
@@ -780,6 +783,7 @@ headroom cancel --job "pnpm test" --all        # each waiting match
 - `--json` gives `{ cancelled, matches }`. The procedure is `resources.cancel`.
 - A waiting lease also ends by itself when its client stops. A lease with a process ends at the next tick after its process exits. A lease with no process ends after its heartbeat limit (5 minutes by default) with no call.
 - After a restart of the daemon, each waiting lease of the store gets a new limit. It ends when its client does not call again in that limit.
+- A client can fail to reach the daemon for its release, for example during a restart. Then the lease ends with the exit of the end record of the client (H202). Its reason tells that the exit came from that record.
 
 A job that writes much data asks for space on a drive with `--disk`. `--disk 5g` asks for space on the drive of the current folder, and `--disk D:=5g` names the drive. The lease waits until the drive has the space. The broker keeps the critical limit of the disk alert free: 5 GB, or 5% of a small drive. A disk lease holds its full amount until its release. A lease that is larger than the drive, or that names a drive that does not exist, is cancelled at once.
 
