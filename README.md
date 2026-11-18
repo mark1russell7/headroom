@@ -1002,7 +1002,7 @@ The bridge sends the messages of the session to the gateway. When the gateway do
 ## How it is built
 
 - The procedures use `@procedures/client`. The host is `runProcedureHost` of `@procedures/server`, on the runner of `@mark1russell7/service`.
-- The database is `node:sqlite`, with one file in WAL mode.
+- The database is `node:sqlite`, with one file in WAL mode and the pragma `synchronous` NORMAL. A new lease, each change of the state of a lease and the key of a new lease are synced writes (H204). A synced write is on the disk when the call returns. The field `syncs` of `headroom status --json` gives their count, their time and the longest one.
 - The daemon is one Node process. Its target is less than 60 MB of memory.
 
 ## License

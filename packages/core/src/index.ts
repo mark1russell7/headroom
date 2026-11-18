@@ -630,7 +630,7 @@ export {
 export type { ExitRow, LoggedStart, RankedStarter, StartLogSpan, StartLogStats, StartLogWriterOptions, StartRanking, StartRow } from "./start-log.ts";
 export {
   MEMORY_RESERVE_DEFAULT_MB, AWAY_AFTER_MIN_MS, PRESENCE_TIME_MAX_MS, Store } from "./store.ts";
-export type { Config, MemoryRow, NativeRefusalCount, NativeRefusalEntry, NativeRefusalInput, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep } from "./store.ts";
+export type { Config, MemoryRow, NativeRefusalCount, NativeRefusalEntry, NativeRefusalInput, OwnerRow, PoolTagSnapshot, ReaderRow, ResourceRow, Sleep, StoreSyncs } from "./store.ts";
 export {
   checkJobTemp,
   folderSizeMb,
