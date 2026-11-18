@@ -6,6 +6,7 @@
 
 import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import { uptime as systemUptime } from "node:os";
 import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom, WORKTREE_IDLE_MS } from "@headroom/core";
 import { defineModule, hostPolicy, manifestProcedure, ProcedureRegistry, REGISTRY_READ_EFFECTS, registerModules, withEffects, type AnyProcedure } from "@procedures/client";
 import { peerHostOptions, type HostFaceFactory, type ProcedureHostOptions } from "@procedures/peer";
@@ -100,6 +101,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const host = "127.0.0.1";
   const early = await openEarlyListener({ port, host });
   const earlyAt = process.uptime();
+  // The time from the boot of the computer to the bind: a hook call before it gets a refused connection.
+  const earlyAfterBoot = systemUptime();
   if (early instanceof Error) log(`The early listener did not bind ${host}:${port}: ${early.message}. The port answers when the daemon runs.`);
 
   const store = new Store(databasePath());
@@ -204,6 +207,9 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const seconds = (value: number): string => `${value.toFixed(1)} s`;
   log(
     `The start took ${seconds(process.uptime())} from the start of the process: the early listener at ${early instanceof Error ? "no bind" : seconds(earlyAt)}, the engine at ${seconds(engineAt)}, the close of the early listener at ${closedAt === null ? "no close" : seconds(closedAt)}.`,
+  );
+  log(
+    `The process started ${seconds(earlyAfterBoot - earlyAt)} after the boot of the computer. ${early instanceof Error ? "The early listener did not bind the port." : `The early listener bound the port ${seconds(earlyAfterBoot)} after the boot.`}`,
   );
   if (unclean !== null) {
     // H193: a bugcheck is an unclean stop. The starts of its last 2 minutes stay in a file after the 24 hours of the log. H206:
