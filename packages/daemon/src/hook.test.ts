@@ -9,7 +9,7 @@ import { dashboardFace } from "./dashboard.ts";
 import { DEFAULT_PORT, withFaces } from "./daemon.ts";
 import { HOOK_CLIENT, HOOK_HEADER, HOOK_PATH, hookAnswer, hookFace, hookVerdict } from "./hook-face.ts";
 import { FALSE_CASES, HEAVY_CASES, LEASE_CASES, VERDICT_COMMANDS } from "./fixtures/hook-commands.ts";
-import { decide, hookOutput, isHeavy, leased, type Status } from "./hook-rating.ts";
+import { CALL_TIMEOUT_DEFAULT_MS, CALL_TIMEOUT_MAX_MS, decide, hookOutput, isHeavy, leased, runParts, toolCallOf, type HookOutput, type Status } from "./hook-rating.ts";
 
 const event = (command: unknown): unknown => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } });
 
@@ -115,17 +115,20 @@ describe("the verdicts of the hook over HTTP and of the old process hook (H194)"
     );
   });
 
-  it("reads the status only for a heavy command that does not run under headroom run", () => {
+  it("reads the status only for a heavy command or a headroom run that waits in the foreground (H208)", () => {
     let reads = 0;
     const status = (): Status => {
       reads += 1;
       return { free: { memory: 100 }, leases: [] };
     };
     hookOutput(event("git status"), status);
-    hookOutput(event("headroom run --mem 2g -- pnpm test"), status);
+    hookOutput(event("headroom run --detach --job tests --mem 2g -- pnpm test"), status);
+    hookOutput(event("headroom run --wait 1m --mem 2g -- pnpm test"), status);
+    hookOutput(event("echo headroom run --mem 2g -- pnpm test"), status);
     expect(reads).toBe(0);
     hookOutput(event("pnpm test"), status);
-    expect(reads).toBe(1);
+    hookOutput(event("headroom run --mem 2g -- pnpm test"), status);
+    expect(reads).toBe(2);
   });
 
   it("lets an event with no command, or a command that is not a string, go on as the old hook did", () => {
@@ -396,5 +399,99 @@ describe("the gate of long native paths in the hook (H203)", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+});
+
+describe("the guard of a headroom run that waits in the foreground (H208)", () => {
+  const call = (command: string, input: Record<string, unknown> = {}, tool = "Bash"): unknown => ({
+    hook_event_name: "PreToolUse",
+    tool_name: tool,
+    tool_input: { command, ...input },
+  });
+  const QUEUE: Status = { free: { memory: 9000 }, leases: [{ state: "granted" }, { state: "waiting", reason: "waits for memory: needs 3072, 1770 free" }] };
+  const TWO_IN_QUEUE: Status = {
+    free: { memory: 1770 },
+    leases: [
+      { state: "waiting", reason: "waits for memory: needs 3072, 1770 free" },
+      { state: "waiting", reason: "waits for memory: needs 3300, 1770 free" },
+    ],
+  };
+  const NO_QUEUE: Status = { free: { memory: 1770 }, leases: [{ state: "granted" }] };
+  const SLOT_QUEUE: Status = { free: { memory: 9000 }, leases: [{ state: "waiting", reason: "waits for browser: needs 1, 0 free" }] };
+  const reasonOf = (output: HookOutput): string | null => ("hookSpecificOutput" in output ? output.hookSpecificOutput.permissionDecisionReason : null);
+  const RUN = "headroom run --mem 2g -- pnpm test";
+
+  const cases: { name: string; command: string; input?: Record<string, unknown>; tool?: string; status: Status | null; refused: boolean }[] = [
+    { name: "no lease waits for memory", command: RUN, status: NO_QUEUE, refused: false },
+    { name: "a lease waits for a slot, not for memory", command: RUN, status: SLOT_QUEUE, refused: false },
+    { name: "the daemon gives no status", command: RUN, status: null, refused: false },
+    { name: "no --wait (30 min) and the default timeout (2 min)", command: RUN, status: QUEUE, refused: true },
+    { name: "a --wait shorter than the default timeout", command: "headroom run --wait 1m --mem 2g -- pnpm test", status: QUEUE, refused: false },
+    { name: "a --wait equal to the timeout", command: "headroom run --wait 2m --mem 2g -- pnpm test", status: QUEUE, refused: true },
+    { name: "--wait 8m and a timeout of 600000", command: "headroom run --wait 8m --mem 2g -- pnpm test", input: { timeout: 600_000 }, status: QUEUE, refused: false },
+    { name: "--wait=8m and a timeout of 600000", command: "headroom run --wait=8m --mem 2g -- pnpm test", input: { timeout: 600_000 }, status: QUEUE, refused: false },
+    { name: "--wait 10m and a timeout of 600000", command: "headroom run --wait 10m --mem 2g -- pnpm test", input: { timeout: 600_000 }, status: QUEUE, refused: true },
+    { name: "a timeout above the largest value counts as the largest value", command: "headroom run --wait 15m -- pnpm test", input: { timeout: 1_200_000 }, status: QUEUE, refused: true },
+    { name: "a timeout that is not a number counts as the default", command: "headroom run --wait 8m -- pnpm test", input: { timeout: "600000" }, status: QUEUE, refused: true },
+    { name: "--detach with --job", command: "headroom run --detach --job tests --mem 2g -- pnpm test", status: QUEUE, refused: false },
+    { name: "--detach after -- is an argument of the command", command: "headroom run --mem 2g -- pnpm test --detach", status: QUEUE, refused: true },
+    { name: "--detach with no --job: the tool refuses the run at once", command: "headroom run --detach -- pnpm test", status: QUEUE, refused: false },
+    { name: "an unknown option: the tool refuses the run at once", command: "headroom run --bogus -- pnpm test", status: QUEUE, refused: false },
+    { name: "no command: the tool refuses the run at once", command: "headroom run --mem 2g", status: QUEUE, refused: false },
+    { name: "a wrong --wait: the tool refuses the run at once", command: "headroom run --wait soon -- pnpm test", status: QUEUE, refused: false },
+    { name: "the PowerShell tool", command: RUN, tool: "PowerShell", status: QUEUE, refused: true },
+    { name: "the PowerShell tool with --detach", command: "headroom run --detach --job tests -- pnpm test", tool: "PowerShell", status: QUEUE, refused: false },
+    { name: "the call operator of PowerShell", command: `& ${RUN}`, tool: "PowerShell", status: QUEUE, refused: true },
+    { name: "a run after cd", command: `cd app && ${RUN}`, status: QUEUE, refused: true },
+    { name: "a run after its variables", command: `CI=1 ${RUN}`, status: QUEUE, refused: true },
+    { name: "headroom.cmd", command: "headroom.cmd run --mem 2g -- pnpm test", status: QUEUE, refused: true },
+    { name: "headroom run in the text of echo", command: `echo ${RUN}`, status: QUEUE, refused: false },
+    { name: "a call in the background with a short --wait", command: "headroom run --wait 1m -- pnpm test", input: { run_in_background: true }, status: QUEUE, refused: true },
+    { name: "a call in the background with --detach", command: "headroom run --detach --job tests -- pnpm test", input: { run_in_background: true }, status: QUEUE, refused: false },
+  ];
+  it.each(cases)("$name: refused $refused", ({ command, input, tool, status, refused }) => {
+    const reason = reasonOf(hookOutput(call(command, input, tool), () => status));
+    expect(reason !== null).toBe(refused);
+  });
+
+  it("gives the detached form of the command and the wait of the job, with --job <name> when the run has no name", () => {
+    const reason = reasonOf(hookOutput(call(`cd app && ${RUN}`), () => TWO_IN_QUEUE));
+    expect(reason).toContain("2 jobs already wait for memory");
+    expect(reason).toContain("waits up to 30 min for its grant, and the tool call ends at 2 min");
+    expect(reason).toContain("Send it as a detached job: cd app && headroom run --detach --job <name> --mem 2g -- pnpm test.");
+    expect(reason).toContain('Then "headroom job <name>" gives its state.');
+    expect(reason).toContain("--wait 8m with a timeout of 600000");
+  });
+
+  it("keeps the name of the job in the detached form", () => {
+    const reason = reasonOf(hookOutput(call("headroom run --job tests --wait 10m -- pnpm test", { timeout: 300_000 }), () => QUEUE));
+    expect(reason).toContain("1 job already waits for memory");
+    expect(reason).toContain("waits up to 10 min for its grant, and the tool call ends at 5 min");
+    expect(reason).toContain("Send it as a detached job: headroom run --detach --job tests --wait 10m -- pnpm test.");
+    expect(reason).toContain('Then "headroom job tests" gives its state.');
+  });
+
+  it("tells a call in the background that it has no time in the foreground", () => {
+    const reason = reasonOf(hookOutput(call("headroom run --wait 1m --job tests -- pnpm test", { run_in_background: true }), () => QUEUE));
+    expect(reason).toContain("this tool call starts in the background");
+    expect(reason).not.toContain("--wait 8m");
+  });
+
+  it("reads the limits of a call", () => {
+    expect(toolCallOf(undefined)).toEqual({ timeoutMs: CALL_TIMEOUT_DEFAULT_MS, background: false });
+    expect(toolCallOf({ timeout: 300_000 })).toEqual({ timeoutMs: 300_000, background: false });
+    expect(toolCallOf({ timeout: 0 })).toEqual({ timeoutMs: CALL_TIMEOUT_DEFAULT_MS, background: false });
+    expect(toolCallOf({ timeout: Number.NaN })).toEqual({ timeoutMs: CALL_TIMEOUT_DEFAULT_MS, background: false });
+    expect(toolCallOf({ timeout: 9_000_000, run_in_background: true })).toEqual({ timeoutMs: CALL_TIMEOUT_MAX_MS, background: true });
+  });
+
+  it("reads each run of a line with the options of the command line tool", () => {
+    expect(runParts("git status")).toEqual([]);
+    expect(runParts("headroom run --job a --wait 90s -- x && headroom run --detach --job b -- y")).toEqual([
+      { detach: false, waitMs: 90_000, job: "a" },
+      { detach: true, waitMs: 30 * 60_000, job: "b" },
+    ]);
+    // Without --, parseArgs of the tool reads --detach after the command as an option. The run has no --job, so the tool refuses it.
+    expect(runParts("headroom run --mem 2g pnpm test --detach")).toEqual([]);
   });
 });
