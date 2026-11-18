@@ -32,7 +32,9 @@ export function leaseRow(lease: Lease, amounts: string, gpu: string | null, use:
  */
 export function leaseUseText(use: LeaseUse | undefined): string | null {
   if (use === undefined || (use.usedMb === null && use.peakMb === null)) return null;
-  const parts = [use.usedMb === null ? "no measure now" : `uses ${diskSize(use.usedMb)}`];
+  const count = use.containers?.length ?? 0;
+  const counted = count === 0 ? "" : ` with ${count} ${count === 1 ? "container" : "containers"}`;
+  const parts = [use.usedMb === null ? "no measure now" : `uses ${diskSize(use.usedMb)}${counted}`];
   if (use.peakMb !== null) parts.push(`peak ${diskSize(use.peakMb)}`);
   const text = parts.join(", ");
   return use.over ? `${text}, over: ${use.times ?? "many"} times its amount` : text;

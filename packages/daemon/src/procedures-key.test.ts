@@ -47,3 +47,17 @@ describe("the key of a request (H78)", () => {
     await expect(call(procedures, "resources.lease", { ...base, key: { ...KEY, lock: "not-a-hash" } })).rejects.toThrow();
   });
 });
+
+describe("the folder of a request (H62)", () => {
+  it("keeps the folder of the job in the lease and in the store, and refuses an empty folder", async () => {
+    const store = new Store(":memory:");
+    const procedures = resourceProcedures(new Engine({ sampler, store, sessionsDir: "/nowhere" }));
+    const base = { holder: "shop", job: "share-stack", amounts: { memory: 512 }, ttlMs: 60_000 };
+    const lease = await call<Lease>(procedures, "resources.lease", { ...base, folder: "D:/work/Shop" });
+    expect(lease.folder).toBe("D:/work/Shop");
+    expect(store.lease(lease.id)?.folder).toBe("D:/work/Shop");
+    // A client of before H62 sends no folder.
+    expect(await call<Lease>(procedures, "resources.lease", base)).not.toHaveProperty("folder");
+    await expect(call(procedures, "resources.lease", { ...base, folder: "" })).rejects.toThrow();
+  });
+});

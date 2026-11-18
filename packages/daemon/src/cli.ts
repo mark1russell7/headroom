@@ -942,6 +942,8 @@ async function run(argv: string[]): Promise<number> {
     // H23: the status names the capped jobs. The job object of this process holds the cap.
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
     ...(key === null ? {} : { key }),
+    // H62: a container of a compose project in this folder can count for the lease.
+    folder: process.cwd(),
   };
   // H64: a detached job that waits is a row of the daemon, with no process. A daemon of an older version has no such
   // procedure, and a refused request has its reason in the log, so the client then waits in the queue as before.
@@ -1032,7 +1034,8 @@ async function run(argv: string[]): Promise<number> {
       () => undefined,
     );
   try {
-    result = await runEnforced(positionals, enforcement, temp?.env ?? {}, sink, report);
+    // H62: a compose file can give its containers the label `headroom.lease` from this variable.
+    result = await runEnforced(positionals, enforcement, { ...(temp?.env ?? {}), HEADROOM_LEASE: lease.id }, sink, report);
   } finally {
     if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
   }

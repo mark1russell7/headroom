@@ -212,12 +212,12 @@ export type {
   Status,
   Suggestion,
 } from "./engine.ts";
-export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, jobTreeMb, ORPHAN_LABEL, orphanName, parentOf, parentRecordOf, liveSessions, processKey, programName, readSessions, sameStart, sessionsDir, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
+export { attribute, baseOwner, childrenOf, DEFAULT_RULES, fileTimeMs, isOrphan, isParent, jobTree, jobTreeMb, ORPHAN_LABEL, orphanName, parentOf, parentRecordOf, liveSessions, processKey, programName, readSessions, sameStart, sessionsDir, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
 export { COMMAND_CUT, COMMAND_HEAD, COMMAND_MAX, commandText, isOrphanOwner, keepEnds, OwnerRecords, ownerText, RECORD_AFTER_MS, RECORDS_MAX, shortCommand } from "./orphans.ts";
 export type { ProcessRecord, RecordChanges } from "./orphans.ts";
 export { gainAt, gainPerMinute, HANDLE_HOLDERS_SHOWN, HandleTracker, handleStatus, handlesLines, handlesText, HANDLES_FLOOR, HANDLES_TRAIL_MS } from "./handles.ts";
 export type { HandleHolder, HandleStatus } from "./handles.ts";
-export type { Attribution, KeptOwner, OwnerRule, ParentRecord, SessionRef } from "./owners.ts";
+export type { Attribution, JobTree, KeptOwner, OwnerRule, ParentRecord, SessionRef } from "./owners.ts";
 export { isLoopback, mergeRoles, parseRoleFile, parseRoles, PEER_MAX_DEPTH, PeerError, PeerResolver, RoleBook, roleOf, startedFirst } from "./peer.ts";
 export {
   isReader,
@@ -446,11 +446,14 @@ export {
   dockerStatus,
   memoryBytes,
   normalPath,
+  LEASE_LABEL,
   parseContainers,
   parseDf,
   parseStats,
   parseVersion,
   pathForms,
+  pathFormsCache,
+  upMinMs,
   roleFolders,
   roleOfFolder,
   splitCores,
@@ -581,6 +584,8 @@ export {
 export type { JobStarts, OwnerStarts, ProcessStarts, RatePoint, StartCost } from "./starts.ts";
 export { isOver, leaseUse, overText } from "./lease-use.ts";
 export type { LeaseUse, OverRules } from "./lease-use.ts";
+export { leaseContainers, leaseMemoryMb } from "./lease-containers.ts";
+export type { LeaseContainerFrom, LeaseContainers, LeaseContainerUse, LeasedContainer } from "./lease-containers.ts";
 export {
   COVER_AFTER_MS,
   COVERS_PER_READ,

@@ -39,6 +39,8 @@ export interface LeaseUse {
   readonly times: number | null;
   /** True when the peak is `overFactor` times the stated memory or more, and at least `overMinMb` above it. */
   readonly over: boolean;
+  /** The names of the containers that count for the lease (H62). A lease with no container has none. */
+  readonly containers?: readonly string[];
 }
 
 /** This function tells if a peak is far above the stated memory. A stated memory of 0 is over at a peak of `overMinMb`. */
@@ -49,9 +51,9 @@ export function isOver(statedMb: number, peakMb: number | null, rules: OverRules
 
 /**
  * This function gives the use of a lease, or `null` for a lease that is not granted or has no memory amount. The peak is
- * at least the use at this time.
+ * at least the use at this time. `containers` are the names of the containers that count for the lease.
  */
-export function leaseUse(lease: Lease, usedMb: number | null, peakMb: number | null, rules: OverRules): LeaseUse | null {
+export function leaseUse(lease: Lease, usedMb: number | null, peakMb: number | null, rules: OverRules, containers: readonly string[] = []): LeaseUse | null {
   const statedMb = lease.amounts[MEMORY];
   if (lease.state !== "granted" || statedMb === undefined) return null;
   const peak = peakMb === null && usedMb === null ? null : Math.max(peakMb ?? 0, usedMb ?? 0);
@@ -65,6 +67,7 @@ export function leaseUse(lease: Lease, usedMb: number | null, peakMb: number | n
     peakMb: peak === null ? null : Math.round(peak),
     times,
     over: isOver(statedMb, peak, rules),
+    ...(containers.length === 0 ? {} : { containers }),
   };
 }
 
@@ -79,7 +82,9 @@ export function overText(uses: readonly LeaseUse[]): { readonly subject: string;
   const over = uses.filter((use) => use.over).sort((a, b) => excess(b) - excess(a));
   const named = over.slice(0, NAMED).map((use) => {
     const times = use.times === null ? "" : `, ${use.times} times its amount`;
-    return ` The lease ${use.job} of ${use.holder} states ${diskSize(use.statedMb)} and used up to ${diskSize(use.peakMb ?? 0)}${times}.`;
+    const count = use.containers?.length ?? 0;
+    const containers = count === 0 ? "" : ` Its use holds ${count === 1 ? "the container" : "the containers"} ${use.containers?.join(", ") ?? ""}.`;
+    return ` The lease ${use.job} of ${use.holder} states ${diskSize(use.statedMb)} and used up to ${diskSize(use.peakMb ?? 0)}${times}.${containers}`;
   });
   const more = over.length > NAMED ? ` ${over.length - NAMED} more leases are over.` : "";
   const first = over.length === 1 ? "A lease uses far more memory than it states." : `${over.length} leases use far more memory than they state.`;

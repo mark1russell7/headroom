@@ -132,6 +132,10 @@ const MIGRATIONS: readonly Migration[] = [
   (db) => {
     db.exec(REFUSAL_SCHEMA);
   },
+  // H62: the folder of the job of each lease. The rules of the containers read it.
+  (db) => {
+    addMissingColumns(db, "leases", { folder: "TEXT" });
+  },
 ];
 
 /** The table of the refusals of the gate of long native paths (H203). Step 6 of the schema makes it. */
@@ -534,8 +538,8 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores, peak_gpu_mb, cancelled_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores, peak_gpu_mb, cancelled_by, folder)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET pid = excluded.pid, state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
            usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes,
@@ -550,7 +554,7 @@ export class Store {
         lease.peakStartsPerMin ?? null, lease.spawn === undefined ? null : JSON.stringify(lease.spawn),
         lease.conditions === undefined ? null : JSON.stringify(lease.conditions), lease.conditionsMetAt ?? null,
         lease.unmet === undefined ? null : JSON.stringify(lease.unmet), lease.cpuCap ?? null, lease.peakCores ?? null, lease.peakGpuMb ?? null,
-        lease.cancelledBy ?? null,
+        lease.cancelledBy ?? null, lease.folder ?? null,
       );
   }
 
@@ -1274,5 +1278,6 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["peak_cores"] === null || row["peak_cores"] === undefined ? {} : { peakCores: Number(row["peak_cores"]) }),
     ...(row["peak_gpu_mb"] === null || row["peak_gpu_mb"] === undefined ? {} : { peakGpuMb: Number(row["peak_gpu_mb"]) }),
     ...(row["cancelled_by"] === null || row["cancelled_by"] === undefined ? {} : { cancelledBy: String(row["cancelled_by"]) }),
+    ...(row["folder"] === null || row["folder"] === undefined ? {} : { folder: String(row["folder"]) }),
   };
 }
