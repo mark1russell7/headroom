@@ -2,7 +2,19 @@ import { describe, expect, it } from "vitest";
 import { Broker, type Lease } from "./broker.ts";
 import { attribute } from "./owners.ts";
 import { leasesOf, type Owners } from "./resources.ts";
-import { isNewProcess, RECENT_STARTS_MS, StartTracker, startsLine, STARTS_WINDOW_MS } from "./starts.ts";
+import { random } from "@mark1russell7/rigor-generators";
+import {
+  isNewProcess,
+  RATE_STEP_MAX_MS,
+  RECENT_STARTS_MS,
+  startCost,
+  startCostText,
+  startsFromRates,
+  StartTracker,
+  startsLine,
+  STARTS_WINDOW_MS,
+  type RatePoint,
+} from "./starts.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const S = 1000;
@@ -205,5 +217,86 @@ describe("StartTracker after a sleep (H30)", () => {
     expect(tracker.summary(3_600_000).perMinute).toBe(0);
     tracker.read(3_610_000, second, ownersOf(second, []), 10_050);
     expect(tracker.summary(3_610_000)).toMatchObject({ perMinute: 300, exact: true });
+  });
+});
+
+describe("startsFromRates (H63)", () => {
+  const MIN = 60_000;
+  const T0 = Date.UTC(2026, 10, 18, 12, 0);
+  /** One sample each minute from `from` to `to`, both included, with the rate that `rate` gives for each time. */
+  const samples = (from: number, to: number, rate: (at: number) => number | null, step = MIN): RatePoint[] => {
+    const points: RatePoint[] = [];
+    for (let at = from; at <= to; at += step) points.push([at, rate(at)]);
+    return points;
+  };
+
+  it("counts a steady rate over the window, also when the samples do not fall on its ends", () => {
+    expect(startsFromRates(samples(T0 - MIN, T0 + 60 * MIN, () => 100), T0, T0 + 60 * MIN)).toBeCloseTo(6000, 6);
+    // Samples at 30 seconds past each minute: the first and the last step count only their parts in the window.
+    expect(startsFromRates(samples(T0 - MIN / 2, T0 + 60 * MIN + MIN / 2, () => 100), T0, T0 + 60 * MIN)).toBeCloseTo(6000, 6);
+    // Each step counts the rate of its later sample.
+    expect(startsFromRates([[T0, 999], [T0 + MIN, 10], [T0 + 2 * MIN, 20]], T0, T0 + 2 * MIN)).toBeCloseTo(30, 6);
+  });
+
+  it("covers a short gap at the rate of the steps, and gives null when the steps cover less than 90 % of the window", () => {
+    const withGap = (gapMinutes: number): RatePoint[] =>
+      samples(T0 - MIN, T0 + 60 * MIN, () => 100).filter(([at]) => at <= T0 + 20 * MIN || at >= T0 + (20 + gapMinutes) * MIN);
+    // A step of 5 minutes counts. A step of 6 minutes is a gap: 54 of the 60 minutes are covered, so the count is scaled.
+    expect(startsFromRates(withGap(RATE_STEP_MAX_MS / MIN), T0, T0 + 60 * MIN)).toBeCloseTo(6000, 6);
+    expect(startsFromRates(withGap(6), T0, T0 + 60 * MIN)).toBeCloseTo(6000, 6);
+    expect(startsFromRates(withGap(7), T0, T0 + 60 * MIN)).toBeNull();
+    // A sample with no rate is a gap too.
+    const missing = samples(T0 - MIN, T0 + 60 * MIN, (at) => (at > T0 + 10 * MIN && at <= T0 + 17 * MIN ? null : 100));
+    expect(startsFromRates(missing, T0, T0 + 60 * MIN)).toBeNull();
+    expect(startsFromRates([], T0, T0 + 60 * MIN)).toBeNull();
+    expect(startsFromRates(samples(T0, T0 + 10 * MIN, () => 100), T0 + 5 * MIN, T0 + 5 * MIN)).toBeNull();
+  });
+
+  it("adds over two windows that meet and scales with the rate, for 20 seeds", () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const draw = random(`h63-rates-${seed}`);
+      const rates = new Map<number, number>();
+      const points = samples(T0 - MIN, T0 + 120 * MIN, (at) => {
+        const rate = draw.int(0, 3000);
+        rates.set(at, rate);
+        return rate;
+      });
+      const from = T0 + draw.int(0, 30 * MIN);
+      const middle = from + draw.int(10 * MIN, 40 * MIN);
+      const to = middle + draw.int(10 * MIN, 40 * MIN);
+      const whole = startsFromRates(points, from, to);
+      const first = startsFromRates(points, from, middle);
+      const second = startsFromRates(points, middle, to);
+      expect(whole, `seed ${seed}`).not.toBeNull();
+      expect((first ?? 0) + (second ?? 0), `seed ${seed}`).toBeCloseTo(whole ?? 0, 6);
+      const doubled = points.map(([at, rate]): RatePoint => [at, rate === null ? null : 2 * rate]);
+      expect(startsFromRates(doubled, from, to), `seed ${seed}`).toBeCloseTo(2 * (whole ?? 0), 6);
+      // The reference: the sum over the whole minutes of the window of the rate of the sample at the end of each minute.
+      const aligned = Math.ceil((from - T0) / MIN) * MIN + T0;
+      const end = Math.floor((to - T0) / MIN) * MIN + T0;
+      let inner = 0;
+      for (let at = aligned + MIN; at <= end; at += MIN) inner += rates.get(at) ?? 0;
+      expect(startsFromRates(points, aligned, end), `seed ${seed}`).toBeCloseTo(inner, 6);
+    }
+  });
+});
+
+describe("startCost and startCostText (H63)", () => {
+  it("gives the growth for each start and its text", () => {
+    const cost = startCost(60.4, 310.2, 84_213.6);
+    expect(cost).toEqual({ minutes: 60, growthMb: 310, starts: 84_214, bytesPerStart: 3862 });
+    expect(startCostText(cost)).toBe(
+      "Process starts: 84,214 in the last 60 minutes. The kernel pools grew 310 MB in that time, 3.8 KB for each start. Fewer starts slow this growth with no reboot.",
+    );
+    expect(startCostText(startCost(60, 0.5, 2000))).toBe(
+      "Process starts: 2,000 in the last 60 minutes. The kernel pools grew 1 MB in that time, 262 B for each start. Fewer starts slow this growth with no reboot.",
+    );
+  });
+
+  it("gives no cost for each start with no starts or when the pools did not grow", () => {
+    expect(startCost(55, -40, 50_000).bytesPerStart).toBeNull();
+    expect(startCostText(startCost(55, -40, 50_000))).toBe("Process starts: 50,000 in the last 55 minutes. The kernel pools fell 40 MB in that time.");
+    expect(startCostText(startCost(55, 0, 50_000))).toBe("Process starts: 50,000 in the last 55 minutes. The kernel pools did not grow in that time.");
+    expect(startCost(55, 12, 0).bytesPerStart).toBeNull();
   });
 });

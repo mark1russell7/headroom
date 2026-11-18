@@ -5,6 +5,7 @@ import type { Forecast } from "./forecast.ts";
 import {
   autoDrainEndedText,
   drainAlerts,
+  drainCancelLines,
   drainLine,
   drainName,
   drainStatus,
@@ -265,5 +266,39 @@ describe("rebootBudget and rebootLines (H34)", () => {
       "Automatic drain: at 6.0 GB of the kernel pools together, now 6.2 GB. After 2 minutes at or above the level, new jobs wait for a reboot.",
     );
     expect(lines({ levelMb: 0, poolsMb: 6300, forecast: null })[2]).toBe("Automatic drain: off. `headroom config auto-drain 6GB` turns it on.");
+  });
+
+  it("adds the cost of a process start after the automatic drain (H63)", () => {
+    const startCost = { minutes: 60, growthMb: 310, starts: 84_214, bytesPerStart: 3862 };
+    const autoDrain = { levelMb: 6144, poolsMb: 5300, forecast: null };
+    const lines = rebootLines(rebootBudget({ at: NOW, pools: pools(), windows: null, bootedAt: null, drain: null, resumePlan: null, autoDrain, startCost, clock }), clock);
+    expect(lines[2]).toMatch(/^Automatic drain: /);
+    expect(lines[3]).toBe(
+      "Process starts: 84,214 in the last 60 minutes. The kernel pools grew 310 MB in that time, 3.8 KB for each start. Fewer starts slow this growth with no reboot.",
+    );
+    expect(lines[4]).toBe("Windows: headroom cannot read the reboot state of Windows.");
+    // A budget with no history gives no line, and a daemon of an older version gives no field.
+    const bare = rebootBudget({ at: NOW, pools: pools(), windows: null, bootedAt: null, drain: null, resumePlan: null, clock });
+    expect(bare.startCost).toBeNull();
+    expect(rebootLines(bare, clock)).toHaveLength(5);
+    const { startCost: _omitted, ...older } = bare;
+    expect(rebootLines(older, clock)).toEqual(rebootLines(bare, clock));
+  });
+});
+
+describe("drainCancelLines (H63)", () => {
+  const budget = (autoDrain: AutoDrainBudget | null, startCost: { minutes: number; growthMb: number; starts: number; bytesPerStart: number | null } | null) =>
+    rebootBudget({ at: NOW, pools: pools(), windows: null, bootedAt: null, drain: null, resumePlan: null, autoDrain, startCost, clock });
+
+  it("gives the level of the pools, the level of the automatic drain and the cost of a process start", () => {
+    expect(drainCancelLines(budget({ levelMb: 6144, poolsMb: 5300, forecast: null }, { minutes: 60, growthMb: 310, starts: 84_214, bytesPerStart: 3862 }))).toEqual([
+      "The kernel pools are at 5.2 GB, and the automatic drain starts at 6.0 GB.",
+      "Process starts: 84,214 in the last 60 minutes. The kernel pools grew 310 MB in that time, 3.8 KB for each start. Fewer starts slow this growth with no reboot.",
+    ]);
+  });
+
+  it("adds the two pools when the budget has no automatic drain, and names no level when the rule is off", () => {
+    expect(drainCancelLines(budget(null, null))).toEqual(["The kernel pools are at 2.6 GB."]);
+    expect(drainCancelLines(budget({ levelMb: 0, poolsMb: 6300, forecast: null }, null))).toEqual(["The kernel pools are at 6.2 GB."]);
   });
 });

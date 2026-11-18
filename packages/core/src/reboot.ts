@@ -19,6 +19,7 @@ import type { Lease } from "./broker.ts";
 import { heavyWhy, localClock } from "./conditions.ts";
 import { coresText } from "./cpu.ts";
 import { spanText, type Forecast, type ResourcePoint } from "./forecast.ts";
+import { startCostText, type StartCost } from "./starts.ts";
 import { gb } from "./units.ts";
 
 /** The state of one registry key at a read: it exists, it does not exist, or the read failed. */
@@ -446,6 +447,11 @@ export interface RebootBudget {
   readonly resumePlan: ResumePlanFile | null;
   /** The automatic drain: its level and the forecast to it, or `null` when the input gives none. */
   readonly autoDrain: AutoDrainBudget | null;
+  /**
+   * The growth of the kernel pools against the process starts over the last hour (H63). It is `null` with less than 50
+   * minutes of history or with too few samples of the start rate. A daemon of an older version gives no field.
+   */
+  readonly startCost?: StartCost | null | undefined;
 }
 
 /** The inputs of `rebootBudget()`. */
@@ -457,6 +463,7 @@ export interface BudgetInput {
   readonly drain: DrainStatus | null;
   readonly resumePlan: ResumePlanFile | null;
   readonly autoDrain?: AutoDrainBudget | null | undefined;
+  readonly startCost?: StartCost | null | undefined;
   readonly clock?: ((at: number) => string) | undefined;
 }
 
@@ -474,6 +481,7 @@ export function rebootBudget(input: BudgetInput): RebootBudget {
     drain,
     resumePlan,
     autoDrain,
+    startCost: input.startCost ?? null,
   };
 }
 
@@ -511,6 +519,8 @@ export function rebootLines(budget: RebootBudget, clock: (at: number) => string 
   // A daemon of an older version gives no automatic drain.
   const auto = budget.autoDrain ?? null;
   if (auto !== null) lines.push(autoDrainText(auto, clock));
+  const cost = budget.startCost ?? null;
+  if (cost !== null) lines.push(startCostText(cost));
   const windows = budget.windows;
   lines.push(
     windows === null
@@ -527,5 +537,20 @@ export function rebootLines(budget: RebootBudget, clock: (at: number) => string 
       ? "Resume plan: none yet. `headroom resume-plan` writes it, and a drain writes it at its start."
       : `Resume plan: ${plan.path}, written ${spanText(Math.max(0, Math.round((budget.at - plan.at) / 60_000)))} ago (${dayText(plan.at, clock)}). A drain writes it again at its start.`,
   );
+  return lines;
+}
+
+/**
+ * This function gives the lines that `headroom drain --cancel` writes after a cancel (H63). The lines give the current
+ * level of the two kernel pools, and the cost of a process start when the budget gives it. An example is "The kernel pools are at 11.2 GB,
+ * and the automatic drain starts at 13.0 GB."
+ */
+export function drainCancelLines(budget: RebootBudget): string[] {
+  const auto = budget.autoDrain ?? null;
+  const poolsMb = auto?.poolsMb ?? budget.pools.reduce((sum, pool) => sum + pool.usedMb, 0);
+  const level = auto !== null && auto.levelMb > 0 ? `, and the automatic drain starts at ${gb(auto.levelMb)}` : "";
+  const lines = [`The kernel pools are at ${gb(poolsMb)}${level}.`];
+  const cost = budget.startCost ?? null;
+  if (cost !== null) lines.push(startCostText(cost));
   return lines;
 }

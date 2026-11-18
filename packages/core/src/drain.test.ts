@@ -473,3 +473,43 @@ describe("Automatic drain: only heavy jobs wait", () => {
     expect(drainHolds({ amounts: { browser: 1 }, conditions: { when: [], duringDrain: true } }, auto)).toBe(false);
   });
 });
+
+describe("Engine cost of a process start (H63)", () => {
+  /** An hour of history in the store: the memory each minute, with pools that grow 5 MB a minute, and the start rate `rate`. */
+  function history(store: Store, now: number, rate: (minute: number) => number | null): void {
+    for (let minute = 62; minute >= 1; minute--) {
+      const at = now - minute * MINUTE;
+      const grown = 5 * (62 - minute);
+      const memory = { totalMb: 28_000, availableMb: 12_000, commitMb: 30_000, commitLimitMb: 80_000, kernelPagedMb: 1000 + grown, kernelNonpagedMb: 2000 };
+      const perMinute = rate(minute);
+      store.saveSample(at, memory, [], undefined, perMinute === null ? [] : [{ id: "procs", capacity: null, used: perMinute, free: null }]);
+    }
+  }
+
+  it("gives the growth of the pools against the starts of the last hour in the reboot budget and its lines", () => {
+    const now = START + 3 * HOUR;
+    const store = new Store(":memory:");
+    history(store, now, () => 1500);
+    // The pools at the tick: 5 MB more than the last stored minute.
+    const engine = new Engine({ sampler: poolSampler({ nonpaged: 2000, paged: 1000 + 5 * 62 }), store, now: () => now, sessionsDir: "/nowhere" });
+    engine.tick();
+    const cost = engine.status().reboot.startCost;
+    // The window starts at the first row of the last hour (60 minutes ago, at 1,010 MB), so the pools grew 300 MB in 60 minutes.
+    // The samples cover 59 of the 60 minutes, and the count covers the last minute at the same rate.
+    expect(cost).toEqual({ minutes: 60, growthMb: 300, starts: 90_000, bytesPerStart: Math.round((300 * 1_048_576) / 90_000) });
+    expect(rebootLines(engine.status().reboot).find((line) => line.startsWith("Process starts:"))).toBe(
+      "Process starts: 90,000 in the last 60 minutes. The kernel pools grew 300 MB in that time, 3.4 KB for each start. Fewer starts slow this growth with no reboot.",
+    );
+    engine.close();
+  });
+
+  it("gives no cost when the samples of the start rate cover less than 90 % of the hour", () => {
+    const now = START + 3 * HOUR;
+    const store = new Store(":memory:");
+    history(store, now, (minute) => (minute > 20 && minute <= 30 ? null : 1500));
+    const engine = new Engine({ sampler: poolSampler({ nonpaged: 2000, paged: 1000 + 5 * 62 }), store, now: () => now, sessionsDir: "/nowhere" });
+    engine.tick();
+    expect(engine.status().reboot.startCost).toBeNull();
+    engine.close();
+  });
+});

@@ -899,6 +899,18 @@ export class Store {
     }));
   }
 
+  /** This function reads the samples of one resource instance since a time, the oldest first, for example `procs` (H63). */
+  resourceSince(id: string, since: number): ResourceRow[] {
+    const nullable = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
+    return this.#db.prepare("SELECT * FROM resource_samples WHERE at >= ? AND id = ? ORDER BY at").all(since, id).map((row) => ({
+      at: Number(row["at"]),
+      id: String(row["id"]),
+      capacity: nullable(row["capacity"]),
+      used: nullable(row["used"]),
+      free: nullable(row["free"]),
+    }));
+  }
+
   /**
    * This function reads the memory samples since a time, the oldest first. With a step longer than one
    * minute, each row is the average of the samples of one step, so a long window stays small.
