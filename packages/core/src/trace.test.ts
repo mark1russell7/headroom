@@ -506,13 +506,21 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
       expect(trace.jobs()).toBe(1);
       child.stdin?.write("go\n");
       await new Promise((resolve) => child.stdout?.once("data", resolve));
-      // The reader sends a batch at least each second.
+      // The reader sends a batch at least each second. The loop waits for the 5 starts of cmd.exe and for their exits. An
+      // exit of another process of the job, for example of a conhost.exe, does not count (H207: a loop that stopped at 5
+      // exits of any process saw 4 starts of cmd.exe on Windows CI).
       const events: TraceEvent[] = [];
-      for (let tries = 0; tries < 40 && events.filter((each) => each.type === "exit").length < 5; tries++) {
+      const cmdStarts = (): Extract<TraceEvent, { type: "start" }>[] =>
+        events.filter((each): each is Extract<TraceEvent, { type: "start" }> => each.type === "start" && each.name?.toLowerCase() === "cmd.exe");
+      const cmdExits = (): number => {
+        const pids = new Set(cmdStarts().map((each) => each.pid));
+        return events.filter((each) => each.type === "exit" && pids.has(each.pid)).length;
+      };
+      for (let tries = 0; tries < 100 && (cmdStarts().length < 5 || cmdExits() < 5); tries++) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         events.push(...trace.drain());
       }
-      const starts = events.filter((each): each is Extract<TraceEvent, { type: "start" }> => each.type === "start" && each.name?.toLowerCase() === "cmd.exe");
+      const starts = cmdStarts();
       expect(starts).toHaveLength(5);
       expect(starts.every((each) => each.ppid === child.pid && each.key === key)).toBe(true);
       const exits = events.filter((each): each is Extract<TraceEvent, { type: "exit" }> => each.type === "exit" && starts.some((started) => started.pid === each.pid));
