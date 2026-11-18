@@ -193,7 +193,8 @@ export { keyedLeases, readResourceSamples } from "./store.ts";
 export type { KeyedLease, KeyScope, LeaseKeyRow } from "./store.ts";
 export { chooseRule, holdsGates, holdsOver, measureRows, OVER_GATE, RATIO_GATE, replayLeases } from "./replay.ts";
 export type { AmountMeasures, ChosenRule, ReplayOptions, ReplayRow, RuleResult } from "./replay.ts";
-export { Engine } from "./engine.ts";
+export { Engine, HISTORY_PARTS } from "./engine.ts";
+export { gb } from "./units.ts";
 export type {
   Alerts,
   CancelQuery,
@@ -204,6 +205,7 @@ export type {
   EndedAlert,
   EngineOptions,
   History,
+  HistoryPart,
   PoolTagLine,
   PoolTagRow,
   PoolTags,

@@ -54,7 +54,10 @@ See the memory, the free space of the drives, the free amounts, the leases and t
 ```sh
 headroom status
 headroom history --minutes 120
+headroom memory --since 2026-11-18T04:00Z --until 2026-11-18T05:00Z --json
 ```
+
+`headroom memory` gives only the 1-minute memory samples of a window: the available memory, the commit charge and the commit limit (H201). A script reads them with `--json`, so it does not read the database of headroom.
 
 The list "Memory by owner" gives the private memory and the memory in RAM of each owner. Its last row, `unattributed`, gives the memory in use that no owner holds (H49):
 

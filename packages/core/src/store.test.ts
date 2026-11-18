@@ -47,6 +47,31 @@ describe("Store", () => {
     store.close();
   });
 
+  it("reads the samples of a window with an end time that is not in the window (H201)", () => {
+    const store = new Store(":memory:");
+    const memory = { totalMb: 28000, availableMb: 700, commitMb: 46000, commitLimitMb: 57000, kernelPagedMb: 2400, kernelNonpagedMb: 600 };
+    const owners = [{ owner: "kernel", kind: "kernel" as const, privateMb: 3000, workingMb: 3000, processes: 0 }];
+    for (const at of [60_000, 120_000, 180_000]) {
+      store.saveSample(at, { ...memory, availableMb: at / 100 }, owners, undefined, [{ id: "cpu", capacity: 16, used: 4, free: 12 }]);
+    }
+    expect(store.memorySince(60_000, 0, 180_000).map((row) => row.at)).toEqual([60_000, 120_000]);
+    expect(store.memorySince(60_000).map((row) => row.at)).toEqual([60_000, 120_000, 180_000]);
+    expect(store.ownersSince(0, 0, 120_000).map((row) => row.at)).toEqual([60_000]);
+    expect(store.resourcesSince(120_000, 0, 180_000).map((row) => row.at)).toEqual([120_000]);
+    // A step of 2 minutes averages the samples of each step inside the window.
+    expect(store.memorySince(0, 120_000, 180_000).map((row) => [row.at, row.availableMb])).toEqual([[0, 600], [120_000, 1200]]);
+    store.saveSleep(100_000, 110_000);
+    store.saveSleep(200_000, 300_000);
+    expect(store.sleepsSince(0, 150_000)).toEqual([[100_000, 110_000]]);
+    expect(store.sleepsSince(0)).toHaveLength(2);
+    const broker = new Broker({ now: () => 5000, newId: () => "l1" });
+    const lease = broker.request({ holder: "shop", job: "build", amounts: { memory: 100 } });
+    store.saveLease({ ...lease, state: "released", endedAt: 90_000, reason: "released" });
+    expect(store.endedLeases(0, 100, 90_000)).toEqual([]);
+    expect(store.endedLeases(0, 100, 90_001)).toHaveLength(1);
+    store.close();
+  });
+
   it("keeps the settings, and the usage of an ended lease", () => {
     const store = new Store(":memory:");
     expect(store.config()).toEqual({ jobTemp: null, health: DEFAULT_HEALTH, spawnHeavy: 600, batteryFloor: 25, usageFile: null, rolesFile: null, memoryReserveMb: 1024, cpuReserve: 2, ...PRESENCE_SETTINGS, autoDrainMb: 6144, worktreeAutoClean: false, reapAuto: false, startTrace: ["session", "mcp", "service", "docker"], startTraceHold: ["session"], startCap: START_CAP_DEFAULT, alerts: {} });

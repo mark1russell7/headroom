@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { DEFAULT_ALERT_RULES, HISTORY_PARTS, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -288,8 +288,11 @@ const ReapInput = z.object({
 type ReapInput = z.infer<typeof ReapInput>;
 
 const HistoryInput = z.object({
-  minutes: z.number().int().positive().max(10_080).default(60).describe("The length of the history in minutes (default: 60)"),
+  minutes: z.number().int().positive().max(10_080).default(60).describe("The length of the history in minutes, up to the end (default: 60)"),
   step: z.number().int().positive().max(1440).default(1).describe("The minutes in each row: each row is the average of its samples (default: 1)"),
+  since: z.number().int().nonnegative().optional().describe("The start of the window in milliseconds since the epoch. It replaces minutes (H201)"),
+  until: z.number().int().positive().optional().describe("The end of the window in milliseconds since the epoch, not in the window (default: no end)"),
+  parts: z.array(z.enum(HISTORY_PARTS)).min(1).optional().describe("Only these parts of the history have rows (default: all)"),
 });
 type HistoryInput = z.infer<typeof HistoryInput>;
 
@@ -529,12 +532,16 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .input(zodAdapter<HistoryInput>(HistoryInput))
     .output(anything<History>())
     .meta({
-      description: "Give the memory samples, the memory of each owner, the ended leases and the points of each resource of the last minutes",
+      description: "Give the memory samples, the memory of each owner, the ended leases and the points of each resource of a window of time",
       args: [],
       output: "json",
       effects: { reads: ["headroom"], writes: [], destructive: false },
     })
-    .handler(async (input: HistoryInput): Promise<History> => engine.history(Date.now() - input.minutes * 60_000, input.step * 60_000))
+    .handler(async (input: HistoryInput): Promise<History> => {
+      const since = input.since ?? (input.until ?? Date.now()) - input.minutes * 60_000;
+      if (input.until !== undefined && since >= input.until) throw new Error("The start of the window must be before its end");
+      return engine.history(since, input.step * 60_000, input.until, input.parts);
+    })
     .build() as AnyProcedure;
 
   const pool = createProcedure()

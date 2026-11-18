@@ -660,6 +660,11 @@ describe("Engine resources", () => {
     expect(history.memory).toHaveLength(2);
     // With a step, each point is the average of one step.
     expect(engine.history(0, 3_600_000).resources["memory"]).toHaveLength(1);
+    // H201: the end time is not in the window, and only the parts asked for have rows.
+    expect(engine.history(0, 0, now).memory.map((row) => row.at)).toEqual([now - 61_000]);
+    const memoryOnly = engine.history(0, 0, undefined, ["memory", "sleeps"]);
+    expect(memoryOnly.memory).toHaveLength(2);
+    expect([memoryOnly.owners, memoryOnly.leases, Object.keys(memoryOnly.resources)]).toEqual([[], [], []]);
     engine.close();
   });
 
