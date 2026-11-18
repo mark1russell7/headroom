@@ -463,6 +463,9 @@ export interface PoolTagSnapshot {
   readonly paged: ReadonlyMap<string, number>;
 }
 
+/** The end of a window of the readers of the history with no end. */
+const NO_END = Number.MAX_SAFE_INTEGER;
+
 /** The store. */
 export class Store {
   readonly #db: DatabaseSync;
@@ -603,9 +606,9 @@ export class Store {
     else this.#db.prepare("INSERT INTO settings VALUES ('drain', ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value").run(JSON.stringify(drain));
   }
 
-  /** This function reads the leases that ended after a time, the newest first. */
-  endedLeases(since: number, limit = 100): Lease[] {
-    return this.#db.prepare("SELECT * FROM leases WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT ?").all(since, limit).map(toLease);
+  /** This function reads the leases that ended from a time to an end time, the newest first. By default, no end. */
+  endedLeases(since: number, limit = 100, until: number = NO_END): Lease[] {
+    return this.#db.prepare("SELECT * FROM leases WHERE ended_at >= ? AND ended_at < ? ORDER BY ended_at DESC LIMIT ?").all(since, until, limit).map(toLease);
   }
 
   /**
@@ -828,18 +831,19 @@ export class Store {
   }
 
   /**
-   * This function reads the measurements of the resource instances since a time, the oldest first. With a step longer
-   * than one minute, each row is the average of the samples of one instance in one step, as in `memorySince`.
+   * This function reads the measurements of the resource instances from a time to an end time, the oldest first. The end
+   * time is not in the window, and by default the window has no end. With a step longer than one minute, each row is the
+   * average of the samples of one instance in one step, as in `memorySince`.
    */
-  resourcesSince(since: number, stepMs = 0): ResourceRow[] {
+  resourcesSince(since: number, stepMs = 0, until: number = NO_END): ResourceRow[] {
     const nullable = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
     const step = Math.floor(stepMs);
     const query =
       step > 60_000
         ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, id, AVG(capacity) AS capacity, AVG(used) AS used, AVG(free) AS free
-           FROM resource_samples WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER), id ORDER BY at, id`
-        : "SELECT * FROM resource_samples WHERE at >= ? ORDER BY at, id";
-    return this.#db.prepare(query).all(since).map((row) => ({
+           FROM resource_samples WHERE at >= ? AND at < ? GROUP BY CAST(at / ${step} AS INTEGER), id ORDER BY at, id`
+        : "SELECT * FROM resource_samples WHERE at >= ? AND at < ? ORDER BY at, id";
+    return this.#db.prepare(query).all(since, until).map((row) => ({
       at: Number(row["at"]),
       id: String(row["id"]),
       capacity: nullable(row["capacity"]),
@@ -849,10 +853,11 @@ export class Store {
   }
 
   /**
-   * This function reads the memory samples since a time, the oldest first. With a step longer than one
-   * minute, each row is the average of the samples of one step, so a long window stays small.
+   * This function reads the memory samples from a time to an end time, the oldest first. The end time is not in the
+   * window, and by default the window has no end. With a step longer than one minute, each row is the average of the
+   * samples of one step, so a long window stays small.
    */
-  memorySince(since: number, stepMs = 0): MemoryRow[] {
+  memorySince(since: number, stepMs = 0, until: number = NO_END): MemoryRow[] {
     const step = Math.floor(stepMs);
     const query =
       step > 60_000
@@ -860,9 +865,9 @@ export class Store {
              AVG(commit_mb) AS commit_mb, AVG(commit_limit_mb) AS commit_limit_mb, AVG(kernel_paged_mb) AS kernel_paged_mb,
              AVG(kernel_nonpaged_mb) AS kernel_nonpaged_mb, MAX(processes) AS processes, MAX(user_objects) AS user_objects,
              MAX(gdi_objects) AS gdi_objects
-           FROM memory WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER) ORDER BY at`
-        : "SELECT * FROM memory WHERE at >= ? ORDER BY at";
-    return this.#db.prepare(query).all(since).map((row) => ({
+           FROM memory WHERE at >= ? AND at < ? GROUP BY CAST(at / ${step} AS INTEGER) ORDER BY at`
+        : "SELECT * FROM memory WHERE at >= ? AND at < ? ORDER BY at";
+    return this.#db.prepare(query).all(since, until).map((row) => ({
       at: Number(row["at"]),
       totalMb: Number(row["total_mb"]),
       availableMb: Number(row["available_mb"]),
@@ -876,16 +881,19 @@ export class Store {
     }));
   }
 
-  /** This function reads the owner samples since a time, the oldest first. A step longer than one minute averages each step. */
-  ownersSince(since: number, stepMs = 0): OwnerRow[] {
+  /**
+   * This function reads the owner samples from a time to an end time, the oldest first. The end time is not in the window,
+   * and by default the window has no end. A step longer than one minute averages each step.
+   */
+  ownersSince(since: number, stepMs = 0, until: number = NO_END): OwnerRow[] {
     const step = Math.floor(stepMs);
     const query =
       step > 60_000
         ? `SELECT CAST(at / ${step} AS INTEGER) * ${step} AS at, owner, MAX(kind) AS kind, AVG(private_mb) AS private_mb,
              AVG(working_mb) AS working_mb, MAX(processes) AS processes, SUM(write_mb) AS write_mb, SUM(read_mb) AS read_mb
-           FROM owners WHERE at >= ? GROUP BY CAST(at / ${step} AS INTEGER), owner ORDER BY at, private_mb DESC`
-        : "SELECT * FROM owners WHERE at >= ? ORDER BY at, private_mb DESC";
-    return this.#db.prepare(query).all(since).map((row) => ({
+           FROM owners WHERE at >= ? AND at < ? GROUP BY CAST(at / ${step} AS INTEGER), owner ORDER BY at, private_mb DESC`
+        : "SELECT * FROM owners WHERE at >= ? AND at < ? ORDER BY at, private_mb DESC";
+    return this.#db.prepare(query).all(since, until).map((row) => ({
       at: Number(row["at"]),
       owner: String(row["owner"]),
       kind: String(row["kind"]) as OwnerKind,
@@ -991,11 +999,11 @@ export class Store {
     this.#db.prepare("INSERT OR REPLACE INTO sleeps (from_at, to_at) VALUES (?, ?)").run(from, to);
   }
 
-  /** This function reads the sleeps that end after a time, the oldest first. */
-  sleepsSince(since: number): Sleep[] {
+  /** This function reads the sleeps that end after a time and start before an end time, the oldest first. By default, no end. */
+  sleepsSince(since: number, until: number = NO_END): Sleep[] {
     return this.#db
-      .prepare("SELECT from_at, to_at FROM sleeps WHERE to_at >= ? ORDER BY from_at")
-      .all(since)
+      .prepare("SELECT from_at, to_at FROM sleeps WHERE to_at >= ? AND from_at < ? ORDER BY from_at")
+      .all(since, until)
       .map((row) => [Number(row["from_at"]), Number(row["to_at"])] as const);
   }
 

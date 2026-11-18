@@ -499,6 +499,10 @@ export interface Alerts {
 
 export type { ResourcePoint } from "./forecast.ts";
 
+/** The parts of a history (H201). */
+export const HISTORY_PARTS = ["memory", "owners", "leases", "resources", "sleeps"] as const;
+export type HistoryPart = (typeof HISTORY_PARTS)[number];
+
 /** The history since a time. */
 export interface History {
   readonly memory: readonly MemoryRow[];
@@ -1633,16 +1637,23 @@ export class Engine {
     };
   }
 
-  /** This function gives the history since a time. With a step longer than one minute, each row is the average of one step. */
-  history(since: number, stepMs = 0): History {
+  /**
+   * This function gives the history from a time to an end time. The end time is not in the window, and by default the
+   * window has no end. With a step longer than one minute, each row is the average of one step. With `parts`, only those
+   * parts have rows, and the other parts are empty, so a long window of one part stays small (H201).
+   */
+  history(since: number, stepMs = 0, until?: number, parts: readonly HistoryPart[] = HISTORY_PARTS): History {
+    const has = new Set(parts);
     const resources: Record<ResourceId, ResourcePoint[]> = {};
-    for (const row of this.#store.resourcesSince(since, stepMs)) (resources[row.id] ??= []).push([row.at, point(row.used), point(row.free)]);
+    if (has.has("resources")) {
+      for (const row of this.#store.resourcesSince(since, stepMs, until)) (resources[row.id] ??= []).push([row.at, point(row.used), point(row.free)]);
+    }
     return {
-      memory: this.#store.memorySince(since, stepMs),
-      owners: this.#store.ownersSince(since, stepMs),
-      leases: this.#store.endedLeases(since),
+      memory: has.has("memory") ? this.#store.memorySince(since, stepMs, until) : [],
+      owners: has.has("owners") ? this.#store.ownersSince(since, stepMs, until) : [],
+      leases: has.has("leases") ? this.#store.endedLeases(since, undefined, until) : [],
       resources,
-      sleeps: this.#store.sleepsSince(since),
+      sleeps: has.has("sleeps") ? this.#store.sleepsSince(since, until) : [],
     };
   }
 

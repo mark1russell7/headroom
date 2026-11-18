@@ -33,6 +33,7 @@
  * - `headroom config reap-auto on|off`: the setting of a later automatic reap. In this version it stops no process (H183).
  * - `headroom config start-cap <steps>|off`: the cap on the process starts at the grant of a lease (H197).
  * - `headroom report leases [--days 7] [--json]`: how well the leases ask for the memory of their jobs, with a walk-forward replay of the rule (H78).
+ * - `headroom memory [--since <time>] [--until <time>] [--json]`: the 1-minute memory samples of a window (H201).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
 
@@ -125,6 +126,7 @@ import { diskCommand } from "./disk-cli.ts";
 import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, routeLine, startDetachedClient, tellParent, waitForDaemon, windowsRelayLaunch } from "./detach.ts";
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { SLOW_SAMPLE_IDS, STARTS_USAGE, startsCommand } from "./starts-cli.ts";
+import { HISTORY_USAGE, historyWindow, MEMORY_USAGE, memoryCommand, WINDOW_OPTIONS } from "./history-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
 import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
 import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
@@ -271,7 +273,10 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom peer <localPort> <remotePort> [--json]
                The process at the other end of a loopback connection, its claude.exe, session and role.
                The two ports are the ports that the server sees. No connection or no process: exit 3.
-  headroom history [--minutes 60] [--json]
+  ${HISTORY_USAGE}
+               The memory samples, the owners, the ended leases and the resources of a window (default: the last 60 minutes).
+  ${MEMORY_USAGE}
+               Only the 1-minute memory samples of a window: available, committed and the commit limit. A --time is ISO 8601.
   ${REPORT_USAGE}
                How well the leases ask for the memory of their jobs: the share with a measured or fitted amount,
                the request sum over the peak sum, the share over the request, and the wait of the installs.
@@ -1818,14 +1823,19 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "history": {
-      const { values } = parseArgs({ args: rest, options: { minutes: { type: "string" }, json: { type: "boolean" } } });
+      const { values } = parseArgs({ args: rest, options: WINDOW_OPTIONS });
+      const window = historyWindow(values, Date.now());
+      if (typeof window === "string") return (console.error(`${window}
+Usage: ${HISTORY_USAGE}`), 2);
       const connection = connect();
       if (!connection) return (console.error("headroom does not run."), 1);
-      const history = await connection.call<History>(["resources", "history"], { minutes: Number(values.minutes ?? 60) });
+      const history = await connection.call<History>(["resources", "history"], window);
       if (values.json) console.log(JSON.stringify(history, null, 2));
       else for (const row of history.memory) console.log(`${new Date(row.at).toISOString().slice(11, 16)}  available ${mb(row.availableMb).padStart(8)}  committed ${mb(row.commitMb).padStart(8)}  non-paged ${mb(row.kernelNonpagedMb)}`);
       return 0;
     }
+    case "memory":
+      return memoryCommand(rest, connect());
     case "pool": {
       const [name, capacity] = rest;
       const connection = connect();
