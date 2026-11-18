@@ -49,7 +49,7 @@ export function daemonRegistry(procedures: readonly AnyProcedure[]): ProcedureRe
   const registry = new ProcedureRegistry();
   registerModules(registry, [
     defineModule("@headroom/daemon", [...procedures]),
-    defineModule("@headroom/manifest", withEffects(REGISTRY_READ_EFFECTS, [manifestProcedure as AnyProcedure])),
+    defineModule("@headroom/manifest", withEffects(REGISTRY_READ_EFFECTS, [manifestProcedure])),
   ]);
   return registry;
 }
