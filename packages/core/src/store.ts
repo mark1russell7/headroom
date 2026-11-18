@@ -13,6 +13,7 @@ import { alertRulesOf, type AlertRules } from "./alerts.ts";
 import type { Lease, LeaseState } from "./broker.ts";
 import type { CounterRow, ProcessReads } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
+import type { MemoryPeak, PeakKind, PeakPoint, PeakSummary } from "./memory-peaks.ts";
 import { DEFAULT_HEALTH } from "./services.ts";
 import { BATTERY_FLOOR_DEFAULT, type LeaseConditions, type UnmetCondition } from "./conditions.ts";
 import { CPU_RESERVE_DEFAULT } from "./cpu.ts";
@@ -86,6 +87,22 @@ CREATE TABLE IF NOT EXISTS process_owners (
 `;
 
 /**
+ * The tables of the memory peaks of the large processes and containers in each minute (H62 part 5). Step 8 makes them. A
+ * holder keeps its command in one row of `peak_holders`, not in each minute. The records of the owners drop a process
+ * at its end, so the peaks keep their own commands.
+ */
+const PEAKS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS memory_peaks (
+  at INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, name TEXT NOT NULL, owner TEXT, pid INTEGER, created INTEGER,
+  lease TEXT, peak_mb REAL NOT NULL, PRIMARY KEY (at, kind, key)
+);
+CREATE INDEX IF NOT EXISTS memory_peaks_key ON memory_peaks (kind, key, at);
+CREATE TABLE IF NOT EXISTS peak_holders (
+  kind TEXT NOT NULL, key TEXT NOT NULL, command TEXT, last_at INTEGER NOT NULL, PRIMARY KEY (kind, key)
+);
+`;
+
+/**
  * The steps of the schema (@mark1russell7/sqlite). The user_version of a file is the count of its steps. Each change
  * of the schema is a new step at the end. Do not change a step that a file can have.
  */
@@ -135,6 +152,10 @@ const MIGRATIONS: readonly Migration[] = [
   // H62: the folder of the job of each lease. The rules of the containers read it.
   (db) => {
     addMissingColumns(db, "leases", { folder: "TEXT" });
+  },
+  // H62 part 5: the memory peaks of the large processes and containers in each minute.
+  (db) => {
+    db.exec(PEAKS_SCHEMA);
   },
 ];
 
@@ -1203,6 +1224,60 @@ export class Store {
       }));
   }
 
+  /** This function writes the memory peaks of one minute (H62 part 5). */
+  saveMemoryPeaks(at: number, peaks: readonly MemoryPeak[]): void {
+    if (peaks.length === 0) return;
+    const insert = this.#db.prepare(
+      "INSERT OR REPLACE INTO memory_peaks (at, kind, key, name, owner, pid, created, lease, peak_mb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const holder = this.#db.prepare(
+      `INSERT INTO peak_holders (kind, key, command, last_at) VALUES (?, ?, ?, ?) ON CONFLICT (kind, key)
+       DO UPDATE SET last_at = excluded.last_at, command = COALESCE(excluded.command, peak_holders.command)`,
+    );
+    transaction(this.#db, () => {
+      for (const peak of peaks) {
+        insert.run(at, peak.kind, peak.key, peak.name, peak.owner, peak.pid, peak.created, peak.lease, Math.round(peak.peakMb * 10) / 10);
+        holder.run(peak.kind, peak.key, peak.command, at);
+      }
+    });
+  }
+
+  /**
+   * This function gives the holders of the memory peaks since a time, the largest peak first (H62 part 5). Each holder
+   * gives the row of its largest peak, its first and its last minute, and its count of minutes. `minMb` keeps only the
+   * minutes with a peak of that amount or more. `lease` keeps only the minutes of one lease.
+   */
+  peaksSince(since: number, options: { readonly minMb?: number; readonly lease?: string | undefined; readonly limit?: number } = {}): PeakSummary[] {
+    const lease = options.lease === undefined ? "" : "AND lease = ?";
+    const args: (number | string)[] = [since, options.minMb ?? 0, ...(options.lease === undefined ? [] : [options.lease]), options.limit ?? 50];
+    return this.#db
+      .prepare(
+        `SELECT p.*, h.command AS command FROM (
+           SELECT *, ROW_NUMBER() OVER (PARTITION BY kind, key ORDER BY peak_mb DESC, at) AS n,
+             MIN(at) OVER (PARTITION BY kind, key) AS first_at, MAX(at) OVER (PARTITION BY kind, key) AS last_at,
+             COUNT(*) OVER (PARTITION BY kind, key) AS minutes
+           FROM memory_peaks WHERE at >= ? AND peak_mb >= ? ${lease}
+         ) AS p LEFT JOIN peak_holders AS h ON h.kind = p.kind AND h.key = p.key
+         WHERE p.n = 1 ORDER BY p.peak_mb DESC, p.at LIMIT ?`,
+      )
+      .all(...args)
+      .map((row) => ({
+        ...peakOf(row),
+        at: Number(row["at"]),
+        firstAt: Number(row["first_at"]),
+        lastAt: Number(row["last_at"]),
+        minutes: Number(row["minutes"]),
+      }));
+  }
+
+  /** This function gives the minutes of one holder since a time, the oldest first (H62 part 5). */
+  peakTrail(kind: PeakKind, key: string, since: number): PeakPoint[] {
+    return this.#db
+      .prepare("SELECT at, peak_mb, lease FROM memory_peaks WHERE kind = ? AND key = ? AND at >= ? ORDER BY at")
+      .all(kind, key, since)
+      .map((row) => ({ at: Number(row["at"]), peakMb: Number(row["peak_mb"]), lease: row["lease"] === null || row["lease"] === undefined ? null : String(row["lease"]) }));
+  }
+
   /**
    * This function removes the samples older than a time, and the leases that ended before the second time. The second
    * time is the first time by default. The rows of the shadow log, of the reap log (H183) and of the refusals (H203) go
@@ -1215,6 +1290,8 @@ export class Store {
     this.#db.prepare("DELETE FROM readers WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM pool_tags WHERE at < ?").run(before);
     this.#db.prepare("DELETE FROM resource_samples WHERE at < ?").run(before);
+    this.#db.prepare("DELETE FROM memory_peaks WHERE at < ?").run(before);
+    this.#db.prepare("DELETE FROM peak_holders WHERE last_at < ?").run(before);
     this.#db.prepare("DELETE FROM leases WHERE ended_at IS NOT NULL AND ended_at < ?").run(leasesBefore);
     this.#db.prepare("DELETE FROM lease_keys WHERE lease_id NOT IN (SELECT id FROM leases)").run();
     this.#db.prepare("DELETE FROM reap_shadow WHERE last_at < ?").run(reapBefore);
@@ -1226,6 +1303,23 @@ export class Store {
   close(): void {
     this.#db.close();
   }
+}
+
+/** This function gives the peak of one row of the table of the memory peaks (H62 part 5). */
+function peakOf(row: Record<string, unknown>): MemoryPeak {
+  const text = (value: unknown): string | null => (value === null || value === undefined ? null : String(value));
+  const number = (value: unknown): number | null => (value === null || value === undefined ? null : Number(value));
+  return {
+    kind: row["kind"] === "container" ? "container" : "process",
+    key: String(row["key"]),
+    name: String(row["name"]),
+    owner: text(row["owner"]),
+    pid: number(row["pid"]),
+    created: number(row["created"]),
+    lease: text(row["lease"]),
+    peakMb: Number(row["peak_mb"]),
+    command: text(row["command"]),
+  };
 }
 
 /** This function gives the entry of one row of the reap log (H183). */

@@ -126,6 +126,7 @@ import { clientArgs, detachedLine, detachedLogPath, noDaemonLine, routeLine, sta
 import { GPU_USAGE, gpuCommand } from "./gpu-cli.ts";
 import { STARTS_USAGE, startsCommand } from "./starts-cli.ts";
 import { DOCKER_USAGE, dockerCommand } from "./docker-cli.ts";
+import { PEAKS_USAGE, peaksCommand } from "./peaks-cli.ts";
 import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.ts";
 import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
@@ -252,6 +253,9 @@ const HELP = `headroom: the memory and job broker of this computer
                The start log: each start of the trace with its command line and its exit, kept 24 hours.
                A pid of a crash dump gives its program and its parents. --top ranks the starters.
   ${DOCKER_USAGE}                  (each container: its owner, memory and cores; the VM and the disk use)
+  ${PEAKS_USAGE}
+               The memory peaks of each process and container of 512 MB or more, by minute, kept 7 days.
+               Each holder gives its largest minute, its owner and its lease. --key: the minutes of one holder.
   headroom disk report [--drive C:] [--deep] [--json]
                What uses the space: the temp folders, the caches, the disk images, node_modules and more.
                It saves the report to ~/.headroom/disk-report.json. --deep: the largest folders, 3 minutes.
@@ -1881,6 +1885,8 @@ async function main(argv: string[]): Promise<number> {
       return startsCommand(rest, startLogPath());
     case "docker":
       return dockerCommand(rest, connect());
+    case "peaks":
+      return peaksCommand(rest, connect());
     case "disk":
       return diskCommand(rest, connect());
     case "worktree":

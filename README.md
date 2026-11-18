@@ -388,6 +388,12 @@ A job states its memory with `--mem`. headroom compares the use of each granted 
 
 **A container start waits for room.** The hook rates a container start as heavy: `docker run`, `docker start`, `docker restart`, and `docker compose up`, `start`, `run` or `restart`. The same rule applies to `docker-compose`, `podman` and `nerdctl`. Below 4 GB free, or while a job waits for memory, the hook tells the session to send the command under a lease. `headroom run --mem 3g -- docker compose up -d` then waits until 3 GB is free.
 
+**The peaks of large processes.** The minute sample keeps the memory of each owner at one read. Thus a process that grows and ends between two samples leaves no trace there. Each read of the processes, every 10 seconds, also gives each process and each running container of 512 MB or more to a tracker. The store keeps the largest amount of each holder in each minute for 7 days, with its owner, its lease and its command line. One minute keeps the 30 largest holders.
+
+- `headroom peaks` gives each holder with its largest minute, the largest first. `--minutes 1440` sets the window, `--min 2g` sets the least peak, and `--lease <id>` keeps one lease.
+- `--key <key>` gives the minutes of one holder. Add `--container` for the key of a container. `--json` gives the answer of the procedure `resources.peaks`.
+- The memory of a container is in the VM of Docker, so the VM process is also a large process. The rows are peaks, not a sum.
+
 ### Forecasts (H32)
 
 headroom tells the time until each resource reaches a limit, so the sessions act before the limit. The forecast comes from the history of the last hour:
