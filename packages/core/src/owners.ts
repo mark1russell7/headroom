@@ -99,6 +99,26 @@ function sessionStart(data: Record<string, unknown>): number | undefined {
   return fileTimeMs(BigInt(raw));
 }
 
+/** This function tells if two starts are the same start. An unknown start matches each start. */
+export function sameStart(a: number | undefined, b: number | undefined): boolean {
+  return a === undefined || b === undefined || Math.abs(a - b) <= 1;
+}
+
+/**
+ * This function gives the session files whose process runs (H205). The process with the ID of the file must have the start
+ * of the file. A session that ends in a crash or a bugcheck keeps its file, and after the next boot another process can
+ * get its ID. On 2026-11-18 the main process of VS Code got the ID of the file of a session. Then the session got the 87
+ * processes of VS Code. A file with no start, or a process with no start, matches each process with its ID.
+ */
+export function liveSessions(sessions: readonly SessionInfo[], processes: readonly Pick<ProcessInfo, "pid" | "startedAt">[]): SessionInfo[] {
+  const byPid = new Map(processes.map((info) => [info.pid, info]));
+  // A file with no process in the read is kept: its session can start after the read. No process gets its owner.
+  return sessions.filter((session) => {
+    const info = byPid.get(session.pid);
+    return info === undefined || sameStart(info.startedAt, session.startedAt);
+  });
+}
+
 /** This function gives the name of a program in lower case, with no `.exe`. */
 export function programName(name: string): string {
   return name.toLowerCase().replace(/\.exe$/, "");
@@ -352,6 +372,9 @@ export function unattributedRow(unattributed: number | null | undefined, mbText:
  *
  * The search also compares the start of each parent with the start in its record (H182). The session of each process
  * comes from the same search: the session file of the ancestor, or the kept record of an orphan.
+ *
+ * Only the files of `liveSessions()` give an owner (H205). The process with the ID of a file must have the start of the
+ * file.
  */
 export function attribute(
   processes: readonly ProcessInfo[],
@@ -362,7 +385,8 @@ export function attribute(
   kept: ReadonlyMap<string, KeptOwner> = new Map(),
 ): Attribution {
   const byPid = new Map(processes.map((info) => [info.pid, info]));
-  const sessionByPid = new Map(sessions.map((session) => [session.pid, session]));
+  // H205: a session file whose ID is in use by another process gives no owner.
+  const sessionByPid = new Map(liveSessions(sessions, processes).map((session) => [session.pid, session]));
   const ruleOf = new Map<string, OwnerRule>();
   for (const rule of rules) for (const name of rule.names) ruleOf.set(name, rule);
 
