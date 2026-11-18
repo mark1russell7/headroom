@@ -21,6 +21,7 @@
 import { execFile } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync, rmSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Alert } from "./alerts.ts";
 import { diskSize } from "./units.ts";
 
@@ -153,8 +154,48 @@ export interface ScanOptions {
   readonly idleMs?: number | undefined;
   /** True to size the `node_modules` folders. */
   readonly sizes?: boolean | undefined;
+  /**
+   * The least time between the starts of two git commands, in ms. The default is 0: no wait. Each git command on Windows
+   * starts 2 or 3 processes. Thus a scan of 500 trees with no wait starts more than 4,000 processes in less than a minute.
+   */
+  readonly gitGapMs?: number | undefined;
+  /** This function waits. The tests replace it. */
+  readonly sleep?: ((ms: number) => Promise<void>) | undefined;
   readonly now?: number | undefined;
   readonly platform?: NodeJS.Platform | undefined;
+}
+
+/** The gap between the starts of two git commands in a scan that the daemon starts: 500 ms, thus at most 2 git commands each second. */
+export const WORKTREE_GIT_GAP_MS = 500;
+
+/**
+ * This function gives the text of the rules of the worktree cleanup: the source of this module. The daemon and the dry run
+ * hash it into the key of a plan. Thus a change of a rule gives a new plan, and a new version with the same rules does not.
+ */
+export function worktreeRulesSource(): string {
+  return readFileSync(fileURLToPath(import.meta.url), "utf8");
+}
+
+/** This function gives a runner whose git commands start at least `gapMs` apart. The other functions of the runner do not change. */
+function spacedRunner(runner: WorktreeRunner, gapMs: number, sleep: (ms: number) => Promise<void>): WorktreeRunner {
+  if (gapMs <= 0) return runner;
+  let turn: Promise<void> = Promise.resolve();
+  // Each function calls the runner itself: a spread copy loses the methods of a class.
+  const measure = runner.measure;
+  return {
+    git: (args) => {
+      // Each call waits for the gap after the start of the call before it. The git commands can still overlap.
+      const start = turn.then(() => sleep(gapMs));
+      turn = start;
+      return start.then(() => runner.git(args));
+    },
+    entries: (path) => runner.entries(path),
+    stat: (path) => runner.stat(path),
+    readText: (path) => runner.readText(path),
+    remove: (path) => runner.remove(path),
+    freeMb: (path) => runner.freeMb(path),
+    measure: measure === undefined ? undefined : (path) => measure.call(runner, path),
+  };
 }
 
 /** This function gives a key of a path for a compare: forward slashes, no slash at the end, and lower case on Windows. */
@@ -394,7 +435,9 @@ function orphanCandidates(main: string, runner: WorktreeRunner): string[] {
  * only: it changes no file.
  */
 export async function scanWorktrees(options: ScanOptions): Promise<WorktreeScan> {
-  const { roots, runner } = options;
+  const { roots } = options;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const runner = spacedRunner(options.runner, options.gitGapMs ?? 0, sleep);
   const platform = options.platform ?? process.platform;
   const now = options.now ?? Date.now();
   const idleMs = options.idleMs ?? WORKTREE_IDLE_MS;

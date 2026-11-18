@@ -471,11 +471,17 @@ A deletion fills the file cache of the system, and so it takes memory. Thus the 
 
 The daemon writes a plan before it removes a tree:
 
-1. The first run after each start of the daemon is a dry run. It writes the plan to `~/.headroom/worktree-plan.json`, with the version of the daemon. The note `worktree:plan` gives its counts.
-2. The setting `worktreeAutoClean` is off by default. While it is off, the daemon only writes a new plan, one time each 24 hours.
+1. The daemon starts a dry run when no plan in the file has the key of its rules (H198). The key is a hash of the code of the rules, the roots and the idle time.
+   - Thus the first start of the daemon starts a dry run. A change of a rule or of a setting of the scan also starts one.
+   - A restart, or a new version with the same rules, starts no dry run.
+   - The dry run writes the plan to `~/.headroom/worktree-plan.json`, with its key and the version of the daemon. The note `worktree:plan` gives its counts.
+   - A dry run that writes no plan with the key starts again at most one time each hour.
+2. The setting `worktreeAutoClean` is off by default. While it is off, the daemon only writes a new plan, 24 hours after the time of the last plan in the file.
 3. Read the plan. Then start the removals with `headroom config worktree-auto-clean on`.
 4. While the setting is on, the daemon starts `headroom worktree clean` in a child process one time each 24 hours. It also starts it when a drive of a root has less than 20 GB free, at most one time each hour.
 5. When a run stops before the end, the next check of the daemon, 5 minutes later, starts the next batch. This continues until the cleanup has no more trees.
+6. The scan of each run of the daemon waits 500 ms between the starts of two git commands. On Windows, each git command starts 2 or 3 processes.
+   A scan of 555 trees with no wait started 5,156 processes in 45 s on 2026-11-17. `--git-gap` sets the wait of a run from the command line. The default there is 0.
 
 - The cleanup writes its counts to `~/.headroom/worktrees.json`, and one line for each action to `~/.headroom/worktree-clean.log`.
 - When more than 100 trees are `keep`, the alert `worktree:keep` names the 3 repositories with the most.

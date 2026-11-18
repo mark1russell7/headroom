@@ -17,6 +17,7 @@ import {
   removeWorktree,
   scanWorktrees,
   summarize,
+  worktreeRulesSource,
   WORKTREE_CLEAN_EVERY_MS,
   type EntryKind,
   type GitResult,
@@ -250,6 +251,41 @@ describe("scanWorktrees", () => {
     expect(scan.orphans.map((orphan) => key(orphan.path)).sort()).toEqual([`${ROOT}/algebra-a13-packing`, `${ROOT}/algebra-wt/left`]);
     expect(scan.orphans.find((orphan) => key(orphan.path).endsWith("packing"))).toMatchObject({ repo: "algebra", newestMs: FRESH });
     expect(summarize(scan).counts).toMatchObject({ orphan: 2, removable: 1 });
+  });
+
+  it("waits the git gap before the start of each git command, and gives the same states as a scan with no wait (H198)", async () => {
+    const make = (): Fake => {
+      const fake = new Fake().repo("app", [
+        { path: `${ROOT}/app-wt/a`, branch: "a" },
+        { path: `${ROOT}/app-wt/b`, branch: "b" },
+        { path: `${ROOT}/app-wt/c`, branch: "c" },
+      ]);
+      fake.dirty.add(`${ROOT}/app-wt/b`);
+      return fake;
+    };
+    const plain = await scanWorktrees(options(make()));
+    const fake = make();
+    const waits: { ms: number; startedBefore: number }[] = [];
+    const sleep = async (ms: number): Promise<void> => {
+      waits.push({ ms, startedBefore: fake.gitCalls.length });
+    };
+    const spaced = await scanWorktrees({ ...options(fake), gitGapMs: 500, sleep });
+    expect(spaced.trees.map((tree) => tree.state)).toEqual(plain.trees.map((tree) => tree.state));
+    // 1 worktree list and 2 calls for each of the 3 trees. Each wait comes before the start of its own git command.
+    expect(fake.gitCalls).toHaveLength(7);
+    expect(waits.map((wait) => wait.ms)).toEqual(Array.from({ length: 7 }, () => 500));
+    expect(waits.map((wait) => wait.startedBefore)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    const none: number[] = [];
+    await scanWorktrees({ ...options(make()), gitGapMs: 0, sleep: async (ms) => void none.push(ms) });
+    expect(none).toEqual([]);
+  });
+});
+
+describe("worktreeRulesSource", () => {
+  it("gives the source of the rules of the cleanup", () => {
+    const source = worktreeRulesSource();
+    expect(source).toContain("export function classifyWorktree");
+    expect(source).toContain("export function refusal");
   });
 });
 
