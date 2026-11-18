@@ -9,7 +9,7 @@ import { dashboardFace } from "./dashboard.ts";
 import { DEFAULT_PORT, withFaces } from "./daemon.ts";
 import { HOOK_CLIENT, HOOK_HEADER, HOOK_PATH, hookAnswer, hookFace, hookVerdict } from "./hook-face.ts";
 import { FALSE_CASES, HEAVY_CASES, LEASE_CASES, VERDICT_COMMANDS } from "./fixtures/hook-commands.ts";
-import { hookOutput, isHeavy, leased, type Status } from "./hook-rating.ts";
+import { decide, hookOutput, isHeavy, leased, type Status } from "./hook-rating.ts";
 
 const event = (command: unknown): unknown => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } });
 
@@ -20,6 +20,70 @@ describe("the rating of a command line (H55)", () => {
 
   it.each(HEAVY_CASES)("rates %j as heavy", (command) => {
     expect(isHeavy(command)).toBe(true);
+  });
+});
+
+describe("the container starts (H62)", () => {
+  const STARTS = [
+    "docker run -d --name db mongo:7",
+    "docker start db",
+    "docker restart db",
+    "docker container run --rm alpine",
+    "docker container start db",
+    "docker compose up -d",
+    "docker compose start",
+    "docker compose run api",
+    "docker compose restart",
+    "docker-compose up -d",
+    "podman run -d mongo:7",
+    "podman-compose up",
+    "nerdctl run mongo:7",
+    "cd deploy && docker compose -f a.yml up",
+    "docker compose --project-name shop --profile dev up -d",
+    "docker --context remote run mongo:7",
+    "docker-compose -f a.yml start",
+    "docker build .",
+  ];
+  const LIGHT = [
+    "docker ps",
+    "docker stop db",
+    "docker compose down",
+    "docker compose logs api",
+    "docker images",
+    "docker container ls",
+    "docker-compose ps",
+    "docker compose -f up.yml logs",
+    "docker inspect --format x db",
+  ];
+
+  it.each(STARTS)("rates %j as heavy", (command) => {
+    expect(isHeavy(command)).toBe(true);
+  });
+
+  it.each(LIGHT)("does not rate %j as heavy", (command) => {
+    expect(isHeavy(command)).toBe(false);
+  });
+
+  it("rates a command with many options and no verb in linear time", () => {
+    // Each `--o1` matched in two ways before the fix. The time doubled with each option: 3.5 ms at 16 options, 48 ms at 20.
+    const options = Array.from({ length: 40 }, (_, index) => `--o${index}`).join(" ");
+    const started = performance.now();
+    expect(isHeavy(`docker ${options} ps`)).toBe(false);
+    expect(isHeavy(`docker compose ${options} logs`)).toBe(false);
+    expect(isHeavy(`docker-compose ${options} ps`)).toBe(false);
+    expect(isHeavy(`docker ${options} run mongo:7`)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it("refuses a container start below the room of a lease, and tells the form that waits for its room", () => {
+    const tight: Status = { free: { memory: 1500 }, leases: [] };
+    expect(decide("docker compose up -d", tight)).toContain("Send it again as: headroom run --mem auto -- docker compose up -d");
+    expect(decide("docker start db", { free: { memory: 9000 }, leases: [{ state: "waiting", reason: "waits for memory: needs 3072, 400 free" }] })).toContain(
+      "1 job already wait for memory",
+    );
+    // With room and no wait, the start goes on. Under a lease, it waits for the room of the lease.
+    expect(decide("docker compose up -d", { free: { memory: 9000 }, leases: [] })).toBeNull();
+    expect(decide("headroom run --mem 3g -- docker compose up -d", tight)).toBeNull();
   });
 });
 

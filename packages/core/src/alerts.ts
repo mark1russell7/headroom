@@ -55,6 +55,7 @@ import type { TrailPoint, TreeUse } from "./cpu.ts";
 import type { Forecast } from "./forecast.ts";
 import { dockerAlerts, type DockerStatus } from "./docker.ts";
 import type { GpuRead } from "./gpu.ts";
+import type { LeaseContainers } from "./lease-containers.ts";
 import {
   grows,
   healthLevel,
@@ -418,6 +419,8 @@ export interface AlertInput {
   readonly docker?: DockerStatus | null | undefined;
   /** The memory peak of each granted lease since its grant, in MB, by lease id (H62). The over rule reads it. */
   readonly leasePeaks?: ReadonlyMap<string, number> | undefined;
+  /** The containers of each granted lease (H62). The over rule counts their memory in the use of a lease. */
+  readonly leaseContainers?: LeaseContainers | undefined;
 }
 
 const NO_MEMORY: SystemMemory = { totalMb: 0, availableMb: 0, commitMb: 0, commitLimitMb: 0, kernelPagedMb: 0, kernelNonpagedMb: 0 };
@@ -429,7 +432,7 @@ function readingsOf(
   input: Pick<
     AlertInput,
     | "memory" | "processes" | "load" | "disks" | "writes" | "reads" | "readers" | "tcp" | "services" | "starts" | "battery" | "meters" | "gpu" | "cores" | "at" | "processors"
-    | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles" | "leasePeaks"
+    | "trails" | "trees" | "leaseCores" | "forecasts" | "thermal" | "handles" | "leasePeaks" | "leaseContainers"
   > & {
     readonly leases?: readonly Lease[] | undefined;
   },
@@ -439,7 +442,7 @@ function readingsOf(
     processors: input.processors ?? 0, pools: {}, granted: {}, writes: input.writes, reads: input.reads, readers: input.readers, tcp: input.tcp, services: input.services, starts: input.starts,
     battery: input.battery, meters: input.meters, gpu: input.gpu, cores: input.cores, leases: input.leases?.filter((lease) => lease.state === "granted"),
     trails: input.trails, trees: input.trees, leaseCores: input.leaseCores, forecasts: input.forecasts, thermal: input.thermal, handles: input.handles,
-    leasePeaks: input.leasePeaks,
+    leasePeaks: input.leasePeaks, leaseContainers: input.leaseContainers,
   };
 }
 

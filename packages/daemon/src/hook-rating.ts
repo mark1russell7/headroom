@@ -3,7 +3,7 @@
  * The daemon gives it on `POST /hooks/pre-tool-use` (`hook-face.ts`). The plugin calls that route as an HTTP hook, so a
  * tool call starts no process for the hook (H194). This file is the one copy of the rating.
  *
- * - A heavy command (tests, builds, Playwright, Docker builds, recursive pnpm) that does not run under
+ * - A heavy command (tests, builds, Playwright, container builds and starts, recursive pnpm) that does not run under
  *   `headroom run` goes on only when the memory has room for it.
  * - When the memory is tight, the hook refuses the command and tells the session the form under a
  *   lease: `headroom run --mem auto -- <command>`. The session sends that form, and the permission
@@ -25,7 +25,10 @@ export interface Status {
   readonly leases?: readonly { readonly state: string; readonly reason?: string | null }[];
 }
 
-/** The commands that need a lease: the test runners, the builds, the browsers and the container builds. */
+/**
+ * The commands that need a lease: the test runners, the builds, the browsers, and the container builds and starts. A
+ * container start needs room first (H62): on 2026-11-05, a job started a container that held 3.0 GB.
+ */
 export const HEAVY: RegExp[] = [
   /\b(?:pnpm|npm|yarn|bun)\s+(?:-[\w-]+\s+)*(?:run\s+)?(?:test|tests|build|e2e|typecheck|check|coverage)\b/,
   /\b(?:pnpm|npm|yarn)\s+(?:-r|--recursive|-ws|--workspaces)\b/,
@@ -35,7 +38,10 @@ export const HEAVY: RegExp[] = [
   /\btsc\s+(?:-b|--build)\b/,
   /\bturbo\s+run\b/,
   /\bnx\s+(?:run-many|affected)\b/,
-  /\bdocker\s+(?:build|buildx\s+build|compose\s+(?:up|build))\b/,
+  // The options before the verb, for example `--context x` or `-f a.yml`, do not hide it. A file `up.yml` is not the verb `up`.
+  // An option starts with a word character after its hyphens, so the regex reads each option in one way only: no backtrack grows.
+  /\b(?:docker|podman|nerdctl)(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:build|buildx\s+build|(?:container\s+)?(?:run|start|restart)|compose(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart))(?![\w.-])/,
+  /\b(?:docker|podman)-compose(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart)(?![\w.-])/,
   /\bcargo\s+(?:build|test)\b/,
   /\bgo\s+test\b/,
   /\bpytest\b/,

@@ -14,6 +14,8 @@ import {
   ContainerOwners,
   dockerShares,
   dockerStatus,
+  pathForms,
+  pathFormsCache,
   splitCores,
   splitOwners,
   type DockerContainerStatus,
@@ -21,11 +23,12 @@ import {
   type DockerShare,
   type DockerStatus,
 } from "./docker.ts";
+import { leaseContainers, type LeaseContainers } from "./lease-containers.ts";
 import { NO_STARTS, RATE_STEP_MAX_MS, RECENT_STARTS_MS, startCost, startsFromRates, StartTracker, type ProcessStarts, type RatePoint, type StartCost } from "./starts.ts";
 import { checkStartCap, START_CAP_WAIT_START, startCapConflict, type StartCap, type StartCapFacts, type StartCapStatus } from "./start-cap.ts";
 import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, MIN_ID_PREFIX, type JobQuery, type JobState } from "./job-state.ts";
-import { availableParallelism } from "node:os";
+import { availableParallelism, homedir } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
 import { attribute, isOrphan, liveSessions, processKey, readSessions, sameStart, sessionsDir, treeMb, unattributedMb, type SessionRef } from "./owners.ts";
 import { OwnerRecords } from "./orphans.ts";
@@ -701,6 +704,10 @@ export class Engine {
   /** The source of the reads of the Docker engine (H38), the owners of the containers, and the last read with its owners. */
   readonly #dockerSource: () => DockerRead | undefined;
   readonly #containerOwners = new ContainerOwners();
+  /** The normal forms of the folders of the leases and of the compose projects (H62). */
+  readonly #pathForms = pathFormsCache();
+  /** The folders that are too wide for the folder rule of the containers: the home folder (H62). */
+  readonly #wideFolders = pathForms(homedir());
   #dockerFacts: { readonly read: DockerRead; readonly containers: readonly DockerContainerStatus[]; readonly shares: readonly DockerShare[] } | null = null;
   /** The Docker resource of the status, from the last read of the processes (H38). */
   #docker: DockerStatus | null = null;
@@ -902,8 +909,16 @@ export class Engine {
       gpu: this.#gpu,
       leases,
       docker: this.#docker,
+      // H62: the memory of a lease counts its containers.
+      leaseContainers: this.#leaseContainers(leases),
     };
     return this.#readings;
+  }
+
+  /** This function gives the containers of each granted lease from the last read of Docker and of the processes (H62). */
+  #leaseContainers(leases: readonly Lease[]): LeaseContainers | undefined {
+    const docker = this.#docker;
+    return docker === null ? undefined : leaseContainers(docker.containers, leases, this.#processes, docker.at, this.#pathForms, this.#wideFolders);
   }
 
   /**
@@ -1632,7 +1647,15 @@ export class Engine {
       pools: { ...capacity.pools },
       leases: this.#broker.leases().filter(isActive),
       // H62: the use of each granted lease against its stated memory, with the same rule as the over alert.
-      leaseUse: leaseUses({ leases: this.#broker.leases().filter((lease) => lease.state === "granted"), processes: this.#processes, leasePeaks: this.#leasePeaks() }, this.#alertRules),
+      leaseUse: leaseUses(
+        {
+          leases: this.#broker.leases().filter((lease) => lease.state === "granted"),
+          processes: this.#processes,
+          leasePeaks: this.#leasePeaks(),
+          leaseContainers: this.#readings?.leaseContainers,
+        },
+        this.#alertRules,
+      ),
       owners: this.#owners,
       unattributedMb: this.#unattributedMb,
       sessions: this.#sessions,
@@ -1859,6 +1882,7 @@ export class Engine {
         docker: this.#docker,
         // H62: the over rule compares the memory peak of each granted lease with its stated memory.
         leasePeaks: this.#leasePeaks(),
+        leaseContainers: this.#leaseContainers(this.#broker.leases()),
       },
       this.#alertRules,
     );

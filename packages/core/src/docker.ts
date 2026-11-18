@@ -64,6 +64,13 @@ export interface DockerContainer {
   readonly project: string | null;
   /** The folder of the compose project, from the label `com.docker.compose.project.working_dir`, or `null`. */
   readonly workingDir: string | null;
+  /** The lease of the label `headroom.lease`, or `null` (H62). A compose file can set it from `HEADROOM_LEASE`. */
+  readonly leaseLabel?: string | null | undefined;
+  /**
+   * The least run time that the status text of the list tells, in ms (H62). For example, `Up 5 minutes` gives 300,000. A
+   * container that is not running, or a text that the parse does not know, gives `null`.
+   */
+  readonly upMinMs?: number | null | undefined;
   /** The memory in MB: the use less the inactive file cache. A container that is not `running` has `null`. */
   readonly memoryMb: number | null;
   /** The memory limit in MB. A container with no limit gets the memory of the VM. */
@@ -217,7 +224,7 @@ export function compareApi(a: string, b: string): number {
 }
 
 /** The fields of a container from `GET /containers/json`, before its stats. */
-export type ListedContainer = Pick<DockerContainer, "id" | "name" | "image" | "state" | "project" | "workingDir">;
+export type ListedContainer = Pick<DockerContainer, "id" | "name" | "image" | "state" | "project" | "workingDir" | "leaseLabel" | "upMinMs">;
 
 /** This function reads the answer of `GET /containers/json`. An entry with no ID is skipped. */
 export function parseContainers(json: unknown): ListedContainer[] {
@@ -229,6 +236,9 @@ export function parseContainers(json: unknown): ListedContainer[] {
     const names = listOf(item["Names"]);
     const first = text(names[0]) ?? id.slice(0, 12);
     const labels = isRecord(item["Labels"]) ? item["Labels"] : {};
+    // H62: the two fields are in a container only with a value, so the status of a container with no lease stays as before.
+    const leaseLabel = text(labels[LEASE_LABEL]);
+    const up = upMinMs(text(item["Status"]));
     containers.push({
       id,
       name: first.startsWith("/") ? first.slice(1) : first,
@@ -236,9 +246,38 @@ export function parseContainers(json: unknown): ListedContainer[] {
       state: text(item["State"]) ?? "unknown",
       project: text(labels["com.docker.compose.project"]),
       workingDir: text(labels["com.docker.compose.project.working_dir"]),
+      ...(leaseLabel === null ? {} : { leaseLabel }),
+      ...(up === null ? {} : { upMinMs: up }),
     });
   }
   return containers;
+}
+
+/** The label of a container that names its lease (H62). */
+export const LEASE_LABEL = "headroom.lease";
+
+const SECOND = 1000;
+const MINUTE = 60 * SECOND;
+const HOUR = 60 * MINUTE;
+/** The units of the run time in the status text of the list. */
+const UP_UNITS: Readonly<Record<string, number>> = { second: SECOND, minute: MINUTE, hour: HOUR, day: 24 * HOUR, week: 168 * HOUR, month: 720 * HOUR, year: 8760 * HOUR };
+
+/**
+ * This function gives the least run time that the status text of the container list tells, in ms (H62). The engine
+ * writes the run time in words, for example `Up 5 minutes`, `Up About an hour` or `Up 3 days (healthy)`. It rounds a
+ * count of hours, days, weeks or months to the nearest hour, so the least time is 30 minutes less. A text that does
+ * not start with `Up`, or a text that the parse does not know, gives `null`.
+ */
+export function upMinMs(status: string | null): number | null {
+  if (status === null) return null;
+  const match = /^Up (?:(Less than a second)|About an? (minute|hour)|(\d+) (second|minute|hour|day|week|month|year)s?)(?:\s|$)/.exec(status.trim());
+  if (match === null) return null;
+  if (match[1] !== undefined) return 0;
+  if (match[2] !== undefined) return match[2] === "minute" ? MINUTE : HOUR;
+  const unit = UP_UNITS[match[4] ?? ""];
+  if (unit === undefined) return null;
+  const least = Number(match[3]) * unit;
+  return unit >= HOUR && match[4] !== "year" ? Math.max(0, least - 30 * MINUTE) : least;
 }
 
 /** The fields of one answer of the stats of a container. */
@@ -588,6 +627,23 @@ export function pathForms(path: string, home: string = homedir()): string[] {
   return forms;
 }
 
+/**
+ * This function gives a function of the normal forms of a path that keeps each answer. A daemon of many days sees few
+ * project folders. The limit keeps the map small all the same.
+ */
+export function pathFormsCache(home: string = homedir(), limit = 500): (path: string) => readonly string[] {
+  const kept = new Map<string, readonly string[]>();
+  return (path) => {
+    let found = kept.get(path);
+    if (found === undefined) {
+      if (kept.size >= limit) kept.clear();
+      found = pathForms(path, home);
+      kept.set(path, found);
+    }
+    return found;
+  };
+}
+
 /** This function gives the folders of the roles that are not retired, from the field `repos` of each role. */
 export function roleFolders(roles: readonly Role[], forms: (path: string) => readonly string[] = (path) => pathForms(path)): RoleFolder[] {
   const folders: RoleFolder[] = [];
@@ -672,10 +728,11 @@ export class ContainerOwners {
   #roles: readonly Role[] | null = null;
   #folders: readonly RoleFolder[] = [];
   #ids: ReadonlySet<string> = new Set();
-  readonly #forms = new Map<string, readonly string[]>();
+  readonly #forms: (path: string) => readonly string[];
 
   constructor(home: string = homedir()) {
     this.#home = home;
+    this.#forms = pathFormsCache(home);
   }
 
   /** This function gives each container with its owner. */
@@ -685,17 +742,7 @@ export class ContainerOwners {
       this.#folders = roleFolders(roles, (path) => pathForms(path, this.#home));
       this.#ids = new Set(roles.filter((role) => role.status !== "retired").map((role) => role.id));
     }
-    const forms = (path: string): readonly string[] => {
-      let found = this.#forms.get(path);
-      if (found === undefined) {
-        // A daemon of many days sees few project folders. The limit keeps the map small all the same.
-        if (this.#forms.size >= 500) this.#forms.clear();
-        found = pathForms(path, this.#home);
-        this.#forms.set(path, found);
-      }
-      return found;
-    };
-    return containers.map((container) => ({ ...container, ...containerOwner(container, this.#folders, this.#ids, forms) }));
+    return containers.map((container) => ({ ...container, ...containerOwner(container, this.#folders, this.#ids, this.#forms) }));
   }
 }
 

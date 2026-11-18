@@ -60,6 +60,9 @@ describe("the memory use of a lease in `headroom status` (H62)", () => {
     expect(leaseUseText({ ...use, peakMb: 1300, times: 2.6, over: false })).toBe("uses 1.2 GB, peak 1.3 GB");
     expect(leaseUseText({ ...use, usedMb: null })).toBe("no measure now, peak 3.2 GB, over: 6.6 times its amount");
     expect(leaseUseText({ ...use, usedMb: null, peakMb: null, times: null, over: false })).toBeNull();
+    // H62 part 2: the containers of a compose job count in its use.
+    expect(leaseUseText({ ...use, containers: ["share-mongo-1"] })).toBe("uses 1.2 GB with 1 container, peak 3.2 GB, over: 6.6 times its amount");
+    expect(leaseUseText({ ...use, containers: ["a", "b"] })).toBe("uses 1.2 GB with 2 containers, peak 3.2 GB, over: 6.6 times its amount");
     expect(leaseUseText(undefined)).toBeNull();
   });
 

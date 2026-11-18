@@ -51,6 +51,8 @@ export interface LeaseRequest {
   readonly ignorePresence?: boolean | undefined;
   /** The hard cap of the job in cores, with `--cpu N --limit` (H23). The client of `headroom run` sets it on the job object. */
   readonly cpuCap?: number | undefined;
+  /** The full path of the folder of the job, from the client of `headroom run` (H62). The rules of the containers read it. */
+  readonly folder?: string | undefined;
   /**
    * The typed key of the job (H78), from the client. The engine writes it with its predictions to the store, and the
    * ladder of `--mem auto` matches it. The broker does not read it. An older client sends none.
@@ -127,6 +129,8 @@ export interface Lease {
   readonly peakGpuMb?: number | undefined;
   /** Who took the waiting lease off the queue with `headroom cancel`: the holder of the caller, or "cli". */
   readonly cancelledBy?: string | undefined;
+  /** The full path of the folder of the job (H62). A container of a compose project in this folder can count for the lease. */
+  readonly folder?: string | undefined;
 }
 
 /** The fields of a lease that the engine measures while its job runs (H47, H23, H36), and the record of a condition that stops (H31). */
@@ -387,6 +391,7 @@ export class Broker {
       ...spawnOf(request, spawn),
       ...(conditions === undefined ? {} : { conditions }),
       ...(request.cpuCap === undefined ? {} : { cpuCap: request.cpuCap }),
+      ...(request.folder === undefined ? {} : { folder: request.folder }),
     };
     this.#leases.set(lease.id, lease);
     return lease;

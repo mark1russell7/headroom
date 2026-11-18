@@ -478,23 +478,38 @@ export function treeMb(pid: number, processes: readonly ProcessInfo[]): number {
  */
 const CONTAINER_CLIENTS: ReadonlySet<string> = new Set(["docker", "docker-compose", "com.docker.cli", "podman", "nerdctl", "kubectl"]);
 
+/** The job tree of a process: the private memory of the process and its descendants, and the mark of a container client. */
+export interface JobTree {
+  /** The private memory of the tree in MB. */
+  readonly mb: number;
+  /** True when a process of the tree starts containers. Then the memory of the tree does not hold the memory of the job. */
+  readonly client: boolean;
+}
+
+/** This function gives the job tree of a process (H187, H62), or `null` when the process is not in the read. */
+export function jobTree(pid: number, processes: readonly ProcessInfo[]): JobTree | null {
+  const root = processes.find((info) => info.pid === pid);
+  if (root === undefined) return null;
+  const children = childrenOf(processes);
+  const seen = new Set<number>();
+  const stack = [root];
+  let client = false;
+  while (stack.length > 0 && !client) {
+    const at = stack.pop();
+    if (at === undefined || seen.has(at.pid)) continue;
+    seen.add(at.pid);
+    if (CONTAINER_CLIENTS.has(programName(at.name))) client = true;
+    stack.push(...(children.get(at.pid) ?? []));
+  }
+  return { mb: treeMb(pid, processes), client };
+}
+
 /**
  * This function gives the private memory, in MB, of the job of a process: the process and all of its descendants (H187).
  * It gives `null` when the processes do not measure the job. Then the process is not in the read, or a process of the
  * tree starts containers.
  */
 export function jobTreeMb(pid: number, processes: readonly ProcessInfo[]): number | null {
-  const root = processes.find((info) => info.pid === pid);
-  if (root === undefined) return null;
-  const children = childrenOf(processes);
-  const seen = new Set<number>();
-  const stack = [root];
-  while (stack.length > 0) {
-    const at = stack.pop();
-    if (at === undefined || seen.has(at.pid)) continue;
-    seen.add(at.pid);
-    if (CONTAINER_CLIENTS.has(programName(at.name))) return null;
-    stack.push(...(children.get(at.pid) ?? []));
-  }
-  return treeMb(pid, processes);
+  const tree = jobTree(pid, processes);
+  return tree === null || tree.client ? null : tree.mb;
 }

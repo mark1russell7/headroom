@@ -8,7 +8,8 @@
 import type { Alert, AlertKind, AlertRules } from "./alerts.ts";
 import type { Lease } from "./broker.ts";
 import type { JobLimits } from "./jobs.ts";
-import { childrenOf, jobTreeMb, orphanName } from "./owners.ts";
+import { leaseMemoryMb, type LeaseContainers } from "./lease-containers.ts";
+import { childrenOf, orphanName } from "./owners.ts";
 import { MB } from "./sampler.ts";
 import type { Amounts, BatteryRead, DiskSpace, NetRead, OwnerKind, PowerMeters, ProcessInfo, SessionLoad, SystemMemory, TcpTable } from "./types.ts";
 import { diskSize, gb } from "./units.ts";
@@ -131,6 +132,8 @@ export interface Readings {
   readonly handles?: readonly ProcessTrail[] | undefined;
   /** The containers of Docker and their owners (H38). The attribute part of the memory gives the Docker VM to them. */
   readonly docker?: DockerStatus | null | undefined;
+  /** The containers of each granted lease (H62). The memory of a lease counts them. */
+  readonly leaseContainers?: LeaseContainers | undefined;
 }
 
 /** One process with the trail of one of its counters (H48): for example its handles at each read, the oldest first. */
@@ -779,7 +782,8 @@ const MEMORY_RESOURCE: Resource = {
     reserve: { amount: 1024 },
     // A job that starts uses little memory, but its lease holds the rest of its amount.
     // H187: a job that starts containers has their memory in the VM of Docker, so its tree does not measure it.
-    used: (lease, _id, readings) => (lease.pid === null ? null : jobTreeMb(lease.pid, readings.processes)),
+    // H62: the containers of the lease count too, so a tree with a container client has a measure when its containers are known.
+    used: (lease, _id, readings) => leaseMemoryMb(lease, readings.processes, readings.leaseContainers),
   },
   enforce: { limit: (amount) => ({ memoryMb: amount }), report: ["peakMb"] },
   // The target is the limit of the memory alert: 1 GB available.
@@ -787,13 +791,15 @@ const MEMORY_RESOURCE: Resource = {
 };
 
 /**
- * This function gives the use of each granted lease with a memory amount (H62). The use is the memory of its job tree at
- * this read. The peak is the largest use since the grant. A job tree with a container client has no measure (H187), so its use is `null`.
+ * This function gives the use of each granted lease with a memory amount (H62). The use is the memory of its job tree and
+ * its containers at this read. The peak is the largest use since the grant. A job tree with a container client and no
+ * container has no measure (H187), so its use is `null`.
  */
-export function leaseUses(readings: Pick<Readings, "leases" | "processes" | "leasePeaks">, rules: OverRules): LeaseUse[] {
+export function leaseUses(readings: Pick<Readings, "leases" | "processes" | "leasePeaks" | "leaseContainers">, rules: OverRules): LeaseUse[] {
   return (readings.leases ?? []).flatMap((lease) => {
-    const used = lease.pid === null ? null : jobTreeMb(lease.pid, readings.processes);
-    const use = leaseUse(lease, used, readings.leasePeaks?.get(lease.id) ?? null, rules);
+    const used = leaseMemoryMb(lease, readings.processes, readings.leaseContainers);
+    const containers = readings.leaseContainers?.byLease.get(lease.id)?.names ?? [];
+    const use = leaseUse(lease, used, readings.leasePeaks?.get(lease.id) ?? null, rules, containers);
     return use === null ? [] : [use];
   });
 }

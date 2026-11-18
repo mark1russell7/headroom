@@ -46,7 +46,7 @@ headroom run --slot docker --mem 1g -- docker compose up -d mongo
 - When the ends of the granted leases give the first lease its room, the broker knows its expected start. A later lease goes first when its expected run ends before that start. It also goes first when it fits in the room that the first lease does not need.
 - When no end of a granted lease gives the first lease its room, other processes hold that room, and the start is not known. Then a later lease goes first when its expected run is at most 10 minutes. Thus the first lease starts at most 10 minutes after the room comes back.
 - In that case, a later lease with a longer run also goes first when the leases that went first stay in a cap (H187). The cap is the room that the first lease waits for from other processes. Thus the leases that go first at most double that room.
-- After 30 minutes of measures, a granted lease holds its measured memory, not its amount (H187). The measured memory is the peak of the job times 1.25, or its use at this time when that is more. Thus a server that asked for 1024 MB and uses 32 MB holds 40 MB. A lease with no process, and a job that starts containers, keep their amount, because the read does not measure them.
+- After 30 minutes of measures, a granted lease holds its measured memory, not its amount (H187). The measured memory is the peak of the job times 1.25, or its use at this time when that is more. Thus a server that asked for 1024 MB and uses 32 MB holds 40 MB. A lease with no process keeps its amount, because the read does not measure it. A job that starts containers keeps its amount until a container counts for its lease (H62).
 - A later lease that waits for the first lease tells it in `headroom status`, for example `waits for the first request (pnpm build): its run of 25 min would delay that request`.
 
 See the memory, the free space of the drives, the free amounts, the leases and the memory of each owner:
@@ -358,6 +358,35 @@ The line `Docker` of `headroom status` gives the state, for example `Docker: 1 c
 - **The alerts** (kind `docker`): a warning when the build cache is above 20 GB, or the images with no container are above 10 GB. The message gives the size and the prune commands.
 - headroom does not prune, stop or start a container, an image or Docker. `docker builder prune` or `docker image prune` frees the space.
 - **The cost** on this laptop: the list and the stats take approximately 60 ms, with no measurable CPU in the daemon. The disk read takes approximately 5 s in the engine and 15 ms of CPU in the daemon, one time each 10 minutes.
+
+### A lease that uses more than it states (H62)
+
+A job states its memory with `--mem`. headroom compares the use of each granted lease with that amount:
+
+- **The use** of a lease is the private memory of its job tree, plus the memory of its containers. **The peak** is the largest use since the grant.
+- **The alert** (kind `over`): a warning when the peak of a lease is 2 times its amount or more, and at least 1 GB above it. The message names the 3 largest excesses and the containers of each lease.
+- `headroom status` gives the use on the row of each lease, for example `memory 500 MB  uses 3.3 GB with 1 container, peak 3.3 GB, over: 6.6 times its amount`. `--json` gives `Status.leaseUse`.
+
+**The containers of a lease.** Docker keeps the memory of a container in its VM, not in the tree of the job that started it. Thus headroom gives each running container to one lease at most:
+
+1. **The label.** `headroom run` gives each job the variable `HEADROOM_LEASE`, with the ID of its lease. To give a container to its lease, set the label `headroom.lease` from this variable:
+
+   ```yaml
+   services:
+     db:
+       image: mongo:7
+       labels:
+         headroom.lease: ${HEADROOM_LEASE:-}
+   ```
+
+   A container with this label counts for the lease that it names. A label of a lease that ended counts for no lease.
+2. **The folder.** With no label, a container counts for a lease when three facts hold. The folder of its compose project is the folder of the job, or a folder in it. The job tree has a container client, for example `docker`. The container started after the grant of the lease.
+3. **One lease.** When two leases match, the container counts for neither. The home folder and a root folder are too wide for the folder rule.
+
+- A job tree with a container client and no container of its lease has no measure. Its lease then holds its full amount (H187).
+- **A detached start.** `docker compose up -d` ends after the start, and its lease ends with it. The containers then count for no lease. The hold of the lease covers only the start.
+
+**A container start waits for room.** The hook rates a container start as heavy: `docker run`, `docker start`, `docker restart`, and `docker compose up`, `start`, `run` or `restart`. The same rule applies to `docker-compose`, `podman` and `nerdctl`. Below 4 GB free, or while a job waits for memory, the hook tells the session to send the command under a lease. `headroom run --mem 3g -- docker compose up -d` then waits until 3 GB is free.
 
 ### Forecasts (H32)
 

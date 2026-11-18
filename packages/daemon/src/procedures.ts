@@ -60,6 +60,12 @@ const LeaseInput = z.object({
     .optional()
     .describe("The hard cap of the job in cores, with --cpu N --limit (H23). The client sets it on the job object, and the status names the capped jobs."),
   key: JobKeyInput.nullable().optional(),
+  folder: z
+    .string()
+    .min(1)
+    .max(4000)
+    .optional()
+    .describe("The full path of the folder of the job (H62). A container of a compose project in this folder can count for the lease."),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -411,6 +417,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         ignorePresence: input.ignorePresence,
         cpuCap: input.cpuCap,
         key: input.key,
+        folder: input.folder,
       }),
     )
     .build() as AnyProcedure;
