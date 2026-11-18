@@ -31,6 +31,7 @@
  * - `headroom cancel <id> | --job <name> [--holder <h>] [--all]`: take a waiting lease off the queue. Its job does not start.
  * - `headroom reap [--all] | <pid> | --shadow | --log`: the processes whose parent is proven gone, and a stop of a process of the own session (H183).
  * - `headroom config reap-auto on|off`: the setting of a later automatic reap. In this version it stops no process (H183).
+ * - `headroom config start-cap <steps>|off`: the cap on the process starts at the grant of a lease (H197).
  * - `headroom report leases [--days 7] [--json]`: how well the leases ask for the memory of their jobs, with a walk-forward replay of the rule (H78).
  * - `headroom history`, `headroom pool <name> <capacity>`, `headroom release <id>`, `headroom resume-plan`.
  */
@@ -83,6 +84,8 @@ import {
   spawnClassText,
   spawnLine,
   startUnderShell,
+  startCapLine,
+  START_CAP_DEFAULT,
   startsLine,
   thermalLine,
   TRACE_HOLD_KINDS,
@@ -123,7 +126,7 @@ import { sessionFromEnv, sessionRefFromEnv, sessionRefFromTree } from "./holder.
 import { REAP_USAGE, reapCommand } from "./reap-cli.ts";
 import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOptions } from "./job.ts";
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
-import { parseDisk, parseMemory, parseTime } from "./parse.ts";
+import { parseDisk, parseMemory, parseStartCap, parseTime, startCapText } from "./parse.ts";
 import { dashboardKey, databasePath, readDiscovery, readPlannedStop, startLogPath } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
@@ -221,6 +224,9 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom config reap-auto [on | off | --clear]
                The setting of a later automatic reap. off is the default. In this version, on stops
                no process: the daemon only writes the shadow log of headroom reap --shadow.
+  headroom config start-cap [<steps> | off | --clear]
+               The cap on the process starts of the computer at the grant of a lease. A step is
+               <perMinute>@<time after the boot>, for example 1822@0,3500@60m (the default). off: no cap.
   headroom presence [--json]                (Mark at the laptop: present, busy or away, and the history)
   ${SERVICES_USAGE}                 (Docker, the MCP servers and the URLs: ok, slow, down, idle)
   headroom dashboard                         (open the dashboard in the browser)
@@ -413,6 +419,9 @@ function printStatus(status: DaemonStatus): void {
   // H47: the spawn-heavy jobs that run. A browser test waits until they end.
   const heavy = spawnLine(status.leases);
   if (heavy !== null) console.log(heavy);
+  // H197: the start cap. A daemon of an older version gives none.
+  const cap = status.startCap === undefined ? null : startCapLine(status.startCap.steps, status.startCap.sinceBootMs, status.startCap.machine, status.startCap.waiting);
+  if (cap !== null) console.log(cap);
   // H24: the network needs two reads of the adapters, so its first status after a start has no rate.
   const usedOf = (id: string): number | null => (status.resources ?? []).find((each) => each.id === id)?.used ?? null;
   const received = usedOf("net:in");
@@ -1312,8 +1321,29 @@ function printConfig(config: Config): void {
         : `start-trace-hold: ${hold.join(",")}${byDefault}. The jobs of these owner kinds refuse a breakaway, so their children stay in the trace.`,
     );
   }
+  // H197: a daemon of an older version has no setting startCap.
+  if (Array.isArray(config.startCap)) {
+    const steps = config.startCap;
+    const byDefault = startCapText(steps) === startCapText(START_CAP_DEFAULT) ? " (the default)" : "";
+    console.log(
+      steps.length === 0
+        ? "start-cap: off. A lease does not wait for the process starts of the computer."
+        : `start-cap: ${startCapText(steps)}${byDefault}. A lease waits while the starts of the computer, of the new jobs and of its job go above the cap.`,
+    );
+  }
   // H179: a daemon of an older version has no setting alerts.
   if (config.alerts !== undefined) for (const line of alertsLines(config.alerts)) console.log(line);
+}
+
+/** `headroom config start-cap <steps>|off` sets the cap on the process starts at a grant (H197). `--clear` gives the default. */
+async function startCapConfig(connection: Connection, value: string | undefined, clear: boolean, extra: boolean): Promise<number> {
+  const steps = value === undefined ? null : value === "off" ? [] : parseStartCap(value);
+  if ((value === undefined) === !clear || extra || (value !== undefined && steps === null)) {
+    console.error(`Usage: headroom config start-cap <steps>, for example ${startCapText(START_CAP_DEFAULT)}, headroom config start-cap off, or headroom config start-cap --clear (the default)`);
+    return 2;
+  }
+  printConfig(await connection.call<Config>(["config", "set"], { startCap: steps }));
+  return 0;
 }
 
 /**
@@ -1564,9 +1594,10 @@ async function configCommand(argv: string[]): Promise<number> {
   if (name === "reap-auto" || name === "reapAuto") return reapAutoConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "start-trace" || name === "startTrace") return startTraceConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name === "start-trace-hold" || name === "startTraceHold") return startTraceHoldConfig(connection, value, values.clear === true, positionals.length > 2);
+  if (name === "start-cap" || name === "startCap") return startCapConfig(connection, value, values.clear === true, positionals.length > 2);
   if (name !== "job-temp" || (value === undefined) === (values.clear !== true) || positionals.length > 2) {
     console.error(
-      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config start-trace <kinds>|off, headroom config start-trace-hold <kinds>|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
+      "Usage: headroom config, headroom config job-temp <folder>, headroom config job-temp --clear, headroom config health, headroom config spawn-heavy <n>, headroom config battery-floor <pct>, headroom config usage-file <path>, headroom config roles-file <path>, headroom config memory-reserve <MB>, headroom config cpu-reserve <cores>, headroom config auto-drain <size>|off, headroom config worktree-auto-clean on|off, headroom config reap-auto on|off, headroom config start-trace <kinds>|off, headroom config start-trace-hold <kinds>|off, headroom config start-cap <steps>|off, headroom config alerts <name> <number>, or headroom config presence on|off, away-after <time>, busy-wait <time> or present-reserve <cores>",
     );
     return 2;
   }

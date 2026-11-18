@@ -22,6 +22,7 @@ import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
 import { redactCommand } from "./redact.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
+import { FIRST_RUNS, startCapOf, type StartCap } from "./start-cap.ts";
 import { TRACE_HOLD_KINDS, traceKindsOf } from "./trace.ts";
 import { FIT_RUNS, isJobKind, KIND_RUNS, PEAK_RUNS, type JobKey, type MemoryPrediction, type Rung, type RunEstimate, type RunSource, type SizedPeak } from "./predict.ts";
 import type { Amounts, McpServerSpec, OwnerKind, OwnerUsage, PoolTag, SessionLoad, SystemMemory } from "./types.ts";
@@ -364,6 +365,11 @@ export interface Config {
    */
   readonly startTraceHold: readonly OwnerKind[];
   /**
+   * The cap on the process starts of the computer at the grant of a lease (H197): steps by the time since the boot. The
+   * default is `START_CAP_DEFAULT`, and an empty list turns the cap off.
+   */
+  readonly startCap: StartCap;
+  /**
    * The alert limits that differ from the defaults (H179), by the names of `AlertRules`. A computer with its own lines (for
    * example a hold of the jobs below 2 GB of available memory) sets them here. The default is no differences.
    */
@@ -548,12 +554,13 @@ export class Store {
       reapAuto: values.get("reapAuto") === "on",
       startTrace: traceKindsOf(values.get("startTrace")),
       startTraceHold: traceKindsOf(values.get("startTraceHold"), TRACE_HOLD_KINDS),
+      startCap: startCapOf(values.get("startCap")),
       alerts: alertRulesOf(values.get("alerts")),
     };
   }
 
   /**
-   * This function sets one setting. `null` removes it. The value of `health` and `alerts` is the JSON text of its object. The value of
+   * This function sets one setting. `null` removes it. The value of `health`, `alerts` and `startCap` is its JSON text. The value of
    * `presence`, `worktreeAutoClean` and `reapAuto` is `on` or `off`. The value of `startTrace` and `startTraceHold` is `off` or owner kinds with
    * commas. The values of the other settings are numbers as text.
    */
@@ -717,6 +724,27 @@ export class Store {
     const rows = holder === undefined
       ? this.#db.prepare(`${columns} WHERE job = ? AND ${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, limit)
       : this.#db.prepare(`${columns} WHERE job = ? AND holder = ? AND ${ran} ORDER BY ended_at DESC LIMIT ?`).all(job, holder, limit);
+    return rows.map((row) =>
+      row["peak_starts_per_min"] === null || row["peak_starts_per_min"] === undefined
+        ? averageRate(Number(row["processes"]), Number(row["ended_at"]) - Number(row["granted_at"]))
+        : Number(row["peak_starts_per_min"]),
+    );
+  }
+
+  /**
+   * This function gives the real peak starts in one minute of the last first runs (H197). A first run is a run of a job with
+   * no past runs at its request, and with no option of the run. A first run that went above the limit has the class `live` at its
+   * end, and it counts too. A run with no peak gives its average rate.
+   */
+  firstRunPeaks(limit: number = FIRST_RUNS): number[] {
+    const rows = this.#db
+      .prepare(
+        `SELECT peak_starts_per_min, processes, granted_at, ended_at FROM leases
+         WHERE ended_at IS NOT NULL AND granted_at IS NOT NULL AND (peak_starts_per_min IS NOT NULL OR processes IS NOT NULL)
+           AND json_extract(spawn, '$.runs') = 0 AND json_extract(spawn, '$.source') NOT IN ('declared', 'opted-out')
+         ORDER BY ended_at DESC LIMIT ?`,
+      )
+      .all(limit);
     return rows.map((row) =>
       row["peak_starts_per_min"] === null || row["peak_starts_per_min"] === undefined
         ? averageRate(Number(row["processes"]), Number(row["ended_at"]) - Number(row["granted_at"]))

@@ -1345,6 +1345,52 @@ waits for the browser tests of shop (pnpm e2e) to end: this job 300 and tsc (cli
 
 **Cost.** The tracker keeps the counts of each job for 10 minutes, as before. The class costs one or two indexed queries of the store at each request. The sum reads the counts of each granted lease in memory, at each tick with a waiting lease.
 
+### H197: the start cap
+
+All 5 bugchecks of 2026-11-15 to 2026-11-17 came at a high 10-minute start rate of the computer. Its rank in the spread of the awake time was 92 % to 100 %. The samples are the resource `procs` of the store.
+
+- Under a constant risk, the chance of 5 ranks at or above 92 % is 4.4e-6.
+- In the busy time alone (a rate of 1,500 a minute or more), the chance is 7.2e-3. Thus the busy time alone does not explain the ranks.
+- The memory in use, the commit, the nonpaged pool and the count of processes had ranks at chance at the same times.
+- Of three laws (a constant risk, a risk in proportion to the rate, a risk in proportion to its square), the square law fits the 5 cases best.
+
+**Rule.** At each grant, the broker adds three parts and holds the lease while the sum is above the cap (`startCapConflict()` in `start-cap.ts`):
+
+- **The computer.** The starts of the computer in one minute over the last 2 minutes, the window of `starts<N`.
+- **The new leases.** A lease granted `age` ms ago adds its expected rate times `(window - age) / window`. The window does not hold that part of its starts yet.
+- **This lease.** Its expected rate, at most the cap. So a job above the cap starts when the computer is quiet.
+- The leases that wait before it do not count. They count when they start.
+
+**The expected rate.** It is the learned peak of the job: the 90th percentile of its last 20 runs (H47). Without a learned peak:
+
+- A job with `--no-spawn-heavy` counts as 0, and a job with `--spawn-heavy` counts as the spawn-heavy limit.
+- Each other job counts as the 90th percentile of the real peaks of the last 200 first runs. A first run is a run with no past runs at its request. The engine reads them again every 10 minutes. With no first runs, the value is the spawn-heavy limit.
+- On 2026-11-17, the 5,592 first runs had a median of 18 and a 90th percentile of 150. Of them, 1.9 % went above 600. The last 200 gave 162.
+
+**Progress.** A light job, at most 1 % of the cap, does not wait: under the square law, it adds at most 2 % to the risk. A lease that waits longer than the head wait of H178 (10 minutes) stops counting its own rate. Then it starts when the computer and the new leases are under the cap, so no lease waits for ever.
+
+**The default values.** They come from the start log of 2026-11-17 (1,050 grants in 5 hours, H193):
+
+- **3,500 a minute.** A replay of the rule on the grants of the log gave the held share and the waits for each cap in steps of 500. 3,500 is the lowest cap at which the light and middle jobs waited less than 2 minutes at the 99th percentile (65 and 85 seconds). At that cap, 6.6 % of the grants waited. At 3,000, the 99th percentile wait was 235 seconds.
+- **1,822 a minute in the first hour after a boot.** It is the median 2-minute rate of the log. Two of the 5 bugchecks came 27 and 69 minutes after a boot. After a start of the daemon, the grants came back to their steady rate in 50 to 55 minutes.
+- The replay keeps the real grant times, so a held lease does not move the later grants. Thus it is a first estimate of the waits.
+
+**Settings.** `headroom config start-cap 1822@0,3500@60m` sets the steps: `<perMinute>@<time after the boot>`, with commas. The first step starts at 0, and each later step starts after the step before it. A cap has at most 12 steps. `off` turns the cap off, and `--clear` sets the default again. The procedure `config.set` takes `startCap` as a list of `{ afterMs, perMinute }`.
+
+**Status.** `headroom status` gives the line of the cap. The reason of each held lease starts with `waits for the start cap`:
+
+```text
+Start cap: 1,822 a minute in the slow start, 3,500 from 60 minutes after the boot. The computer starts 1,350 a minute.
+waits for the start cap: the computer starts 1,350 a minute and this job adds 600. The sum of 1,950 is above the cap of 1,822 in the slow start, 22 minutes after the boot.
+```
+
+**Limits.**
+
+- The link comes from 5 cases. The start rate can be a symptom of the cause and not the cause. The failed starts of H188 before each bugcheck are the next test.
+- The values come from 5 hours of the start log. Derive them again when the log has 7 days.
+- Only the leases wait. The starts of the sessions, the services and Docker go on. In the log, the leases made 14 % to 30 % of the starts.
+- Without a read of the starts, no lease waits.
+
 ### H36: the GPU of each process
 
 H36 shipped in one change. These parts are as built:
