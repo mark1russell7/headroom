@@ -1,6 +1,6 @@
 {
   "name": "headroom",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A hook that sends a heavy command (tests, builds, Playwright, Docker builds) through headroom run when the memory of the computer is tight. The hook asks the daemon over HTTP, so it starts no process.",
   "author": {
     "name": "Mark Russell"
