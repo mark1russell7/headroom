@@ -8,9 +8,9 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { addMissingColumns, migrate, openDatabase, transaction, type Migration } from "@mark1russell7/sqlite";
+import { addMissingColumns, migrate, openDatabase, syncedTransaction, transaction, type Migration } from "@mark1russell7/sqlite";
 import { alertRulesOf, type AlertRules } from "./alerts.ts";
-import type { Lease, LeaseState } from "./broker.ts";
+import { isActive, type Lease, type LeaseState } from "./broker.ts";
 import type { CounterRow, ProcessReads } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import type { MemoryPeak, PeakKind, PeakPoint, PeakSummary } from "./memory-peaks.ts";
@@ -549,17 +549,70 @@ export interface PoolTagSnapshot {
   readonly paged: ReadonlyMap<string, number>;
 }
 
-/** The store. */
+/** The cost of the synced writes of the store since its open (H204). */
+export interface StoreSyncs {
+  /** The count of synced writes. */
+  readonly writes: number;
+  /** The time of all the synced writes, in ms. */
+  readonly totalMs: number;
+  /** The longest synced write, in ms. */
+  readonly slowestMs: number;
+}
+
+/**
+ * The store. The file uses `synchronous` NORMAL, so a crash of the system loses the writes after the last sync (H204).
+ * Thus each change of the state of a lease and the key of a new lease are synced writes. A synced write is on the disk
+ * when the call returns. A heartbeat, a peak or a reason of a lease changes no state, and it gets the low cost of
+ * NORMAL. The sync of a write also keeps each earlier write of the file.
+ */
 export class Store {
   readonly #db: DatabaseSync;
+  /** The state of each active lease at its last synced write. A lease that ended has no entry. */
+  readonly #syncedStates = new Map<string, LeaseState>();
+  #syncWrites = 0;
+  #syncMs = 0;
+  #slowestSyncMs = 0;
 
   constructor(path: string) {
     this.#db = openDatabase(path, { synchronous: "NORMAL", busyTimeoutMs: 5000, makeFolder: true });
     migrate(this.#db, MIGRATIONS, { name: "headroom" });
   }
 
-  /** This function writes a lease, new or changed. */
+  /**
+   * This function writes a lease, new or changed. A new lease and a change of its state are on the disk when the
+   * function returns (H204). A different change gets the low cost of NORMAL.
+   */
   saveLease(lease: Lease): void {
+    const changed = this.#syncedStates.get(lease.id) !== lease.state;
+    const write = (): void => {
+      this.#writeLease(lease);
+    };
+    if (!changed) {
+      write();
+      return;
+    }
+    this.#synced(write);
+    if (isActive(lease)) this.#syncedStates.set(lease.id, lease.state);
+    else this.#syncedStates.delete(lease.id);
+  }
+
+  /** This function gives the cost of the synced writes since the open of the store (H204). */
+  syncs(): StoreSyncs {
+    return { writes: this.#syncWrites, totalMs: Math.round(this.#syncMs * 10) / 10, slowestMs: Math.round(this.#slowestSyncMs * 10) / 10 };
+  }
+
+  /** This function does a write in a synced transaction, and adds its time to the cost (H204). */
+  #synced(write: () => void): void {
+    const begin = performance.now();
+    syncedTransaction(this.#db, write);
+    const ms = performance.now() - begin;
+    this.#syncWrites++;
+    this.#syncMs += ms;
+    this.#slowestSyncMs = Math.max(this.#slowestSyncMs, ms);
+  }
+
+  /** This function writes the row of a lease, with no transaction of its own. */
+  #writeLease(lease: Lease): void {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
@@ -705,8 +758,13 @@ export class Store {
     return rows.map((row) => Number(row["value"]));
   }
 
-  /** This function writes the key of a lease and the predictions at its request (H78). */
+  /** This function writes the key of a lease and the predictions at its request (H78). The key is on the disk when the function returns (H204). */
   saveLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate): void {
+    this.#synced(() => this.#writeLeaseKey(id, key, memory, run));
+  }
+
+  /** This function writes the row of the key of a lease, with no transaction of its own. */
+  #writeLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate): void {
     this.#db
       .prepare(
         `INSERT OR REPLACE INTO lease_keys (lease_id, kind, repo, lock, filter, warm, packages, command, predicted_mb, rung, runs, predicted_ms, run_from)

@@ -124,3 +124,50 @@ describe("Store lease keys (H78)", () => {
     old.close();
   });
 });
+
+describe("the synced lease writes (H204)", () => {
+  it("syncs a new lease, each change of its state and its key, and not a heartbeat, a reason or a peak", () => {
+    const store = new Store(join(mkdtempSync(join(tmpdir(), "headroom-sync-")), "headroom.db"));
+    const lease: Lease = {
+      id: "l1", holder: "shop", job: "build", amounts: { memory: 100 }, priority: 0, pid: null, ttlMs: 300_000,
+      state: "waiting", requestedAt: 5000, grantedAt: null, endedAt: null, heartbeatAt: 5000, reason: null, peakMb: null,
+    };
+    store.saveLease(lease);
+    store.saveLeaseKey("l1", key(), MEMORY, RUN);
+    expect(store.syncs().writes).toBe(2);
+    store.saveLease({ ...lease, heartbeatAt: 6000 });
+    store.saveLease({ ...lease, heartbeatAt: 7000, reason: "waits for memory" });
+    expect(store.syncs().writes).toBe(2);
+    const granted: Lease = { ...lease, state: "granted", grantedAt: 8000, heartbeatAt: 8000, reason: null };
+    store.saveLease(granted);
+    store.saveLease({ ...granted, peakMb: 90 });
+    expect(store.syncs().writes).toBe(3);
+    store.saveLease({ ...granted, peakMb: 90, state: "released", endedAt: 9000, reason: "released" });
+    const syncs = store.syncs();
+    expect(syncs.writes).toBe(4);
+    expect(syncs.slowestMs).toBeGreaterThanOrEqual(0);
+    expect(syncs.totalMs).toBeGreaterThanOrEqual(syncs.slowestMs);
+    // Each write is in the file, the synced writes and the others
+    expect(store.endedLeases(0)).toEqual([expect.objectContaining({ id: "l1", state: "released", peakMb: 90, endedAt: 9000 })]);
+    expect(store.leaseKey("l1")).toEqual(key());
+    store.close();
+  });
+
+  it("syncs the first write of each lease after a new open of the file, because a restart knows no synced state", () => {
+    const path = join(mkdtempSync(join(tmpdir(), "headroom-sync-")), "headroom.db");
+    const lease: Lease = {
+      id: "l2", holder: "shop", job: "build", amounts: { memory: 100 }, priority: 0, pid: 42, ttlMs: 300_000,
+      state: "granted", requestedAt: 5000, grantedAt: 5000, endedAt: null, heartbeatAt: 5000, reason: null, peakMb: null,
+    };
+    const first = new Store(path);
+    first.saveLease(lease);
+    first.close();
+    const next = new Store(path);
+    expect(next.syncs()).toEqual({ writes: 0, totalMs: 0, slowestMs: 0 });
+    next.saveLease({ ...lease, heartbeatAt: 6000 });
+    next.saveLease({ ...lease, heartbeatAt: 7000 });
+    expect(next.syncs().writes).toBe(1);
+    expect(next.activeLeases()).toEqual([expect.objectContaining({ id: "l2", heartbeatAt: 7000 })]);
+    next.close();
+  });
+});

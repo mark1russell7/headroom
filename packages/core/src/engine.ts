@@ -113,7 +113,7 @@ import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
-import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type NativeRefusalCount, type NativeRefusalEntry, type NativeRefusalInput, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
+import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type NativeRefusalCount, type NativeRefusalEntry, type NativeRefusalInput, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store, type StoreSyncs } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { readLeaseEnd, sweepLeaseEnds } from "./ends.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
@@ -302,6 +302,8 @@ export interface Status {
    * when the Docker engine does not answer.
    */
   readonly docker: DockerStatus | null;
+  /** The cost of the synced writes of the store since the start of the daemon (H204): each change of the state of a lease. */
+  readonly syncs: StoreSyncs;
 }
 
 /** A change of the settings. A field that is absent stays as it is, and `null` removes the setting. */
@@ -1688,6 +1690,7 @@ export class Engine {
       gpu: gpuStatus(this.#gpu, this.#ownership, new Map(this.#processes.map((info) => [info.pid, info.name]))),
       handles: handleStatus(this.#processes, this.#ownership.ownerOf, (info) => this.#records.get(info), this.#alertRules.handlesWarn),
       docker: this.#docker,
+      syncs: this.#store.syncs(),
       self: {
         pid: process.pid,
         privateMb: Math.round(this.#processes.find((info) => info.pid === process.pid)?.privateMb ?? 0),
