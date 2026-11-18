@@ -27,7 +27,7 @@ import { largeFileDirs, largeFiles, type LargeFile } from "./disks.ts";
 import { findJobs, MIN_ID_PREFIX, type JobQuery, type JobState } from "./job-state.ts";
 import { availableParallelism } from "node:os";
 import { listeningPorts, tcpSummary, type TcpPorts, type TcpSummary } from "./network.ts";
-import { attribute, isOrphan, processKey, readSessions, sessionsDir, treeMb, unattributedMb, type SessionRef } from "./owners.ts";
+import { attribute, isOrphan, liveSessions, processKey, readSessions, sameStart, sessionsDir, treeMb, unattributedMb, type SessionRef } from "./owners.ts";
 import { OwnerRecords } from "./orphans.ts";
 import {
   hostsKept,
@@ -49,7 +49,7 @@ import {
   type ShadowView,
 } from "./reap.ts";
 import { HandleTracker, handleStatus, type HandleStatus } from "./handles.ts";
-import { PeerResolver, RoleBook, sameStart, type Peer, type PeerInput } from "./peer.ts";
+import { PeerResolver, RoleBook, type Peer, type PeerInput } from "./peer.ts";
 import { fitTrend, forecastFrom, FORECAST_WINDOW_MS, type Forecast, type ResourcePoint, type Trend } from "./forecast.ts";
 import {
   DISK_HINT,
@@ -930,7 +930,8 @@ export class Engine {
       this.#processesAt = now;
       this.#previous = this.#processes;
       this.#processes = this.#sampler.processes();
-      this.#sessions = readSessions(this.#sessionsDir);
+      // H205: a session file whose ID is in use by another process is not a session: not an owner, not kept out of a reap.
+      this.#sessions = liveSessions(readSessions(this.#sessionsDir), this.#processes);
       this.#rememberSessions();
       // H48: an orphan gets the owner of its record, with the label `(orphan)`.
       // H182: the records also keep the parent, its start and the session of each process.

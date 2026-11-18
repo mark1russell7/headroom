@@ -40,7 +40,8 @@ describe("the start under the shell on another platform", () => {
 
 describe.skipIf(process.platform !== "win32")("the start under the shell of Windows (H190)", () => {
   const dir = mkdtempSync(join(tmpdir(), "headroom-shell-start-"));
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  // The process of a test can hold its folder for a short time after its end on Windows (EPERM), so the removal tries again.
+  afterAll(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 
   it("gives the process the shell as its parent, with the folder and the environment of the call", { timeout: 30000 }, async (context) => {
     const out = join(dir, "seen.json");

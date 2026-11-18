@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { attribute, childrenOf, fileTimeMs, isParent, jobTreeMb, kernelOwners, readSessions, titleOf, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
+import { attribute, childrenOf, fileTimeMs, isParent, jobTreeMb, kernelOwners, liveSessions, readSessions, titleOf, treeMb, unattributedMb, unattributedRow } from "./owners.ts";
 import type { ProcessInfo } from "./types.ts";
 
 const p = (pid: number, ppid: number, name: string, privateMb: number): ProcessInfo => ({ pid, ppid, name, privateMb, workingMb: privateMb / 2 });
@@ -66,6 +66,43 @@ describe("attribute", () => {
     // The tree of a process and the leases follow the same rule.
     expect(treeMb(11, tree)).toBe(906);
     expect([...(childrenOf(tree).get(11) ?? [])].map((info) => info.pid)).toEqual([12, 64]);
+  });
+
+  it("gives no owner from a session file whose ID is in use by another process (H205)", () => {
+    const at = (info: ProcessInfo, startedAt: number): ProcessInfo => ({ ...info, startedAt });
+    // The case of 2026-11-18: the file of the session systems survived a bugcheck. After the boot, the main process of
+    // VS Code got its ID 21392. VS Code hosts the terminal of the session shop and an idle shell.
+    const sessions = [
+      { pid: 21392, name: "systems", sessionId: "s1", status: "idle", cwd: null, startedAt: 1_000 },
+      { pid: 30, name: "shop", sessionId: "s2", status: "busy", cwd: null, startedAt: 9_200 },
+      { pid: 40, name: "systems", sessionId: "s3", status: "busy", cwd: null, startedAt: 9_500 },
+    ];
+    const tree = [
+      at(p(1, 0, "explorer.exe", 100), 8_000),
+      at(p(21392, 1, "Code.exe", 300), 9_000),
+      at(p(22, 21392, "Code.exe", 200), 9_001),
+      at(p(23, 22, "OpenConsole.exe", 5), 9_100),
+      at(p(24, 23, "bash.exe", 5), 9_101),
+      at(p(30, 24, "claude.exe", 900), 9_200),
+      at(p(31, 30, "node.exe", 50), 9_300),
+      at(p(25, 22, "OpenConsole.exe", 5), 9_110),
+      at(p(26, 25, "bash.exe", 5), 9_111),
+      at(p(40, 1, "claude.exe", 800), 9_500),
+      at(p(41, 40, "node.exe", 70), 9_600),
+    ];
+    const { owners, ownerOf, sessionOf } = attribute(tree, sessions);
+    expect(ownerOf.get(21392)).toBe("editor");
+    expect(ownerOf.get(26)).toBe("editor");
+    expect(ownerOf.get(24)).toBe("editor");
+    expect(ownerOf.get(31)).toBe("session:shop");
+    expect(ownerOf.get(41)).toBe("session:systems");
+    expect(sessionOf.get(26)).toBeUndefined();
+    expect(sessionOf.get(41)).toEqual({ name: "systems", id: "s3" });
+    expect(owners.find((owner) => owner.owner === "session:systems")).toMatchObject({ privateMb: 870, processes: 2 });
+    expect(owners.find((owner) => owner.owner === "editor")).toMatchObject({ privateMb: 520, processes: 6 });
+    // Without the check, the old file gives the whole tree of VS Code to systems.
+    const stale = attribute(tree, sessions.map((session) => (session.pid === 21392 ? { ...session, startedAt: 9_000 } : session)));
+    expect(stale.ownerOf.get(26)).toBe("session:systems");
   });
 
   it("survives a cycle in the parents", () => {
@@ -139,6 +176,33 @@ describe("attribute", () => {
     expect([3300, 3310].map((pid) => ownerOf.get(pid))).toEqual(["system:defender", "system:defender"]);
     expect(ownerOf.get(2200)).toBe("system");
     expect(owners.find((owner) => owner.owner === "system:search")).toEqual({ owner: "system:search", kind: "system", privateMb: 212, workingMb: 144, processes: 3 });
+  });
+});
+
+describe("liveSessions (H205)", () => {
+  const session = (pid: number, startedAt?: number) => ({ pid, name: `s${pid}`, sessionId: `id${pid}`, status: null, cwd: null, ...(startedAt === undefined ? {} : { startedAt }) });
+
+  it("keeps a file whose process has its start, and drops a file whose ID is in use by a process with another start", () => {
+    const live = liveSessions([session(1, 5_000), session(2, 5_000), session(3, 5_000)], [
+      { pid: 1, startedAt: 5_000 },
+      { pid: 2, startedAt: 9_000 },
+      { pid: 3, startedAt: 5_001 },
+    ]);
+    expect(live.map((each) => each.pid)).toEqual([1, 3]);
+  });
+
+  it("keeps a file with no start, a file whose process has no start and a file with no process in the read", () => {
+    const live = liveSessions([session(1), session(2, 5_000), session(3, 5_000)], [{ pid: 1, startedAt: 7_000 }, { pid: 2, startedAt: undefined }]);
+    expect(live.map((each) => each.pid)).toEqual([1, 2, 3]);
+  });
+
+  it("matches the start of a Windows session file that readSessions reads from procStart", () => {
+    const dir = mkdtempSync(join(tmpdir(), "headroom-live-sessions-"));
+    // The file of the organizer on 2026-11-18. After the boot, the process with its ID was XboxService.exe.
+    writeFileSync(join(dir, "7004.json"), JSON.stringify({ pid: 7004, sessionId: "a", name: "organizer", procStart: "134394750622615681", pidDomain: "win32:host" }));
+    const [file] = readSessions(dir);
+    expect(liveSessions(readSessions(dir), [{ pid: 7004, startedAt: file?.startedAt }])).toHaveLength(1);
+    expect(liveSessions(readSessions(dir), [{ pid: 7004, startedAt: (file?.startedAt ?? 0) + 3_600_000 }])).toHaveLength(0);
   });
 });
 

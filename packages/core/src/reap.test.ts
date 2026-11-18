@@ -431,6 +431,23 @@ describe("Engine reap (H183)", () => {
     expect(engine.reapLog()).toEqual([]);
   });
 
+  it("does not take a process whose ID a session file of an earlier boot names for a session (H205)", () => {
+    // The case of 2026-11-18: the file of the organizer survived a crash, and after the boot XboxService.exe got its ID.
+    const fileStart = T0 - 10 * HOUR;
+    const procStart = String((BigInt(fileStart) + 11_644_473_600_000n) * 10_000n);
+    writeFileSync(join(sessions, "7004.json"), JSON.stringify({ pid: 7004, name: "organizer", sessionId: "c1-organizer", procStart, pidDomain: "win32:host" }));
+    extra = [node(7004, 4, "XboxService.exe", T0 - HOUR)];
+    restart();
+    expect(engine.status().sessions.map((session) => session.name)).not.toContain("organizer");
+    expect(engine.status().owners.map((owner) => owner.owner)).not.toContain("session:organizer");
+    expect(engine.reap(7004, KESTREL).outcome).not.toBe("session");
+    // The same file with the start of the live process is a session.
+    extra = [node(7004, 4, "claude.exe", fileStart)];
+    restart();
+    expect(engine.status().sessions.map((session) => session.name)).toContain("organizer");
+    expect(engine.reap(7004, KESTREL)).toMatchObject({ outcome: "session" });
+  });
+
   it("stops nothing when the sampler cannot read the start of a live process", () => {
     restart(makeSampler(false));
     expect(engine.reap(27308, KESTREL)).toMatchObject({ outcome: "ended" });

@@ -14,8 +14,7 @@
 
 import { spanText } from "./forecast.ts";
 import { commandText, type ProcessRecord } from "./orphans.ts";
-import { isOrphan, processKey, programName, type SessionRef } from "./owners.ts";
-import { sameStart } from "./peer.ts";
+import { isOrphan, processKey, programName, sameStart, type SessionRef } from "./owners.ts";
 import type { ProcessInfo, SessionInfo } from "./types.ts";
 import { diskSize } from "./units.ts";
 
