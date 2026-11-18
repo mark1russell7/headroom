@@ -271,14 +271,21 @@ describe("the gate of long native paths in the hook (H203)", () => {
   const reasonOf = (json: string): string | undefined =>
     (JSON.parse(json) as { hookSpecificOutput?: { permissionDecisionReason?: string } }).hookSpecificOutput?.permissionDecisionReason;
 
-  it("refuses a light command with a lot of free memory when the gate refuses it, and gives the gate the folder of the event", async () => {
-    const seen: [string, string | null][] = [];
-    const native = async (command: string, cwd: string | null): Promise<string | null> => (seen.push([command, cwd]), "the path is too long");
-    const body = JSON.stringify({ ...(event("pnpm -v") as object), cwd: "D:\git\app" });
+  it("refuses a light command with a lot of free memory when the gate refuses it, and gives the gate the folder and the session of the event", async () => {
+    const seen: [string, string | null, string | null][] = [];
+    const native = async (command: string, cwd: string | null, sessionId: string | null): Promise<string | null> => (
+      seen.push([command, cwd, sessionId]), "the path is too long"
+    );
+    const body = JSON.stringify({ ...(event("pnpm -v") as object), cwd: "D:\git\app", session_id: "6f1c-kestrel" });
     const verdict = await hookVerdict(body, { status: free, native });
     expect(verdict.code).toBe(200);
     expect(reasonOf(verdict.json)).toBe("the path is too long");
-    expect(seen).toEqual([["pnpm -v", "D:\git\app"]]);
+    // An event with no session ID, or an empty one, gives the gate no session.
+    await hookVerdict(JSON.stringify({ ...(event("pnpm -v") as object), session_id: "" }), { status: free, native });
+    expect(seen).toEqual([
+      ["pnpm -v", "D:\git\app", "6f1c-kestrel"],
+      ["pnpm -v", null, null],
+    ]);
   });
 
   it("lets the command go on when the gate throws, rejects or lets it go", async () => {

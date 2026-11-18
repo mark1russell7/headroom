@@ -36,9 +36,9 @@ export interface HookFaceOptions {
   readonly bodyLimit?: number | undefined;
   /**
    * The gate of long native paths (H203): the refusal of a command line in its folder, or `null`. A failure lets the
-   * command go on. With no gate, each command goes on.
+   * command go on. With no gate, each command goes on. The session ID of the event goes to the log of refusals.
    */
-  readonly native?: ((command: string, cwd: string | null) => Promise<string | null>) | undefined;
+  readonly native?: ((command: string, cwd: string | null, sessionId: string | null) => Promise<string | null>) | undefined;
 }
 
 function answer(res: ServerResponse, code: number, body: string, type: string): void {
@@ -94,14 +94,15 @@ export async function hookVerdict(
 ): Promise<{ readonly code: number; readonly json: string }> {
   const rated = hookAnswer(body, options.status);
   if (rated.code !== 200 || options.native === undefined) return rated;
-  const event = JSON.parse(body === "" ? "{}" : body) as { tool_input?: { command?: unknown }; cwd?: unknown } | null;
+  const event = JSON.parse(body === "" ? "{}" : body) as { tool_input?: { command?: unknown }; cwd?: unknown; session_id?: unknown } | null;
   const command = event?.tool_input?.command;
   if (typeof command !== "string" || command.trim() === "") return rated;
   const cwd = typeof event?.cwd === "string" && event.cwd !== "" ? event.cwd : null;
+  const sessionId = typeof event?.session_id === "string" && event.session_id !== "" ? event.session_id : null;
   const gate = options.native;
   // A gate that throws, also before its promise, lets the command go on.
   const refusal = await Promise.resolve()
-    .then(() => gate(command, cwd))
+    .then(() => gate(command, cwd, sessionId))
     .catch(() => null);
   return refusal === null ? rated : { code: 200, json: JSON.stringify(denied(refusal)) };
 }

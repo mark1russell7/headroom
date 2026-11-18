@@ -49,6 +49,8 @@ describe("Store lease keys (H78)", () => {
     ended(first, "old-1", "pnpm test", 300, 5000);
     first.close();
     const old = new DatabaseSync(path);
+    // The version of a new file is the count of all the steps. The open of a file of step 3 goes to it.
+    const latest = (old.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
     old.exec("DROP TABLE lease_keys");
     old.exec("PRAGMA user_version = 3");
     old.close();
@@ -59,7 +61,7 @@ describe("Store lease keys (H78)", () => {
     expect(store.leaseKey("old-1")).toEqual(key());
     store.close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: latest });
     read.close();
   });
 

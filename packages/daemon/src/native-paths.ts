@@ -23,6 +23,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { expandHome, findFilesAsync, findUp, isInside, toPosix } from "@mark1russell7/files";
 import { commandWords, SHELLS } from "./hook-rating.ts";
 import { ASSIGNMENT, programName } from "./slots.ts";
+import type { NativeRefusalInput } from "@headroom/core";
 
 /** The longest NT path of a native image that the gate lets go on: a margin of 20 under MAX_PATH (260). */
 export const NATIVE_PATH_LIMIT = 240;
@@ -425,10 +426,26 @@ export interface NativeInput {
   readonly budgetMs?: number | undefined;
 }
 
+/** This function gives the longest native path over the limit of a command line, or `null` when the command can go on. */
+export async function nativeLongPath(images: NativeImages, input: NativeInput): Promise<LongPath | null> {
+  return images.check(foldersOfCommand(input.command, input.cwd), input.budgetMs);
+}
+
 /** This function gives the refusal of a command line for a long native path, or `null` when the command can go on. */
 export async function nativeRefusal(images: NativeImages, input: NativeInput): Promise<string | null> {
-  const long = await images.check(foldersOfCommand(input.command, input.cwd), input.budgetMs);
+  const long = await nativeLongPath(images, input);
   return long === null ? null : longPathRefusal(long);
+}
+
+/** The caller of a refused command: the session ID of a hook event, or the holder of `headroom run`. */
+export interface RefusedBy {
+  readonly session?: string | undefined;
+  readonly sessionId?: string | null | undefined;
+}
+
+/** This function gives the row of the log of refusals (H203) for one refusal. The row keeps no command line. */
+export function refusalRow(long: LongPath, source: "hook" | "run", by: RefusedBy): NativeRefusalInput {
+  return { source, session: by.session, sessionId: by.sessionId ?? null, folder: long.root, ntLength: long.ntLength, limit: long.limit, basis: long.basis };
 }
 
 /**

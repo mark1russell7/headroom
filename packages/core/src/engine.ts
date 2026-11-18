@@ -108,7 +108,7 @@ import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
-import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
+import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type NativeRefusalCount, type NativeRefusalEntry, type NativeRefusalInput, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { readLeaseEnd, sweepLeaseEnds } from "./ends.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
@@ -1438,6 +1438,22 @@ export class Engine {
   /** This function gives the reap log (H183): the stops, the requests and the processes that need the owner of the machine. */
   reapLog(): ReapEntry[] {
     return this.#store.reapLog();
+  }
+
+  /**
+   * This function writes one refusal of the gate of long native paths (H203), and gives the row. A refusal with no name of a
+   * session gets the name of the session file with its session ID. The name comes from the last read of the session files.
+   */
+  recordNativeRefusal(entry: NativeRefusalInput): NativeRefusalEntry {
+    const named = entry.session ?? (entry.sessionId === null ? undefined : this.#sessions.find((session) => session.sessionId === entry.sessionId)?.name);
+    const row: NativeRefusalEntry = { ...entry, at: entry.at ?? this.#now(), session: named ?? null };
+    this.#store.saveNativeRefusal(row);
+    return row;
+  }
+
+  /** This function counts the refusals of long native paths (H203) at or after `from` and before `to`, for each session and source. */
+  nativeRefusalCounts(from: number, to: number): NativeRefusalCount[] {
+    return this.#store.nativeRefusalCounts(from, to);
   }
 
   /** This function gives the settings, for example the temp root of the jobs. */

@@ -113,8 +113,9 @@ describe("the secrets of a command line never reach the store (H186)", () => {
       );
       db.prepare("INSERT INTO lease_keys (lease_id, kind, command, rung, runs) VALUES (?, 'other', ?, 'none', 0)").run("l1", `gh pr list --token ${TOKEN}`);
       db.prepare("INSERT INTO reap_log (at, pid, created, name, action, private_mb, command, result) VALUES (1, 31, 1, 'psql.exe', 'ask', 1, ?, 'ok')").run(`psql --password ${LOGIN_SECRET}`);
-      // The file goes back to the version before the step of H186, as a file of the last release.
-      db.exec(`PRAGMA user_version = ${version - 1}`);
+      // The file goes back to step 4, the last step before the step of H186, as a file of a release before H186. The next
+      // open runs the step of H186 and each later step.
+      db.exec("PRAGMA user_version = 4");
       db.close();
       new Store(path).close();
       const stored = allText(path);
