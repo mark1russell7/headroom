@@ -15,6 +15,7 @@
     "@mark1russell7/cue": "github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7",
     "@mark1russell7/rigor-generators": "^0.2.0",
     "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "5.1.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3"
   },
