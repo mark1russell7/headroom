@@ -321,9 +321,10 @@ describe("the process table proves ownership (H182)", () => {
     expect(sessionOf.get(13)).toEqual({ name: "harbor-crane tools", id: "s1" });
     // The new process with the ID 12 is not an orphan: its own parent runs.
     expect(isOrphan(node, byPidOf(after), records.get(node))).toBe(false);
-    // A process with the ID of the parent and no start in the read is not a proof: the parent is not proven gone.
+    // A process with the ID of the parent and no start in the read is a new process (H212). It started after the read of
+    // the starts, and the recorded parent has a start in each read while it runs. Thus the parent is gone.
     const unread: ProcessInfo = { pid: 12, ppid: 11, name: "bash.exe", privateMb: 1, workingMb: 1 };
-    expect(isOrphan(find, byPidOf([...before.slice(0, 2), unread, find]), records.get(find))).toBe(false);
+    expect(isOrphan(find, byPidOf([...before.slice(0, 2), unread, find]), records.get(find))).toBe(true);
   });
 
   it("reads a reused parent ID as gone for a child with a start, and a new parent ID of Linux as gone", () => {

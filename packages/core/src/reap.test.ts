@@ -123,18 +123,23 @@ describe("the candidates of headroom reap (H183)", () => {
       // A new process has the ID of the ended shell 200. It started after grep, so it is not the parent.
       node(200, 4, "node.exe", T0 - MIN),
       node(27308, 200, "grep.exe", T0 - 3.5 * HOUR, 1536),
-      // The parent of this process started at an unknown time, so the parent is not proven gone.
+      // The parent of this process started before it, and the record has no start of the parent: the parent is not proven gone.
       node(27700, 300, "grep.exe", T0 - HOUR, 700),
-      { pid: 300, ppid: 4, name: "bash.exe", privateMb: 5, workingMb: 5 },
+      node(300, 4, "bash.exe", T0 - 2 * HOUR, 5),
+      // A new process with no start has the ID of the ended parent 400. It started after the read of the starts, so it is
+      // not the parent of an older process (H212).
+      node(27900, 400, "grep.exe", T0 - HOUR, 800),
+      { pid: 400, ppid: 4, name: "node.exe", privateMb: 5, workingMb: 5 },
       // A process with no record is not listed, because no record proves its owner.
       node(27800, 999, "grep.exe", T0 - HOUR, 700),
     ];
     const records = new Map<number, ProcessRecord>([
       [27308, record(27308, T0 - 3.5 * HOUR, GREP_COMMAND)],
       [27700, { ...record(27700, T0 - HOUR, GREP_COMMAND), ppid: 300, parentCreated: 0 }],
+      [27900, { ...record(27900, T0 - HOUR, GREP_COMMAND, T0 - 2 * HOUR), ppid: 400 }],
     ]);
     const list = reapCandidates(processes, (info) => records.get(info.pid), T0);
-    expect(list.map((each) => each.pid)).toEqual([27308]);
+    expect(list.map((each) => each.pid)).toEqual([27308, 27900]);
     expect(list[0]).toMatchObject({ privateMb: 1536, ageMs: 3.5 * HOUR, session: "kestrel", command: GREP_COMMAND });
   });
 

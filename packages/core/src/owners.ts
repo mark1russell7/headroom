@@ -169,7 +169,7 @@ function isRecordedParent(parent: ProcessInfo, record: ParentRecord): boolean {
  * in a read, and a true record names no starter and no session. A record with no start gives `false`, because the reads
  * have no starts to compare.
  */
-export function orphanAtFirstRead(record: Partial<ParentRecord> & { readonly created?: number }): boolean {
+export function orphanAtFirstRead(record: Partial<ParentRecord> & { readonly created?: number | undefined }): boolean {
   return (record.created ?? 0) > 0 && (record.ppid ?? 0) > 0 && record.parentCreated === 0;
 }
 
