@@ -21,6 +21,7 @@ import { AWAY_AFTER_DEFAULT_MS, BUSY_WAIT_DEFAULT_MS, PRESENT_RESERVE_DEFAULT } 
 import { RECORDS_MAX, type ProcessRecord, type RecordChanges } from "./orphans.ts";
 import type { ReapAction, ReapEntry, ShadowMatch, ShadowRow, StdoutKind } from "./reap.ts";
 import { AUTO_DRAIN_DEFAULT_MB, parseDrain, type Drain } from "./reboot.ts";
+import type { MeasuredRun } from "./peak-floor.ts";
 import { redactCommand } from "./redact.ts";
 import { averageRate, SPAWN_HEAVY_DEFAULT, SPAWN_RUNS, type SpawnClass } from "./spawn.ts";
 import { FIRST_RUNS, startCapOf, type StartCap } from "./start-cap.ts";
@@ -157,6 +158,12 @@ const MIGRATIONS: readonly Migration[] = [
   (db) => {
     db.exec(PEAKS_SCHEMA);
   },
+  // H215: the floor of each keyed lease at its request, and the reason of a lease below its floor. The index serves the
+  // read of the last run of a signature.
+  (db) => {
+    addMissingColumns(db, "lease_keys", { floor_mb: "REAL", below_peak: "TEXT" });
+    db.exec("CREATE INDEX IF NOT EXISTS lease_keys_command ON lease_keys (command)");
+  },
 ];
 
 /** The table of the refusals of the gate of long native paths (H203). Step 6 of the schema makes it. */
@@ -219,6 +226,7 @@ export const COMMAND_COLUMNS: readonly (readonly [table: string, column: string]
   ["reap_log", "command"],
   ["leases", "job"],
   ["lease_keys", "command"],
+  ["lease_keys", "below_peak"],
   ["peak_holders", "command"],
 ]);
 
@@ -277,7 +285,22 @@ export interface LeaseKeyRow {
   /** The expected run time at the request, or `null` with no run. */
   readonly predictedMs: number | null;
   readonly runFrom: RunSource | null;
+  /** The floor of the signature at the request in MB, or `null` with no floor or for a row before H215. */
+  readonly floorMb: number | null;
+  /** The reason of a lease below its floor (`--below-peak`), or `null`. */
+  readonly belowPeak: string | null;
 }
+
+/** The floor of a keyed lease at its request, and the reason of a lease below it (H215). */
+export interface LeaseFloor {
+  /** The floor in MB, or `null` when the signature has no measured run. */
+  readonly floorMb: number | null;
+  /** The reason of `--below-peak` when the stated memory is below the floor, else `null`. */
+  readonly belowPeak: string | null;
+}
+
+/** The floor of a lease with no measured run of its signature. */
+export const NO_FLOOR: LeaseFloor = Object.freeze({ floorMb: null, belowPeak: null });
 
 /** One lease for `headroom report leases` (H78): its request, its end and its key, when it has one. */
 export interface KeyedLease {
@@ -318,6 +341,8 @@ function toKeyRow(row: Record<string, unknown>): LeaseKeyRow | null {
     runs: Number(row["runs"] ?? 0),
     predictedMs: number(row["predicted_ms"]),
     runFrom: text(row["run_from"]) as RunSource | null,
+    floorMb: number(row["floor_mb"]),
+    belowPeak: text(row["below_peak"]),
   };
 }
 
@@ -758,22 +783,43 @@ export class Store {
     return rows.map((row) => Number(row["value"]));
   }
 
-  /** This function writes the key of a lease and the predictions at its request (H78). The key is on the disk when the function returns (H204). */
-  saveLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate): void {
-    this.#synced(() => this.#writeLeaseKey(id, key, memory, run));
+  /**
+   * This function writes the key of a lease and the predictions at its request (H78). The key is on the disk when the
+   * function returns (H204). `floor` is the floor of its signature at the request, and `belowPeak` is the reason of a
+   * lease below that floor (H215).
+   */
+  saveLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate, floor: LeaseFloor = NO_FLOOR): void {
+    this.#synced(() => this.#writeLeaseKey(id, key, memory, run, floor));
   }
 
   /** This function writes the row of the key of a lease, with no transaction of its own. */
-  #writeLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate): void {
+  #writeLeaseKey(id: string, key: JobKey, memory: MemoryPrediction, run: RunEstimate, floor: LeaseFloor): void {
     this.#db
       .prepare(
-        `INSERT OR REPLACE INTO lease_keys (lease_id, kind, repo, lock, filter, warm, packages, command, predicted_mb, rung, runs, predicted_ms, run_from)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO lease_keys (lease_id, kind, repo, lock, filter, warm, packages, command, predicted_mb, rung, runs, predicted_ms, run_from, floor_mb, below_peak)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id, key.kind, key.repo ?? null, key.lock ?? null, key.filter ?? null, key.warm === null || key.warm === undefined ? null : key.warm ? 1 : 0,
-        key.packages ?? null, key.command, memory.mb, memory.rung, memory.runs, run.ms, run.from,
+        key.packages ?? null, key.command, memory.mb, memory.rung, memory.runs, run.ms, run.from, floor.floorMb, floor.belowPeak,
       );
+  }
+
+  /**
+   * This function reads the last run of the signature of a key with a measured peak (H215). The signature is the kind,
+   * the repo, the package filter, the warm state and the command text. It gives `null` when no run of the signature has a peak.
+   */
+  lastCommandRun(key: JobKey): MeasuredRun | null {
+    const warm = key.warm === null || key.warm === undefined ? null : key.warm ? 1 : 0;
+    const row = this.#db
+      .prepare(
+        `SELECT l.id, l.job, l.holder, l.peak_mb, l.ended_at FROM lease_keys k JOIN leases l ON l.id = k.lease_id
+         WHERE k.command = ? AND k.kind = ? AND k.repo IS ? AND k.filter IS ? AND k.warm IS ? AND l.peak_mb IS NOT NULL AND l.ended_at IS NOT NULL
+         ORDER BY l.ended_at DESC LIMIT 1`,
+      )
+      .get(key.command, key.kind, key.repo ?? null, key.filter ?? null, warm);
+    if (row === undefined) return null;
+    return { id: String(row["id"]), job: String(row["job"]), holder: String(row["holder"]), peakMb: Number(row["peak_mb"]), endedAt: Number(row["ended_at"]) };
   }
 
   /** This function reads the key of a lease (H78), or gives `null` for a lease with no key. */

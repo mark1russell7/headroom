@@ -126,14 +126,14 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 8, and a second open changes nothing", () => {
+  it("adopts a file of a version before the migrations once: user_version 9, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 8 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
@@ -141,8 +141,13 @@ describe("Store", () => {
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leases_job'").get()).toEqual({ name: "leases_job" });
     // H183: step 3 makes the tables of the shadow log and of the reap log.
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'reap_%' ORDER BY name").all()).toEqual([{ name: "reap_log" }, { name: "reap_shadow" }]);
-    // H78: step 4 makes the table of the keys and its index for the ladder.
-    expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lease_keys%' ORDER BY name").all()).toEqual([{ name: "lease_keys" }, { name: "lease_keys_ladder" }]);
+    // H78: step 4 makes the table of the keys and its index for the ladder. H215: step 9 adds the index of the command.
+    expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'lease_keys%' ORDER BY name").all()).toEqual([
+      { name: "lease_keys" }, { name: "lease_keys_command" }, { name: "lease_keys_ladder" },
+    ]);
+    // H215: step 9 adds the floor of each keyed lease and the reason of a lease below its floor.
+    const keys = read.prepare("PRAGMA table_info(lease_keys)").all().map((row) => String(row["name"]));
+    expect(keys).toEqual(expect.arrayContaining(["floor_mb", "below_peak"]));
     // H203: step 6 makes the log of the refusals of long native paths and its index.
     expect(read.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'native_refusals%' ORDER BY name").all()).toEqual([{ name: "native_refusals" }, { name: "native_refusals_at" }]);
     // H62 part 5: step 8 makes the tables of the memory peaks and of their holders.
@@ -153,7 +158,7 @@ describe("Store", () => {
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 8 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
     again.close();
   });
 

@@ -42,6 +42,7 @@ import { availableParallelism, homedir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import {
+  belowPeakReason,
   createJob,
   createSampler,
   diskLevel,
@@ -117,7 +118,7 @@ import {
   type TcpPorts,
 } from "@headroom/core";
 import { CANCEL_USAGE, cancelCommand, NOT_STARTED, notStartedLine } from "./cancel-cli.ts";
-import { answers, connect, connectTo, isNetworkError, isRestartError, type Connection } from "./client.ts";
+import { answers, connect, connectTo, isNetworkError, isPeakFloorRefusal, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
 import { mcpCommand } from "./gateway-cli.ts";
@@ -161,12 +162,15 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g|auto] [--cpu 2|auto] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
                [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
-               [--battery-ok] [--during-drain] [--ignore-presence] [--detach] -- <command> [args...]
+               [--battery-ok] [--during-drain] [--ignore-presence] [--below-peak reason]
+               [--detach] -- <command> [args...]
                --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
                Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
                --mem auto: the peaks of the last runs. The first rung with runs gives them: this job, its key
                (kind, repository, lockfile and package), its repository, a fit on the count of packages, its kind.
                With no run: ${AUTO_DEFAULT_MB} MB, and the line says "no read". headroom report leases gives the measures.
+               The floor of a command is the peak of its last run times 1.1. A lower --mem gets a refusal (exit 75),
+               and --mem auto gives at least the floor. --below-peak "<reason>": start below the floor, and keep the reason.
                --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
                The leases do not take the last ${CPU_RESERVE_DEFAULT} cores: headroom config cpu-reserve changes them.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
@@ -787,6 +791,20 @@ async function run(argv: string[]): Promise<number> {
   }
   const log = opened?.path ?? null;
   const sink = detachedClient ? null : log;
+  // H215: the reason to start below the floor of the command. An option with no text is a mistake, so the run stops here.
+  const belowPeak = belowPeakReason(values["below-peak"]);
+  if (values["below-peak"] !== undefined && belowPeak === null) {
+    console.error('headroom: --below-peak needs a reason, for example --below-peak "a smaller input than the last run".');
+    return 2;
+  }
+  // H215: a refusal of the floor names the peak of the last run of the command. The job does not start.
+  const floorRefused = (error: Error): number => {
+    const line = `headroom: ${error.message}`;
+    console.error(line);
+    if (sink !== null) appendFileSync(sink, `${line}
+`);
+    return NOT_STARTED;
+  };
   const amounts: Record<string, number> = {};
   if (values.mem && values.mem !== "auto") amounts["memory"] = parseMemory(values.mem);
   if (values.cpu && values.cpu !== "auto") {
@@ -922,6 +940,7 @@ async function run(argv: string[]): Promise<number> {
     // H23: the status names the capped jobs. The job object of this process holds the cap.
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
     ...(key === null ? {} : { key }),
+    ...(belowPeak === null ? {} : { belowPeak }),
     // H62: a container of a compose project in this folder can count for the lease.
     folder: process.cwd(),
   };
@@ -934,9 +953,12 @@ async function run(argv: string[]): Promise<number> {
     const deferred = await connection
       .call<Lease>(["resources", "defer"], { ...withoutProcess, log, start: { args, cwd: process.cwd(), env, waitMs: parseTime(values.wait ?? RUN_WAIT_DEFAULT) } })
       .catch((error: unknown) => {
+        // H215: a refusal of the floor ends the run here. A detached client gets the same refusal, so it does not start.
+        if (isPeakFloorRefusal(error)) return error;
         appendFileSync(log, `headroom: the daemon did not take the queue of this job, so its client waits: ${error instanceof Error ? error.message : String(error)}\n`);
         return null;
       });
+    if (deferred instanceof Error) return floorRefused(deferred);
     if (deferred === null) return startDetached(log);
     const { line, code } = detachedLine(job, log, { kind: "lease", lease: deferred.id });
     console.log(line);
@@ -948,6 +970,7 @@ async function run(argv: string[]): Promise<number> {
   try {
     first = await askLease(connection);
   } catch (error) {
+    if (isPeakFloorRefusal(error)) return floorRefused(error);
     if (!isRestartError(error)) throw error;
     // The daemon can stop for a planned restart between the discovery and the request.
     const next = (await afterPlannedRestart()) ?? (adopt === undefined ? null : await adoptedDaemon(values.wait));

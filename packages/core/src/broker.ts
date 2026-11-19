@@ -58,6 +58,11 @@ export interface LeaseRequest {
    * ladder of `--mem auto` matches it. The broker does not read it. An older client sends none.
    */
   readonly key?: JobKey | null | undefined;
+  /**
+   * The reason to start below the floor of the signature of the job (H215), from `--below-peak`. Without it, a stated
+   * memory below the floor gets a refusal. The engine reads it. The broker does not read it.
+   */
+  readonly belowPeak?: string | undefined;
 }
 
 /** The exit of a job, from its holder at the release (H26). */

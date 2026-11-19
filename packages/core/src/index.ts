@@ -189,10 +189,13 @@ export {
   RUNGS,
 } from "./predict.ts";
 export type { AmountRule, JobKey, JobKind, MemoryPrediction, PackagesFit, PeakReads, Rung, RunEstimate, RunReads, RunSource, SizedPeak } from "./predict.ts";
-export { keyedLeases } from "./store.ts";
-export type { KeyedLease, KeyScope, LeaseKeyRow } from "./store.ts";
+export { keyedLeases, NO_FLOOR } from "./store.ts";
+export type { KeyedLease, KeyScope, LeaseFloor, LeaseKeyRow } from "./store.ts";
+export { BELOW_PEAK_REASON_MAX, belowPeakReason, decideFloor, floorRefusalText, PEAK_FLOOR_CODE, PEAK_FLOOR_FACTOR, peakFloor, PeakFloorError, signatureOf, signatureText } from "./peak-floor.ts";
+export type { CommandSignature, FloorDecision, MeasuredRun, PeakFloor } from "./peak-floor.ts";
 export { chooseRule, holdsGates, holdsOver, measureRows, OVER_GATE, RATIO_GATE, replayLeases } from "./replay.ts";
-export type { AmountMeasures, ChosenRule, ReplayOptions, ReplayRow, RuleResult } from "./replay.ts";
+export { replayFloor } from "./replay.ts";
+export type { AmountMeasures, ChosenRule, FloorReplay, FloorRow, ReplayOptions, ReplayRow, RuleResult } from "./replay.ts";
 export { Engine } from "./engine.ts";
 export type {
   Alerts,

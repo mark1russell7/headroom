@@ -2,7 +2,7 @@
  * The client of the daemon: it finds the daemon through its discovery file and calls its procedures.
  */
 
-import { processIsAlive } from "@headroom/core";
+import { PEAK_FLOOR_CODE, processIsAlive } from "@headroom/core";
 import { Client, HttpTransport } from "@procedures/client";
 import { readDiscovery, type Discovery } from "./paths.ts";
 
@@ -59,6 +59,11 @@ export async function answers(discovery: Discovery, timeoutMs: number = 3000): P
 /** This function tells if an error comes from a daemon that does not answer, not from the procedure. */
 export function isNetworkError(error: unknown): boolean {
   return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "NETWORK_ERROR";
+}
+
+/** This function tells if an error is a refusal of the floor of a command (H215). The floor is the peak of its last run times 1.1. */
+export function isPeakFloorRefusal(error: unknown): error is Error {
+  return error instanceof Error && (error as { code?: unknown }).code === PEAK_FLOOR_CODE;
 }
 
 const RESTART_CODES = new Set(["NETWORK_ERROR", "UNAUTHORIZED", "UNAVAILABLE", "SERVICE_UNAVAILABLE"]);

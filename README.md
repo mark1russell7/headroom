@@ -750,6 +750,7 @@ On Windows, `headroom run` puts the job into a job object:
 - A spawn-heavy job does not run beside a browser test (H47). `--spawn-heavy` and `--no-spawn-heavy` set the class of the job.
 - `--when ac,usage<80` makes the job wait for its conditions, and `--timing` makes it wait for AC power (H31). On a low battery, a heavy job waits. `--battery-ok` starts it.
 - `--mem auto` sizes the lease from the peaks of past runs (H78). It reads the runs of the same job, else of its key, its repository, a fit on the count of packages, or its kind. A job with no run of its kind gets 1 GB. See [The memory of `--mem auto`](#the-memory-of---mem-auto-h78).
+- A stated `--mem` below the floor of its command gets a refusal, and the job does not start (H215). The floor is the peak of the last run of the same command times 1.1. `--below-peak "<reason>"` starts it below the floor. See [The floor of a command](#the-floor-of-a-command-h215).
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool docker 2`. The processors are different: their count is the capacity of `cpu`, and `headroom pool cpu 8` sets a lower cap.
 
@@ -909,6 +910,25 @@ headroom: --mem auto gives 1.0 GB: no read, because no run of this job, its key 
 - the 90th percentile of the wait of the install leases, from the request to the grant
 
 It gives them for the leases as they ran, and for a walk-forward replay: each request sees only the runs that ended before it. The replay compares the rule of before H78 with the ladder, over a grid of amount rules. There are two gates. The upper end of the 95% Wilson interval of the over share is at most 5%. The sum of the requests is at most 1.5 times the sum of the peaks. The report chooses the rule with the lowest ratio that holds both gates. When no rule holds both, it chooses the rule with the lowest ratio that holds the over gate. A lease of before H78 has no key. Thus the report takes its kind from its job text, and the replay can test only the rungs `job` and `kind`.
+
+### The floor of a command (H215)
+
+On 2026-11-19, a bundle build did not get its lease of 900 MB in 8 minutes. The session asked again with 500 MB, and the job used 803 MB. A lease below the real use of its job defeats the hold of the memory, because the daemon grants memory that is not there.
+
+The signature of a command names one command in one place. It is the kind, the repository, the package filter, the warm state and the command text of its key. The client removes the absolute paths, the temp folders and the hex IDs from the command text. Thus a new job name or a new scratchpad gives the same signature. The lockfile and the count of packages are not in the signature.
+
+- The floor is the peak of the last run of the signature times 1.1, rounded up to a whole MB.
+- A stated `--mem` below the floor gets a refusal. The job does not start, and `headroom run` exits with code 75. A detached job gets the same refusal.
+- `--mem auto` gives at least the floor.
+- A request with no memory, a request with no key, and a command with no measured run have no floor.
+- `--below-peak "<reason>"` starts the job below the floor. The store keeps the floor and the reason in `lease_keys` (step 9 of the store).
+
+```text
+headroom: The lease of 500 MB is below the floor of 884 MB for this command. The last run of the same command used 803 MB at its peak (job visuals bundle of visuals, lease abcdef01, ended 2026-11-19 02:41Z). The floor is that peak times 1.1. Start it with --mem auto, or with --mem 884m or more. To start it below the floor, give the reason: --below-peak "<reason>".
+headroom: --mem auto gives 884 MB: the floor of this command, the peak of its last run (803 MB, job visuals bundle) times 1.1.
+```
+
+`headroom report leases` replays the floor over its window, with the same rule as the daemon. It gives the leases that the rule refuses, with their peak over their amount. It also gives the leases of `--mem auto` that it raises, and the leases with a reason.
 
 ## The plugin for Claude Code
 

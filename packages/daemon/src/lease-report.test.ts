@@ -95,3 +95,38 @@ describe("readLeaseReport (H78)", () => {
     expect(readLeaseReport(path, 7, START + DAY).ran.all).toMatchObject({ leases: 1, measured: 1, ratio: 512 / 400 });
   });
 });
+
+describe("The floor section of the report (H215)", () => {
+  const key = { kind: "build" as const, repo: "visuals", lock: "0123456789abcdef", filter: ".", warm: true, packages: 400, command: "pnpm -s build" };
+  /** A keyed lease of the bundle build: its request at `at`, a run of half a minute. */
+  const keyed = (id: string, at: number, memoryMb: number, peakMb: number, more: { predictedMb?: number; belowPeak?: string } = {}): KeyedLease => ({
+    ...lease(id, "visuals bundle", at, memoryMb, peakMb),
+    holder: "visuals",
+    keyed: { key, predictedMb: more.predictedMb ?? null, rung: "key", runs: 1, predictedMs: null, runFrom: null, floorMb: null, belowPeak: more.belowPeak ?? null },
+  });
+
+  it("counts the leases below the floor of the last run of the same command, and their peak over their amount", () => {
+    const leases = [
+      keyed("a", START, 900, 803),
+      // The case of H215: 500 MB after a run of 803 MB, and a peak of 790 MB.
+      keyed("b", START + 10 * MINUTE, 500, 790),
+      // At the floor of the run b: 790 × 1.1 = 869.
+      keyed("c", START + 20 * MINUTE, 869, 700),
+      // --mem auto below the floor of the run c (770): the rule raises it.
+      keyed("d", START + 30 * MINUTE, 600, 650, { predictedMb: 600 }),
+      // A reason to start below the floor of the run d (715).
+      keyed("e", START + 40 * MINUTE, 300, 280, { belowPeak: "a half input" }),
+    ];
+    const report = leaseReport(leases, 7, START + DAY);
+    expect(report.floor).toMatchObject({ leases: 5, withFloor: 4 });
+    expect(report.floor?.refused.map((row) => [row.id, row.memoryMb, row.floorMb, row.peakMb])).toEqual([["b", 500, 884, 790]]);
+    expect(report.floor?.raised.map((row) => [row.id, row.floorMb])).toEqual([["d", 770]]);
+    expect(report.floor?.below.map((row) => [row.id, row.floorMb, row.reason])).toEqual([["e", 715, "a half input"]]);
+    const lines = leaseReportLines(report);
+    expect(lines).toContain("The floor of a command (H215): the peak of its last run times 1.1. A stated amount below the floor gets a refusal.");
+    expect(lines).toContain("  5 keyed leases with a memory amount, 4 with a floor at the request.");
+    expect(lines).toContain("  The rule refuses 1. Of those with a peak, 1 of 1 used more than the amount (median peak/amount 1.58×).");
+    expect(lines).toContain("  1 lease started below the floor with a reason (--below-peak).");
+    expect(lines).toContain("  visuals bundle (visuals): 300 MB, floor 715 MB. Reason: a half input");
+  });
+});
