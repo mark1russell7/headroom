@@ -153,6 +153,7 @@ The line `Process starts` of `headroom status` gives the starts of the last 10 m
 - `headroom job <name|id>` and its JSON give `processes`: the processes that the job started so far. The lease keeps the count.
 - At its end, `headroom run` writes the count, for example `It started 9800 processes.`
 - A parent counts only when it started at or before its child. Windows gives the ID of an ended process to a new process. Thus a child with an old parent ID goes to the owner of its own part of the tree.
+- A parent with no start counts only for a child with no start (H212). The read of the starts comes before the list of the processes. A process with no start started after the read of the starts, so it is not the parent of an older process.
 
 On 2026-10-24, this computer started 1,450 processes in one minute. A read every second found only 260 of them, and a read every 10 seconds found 60.
 

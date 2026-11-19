@@ -186,6 +186,8 @@ export class OwnerRecords {
    * - While the parent of a process runs, its record follows its owner and its session, for example when the file of a new
    *   session appears. After the parent ends, the record keeps them.
    * - A record of an older version, with no parent ID, gets its parent at the next read while the parent runs.
+   * - A process in `refused` is below an orphan whose record names a false starter or session (H212). The record of the
+   *   orphan gets the owner of `ownerOf` and no session. Each record below it loses that session.
    * - A record goes to the store when its process is one minute old.
    */
   observe(
@@ -194,6 +196,7 @@ export class OwnerRecords {
     ownerOf: ReadonlyMap<number, string>,
     commandOf: (pid: number) => string | null,
     sessionOf: ReadonlyMap<number, SessionRef> = new Map(),
+    refused: ReadonlyMap<number, string | null> = new Map(),
   ): RecordChanges {
     const byPid = new Map(processes.map((info) => [info.pid, info]));
     const live = new Set<string>();
@@ -220,8 +223,10 @@ export class OwnerRecords {
         };
         this.#records.set(key, record);
         this.#stored.set(key, "absent");
-      } else if (!isOrphan(info, byPid, record)) {
-        const next: ProcessRecord = { ...record, owner, ...sessionFields(record, session), ...(record.ppid === 0 ? parentFields(info, byPid) : {}) };
+      } else if (refused.has(info.pid) || !isOrphan(info, byPid, record)) {
+        const wrong = refused.has(info.pid) && record.session === (refused.get(info.pid) ?? null);
+        const sessionPart = wrong ? { session: null, sessionId: null } : sessionFields(record, session);
+        const next: ProcessRecord = { ...record, owner, ...sessionPart, ...(record.ppid === 0 ? parentFields(info, byPid) : {}) };
         if (next.owner !== record.owner || next.session !== record.session || next.sessionId !== record.sessionId || next.ppid !== record.ppid || next.parentCreated !== record.parentCreated) {
           record = next;
           this.#records.set(key, record);

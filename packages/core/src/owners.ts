@@ -127,10 +127,16 @@ export function programName(name: string): string {
 /**
  * This function tells if a process can be the parent of another process. The parent must start at or before the child.
  * A parent that started later is a new process with the ID of the real parent, which ended (H29).
- * Without a start, the link counts.
+ *
+ * A process has no start in a read when it started after the read of the starts, or ended before it (H212). Thus a parent
+ * with no start is not the parent of a child with a start, because the child is older. Only when the two processes have no
+ * start, the link counts. On 2026-11-19, a new process of a session got the ID of the parent of `wininit.exe` between the
+ * two reads. The old rule gave the session 251 processes of Windows.
  */
 export function isParent(parent: ProcessInfo, child: ProcessInfo): boolean {
-  return parent.pid !== child.pid && (parent.startedAt === undefined || child.startedAt === undefined || parent.startedAt <= child.startedAt);
+  if (parent.pid === child.pid) return false;
+  if (parent.startedAt === undefined) return child.startedAt === undefined;
+  return child.startedAt === undefined || parent.startedAt <= child.startedAt;
 }
 
 /**
@@ -148,11 +154,23 @@ export interface ParentRecord {
 }
 
 /**
- * This function tells if a live process is the parent of a record (H182). The parent must have the ID and the start of the
- * record. When the read has no start of the live process, the function cannot compare, so the link counts.
+ * This function tells if a live process is the parent of a record with the start of its parent (H182). The parent must have
+ * the ID and the start of the record. A live process with no start is a new process (H212). The recorded parent ran at the
+ * first read with a start, so it has a start in each read while it runs.
  */
 function isRecordedParent(parent: ProcessInfo, record: ParentRecord): boolean {
-  return parent.pid === record.ppid && (parent.startedAt === undefined || Math.round(parent.startedAt) === record.parentCreated);
+  return parent.pid === record.ppid && parent.startedAt !== undefined && Math.round(parent.startedAt) === record.parentCreated;
+}
+
+/**
+ * This function tells if a record shows an orphan at its first read (H212). The record has a start, a parent ID and the
+ * parent start 0. A record with a start gets the start of its parent at its first read when the parent counts. A parent with
+ * no start does not count for a child with a start (`isParent()`). Thus no session, server or service was above the process
+ * in a read, and a true record names no starter and no session. A record with no start gives `false`, because the reads
+ * have no starts to compare.
+ */
+export function orphanAtFirstRead(record: Partial<ParentRecord> & { readonly created?: number | undefined }): boolean {
+  return (record.created ?? 0) > 0 && (record.ppid ?? 0) > 0 && record.parentCreated === 0;
 }
 
 /**
@@ -251,6 +269,8 @@ export interface KeptOwner extends Partial<ParentRecord> {
   readonly session?: string | null | undefined;
   /** The ID of that session (H182), or `null`. */
   readonly sessionId?: string | null | undefined;
+  /** The start of the process (H212), in ms since the epoch, rounded, or 0 when the read had no start. */
+  readonly created?: number | undefined;
 }
 
 /** This function gives the parent facts of a kept record (H182), or `undefined` when the record has none. */
@@ -284,6 +304,12 @@ export interface Attribution {
    * orphan from its kept record. A process with no session is absent.
    */
   readonly sessionOf: ReadonlyMap<number, SessionRef>;
+  /**
+   * The processes below an orphan whose record names a false starter or a false session (H212), by process ID. The value
+   * is the session of that record, or `null`. `OwnerRecords.observe()` writes the plain owner into the record of the
+   * orphan, and removes that session from the records below it.
+   */
+  readonly refused: ReadonlyMap<number, string | null>;
 }
 
 /** The longest title that becomes the name of a service. */
@@ -392,6 +418,7 @@ export function attribute(
 
   const ownerOf = new Map<number, string>();
   const sessionOf = new Map<number, SessionRef>();
+  const refused = new Map<number, string | null>();
   const kindOf = new Map<string, OwnerKind>();
   for (const info of processes) {
     let owner: { name: string; kind: OwnerKind } | null = null;
@@ -424,7 +451,12 @@ export function attribute(
       // H48: an orphan keeps the owner of its record. The kind is `other`, because no live session or server holds it.
       // H185: only an owner that started the tree (a session, an MCP server or a service) wins over the rules.
       const record = kept.get(processKey(top));
-      const orphan = record !== undefined && isOrphan(top, byPid, parentRecordOf(record)) ? record : undefined;
+      const found = record !== undefined && isOrphan(top, byPid, parentRecordOf(record)) ? record : undefined;
+      // H212: the record of an orphan since its first read names no starter and no session. A record that names one got
+      // it from a false parent, so the tree takes its plain owner, with no session.
+      const wrong = found !== undefined && orphanAtFirstRead(found) && (isStarter(found.owner) || typeof found.session === "string");
+      if (wrong) refused.set(info.pid, found.session ?? null);
+      const orphan = wrong ? undefined : found;
       const remembered = orphan?.owner;
       owner = remembered !== undefined && isStarter(remembered) && remembered !== plain.name ? { name: `${remembered}${ORPHAN_LABEL}`, kind: "other" } : plain;
       // H182: an orphan also keeps the session of its record.
@@ -447,7 +479,7 @@ export function attribute(
   const owners: OwnerUsage[] = [...sums].map(([owner, sum]) => ({ owner, kind: kindOf.get(owner) ?? "other", ...round(sum) }));
   if (memory) owners.push(...kernelOwners(memory));
   owners.sort((a, b) => b.privateMb - a.privateMb);
-  return { owners, ownerOf, sessionOf };
+  return { owners, ownerOf, sessionOf, refused };
 }
 
 function round(sum: { privateMb: number; workingMb: number; processes: number }): { privateMb: number; workingMb: number; processes: number } {

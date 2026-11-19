@@ -39,9 +39,68 @@ class FakeStore {
 /** One read of the engine: the attribution with the records, then the records of the read. */
 function read(records: OwnerRecords, store: FakeStore, now: number, processes: readonly ProcessInfo[], live: readonly SessionInfo[] = sessions, lines = commandOf) {
   const attribution = attribute(processes, live, undefined, undefined, undefined, records.byKey());
-  store.saveProcessOwners(records.observe(now, processes, attribution.ownerOf, lines, attribution.sessionOf));
+  store.saveProcessOwners(records.observe(now, processes, attribution.ownerOf, lines, attribution.sessionOf, attribution.refused));
   return attribution;
 }
+
+describe("the heal of a false record (H212)", () => {
+  it("gives the plain owner and no session to an orphan whose record names a starter since its first read, and to the tree below it", () => {
+    const boot = T0 - 12 * 60 * MIN;
+    // The tree of wininit.exe: its parent 1604 ended at the boot, before the first read.
+    const windows = [
+      p(1832, 1604, "wininit.exe", boot),
+      p(1900, 1832, "services.exe", boot + 1000),
+      p(2200, 1900, "svchost.exe", boot + 2000),
+      p(2300, 1900, "svchost.exe", T0 - 30 * MIN),
+      p(1616, 1604, "csrss.exe", boot),
+    ];
+    // The records that one false read wrote: the session of the new process 1604, for each process of the tree.
+    const wrong = (info: ProcessInfo, parentCreated: number): ProcessRecord => ({
+      pid: info.pid, created: info.startedAt ?? 0, ppid: info.ppid, parentCreated, owner: "session:harbor-crane tools", session: "harbor-crane tools", sessionId: "s1", command: null, firstSeen: boot,
+    });
+    const [wininit, services, svchost, young, csrss] = windows as [ProcessInfo, ProcessInfo, ProcessInfo, ProcessInfo, ProcessInfo];
+    const records = new OwnerRecords();
+    const store = new FakeStore();
+    records.restore([
+      wrong(wininit, 0),
+      wrong(services, boot),
+      wrong(svchost, boot + 1000),
+      wrong(young, boot + 1000),
+      // An orphan since its first read with its plain owner: nothing to heal.
+      { ...wrong(csrss, 0), owner: "other", session: null, sessionId: null },
+    ]);
+    const processes = [...tree, ...windows];
+    const first = read(records, store, T0, processes);
+    expect(windows.map((info) => first.ownerOf.get(info.pid))).toEqual(["other", "other", "system", "system", "other"]);
+    expect(first.owners.some((owner) => owner.owner.endsWith(" (orphan)"))).toBe(false);
+    expect([...first.refused]).toEqual([1832, 1900, 2200, 2300].map((pid) => [pid, "harbor-crane tools"]));
+    expect(windows.map((info) => records.get(info))).toMatchObject([
+      { owner: "other", session: null, sessionId: null, ppid: 1604, parentCreated: 0 },
+      { owner: "other", session: null, sessionId: null },
+      { owner: "system", session: null, sessionId: null },
+      { owner: "system", session: null, sessionId: null },
+      { owner: "other", session: null, sessionId: null },
+    ]);
+    expect([wininit, services, svchost, young].map((info) => store.rows.has(`${info.pid}:${info.startedAt}`))).toEqual([true, true, true, true]);
+    expect(store.rows.has(`1616:${boot}`)).toBe(false);
+    // The next read has nothing to heal, and the session tree keeps its owner.
+    const second = read(records, store, T0 + 10_000, processes);
+    expect(second.refused.size).toBe(0);
+    expect(second.ownerOf.get(13)).toBe("session:harbor-crane tools");
+    expect(records.get(wininit)).toMatchObject({ owner: "other", session: null });
+  });
+
+  it("keeps the starter of an orphan whose record has the start of its parent (H185)", () => {
+    const records = new OwnerRecords();
+    const store = new FakeStore();
+    read(records, store, T0, tree);
+    const orphan = read(records, store, T0 + 10_000, withoutShell);
+    expect(orphan.ownerOf.get(13)).toBe("session:harbor-crane tools (orphan)");
+    expect(orphan.refused.size).toBe(0);
+    expect(records.get(tree[3] as ProcessInfo)).toMatchObject({ session: "harbor-crane tools", sessionId: "s1" });
+  });
+});
+
 
 describe("shortCommand (H48)", () => {
   it("gives the name of the program with no folder and no .exe, then the arguments, with no cut at 200 characters (H182)", () => {
@@ -262,9 +321,10 @@ describe("the process table proves ownership (H182)", () => {
     expect(sessionOf.get(13)).toEqual({ name: "harbor-crane tools", id: "s1" });
     // The new process with the ID 12 is not an orphan: its own parent runs.
     expect(isOrphan(node, byPidOf(after), records.get(node))).toBe(false);
-    // A process with the ID of the parent and no start in the read is not a proof: the parent is not proven gone.
+    // A process with the ID of the parent and no start in the read is a new process (H212). It started after the read of
+    // the starts, and the recorded parent has a start in each read while it runs. Thus the parent is gone.
     const unread: ProcessInfo = { pid: 12, ppid: 11, name: "bash.exe", privateMb: 1, workingMb: 1 };
-    expect(isOrphan(find, byPidOf([...before.slice(0, 2), unread, find]), records.get(find))).toBe(false);
+    expect(isOrphan(find, byPidOf([...before.slice(0, 2), unread, find]), records.get(find))).toBe(true);
   });
 
   it("reads a reused parent ID as gone for a child with a start, and a new parent ID of Linux as gone", () => {
