@@ -68,6 +68,34 @@ describe("attribute", () => {
     expect([...(childrenOf(tree).get(11) ?? [])].map((info) => info.pid)).toEqual([12, 64]);
   });
 
+  it("follows no parent with no start from a child with a start, so a new process between the two reads does not decide the owner (H212)", () => {
+    const at = (info: ProcessInfo, startedAt: number): ProcessInfo => ({ ...info, startedAt });
+    // The case of 2026-11-19: the sampler reads the starts, then the list. The parent of wininit.exe and csrss.exe ended at
+    // the boot. A new process of the session ci got its ID between the two reads, so the read has no start of it.
+    const sessions = [{ pid: 25976, name: "ci", sessionId: "s1", status: "busy", cwd: null }];
+    const tree = [
+      at(p(4, 0, "System", 0), 0),
+      at(p(25976, 4, "claude.exe", 900), 5_000),
+      p(1604, 25976, "node.exe", 30),
+      at(p(1832, 1604, "wininit.exe", 2), 1_000),
+      at(p(1616, 1604, "csrss.exe", 3), 1_000),
+      at(p(1900, 1832, "services.exe", 10), 1_001),
+      at(p(2200, 1900, "svchost.exe", 4000), 1_002),
+      p(1700, 1604, "conhost.exe", 1),
+    ];
+    const { owners, ownerOf } = attribute(tree, sessions);
+    expect(ownerOf.get(1604)).toBe("session:ci");
+    expect([1832, 1616, 1900, 2200].map((pid) => ownerOf.get(pid))).toEqual(["other", "other", "other", "system"]);
+    // Two processes with no start: the link counts, because the reads cannot compare them.
+    expect(ownerOf.get(1700)).toBe("session:ci");
+    expect(isParent(tree[2] as ProcessInfo, tree[3] as ProcessInfo)).toBe(false);
+    expect(isParent(tree[2] as ProcessInfo, tree[7] as ProcessInfo)).toBe(true);
+    expect(isParent(tree[1] as ProcessInfo, tree[2] as ProcessInfo)).toBe(true);
+    expect(owners.find((owner) => owner.owner === "session:ci")).toMatchObject({ privateMb: 931, processes: 3 });
+    expect(owners.find((owner) => owner.owner === "system")).toMatchObject({ privateMb: 4000, processes: 2 });
+  });
+
+
   it("gives no owner from a session file whose ID is in use by another process (H205)", () => {
     const at = (info: ProcessInfo, startedAt: number): ProcessInfo => ({ ...info, startedAt });
     // The case of 2026-11-18: the file of the session systems survived a bugcheck. After the boot, the main process of

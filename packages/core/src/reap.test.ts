@@ -622,4 +622,43 @@ describe("Engine reap (H183)", () => {
     engine.tick();
     expect(engine.alerts().active.some((each) => each.kind === "reap")).toBe(false);
   });
+
+  it("gives no session to the tree of wininit.exe below a new process with no start, and stops none of it (H212)", () => {
+    // The case of 2026-11-19: the parent of wininit.exe ended at the boot. A new process of the session otter got its ID
+    // between the read of the starts and the read of the list, so the read has no start of it.
+    const boot = T0 - 10 * HOUR;
+    const reused: ProcessInfo = { pid: 1604, ppid: 110, name: "node.exe", privateMb: 10, workingMb: 10 };
+    const windows = [node(1832, 1604, "wininit.exe", boot), node(1900, 1832, "services.exe", boot + 1000), node(2200, 1900, "svchost.exe", boot + 2000, 900)];
+    extra = [reused, ...windows];
+    restart();
+    expect(engine.status().owners.find((each) => each.owner === "session:otter")).toMatchObject({ processes: 2 });
+    // The new process ends. The tree of wininit.exe is an orphan with its plain owner.
+    extra = windows;
+    now += 10_000;
+    engine.tick();
+    expect(engine.status().owners.some((each) => each.owner === "session:otter (orphan)")).toBe(false);
+    expect(engine.reap(1832, OTTER)).toMatchObject({ outcome: "needs-owner" });
+    expect(stops).toEqual([]);
+  });
+
+  it("heals the false records of the tree of wininit.exe at the first read, so the session of the records stops none of it (H212)", () => {
+    const boot = T0 - 10 * HOUR;
+    extra = [node(1832, 1604, "wininit.exe", boot), node(1900, 1832, "services.exe", boot + 1000), node(2200, 1900, "svchost.exe", boot + 2000, 900)];
+    // The records that the false read wrote: the session otter for each process of the tree.
+    const wrong = (pid: number, created: number, ppid: number, parentCreated: number): ProcessRecord => ({
+      pid, created, ppid, parentCreated, owner: "session:otter", session: "otter", sessionId: "9a2d-otter", command: null, firstSeen: boot,
+    });
+    const store = new Store(":memory:");
+    store.saveProcessOwners({ save: [wrong(1832, boot, 1604, 0), wrong(1900, boot + 1000, 1832, boot), wrong(2200, boot + 2000, 1900, boot + 1000)], ended: [] });
+    restart(undefined, undefined, store);
+    expect(engine.status().owners.some((each) => each.owner === "session:otter (orphan)")).toBe(false);
+    const rows = store.processOwners().filter((row) => [1832, 1900, 2200].includes(row.pid)).sort((a, b) => a.pid - b.pid);
+    expect(rows.map(({ pid, owner, session, sessionId }) => ({ pid, owner, session, sessionId }))).toEqual([
+      { pid: 1832, owner: "other", session: null, sessionId: null },
+      { pid: 1900, owner: "other", session: null, sessionId: null },
+      { pid: 2200, owner: "system", session: null, sessionId: null },
+    ]);
+    expect(engine.reap(1832, OTTER)).toMatchObject({ outcome: "needs-owner" });
+    expect(stops).toEqual([]);
+  });
 });

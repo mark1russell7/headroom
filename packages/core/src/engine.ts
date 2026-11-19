@@ -969,10 +969,10 @@ export class Engine {
       this.#rememberSessions();
       // H48: an orphan gets the owner of its record, with the label `(orphan)`.
       // H182: the records also keep the parent, its start and the session of each process.
-      const { owners, ownerOf, sessionOf } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
+      const { owners, ownerOf, sessionOf, refused } = attribute(this.#processes, this.#sessions, this.#memory, undefined, this.#servers(), this.#records.byKey());
       // H186: a record keeps the command line with a mark in place of each secret. The redaction comes before the cut of a
       // long line, so a cut cannot keep a part of a secret.
-      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#commandLine(pid), sessionOf));
+      this.#store.saveProcessOwners(this.#records.observe(now, this.#processes, ownerOf, (pid) => this.#commandLine(pid), sessionOf, refused));
       this.#handles.read(now, this.#processes);
       // H183: the shadow log of the automatic reap rule. No rule stops a process in this version.
       const shadow = this.#shadow.sample(now, this.#processes, (info) => this.#records.get(info), (pid) => this.#sampler.stdoutKind?.(pid) ?? "unknown");
