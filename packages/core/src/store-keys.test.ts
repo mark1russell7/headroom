@@ -79,7 +79,7 @@ describe("Store lease keys (H78)", () => {
       ended(store, id, job, peak, 1000 * (at + 1));
       if (each !== null) store.saveLeaseKey(id, each, MEMORY, RUN);
     });
-    expect(store.leaseKeyRow("a")).toEqual({ key: key(), predictedMb: 512, rung: "kind", runs: 3, predictedMs: 30_000, runFrom: "all" });
+    expect(store.leaseKeyRow("a")).toEqual({ key: key(), predictedMb: 512, rung: "kind", runs: 3, predictedMs: 30_000, runFrom: "all", floorMb: null, belowPeak: null });
     expect(store.leaseKey("e")).toBeNull();
     expect(store.keyedPeaks(key(), "key")).toEqual([400]);
     expect(store.keyedPeaks(key(), "repo")).toEqual([600, 400]);

@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { BELOW_PEAK_REASON_MAX, DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -66,6 +66,12 @@ const LeaseInput = z.object({
     .max(4000)
     .optional()
     .describe("The full path of the folder of the job (H62). A container of a compose project in this folder can count for the lease."),
+  belowPeak: z
+    .string()
+    .min(1)
+    .max(BELOW_PEAK_REASON_MAX)
+    .optional()
+    .describe("The reason to start below the floor of the command (H215): the peak of its last run times 1.1. Without it, a lease below the floor gets a refusal."),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -428,6 +434,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         cpuCap: input.cpuCap,
         key: input.key,
         folder: input.folder,
+        belowPeak: input.belowPeak,
       }),
     )
     .build() as AnyProcedure;

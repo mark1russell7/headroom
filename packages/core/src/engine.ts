@@ -108,12 +108,13 @@ import {
   type ResumePlanFile,
   type WindowsReboot,
 } from "./reboot.ts";
+import { decideFloor, peakFloor, PeakFloorError, type PeakFloor } from "./peak-floor.ts";
 import { redactCommand, redactKey } from "./redact.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
 import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
-import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type NativeRefusalCount, type NativeRefusalEntry, type NativeRefusalInput, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store, type StoreSyncs } from "./store.ts";
+import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type NativeRefusalCount, type NativeRefusalEntry, type NativeRefusalInput, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store, type StoreSyncs, type LeaseFloor } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { readLeaseEnd, sweepLeaseEnds } from "./ends.ts";
 import { heatOwners, ThermalTracker, type ThermalRead, type ThermalStatus } from "./thermal.ts";
@@ -365,7 +366,8 @@ export interface ConfigChange {
 function redactRequest(request: LeaseRequest): LeaseRequest {
   const job = redactCommand(request.job);
   const key = request.key === undefined || request.key === null ? request.key : redactKey(request.key);
-  return job === request.job && key === request.key ? request : { ...request, job, key };
+  const belowPeak = request.belowPeak === undefined ? undefined : redactCommand(request.belowPeak);
+  return job === request.job && key === request.key && belowPeak === request.belowPeak ? request : { ...request, job, key, belowPeak };
 }
 
 /** This function gives the presence rules from the settings (H33). */
@@ -395,6 +397,11 @@ export interface Suggestion {
   readonly peakMb: number | null;
   /** The rung of the ladder that gave the amount (H78). A daemon of an older version gives none. */
   readonly rung?: Rung | undefined;
+  /**
+   * The floor of the signature of the job (H215), when the last run of the same command has a peak. `memoryMb` is at
+   * least `floor.floorMb`. A daemon of an older version gives none.
+   */
+  readonly floor?: PeakFloor | undefined;
   /** The cores of `--cpu auto` (H23), or `null` when no run of the job has peak cores. */
   readonly cores: number | null;
   /** The number of runs that the cores use. */
@@ -1064,14 +1071,21 @@ export class Engine {
    * A request with a key writes the key and the predictions of its lease to the store (H78). First, the name of the job
    * and the command of the key get a mark in place of each secret (H186). Thus the lease, the store and each later read
    * hold only the redacted text.
+   *
+   * H215: a request with a key and a stated memory below the floor of its signature gets a `PeakFloorError`, and no lease.
+   * The floor is the peak of the last run of the same command times 1.1. With a reason (`belowPeak`), the lease starts,
+   * and the key row keeps the reason.
    */
   request(input: LeaseRequest): Lease {
     const request = redactRequest(input);
+    const key = request.key === undefined || request.key === null ? null : request.key;
+    const decision = decideFloor(request.amounts["memory"], key === null ? null : this.floorOf(key), request.belowPeak);
+    if (decision.kind === "refuse") throw new PeakFloorError(decision.statedMb, decision.floor);
     this.#readPresence(this.#clock());
     const lease = this.#broker.request(request, this.spawnClass(request.job, request.holder, request.spawnHeavy));
     this.#persist([lease]);
     // H78: the key and the predictions of the lease come before the first tick, so its expected run time uses the key.
-    if (request.key !== undefined && request.key !== null) this.#saveKey(lease, request.key);
+    if (key !== null) this.#saveKey(lease, key, { floorMb: decision.floor?.floorMb ?? null, belowPeak: decision.kind === "below" ? decision.reason : null });
     this.#persist(this.#broker.tick(this.capacity()));
     return this.#broker.get(lease.id) ?? lease;
   }
@@ -1105,7 +1119,10 @@ export class Engine {
     const cores = suggestCores(corePeaks, this.#leasableCores());
     const cpu = { cores, coreRuns: cores === null ? 0 : corePeaks.length, peakCores: cores === null ? null : Math.max(...corePeaks) };
     const memory = this.predictMemory(job, holder, key);
-    return { memoryMb: memory.mb, runs: memory.runs, peakMb: memory.peakMb, rung: memory.rung, ...cpu };
+    // H215: the amount of --mem auto is at least the floor of the signature, so the lease of --mem auto passes the floor.
+    const floor = key === null ? null : this.floorOf(key);
+    const memoryMb = floor === null || (memory.mb !== null && memory.mb >= floor.floorMb) ? memory.mb : floor.floorMb;
+    return { memoryMb, runs: memory.runs, peakMb: memory.peakMb, rung: memory.rung, ...cpu, ...(floor === null ? {} : { floor }) };
   }
 
   /** This function gives the memory prediction of a job from the ladder of H78, with the reads of the store. */
@@ -1189,11 +1206,20 @@ export class Engine {
    * This function writes the key of a new lease and the predictions at its request (H78): the memory and the run time.
    * `headroom report leases` compares them with the peak and the run time at the end.
    */
-  #saveKey(lease: Lease, key: JobKey): void {
+  #saveKey(lease: Lease, key: JobKey, floor: LeaseFloor): void {
     const memory = this.predictMemory(lease.job, lease.holder, key);
     const run = this.runEstimate(lease.job, lease.holder, lease.amounts, key);
-    this.#store.saveLeaseKey(lease.id, key, memory, run);
+    this.#store.saveLeaseKey(lease.id, key, memory, run, floor);
     this.#rememberKey(lease.id, key);
+  }
+
+  /**
+   * This function gives the floor of the signature of a key (H215). The floor is the peak of the last run of the same
+   * command times 1.1, rounded up. It gives `null` when no run of the signature has a peak. The store has the redacted key (H186), so
+   * the read redacts the key first.
+   */
+  floorOf(rawKey: JobKey): PeakFloor | null {
+    return peakFloor(this.#store.lastCommandRun(redactKey(rawKey)));
   }
 
   /** This function gives the command line of a process with a mark in place of each secret (H186), or `null` with no read. */

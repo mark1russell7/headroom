@@ -11,6 +11,7 @@
 
 import { quantile, wilson } from "@mark1russell7/rigor-statistics";
 import { FIT_RUNS, KIND_RUNS, PEAK_RUNS, predictMemory, type AmountRule, type JobKey, type JobKind, type Rung, type SizedPeak } from "./predict.ts";
+import { PEAK_FLOOR_FACTOR, peakFloor, signatureText, type MeasuredRun } from "./peak-floor.ts";
 import type { KeyedLease } from "./store.ts";
 
 /** The gate of the share of the runs with a peak over their request. The upper end of its 95% Wilson interval must hold it. */
@@ -213,4 +214,77 @@ export function chooseRule(results: readonly RuleResult[]): ChosenRule | null {
   if (both !== undefined) return { ...both, holds: "both" };
   const over = lowest(results.filter((result) => holdsOver(result.measures)));
   return over === undefined ? null : { ...over, holds: "over" };
+}
+
+/** One lease of the replay of the floor (H215): its amount, the floor at its request and its peak. */
+export interface FloorRow {
+  readonly id: string;
+  readonly job: string;
+  readonly holder: string;
+  /** The memory of the lease in MB. */
+  readonly memoryMb: number;
+  /** The floor of its signature at its request in MB. */
+  readonly floorMb: number;
+  /** The peak of the lease in MB, or `null` with no peak. */
+  readonly peakMb: number | null;
+  /** True when the amount is the prediction of `--mem auto` at the request. */
+  readonly auto: boolean;
+  /** The reason of a lease that started below the floor (`--below-peak`), or `null`. */
+  readonly reason: string | null;
+}
+
+/** The result of the replay of the floor over a window (H215). */
+export interface FloorReplay {
+  /** The count of the keyed leases of the window with a memory amount. */
+  readonly leases: number;
+  /** The count of those leases with a floor at the request: an earlier run of the same command has a peak. */
+  readonly withFloor: number;
+  /** The leases with a stated amount below the floor. The rule refuses them. */
+  readonly refused: readonly FloorRow[];
+  /** The leases of `--mem auto` below the floor. The rule raises their amount to the floor. */
+  readonly raised: readonly FloorRow[];
+  /** The leases that started below the floor with a reason (`--below-peak`). */
+  readonly below: readonly FloorRow[];
+}
+
+/**
+ * This function replays the floor of H215 over the leases of a window. The leases are in the order of their requests, as
+ * `keyedLeases` gives them. For each keyed lease with a memory amount, the floor comes from the last run of its signature
+ * that ended before its request. A lease is `auto` when its amount is the prediction of the ladder at its request. The
+ * store does not keep the option of the run, so this is the closest read.
+ */
+export function replayFloor(leases: readonly KeyedLease[], since: number, factor: number = PEAK_FLOOR_FACTOR): FloorReplay {
+  const ended = leases.filter((lease) => lease.peakMb !== null && lease.endedAt !== null && lease.keyed !== null).sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
+  const last = new Map<string, MeasuredRun>();
+  let next = 0;
+  let count = 0;
+  let withFloor = 0;
+  const refused: FloorRow[] = [];
+  const raised: FloorRow[] = [];
+  const below: FloorRow[] = [];
+  for (const lease of leases) {
+    while (next < ended.length && (ended[next]?.endedAt ?? 0) < lease.requestedAt) {
+      const run = ended[next++] as KeyedLease;
+      if (run.keyed === null) continue;
+      last.set(signatureText(run.keyed.key), { id: run.id, job: run.job, holder: run.holder, peakMb: run.peakMb ?? 0, endedAt: run.endedAt ?? 0 });
+    }
+    if (lease.requestedAt < since || lease.keyed === null || lease.memoryMb === null) continue;
+    count += 1;
+    const floor = peakFloor(last.get(signatureText(lease.keyed.key)) ?? null, factor);
+    if (floor === null) continue;
+    withFloor += 1;
+    const row: FloorRow = {
+      id: lease.id,
+      job: lease.job,
+      holder: lease.holder,
+      memoryMb: lease.memoryMb,
+      floorMb: floor.floorMb,
+      peakMb: lease.peakMb,
+      auto: lease.keyed.predictedMb !== null && lease.keyed.predictedMb === lease.memoryMb,
+      reason: lease.keyed.belowPeak,
+    };
+    if (lease.keyed.belowPeak !== null) below.push(row);
+    else if (lease.memoryMb < floor.floorMb) (row.auto ? raised : refused).push(row);
+  }
+  return { leases: count, withFloor, refused, raised, below };
 }

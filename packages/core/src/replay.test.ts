@@ -8,7 +8,7 @@ function lease(id: string, job: string, at: number, peakMb: number, kind: JobKey
   const keyed =
     kind === null
       ? null
-      : { key: { kind, repo: "shop", lock: null, filter: ".", warm: true, packages: null, command: job }, predictedMb: null, rung: "none" as const, runs: 0, predictedMs: null, runFrom: null };
+      : { key: { kind, repo: "shop", lock: null, filter: ".", warm: true, packages: null, command: job }, predictedMb: null, rung: "none" as const, runs: 0, predictedMs: null, runFrom: null, floorMb: null, belowPeak: null };
   return { id, holder, job, state: "released", memoryMb: 512, peakMb, requestedAt: at, grantedAt: at, endedAt: at + 1000, exitCode: 0, keyed };
 }
 

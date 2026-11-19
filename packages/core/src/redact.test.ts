@@ -169,7 +169,7 @@ describe("the secrets of a command line never reach the store (H186)", () => {
     }
   });
 
-  it("redacts each column of the schema with the name command or job", () => {
+  it("redacts each column of the schema with the name command or job, and the reason of a lease below its floor", () => {
     const dir = mkdtempSync(join(tmpdir(), "headroom-redact-"));
     try {
       const path = join(dir, "headroom.db");
@@ -179,7 +179,8 @@ describe("the secrets of a command line never reach the store (H186)", () => {
         .prepare("SELECT m.name AS tableName, c.name AS columnName FROM sqlite_master m JOIN pragma_table_info(m.name) c WHERE m.type = 'table'")
         .all() as { tableName: string; columnName: string }[];
       db.close();
-      const named = columns.filter((each) => /command|^job$/.test(each.columnName)).map((each) => `${each.tableName}.${each.columnName}`);
+      // H215: the reason of `--below-peak` is free text from the caller, so it gets the marks of a command line.
+      const named = columns.filter((each) => /command|^job$|^below_peak$/.test(each.columnName)).map((each) => `${each.tableName}.${each.columnName}`);
       expect(named.sort()).toEqual(COMMAND_COLUMNS.map(([table, column]) => `${table}.${column}`).sort());
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -230,6 +230,15 @@ describe("memoryAutoLine (H78)", () => {
     );
   });
 
+  it("names the floor of the command when the floor gives the amount (H215)", () => {
+    const floor = { floorMb: 884, run: { id: "abcdef01", job: "visuals bundle", holder: "visuals", peakMb: 803, endedAt: 0 } };
+    expect(memoryAutoLine({ memoryMb: 884, runs: 9, peakMb: 803, rung: "key", floor }, key, 1024, mb)).toBe(
+      "headroom: --mem auto gives 884 MB: the floor of this command, the peak of its last run (803 MB, job visuals bundle) times 1.1.",
+    );
+    // The ladder gives more than the floor: the line names the rung.
+    expect(memoryAutoLine({ memoryMb: 1011, runs: 1, peakMb: 803, rung: "key", floor }, key, 1024, mb)).toContain("at the rung key");
+  });
+
   it("gives the rung job for a daemon before H78, which sends no rung", () => {
     expect(memoryAutoLine({ memoryMb: 1152, runs: 1, peakMb: 900 } as never, null, 1024, mb)).toBe(
       "headroom: --mem auto gives 1152 MB, at the rung job: the peaks of 1 run of this job (the highest 900 MB).",

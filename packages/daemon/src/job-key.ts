@@ -418,11 +418,16 @@ const RUNG_WORDS = {
  * This function gives the line of `--mem auto` (H78). It names the rung and the count of runs. At the rung `none`, the
  * line says "no read", because the amount is the default and no run measured it. A daemon before H78 gives no rung.
  */
-export function memoryAutoLine(suggestion: Pick<Suggestion, "memoryMb" | "runs" | "peakMb" | "rung"> | null, key: JobKey | null, defaultMb: number, mb: (value: number) => string): string {
+export function memoryAutoLine(suggestion: Pick<Suggestion, "memoryMb" | "runs" | "peakMb" | "rung" | "floor"> | null, key: JobKey | null, defaultMb: number, mb: (value: number) => string): string {
   const runs = (count: number): string => `${count} ${count === 1 ? "run" : "runs"}`;
   if (suggestion === null || suggestion.memoryMb === null || suggestion.memoryMb === undefined) {
     const what = key === null ? "this job" : `this job, its key or its kind (${key.kind})`;
     return `headroom: --mem auto gives ${mb(defaultMb)}: no read, because no run of ${what} has a peak yet.`;
+  }
+  // H215: the floor of the command gives the amount when the ladder gives less.
+  const floor = suggestion.floor;
+  if (floor !== undefined && suggestion.memoryMb === floor.floorMb) {
+    return `headroom: --mem auto gives ${mb(floor.floorMb)}: the floor of this command, the peak of its last run (${mb(floor.run.peakMb)}, job ${floor.run.job}) times 1.1.`;
   }
   const rung = suggestion.rung ?? "job";
   const words = rung === "none" ? RUNG_WORDS.job : rung === "kind" && key !== null ? `of the kind ${key.kind}` : RUNG_WORDS[rung];

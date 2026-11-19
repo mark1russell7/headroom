@@ -30,6 +30,7 @@ export const RUN_OPTIONS = {
   detach: { type: "boolean" },
   "detached-client": { type: "boolean" },
   adopt: { type: "string" },
+  "below-peak": { type: "string" },
 } as const;
 
 /** The longest wait of `headroom run` for its grant when the run gives no `--wait`. */

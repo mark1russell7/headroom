@@ -28,10 +28,13 @@ import {
   LEGACY_RULE,
   measureRows,
   PEAK_RULE,
+  replayFloor,
   replayLeases,
   RUNGS,
   type AmountMeasures,
   type AmountRule,
+  type FloorReplay,
+  type FloorRow,
   type JobKey,
   type JobKind,
   type KeyedLease,
@@ -91,6 +94,12 @@ export interface LeaseReport {
   readonly byKind: Readonly<Record<string, AmountMeasures>>;
   /** Each rule of the grid on the ladder. */
   readonly grid: readonly ReplaySide[];
+  /**
+   * The walk-forward replay of the floor of H215 over the window. It has the leases with a stated amount below the floor,
+   * and the leases that started below the floor with a reason. A report of an older
+   * version has none.
+   */
+  readonly floor?: FloorReplay | undefined;
 }
 
 /** This function gives the name of an amount rule, for example `p90×1.2+64MB floor128`. */
@@ -198,6 +207,7 @@ export function leaseReport(leases: readonly KeyedLease[], days: number, until: 
     byRung: measuresBy(current.rows, (row) => row.rung, RUNGS),
     byKind: measuresBy(current.rows, (row) => row.kind ?? "other", JOB_KINDS),
     grid,
+    floor: replayFloor(history, since),
   };
 }
 
@@ -312,8 +322,42 @@ export function leaseReportLines(report: LeaseReport): string[] {
       : report.chosen.holds === "both"
         ? `  Of the rules that hold both gates, ${report.chosen.name} has the lowest request/peak sum.`
         : `  No rule of the grid holds both gates. Of the rules that hold the over gate, ${report.chosen.name} has the lowest request/peak sum.`,
+    ...(report.floor === undefined ? [] : floorLines(report.floor)),
   ];
   return lines;
+}
+
+/** The most rows of each list of the floor section. */
+const FLOOR_ROWS = 10;
+
+/** This function gives the cells of a row of the floor section. */
+function floorCells(row: FloorRow): string[] {
+  const peak = row.peakMb === null ? "no read" : String(Math.round(row.peakMb));
+  return [`${row.job.slice(0, 60)} (${row.holder.slice(0, 20)})`, String(Math.round(row.memoryMb)), String(row.floorMb), peak, times(row.peakMb === null ? null : row.peakMb / row.memoryMb)];
+}
+
+/**
+ * This function gives the floor section of the report (H215). The ratio of a lease is its peak over its amount. A ratio
+ * above 1 is a lease that used more than it held.
+ */
+export function floorLines(floor: FloorReplay): string[] {
+  const ratios = floor.refused.flatMap((row) => (row.peakMb === null ? [] : [row.peakMb / row.memoryMb]));
+  const over = ratios.filter((ratio) => ratio > 1).length;
+  const median = ratios.length === 0 ? null : quantile(ratios, 0.5);
+  const header = ["job (holder)", "amount MB", "floor MB", "peak MB", "peak/amount"];
+  const list = (rows: readonly FloorRow[]): string[] =>
+    rows.length === 0 ? [] : [...table(header, rows.slice(-FLOOR_ROWS).map(floorCells)), ...(rows.length > FLOOR_ROWS ? [`  (the last ${FLOOR_ROWS} of ${rows.length})`] : [])];
+  return [
+    "",
+    "The floor of a command (H215): the peak of its last run times 1.1. A stated amount below the floor gets a refusal.",
+    `  ${floor.leases} keyed ${floor.leases === 1 ? "lease" : "leases"} with a memory amount, ${floor.withFloor} with a floor at the request.`,
+    `  The rule refuses ${floor.refused.length}. Of those with a peak, ${over} of ${ratios.length} used more than the amount (median peak/amount ${times(median)}).`,
+    ...list(floor.refused),
+    `  The rule raises ${floor.raised.length} ${floor.raised.length === 1 ? "lease" : "leases"} of --mem auto to the floor.`,
+    ...list(floor.raised),
+    `  ${floor.below.length} ${floor.below.length === 1 ? "lease" : "leases"} started below the floor with a reason (--below-peak).`,
+    ...floor.below.slice(-FLOOR_ROWS).map((row) => `  ${row.job.slice(0, 60)} (${row.holder.slice(0, 20)}): ${Math.round(row.memoryMb)} MB, floor ${row.floorMb} MB. Reason: ${row.reason ?? "none"}`),
+  ];
 }
 
 /** The usage of `headroom report`. */
