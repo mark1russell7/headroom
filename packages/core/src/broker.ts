@@ -272,6 +272,24 @@ export interface BrokerOptions {
   readonly loanMaxMs?: number | undefined;
 }
 
+/** The id of the request of a dry tick (H220). No real lease has this id, because the broker makes UUIDs. */
+export const DRY_TICK_ID = "dry-tick";
+
+/** The holder and the job of a dry tick that names none (H220). No run of this job is known, so it has no expected run time. */
+export const FITS_DEFAULT = "headroom fits";
+
+/** The answer of a dry tick (H220): what the next tick does with a request at this time. */
+export interface Fits {
+  /** True when the next tick grants the request. */
+  readonly fits: boolean;
+  /** True when the grant is a loan of the unused hold of a long lease (H219). */
+  readonly loan: boolean;
+  /** The reason that the request waits or cannot start, or `null` when it fits. */
+  readonly reason: string | null;
+  /** The state of the request after the dry tick: `granted`, `waiting`, or `cancelled` when it cannot fit at any time. */
+  readonly state: LeaseState;
+}
+
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
 
 /** The margin on the peak of a lease that holds its measured use after a long run (H187). */
@@ -362,8 +380,11 @@ export class Broker {
   readonly #rejoin = new Set<string>();
   /** The peak of the measured use of each id of each granted lease, and the time of its first measure (H187). */
   readonly #peaks = new Map<string, Map<ResourceId, { peak: number; since: number }>>();
+  /** The options of this broker. A dry tick makes a copy of the broker with them (H220). */
+  readonly #options: BrokerOptions;
 
   constructor(options: BrokerOptions = {}) {
+    this.#options = options;
     this.#now = options.now ?? Date.now;
     this.#newId = options.newId ?? randomUUID;
     this.#isAlive = options.isAlive ?? processIsAlive;
@@ -436,6 +457,26 @@ export class Broker {
     };
     this.#leases.set(lease.id, lease);
     return lease;
+  }
+
+  /**
+   * This function tells what the next tick does with a request at this time (H220). It is a dry tick. The request and the
+   * tick operate on a copy of the leases, the conditions, the rejoins and the measured peaks, with the same options.
+   * Thus the answer uses each rule of `tick()`. These are the free room, the rank in the queue, the conflicts, the loans and
+   * the hold of a long first request (H178). The state of this broker does not change, and the id maker of the options is not used.
+   */
+  fits(request: LeaseRequest, capacity: Capacity, spawn?: SpawnClass): Fits {
+    const copy = new Broker({ ...this.#options, newId: () => DRY_TICK_ID });
+    for (const [id, lease] of this.#leases) copy.#leases.set(id, lease);
+    for (const id of this.#held) copy.#held.add(id);
+    for (const id of this.#rejoin) copy.#rejoin.add(id);
+    for (const [id, peaks] of this.#peaks) copy.#peaks.set(id, new Map(peaks));
+    copy.request(request, spawn);
+    copy.tick(capacity);
+    const lease = copy.#leases.get(DRY_TICK_ID);
+    const state = lease?.state ?? "cancelled";
+    const fits = state === "granted";
+    return { fits, loan: fits && lease?.loan !== undefined, reason: fits ? null : (lease?.reason ?? "the dry tick lost the request"), state };
   }
 
   /**

@@ -118,6 +118,7 @@ import {
   type TcpPorts,
 } from "@headroom/core";
 import { CANCEL_USAGE, cancelCommand, NOT_STARTED, notStartedLine } from "./cancel-cli.ts";
+import { FITS_USAGE, fitsCommand } from "./fits-cli.ts";
 import { answers, connect, connectTo, isNetworkError, isPeakFloorRefusal, isRestartError, type Connection } from "./client.ts";
 import { DEFAULT_PORT, fileLog, serve } from "./daemon.ts";
 import { driversOf } from "./drivers.ts";
@@ -291,6 +292,10 @@ const HELP = `headroom: the memory and job broker of this computer
                A walk-forward replay compares the rule of before H78 with the ladder. It reads the store only.
   headroom pool <name> <capacity>
   headroom release <id>
+  ${FITS_USAGE}
+               Tell if a lease of these amounts starts at the next tick: a dry tick of the broker (H220), so no lease is made.
+               It counts the free room, the waiting leases of a higher rank, the conflicts and the hold of a long first request.
+               Exit 0: it starts. Exit 1: it waits. Exit 3: no read (the daemon does not answer), so a gate does not pass.
   ${CANCEL_USAGE}
                Take a waiting job off the queue: it does not start, and its headroom run exits with code 75.
                <id>: the lease id or its first 8 characters. --job: more than one match cancels none, unless --all.
@@ -1925,6 +1930,8 @@ async function main(argv: string[]): Promise<number> {
       printStatus(await connection.call<Status>(["resources", "pool"], { name, capacity: Number(capacity) }));
       return 0;
     }
+    case "fits":
+      return fitsCommand(rest, connect());
     case "cancel":
       // The caller of the cancel: its session, else "cli".
       return cancelCommand(rest, connect(), (await sessionHolder()) ?? "cli");
