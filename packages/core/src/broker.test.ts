@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
-import { Broker, LOAN_END_START, NO_REJOIN_REASON, RECORDED_END_NOTE, type Capacity, type Lease } from "./broker.ts";
+import { Broker, LOAN_END_START, NO_REJOIN_REASON, RECORDED_END_NOTE, type Capacity, type Lease, type LeaseRequest, type LeaseState } from "./broker.ts";
 import type { LeaseEnd } from "./ends.ts";
 import { rooms } from "./resources.ts";
 
@@ -739,5 +739,77 @@ describe("the loan of the unused hold of a long lease (H219)", () => {
     const { broker } = setup();
     expect(() => broker.request({ ...install, loanMs: 0 })).toThrow(RangeError);
     expect(() => broker.request({ ...install, loanMs: Number.NaN })).toThrow(RangeError);
+  });
+
+  describe("the dry tick (H220)", () => {
+    const MIN = 60_000;
+    type Setup = ReturnType<typeof setup>;
+    type Case = { name: string; build: (s: Setup) => void; ask: LeaseRequest; capacity: Capacity; state: LeaseState };
+
+    // Each case builds the same state on two brokers: one answers `fits`, the other makes the request and ticks.
+    const cases: Case[] = [
+      { name: "free room", build: () => {}, ask: { holder: "fleet", job: "install", amounts: { memory: 750 } }, capacity: cap(4800), state: "granted" },
+      { name: "no room", build: () => {}, ask: { holder: "fleet", job: "install", amounts: { memory: 4000 } }, capacity: cap(4800), state: "waiting" },
+      {
+        name: "a waiting lease of a higher rank",
+        build: ({ broker, advance }) => {
+          broker.request({ holder: "a", job: "high", amounts: { memory: 3000 }, priority: 1, pid: 7 });
+          advance(1000);
+        },
+        ask: { holder: "fleet", job: "install", amounts: { memory: 3000 } },
+        capacity: cap(4500),
+        state: "waiting",
+      },
+      {
+        name: "the hold of a long first request (H178)",
+        build: ({ broker, advance }) => {
+          broker.request({ holder: "vex", job: "test", amounts: { memory: 500 }, pid: 7 });
+          broker.tick(cap(4800));
+          broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 8 });
+          broker.tick(cap(4800));
+          advance(700_000);
+        },
+        // The cap of H187 is the 4000 of `gate` less the 3200 MB that are free: 800 MB. So 900 waits.
+        ask: { holder: "lag", job: "slow", amounts: { memory: 900 } },
+        capacity: cap(4800),
+        state: "waiting",
+      },
+      {
+        name: "a short job in the hold of a long first request (H178)",
+        build: ({ broker, advance }) => {
+          broker.request({ holder: "vex", job: "test", amounts: { memory: 500 }, pid: 7 });
+          broker.tick(cap(4800));
+          broker.request({ holder: "assistant", job: "gate", amounts: { memory: 4000 }, pid: 8 });
+          broker.tick(cap(4800));
+          advance(700_000);
+        },
+        ask: { holder: "lag", job: "quick", amounts: { memory: 100 } },
+        capacity: cap(4800),
+        state: "granted",
+      },
+      { name: "more than the computer has", build: () => {}, ask: { holder: "fleet", job: "huge", amounts: { memory: 64_000 } }, capacity: cap(4800), state: "cancelled" },
+    ];
+
+    for (const c of cases) {
+      it(`gives the answer of a real tick: ${c.name}`, () => {
+        const options = { runMs: { quick: 5 * MIN, slow: 20 * MIN } };
+        const dry = setup(options);
+        const real = setup(options);
+        c.build(dry);
+        c.build(real);
+        const before = JSON.stringify(dry.broker.leases());
+
+        const answer = dry.broker.fits(c.ask, c.capacity);
+        const lease = real.broker.request(c.ask);
+        real.broker.tick(c.capacity);
+        const after = real.broker.get(lease.id);
+
+        expect(after?.state).toBe(c.state);
+        expect(answer).toEqual({ fits: c.state === "granted", loan: false, reason: c.state === "granted" ? null : (after?.reason ?? null), state: c.state });
+        // The dry tick changes no lease, and it takes no id: the next request gets the id that the real broker gave.
+        expect(JSON.stringify(dry.broker.leases())).toBe(before);
+        expect(dry.broker.request(c.ask).id).toBe(lease.id);
+      });
+    }
   });
 });

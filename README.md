@@ -820,6 +820,20 @@ headroom cancel --job "pnpm test" --all        # each waiting match
 - The exit code is 0 after a cancel, or when the match ended already. It is 3 with no match, 1 for more than one match, and 2 for a wrong use.
 - `--json` gives `{ cancelled, matches }`. The procedure is `resources.cancel`.
 - A waiting lease also ends by itself when its client stops. A lease with a process ends at the next tick after its process exits. A lease with no process ends after its heartbeat limit (5 minutes by default) with no call.
+
+A gate can ask if a lease starts at the next tick, before it starts a job, with `headroom fits` (H220):
+
+```sh
+headroom fits --mem 750m --cpu 1 --job "fleet install"   # exit 0: it starts at the next tick
+headroom fits --mem 4g --priority 31 --json              # { fits, loan, reason, state }
+```
+
+- The answer is a dry tick. The broker copies its leases, adds the request to the copy and ticks the copy with the capacity of this time. Then it reads the state of the request and drops the copy. No lease changes, and no id is taken.
+- Thus the answer counts each rule of a real tick. These are the free room, the rank in the queue, the conflicts of slots and spawns, the loans of H219 and the hold of H178.
+- `--job` and `--holder` give the past use of the job, and with it its expected time. Without them, the request has the holder and the job `headroom fits`, with no past use.
+- The exit code is 0 when the lease starts at the next tick, and 1 when it waits or cannot start at any time. Then the line on stderr gives the reason of the broker.
+- The exit code is 3 when there is no read: the daemon does not answer, or it is older than H220. A gate must not pass on exit 3. The exit code is 2 for a wrong use.
+- The answer is true only at its time. The next tick can see less free memory, or a new request of a higher rank. The procedure is `resources.fits`.
 - After a restart of the daemon, each waiting lease of the store gets a new limit. It ends when its client does not call again in that limit.
 - A client can fail to reach the daemon for its release, for example during a restart. Then the lease ends with the exit of the end record of the client (H202). Its reason tells that the exit came from that record.
 

@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { BELOW_PEAK_REASON_MAX, DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { BELOW_PEAK_REASON_MAX, DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type Fits, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -83,6 +83,18 @@ const LeaseInput = z.object({
     ),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
+
+/** The holder of a dry tick that names no holder (H220). */
+export const FITS_HOLDER = "headroom fits";
+
+/** The job of a dry tick that names no job (H220). No run of it is known, so it has no expected run time. */
+export const FITS_JOB = "headroom fits";
+
+const FitsInput = LeaseInput.pick({ amounts: true, priority: true, spawnHeavy: true, when: true, timing: true, batteryOk: true, duringDrain: true, ignorePresence: true, loanMs: true }).extend({
+  holder: LeaseInput.shape.holder.optional().describe(`The holder of the lease to test (default: ${FITS_HOLDER})`),
+  job: LeaseInput.shape.job.optional().describe(`The job of the lease to test. Its past runs give its expected run time (default: ${FITS_JOB}, with no runs).`),
+});
+type FitsInput = z.infer<typeof FitsInput>;
 
 const DeferInput = LeaseInput.omit({ pid: true, ttlMs: true }).extend({
   log: z.string().min(1).max(1000).describe("The absolute path of the log file of the job"),
@@ -444,6 +456,34 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         key: input.key,
         folder: input.folder,
         belowPeak: input.belowPeak,
+        loanMs: input.loanMs,
+      }),
+    )
+    .build() as AnyProcedure;
+
+  const fits = createProcedure()
+    .path(["resources", "fits"])
+    .input(zodAdapter<FitsInput>(FitsInput))
+    .output(anything<Fits>())
+    .meta({
+      description:
+        "Tell if a lease of these amounts and this priority starts at the next tick, else why it waits (H220). It is a dry tick: no lease is made. It counts the queue and the hold of a long first request (H178).",
+      args: [],
+      output: "json",
+      effects: { reads: ["headroom"], writes: [], destructive: false },
+    })
+    .handler(async (input: FitsInput): Promise<Fits> =>
+      engine.fits({
+        holder: input.holder ?? FITS_HOLDER,
+        job: input.job ?? FITS_JOB,
+        amounts: input.amounts,
+        priority: input.priority,
+        spawnHeavy: input.spawnHeavy,
+        when: input.when,
+        timing: input.timing,
+        batteryOk: input.batteryOk,
+        duringDrain: input.duringDrain,
+        ignorePresence: input.ignorePresence,
         loanMs: input.loanMs,
       }),
     )
@@ -813,7 +853,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     .handler(async (): Promise<ReapEntry[]> => engine.reapLog())
     .build() as AnyProcedure;
 
-  return [status, lease, defer, adopt, wait, release, cancel, job, renew, history, peaks, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain, reapList, reap, reapShadow, reapLog];
+  return [status, lease, fits, defer, adopt, wait, release, cancel, job, renew, history, peaks, pool, alerts, pooltags, ports, peer, services, suggest, configGet, configSet, drain, reapList, reap, reapShadow, reapLog];
 }
 
 const RestartWhenIdleInput = z.object({

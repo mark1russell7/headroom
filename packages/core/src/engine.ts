@@ -4,7 +4,7 @@
  */
 
 import { changeAlertRules, DEFAULT_ALERT_RULES, detect, type Alert, type AlertRules, type AlertRulesChange, type DiskInput } from "./alerts.ts";
-import { Broker, HEAD_WAIT_DEFAULT_MS, isActive, type Capacity, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
+import { Broker, HEAD_WAIT_DEFAULT_MS, isActive, type Capacity, type Fits, type JobExit, type Lease, type LeaseRequest } from "./broker.ts";
 import { conditionWait, localClock, nextUnmet, USAGE_UNSET, UsageReader, type ConditionFacts, type UsageFacts } from "./conditions.ts";
 import { isAbsolute } from "node:path";
 import { CounterTracker, type OwnerCores, type OwnerReads, type OwnerWrites, type ProcessReads } from "./counters.ts";
@@ -1088,6 +1088,17 @@ export class Engine {
     if (key !== null) this.#saveKey(lease, key, { floorMb: decision.floor?.floorMb ?? null, belowPeak: decision.kind === "below" ? decision.reason : null });
     this.#persist(this.#broker.tick(this.capacity()));
     return this.#broker.get(lease.id) ?? lease;
+  }
+
+  /**
+   * This function tells what the next tick does with a request at this time (H220). It makes no lease, and it writes
+   * nothing to the store. As in `request()`, the presence comes first, and the past runs of the job give its spawn class.
+   * The job and the holder also give its expected run time, so the hold of a long first request counts it (H178).
+   */
+  fits(input: LeaseRequest): Fits {
+    const request = redactRequest(input);
+    this.#readPresence(this.#clock());
+    return this.#broker.fits(request, this.capacity(), this.spawnClass(request.job, request.holder, request.spawnHeavy));
   }
 
   /**
