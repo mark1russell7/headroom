@@ -424,6 +424,20 @@ describe("the gate of long native paths in the hook (H203)", () => {
     expect(reasonOf(tight.json)).toContain("only 1200 MB is free for a lease");
   });
 
+  it("asks the gate of links (H223) after the gate of native paths, and gives the first refusal", async () => {
+    const asked: string[] = [];
+    const gate =
+      (name: string, refusal: string | null) =>
+      async (command: string, cwd: string | null): Promise<string | null> => (asked.push(`${name} ${command} ${cwd ?? "-"}`), refusal);
+    const body = JSON.stringify({ ...(event("pnpm install") as object), cwd: "/r/app-wt/t" });
+    expect(reasonOf((await hookVerdict(body, { status: free, native: gate("native", null), links: gate("links", "a link points into it") })).json)).toBe("a link points into it");
+    expect(reasonOf((await hookVerdict(body, { status: free, native: gate("native", "too long"), links: gate("links", "a link") })).json)).toBe("too long");
+    expect(asked).toEqual(["native pnpm install /r/app-wt/t", "links pnpm install /r/app-wt/t", "native pnpm install /r/app-wt/t"]);
+    const throws = (): Promise<string | null> => Promise.reject(new Error("no read"));
+    expect(await hookVerdict(body, { status: free, links: throws })).toEqual({ code: 200, json: "{}" });
+    expect(reasonOf((await hookVerdict(body, { status: free, links: gate("links", "only links") })).json)).toBe("only links");
+  });
+
   it("gives the refusal of the gate through the route of the daemon", async () => {
     const face = hookFace({ status: free, native: async () => "the path is too long" })({} as HostFaceContext);
     const server = createServer((req, res) => {

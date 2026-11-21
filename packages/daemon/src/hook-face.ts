@@ -14,6 +14,8 @@
  *   that is acceptable: the dashboard on the same port shows more.
  * - The gate of long native paths (H203) comes first. A command that runs node in a folder with a native image path over
  *   the limit gets a refusal. This applies also under `headroom run` and with a lot of free memory. See `native-paths.ts`.
+ * - The gate of links between checkouts (H223) comes next. It refuses an install that writes the links of another
+ *   checkout, and a delete that breaks them. The refusal names the link. See `link-gate.ts`.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -39,6 +41,11 @@ export interface HookFaceOptions {
    * command go on. With no gate, each command goes on. The session ID of the event goes to the log of refusals.
    */
   readonly native?: ((command: string, cwd: string | null, sessionId: string | null) => Promise<string | null>) | undefined;
+  /**
+   * The gate of links between checkouts (H223): the refusal of an install or a delete that breaks the links of another
+   * checkout, or `null`. It comes after the gate of native paths. A failure lets the command go on. See `link-gate.ts`.
+   */
+  readonly links?: ((command: string, cwd: string | null, sessionId: string | null) => Promise<string | null>) | undefined;
 }
 
 function answer(res: ServerResponse, code: number, body: string, type: string): void {
@@ -85,26 +92,29 @@ export function hookAnswer(body: string, status: () => Status | null): { readonl
 }
 
 /**
- * This function gives the verdict for the body of one request, with the gate of long native paths (H203) before the rating
- * of memory. A failure of the gate lets the command go on.
+ * This function gives the verdict for the body of one request. The gates come before the rating of memory: first the
+ * gate of long native paths (H203), then the gate of links between checkouts (H223). A failure of a gate lets the command go on.
  */
 export async function hookVerdict(
   body: string,
-  options: Pick<HookFaceOptions, "status" | "native">,
+  options: Pick<HookFaceOptions, "status" | "native" | "links">,
 ): Promise<{ readonly code: number; readonly json: string }> {
   const rated = hookAnswer(body, options.status);
-  if (rated.code !== 200 || options.native === undefined) return rated;
+  const gates = [options.native, options.links].filter((gate) => gate !== undefined);
+  if (rated.code !== 200 || gates.length === 0) return rated;
   const event = JSON.parse(body === "" ? "{}" : body) as { tool_input?: { command?: unknown }; cwd?: unknown; session_id?: unknown } | null;
   const command = event?.tool_input?.command;
   if (typeof command !== "string" || command.trim() === "") return rated;
   const cwd = typeof event?.cwd === "string" && event.cwd !== "" ? event.cwd : null;
   const sessionId = typeof event?.session_id === "string" && event.session_id !== "" ? event.session_id : null;
-  const gate = options.native;
-  // A gate that throws, also before its promise, lets the command go on.
-  const refusal = await Promise.resolve()
-    .then(() => gate(command, cwd, sessionId))
-    .catch(() => null);
-  return refusal === null ? rated : { code: 200, json: JSON.stringify(denied(refusal)) };
+  for (const gate of gates) {
+    // A gate that throws, also before its promise, lets the command go on.
+    const refusal = await Promise.resolve()
+      .then(() => gate(command, cwd, sessionId))
+      .catch(() => null);
+    if (refusal !== null) return { code: 200, json: JSON.stringify(denied(refusal)) };
+  }
+  return rated;
 }
 
 /** This function gives the face of the hook for the host of the daemon. */

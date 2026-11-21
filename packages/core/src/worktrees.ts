@@ -16,10 +16,12 @@
  * - No step acts on a path outside the roots.
  * - No step uses `--force` with `git worktree remove`. Thus git refuses a tree with changes.
  * - No step deletes an orphan.
+ * - No step removes a tree, or deletes its `node_modules`, while a link in another checkout of the repository points
+ *   inside the tree (H223). A link that headroom cannot read also stops the step. The refusal names the link.
  */
 
 import { execFile } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync, rmSync, statfsSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, readlinkSync, rmSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Alert } from "./alerts.ts";
@@ -81,6 +83,11 @@ export interface WorktreeRunner {
   stat(path: string): PathStat | null;
   /** This function gives the text of a file, or `null`. */
   readText(path: string): string | null;
+  /**
+   * This function gives the absolute path of the target of a link (a symbolic link or a junction), or `null` when it
+   * cannot read the link. The target can be missing.
+   */
+  readLink(path: string): string | null;
   /** This function deletes a folder and its contents, also with long paths. It does not follow a link. */
   remove(path: string): void;
   /** This function gives the free space of the drive of a path, in MB, or `null`. */
@@ -192,6 +199,7 @@ function spacedRunner(runner: WorktreeRunner, gapMs: number, sleep: (ms: number)
     entries: (path) => runner.entries(path),
     stat: (path) => runner.stat(path),
     readText: (path) => runner.readText(path),
+    readLink: (path) => runner.readLink(path),
     remove: (path) => runner.remove(path),
     freeMb: (path) => runner.freeMb(path),
     measure: measure === undefined ? undefined : (path) => measure.call(runner, path),
@@ -286,6 +294,11 @@ export interface SafetyContext {
   readonly mains: readonly string[];
   readonly runner: WorktreeRunner;
   readonly platform?: NodeJS.Platform | undefined;
+  /**
+   * This function gives the `node_modules` links of a checkout, for the check of links into a tree (H223). The cleanup
+   * reads each checkout one time in a run. The default reads the checkout with {@link moduleLinks} at each check.
+   */
+  readonly linksOf?: ((checkout: string) => readonly ModuleLink[]) | undefined;
 }
 
 /**
@@ -352,6 +365,320 @@ export function findNodeModules(path: string, runner: WorktreeRunner): string[] 
     }
   }
   return found.sort();
+}
+
+/** This function tells if a path is absolute, also a Windows path with a drive on another system. */
+function absolutePath(path: string): boolean {
+  return isAbsolute(path) || /^[a-z]:[\\/]/i.test(path);
+}
+
+/** The checkouts of one repository. */
+export interface RepoCheckouts {
+  /** The checkout that holds the path: the nearest folder at or above it with a `.git`. */
+  readonly top: string;
+  /** The main checkout, or `null` when the git folder of the repository is not a `.git` folder of a checkout. */
+  readonly main: string | null;
+  /** The main checkout first, then each linked worktree that the git folder names. */
+  readonly checkouts: readonly string[];
+}
+
+/**
+ * This function finds the checkouts of the repository of an absolute path from the files of git, with no git command. The
+ * nearest `.git` at or above the path gives the checkout. A `.git` file points to the git folder of a linked worktree. Its
+ * `commondir` file points to the git folder of the repository. Each folder in `worktrees` of that git folder gives one
+ * linked worktree, from its `gitdir` file. Outside a repository, the function gives `null`.
+ */
+export function repoCheckouts(path: string, runner: WorktreeRunner): RepoCheckouts | null {
+  let top: string | null = null;
+  for (let at = trimEndSlashes(path); at !== ""; at = dirname(at)) {
+    if (runner.stat(join(at, ".git")) !== null) {
+      top = at;
+      break;
+    }
+    if (dirname(at) === at) break;
+  }
+  if (top === null) return null;
+  let common: string | null = join(top, ".git");
+  if (runner.stat(common)?.kind !== "dir") {
+    const gitDir = gitDirOf(top, runner);
+    const pointer = gitDir === null ? null : (runner.readText(join(gitDir, "commondir"))?.trim() ?? "");
+    if (gitDir === null || pointer === null) common = null;
+    else if (pointer !== "") common = absolutePath(pointer) ? pointer : join(gitDir, pointer);
+    else common = /^(.*[\\/]\.git)[\\/]worktrees[\\/][^\\/]+[\\/]?$/.exec(gitDir)?.[1] ?? null;
+  }
+  const seen = new Map<string, string>();
+  const add = (checkout: string): void => {
+    if (!seen.has(pathKey(checkout))) seen.set(pathKey(checkout), checkout);
+  };
+  const main = common !== null && baseName(common) === ".git" ? dirname(common) : null;
+  if (main !== null) add(main);
+  if (common !== null) {
+    const folder = join(common, "worktrees");
+    for (const entry of runner.entries(folder) ?? []) {
+      if (entry.kind !== "dir") continue;
+      const pointer = runner.readText(join(folder, entry.name, "gitdir"))?.trim();
+      if (pointer) add(dirname(absolutePath(pointer) ? pointer : join(folder, entry.name, pointer)));
+    }
+  }
+  add(top);
+  return { top, main, checkouts: [...seen.values()] };
+}
+
+/** One `node_modules` entry of a checkout: a folder, or a link in place of a folder. */
+export interface ModuleFolder {
+  readonly path: string;
+  readonly kind: "dir" | "link";
+}
+
+/** One link of a `node_modules` folder, and its target. */
+export interface ModuleLink {
+  /** The checkout that holds the link. */
+  readonly checkout: string;
+  /** The path of the link. */
+  readonly link: string;
+  /** The absolute path of the target, or `null` when the runner cannot read the link. */
+  readonly target: string | null;
+}
+
+/** The depth of the walk for `node_modules` folders under a checkout. A depth of 2 finds `packages/<name>/node_modules`. */
+export const MODULE_FOLDER_DEPTH = 2;
+
+/** The most package folders that the globs of a workspace give. */
+const WORKSPACE_MAX = 500;
+
+/** The entries of a `node_modules` folder whose links the scan does not read: the store of pnpm and the programs. */
+const STORE_ENTRIES: ReadonlySet<string> = new Set([".pnpm", ".bin"]);
+
+/** This function gives the globs of the packages of a workspace: `packages` of `pnpm-workspace.yaml` and `workspaces` of `package.json`. */
+function workspaceGlobs(checkout: string, runner: WorktreeRunner): string[] {
+  const globs: string[] = [];
+  const yaml = runner.readText(join(checkout, "pnpm-workspace.yaml"));
+  let inPackages = false;
+  for (const line of (yaml ?? "").replace(/\r/g, "").split("\n")) {
+    if (/^packages\s*:/.test(line)) {
+      inPackages = true;
+      continue;
+    }
+    if (/^\S/.test(line)) inPackages = false;
+    const item = inPackages ? /^\s+-\s*["']?([^"'#\s]+)["']?/.exec(line)?.[1] : undefined;
+    if (item !== undefined) globs.push(item);
+  }
+  const manifest = runner.readText(join(checkout, "package.json"));
+  try {
+    const field: unknown = manifest === null ? undefined : (JSON.parse(manifest) as { workspaces?: unknown } | null)?.workspaces;
+    const list: unknown = Array.isArray(field) ? field : (field as { packages?: unknown } | undefined)?.packages;
+    if (Array.isArray(list)) for (const glob of list) if (typeof glob === "string") globs.push(glob);
+  } catch {
+    // A package.json that does not parse gives no globs.
+  }
+  return globs;
+}
+
+/** This function gives the expression of one part of a glob: a `*` matches each run of characters, and each other character matches itself. */
+function globPattern(part: string): RegExp {
+  const pieces = part.split("*").map((piece) => piece.replace(/[.+?^$()|[\]{}\\]/g, "\\$&"));
+  return new RegExp(`^${pieces.join(".*")}$`);
+}
+
+/**
+ * This function gives the folders of the packages of a workspace, from its globs. A part with `*` matches the folders of one
+ * level, and `**` matches the folder and up to 3 levels under it. A glob that starts with `!` excludes nothing: the scan then
+ * reads more folders, not fewer.
+ */
+function workspacePackages(checkout: string, runner: WorktreeRunner): string[] {
+  const sub = (folder: string): string[] =>
+    (runner.entries(folder) ?? []).filter((entry) => entry.kind === "dir" && entry.name !== "node_modules" && !entry.name.startsWith(".")).map((entry) => join(folder, entry.name));
+  const deep = (folder: string, levels: number): string[] => [folder, ...(levels === 0 ? [] : sub(folder).flatMap((child) => deep(child, levels - 1)))];
+  const folders: string[] = [];
+  for (const glob of workspaceGlobs(checkout, runner)) {
+    if (glob.startsWith("!")) continue;
+    let level = [checkout];
+    for (const part of glob.replace(/\\/g, "/").split("/").filter((piece) => piece !== "" && piece !== ".")) {
+      const pattern = globPattern(part);
+      const next = level.flatMap((folder) => {
+        if (part === "**") return deep(folder, 3);
+        if (part.includes("*")) return sub(folder).filter((child) => pattern.test(baseName(child)));
+        return [join(folder, part)];
+      });
+      level = next.slice(0, WORKSPACE_MAX);
+    }
+    folders.push(...level);
+    if (folders.length >= WORKSPACE_MAX) break;
+  }
+  return folders.slice(0, WORKSPACE_MAX);
+}
+
+/**
+ * This function finds the `node_modules` entries of a checkout. An entry is a folder or a link with that name, at most
+ * `maxDepth` folders under the checkout. The function also reads each package folder of the workspace. The walk does not go into `node_modules`,
+ * `.git`, a link, or another checkout (a folder with a `.git`).
+ */
+export function moduleFolders(checkout: string, runner: WorktreeRunner, maxDepth: number = MODULE_FOLDER_DEPTH): ModuleFolder[] {
+  const found = new Map<string, ModuleFolder>();
+  const take = (path: string, kind: EntryKind): void => {
+    if (kind !== "file") found.set(pathKey(path), { path, kind });
+  };
+  const stack: { folder: string; depth: number }[] = [{ folder: checkout, depth: 0 }];
+  for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
+    const entries = runner.entries(next.folder);
+    if (entries === null || (next.depth > 0 && entries.some((entry) => entry.name === ".git"))) continue;
+    for (const entry of entries) {
+      if (entry.name === ".git") continue;
+      const child = join(next.folder, entry.name);
+      if (entry.name === "node_modules") take(child, entry.kind);
+      else if (entry.kind === "dir" && next.depth < maxDepth) stack.push({ folder: child, depth: next.depth + 1 });
+    }
+  }
+  for (const folder of workspacePackages(checkout, runner)) {
+    const path = join(folder, "node_modules");
+    const kind = runner.stat(path)?.kind;
+    if (kind !== undefined) take(path, kind);
+  }
+  return [...found.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * This function reads the links of the `node_modules` of a checkout. These are a `node_modules` that is itself a link, and
+ * each link at the top of a `node_modules` folder or in its scope folders (`@name`). It does not read the store of pnpm
+ * (`.pnpm`) or `.bin`. An install writes the links at the top each time, so they show where the install wrote.
+ */
+export function moduleLinks(checkout: string, runner: WorktreeRunner, folders: readonly ModuleFolder[] = moduleFolders(checkout, runner)): ModuleLink[] {
+  const links: ModuleLink[] = [];
+  const take = (link: string): void => {
+    links.push({ checkout, link, target: runner.readLink(link) });
+  };
+  for (const folder of folders) {
+    if (folder.kind === "link") {
+      take(folder.path);
+      continue;
+    }
+    for (const entry of runner.entries(folder.path) ?? []) {
+      if (STORE_ENTRIES.has(entry.name)) continue;
+      const child = join(folder.path, entry.name);
+      if (entry.kind === "link") take(child);
+      else if (entry.kind === "dir" && entry.name.startsWith("@")) for (const scoped of runner.entries(child) ?? []) if (scoped.kind === "link") take(join(child, scoped.name));
+    }
+  }
+  return links;
+}
+
+/**
+ * This function gives the links that a delete of `target` breaks. Such a link is outside `target`, and its target is
+ * `target` or a path inside it, or the runner cannot read it. The links of the checkout `owner` do not count, because an
+ * install in that checkout makes them again. `owner` is the checkout that holds `target`, or `null` for none.
+ */
+export function linksInto(target: string, links: readonly ModuleLink[], owner: string | null, platform: NodeJS.Platform = process.platform): ModuleLink[] {
+  const inTarget = (path: string): boolean => samePath(path, target, platform) || isInside(target, path, platform);
+  return links.filter((link) => (owner === null || !samePath(link.checkout, owner, platform)) && !inTarget(link.link) && (link.target === null || inTarget(link.target)));
+}
+
+/** This function gives the text of a refusal for the links that a delete of `target` breaks. It names the first link. */
+export function linkRefusal(target: string, links: readonly ModuleLink[]): string {
+  const first = links[0];
+  if (first === undefined) return "";
+  const what =
+    first.target === null
+      ? `headroom cannot read the link ${first.link} in the checkout ${first.checkout}, so it cannot tell if a delete of ${target} breaks it.`
+      : `The link ${first.link} in the checkout ${first.checkout} points to ${first.target}. A delete of ${target} breaks it.`;
+  const others = links.length - 1;
+  const more = others === 0 ? "" : ` ${others} other ${others === 1 ? "link also points" : "links also point"} into ${target}.`;
+  const fix =
+    baseName(first.link) === "node_modules"
+      ? ` Remove only the link (on Windows: cmd /c rmdir "${first.link}", with no /s), then run the install of ${first.checkout}.`
+      : ` Run the install of ${first.checkout} first (for example pnpm install --frozen-lockfile --prefer-offline). Then its links point into its own node_modules.`;
+  return `${what}${more}${fix}`;
+}
+
+/**
+ * This function gives the refusal of a delete of `target` while links of the other checkouts of its repository point inside
+ * it (H223), or `null`. `owner` is the checkout that holds `target`. When headroom cannot find the checkouts of the
+ * repository, it cannot read the links, so it refuses.
+ */
+export function inboundRefusal(target: string, owner: string, context: Pick<SafetyContext, "runner" | "platform" | "linksOf">): string | null {
+  const platform = context.platform ?? process.platform;
+  const repo = repoCheckouts(owner, context.runner);
+  if (repo === null) return `headroom cannot find the checkouts of the repository of ${owner}, so it cannot tell if a link points into ${target}.`;
+  const read = context.linksOf ?? ((checkout: string): readonly ModuleLink[] => moduleLinks(checkout, context.runner));
+  const links = repo.checkouts.filter((checkout) => !samePath(checkout, owner, platform)).flatMap((checkout) => read(checkout));
+  const inbound = linksInto(target, links, owner, platform);
+  return inbound.length === 0 ? null : linkRefusal(target, inbound);
+}
+
+/**
+ * This function gives the refusal of an install in `folder`, or `null` (H223). It refuses while a `node_modules` that
+ * the install writes is a link into another checkout. Such an install writes the links of the other checkout, and they then point into
+ * this checkout. When this checkout goes away, they break. The install writes the `node_modules` of each folder from
+ * `folder` up to its checkout, and of each package of the workspace there. The function also reads the `.pnpm` store of
+ * each `node_modules`. A link that the runner cannot read stops the install too.
+ */
+export function installLinkRefusal(folder: string, runner: WorktreeRunner, platform: NodeJS.Platform = process.platform): string | null {
+  const top = repoCheckouts(folder, runner)?.top ?? null;
+  const chain: string[] = [];
+  for (let at = trimEndSlashes(folder); at !== ""; at = dirname(at)) {
+    chain.push(at);
+    if (top === null || samePath(at, top, platform) || dirname(at) === at) break;
+  }
+  const folders = new Map<string, ModuleFolder>();
+  for (const root of chain) for (const each of moduleFolders(root, runner, 0)) folders.set(pathKey(each.path, platform), each);
+  for (const each of folders.values()) {
+    const store = join(each.path, ".pnpm");
+    const link = each.kind === "link" ? each.path : runner.stat(store)?.kind === "link" ? store : null;
+    if (link === null) continue;
+    const target = runner.readLink(link);
+    const fix = ` Remove only the link (on Windows: cmd /c rmdir "${link}", with no /s), then run the install again.`;
+    if (target === null) return `headroom cannot read the link ${link}, so it cannot tell where an install in ${folder} writes.${fix}`;
+    const other = repoCheckouts(target, runner)?.top ?? null;
+    if (other === null || (top !== null && samePath(other, top, platform))) continue;
+    return `The folder ${link} is a link to ${target}, in the checkout ${other}. An install in ${folder} writes the links of ${other}, and then they point into ${top ?? folder}. A delete of ${top ?? folder} breaks them.${fix}`;
+  }
+  return null;
+}
+
+/**
+ * The time for which {@link LinkCache} keeps the links of a checkout, when no `node_modules` folder of it changed. A
+ * changed link changes the time of its folder, so the age limit applies only to a new `node_modules` folder.
+ */
+export const LINK_CACHE_MS = 600_000;
+
+/**
+ * A cache of the `node_modules` links of checkouts. An entry stays while it is younger than `maxAgeMs` and the time of
+ * change of each of its `node_modules` folders stays the same. An install changes the folders that it writes. A new
+ * `node_modules` folder shows at the next read after `maxAgeMs`.
+ */
+export class LinkCache {
+  readonly #entries = new Map<string, { at: number; stamps: { path: string; mtimeMs: number | null }[]; links: readonly ModuleLink[] }>();
+  readonly #runner: WorktreeRunner;
+  readonly #now: () => number;
+  readonly #maxAgeMs: number;
+
+  constructor(runner: WorktreeRunner, now: () => number = Date.now, maxAgeMs: number = LINK_CACHE_MS) {
+    this.#runner = runner;
+    this.#now = now;
+    this.#maxAgeMs = maxAgeMs;
+  }
+
+  /** This function gives the links of a checkout from the cache, or `null` when the cache has no fresh entry. */
+  cached(checkout: string): readonly ModuleLink[] | null {
+    const entry = this.#entries.get(pathKey(checkout));
+    if (entry === undefined || this.#now() - entry.at > this.#maxAgeMs) return null;
+    return entry.stamps.every((stamp) => (this.#runner.stat(stamp.path)?.mtimeMs ?? null) === stamp.mtimeMs) ? entry.links : null;
+  }
+
+  /** This function gives the links of a checkout: from the cache when it is fresh, else from a new read. */
+  links(checkout: string): readonly ModuleLink[] {
+    const cached = this.cached(checkout);
+    if (cached !== null) return cached;
+    const at = this.#now();
+    const folders = moduleFolders(checkout, this.#runner);
+    // A new link in a scope folder (`@name`) changes the time of that folder only, so each scope folder gets a stamp too.
+    const scopes = folders.flatMap((folder) =>
+      folder.kind === "link" ? [] : (this.#runner.entries(folder.path) ?? []).filter((entry) => entry.kind === "dir" && entry.name.startsWith("@")).map((entry) => join(folder.path, entry.name)),
+    );
+    const stamps = [...folders.map((folder) => folder.path), ...scopes].map((path) => ({ path, mtimeMs: this.#runner.stat(path)?.mtimeMs ?? null }));
+    const links = moduleLinks(checkout, this.#runner, folders);
+    this.#entries.set(pathKey(checkout), { at, stamps, links });
+    return links;
+  }
 }
 
 /** This function tells if a folder holds a file outside `node_modules` and `.git`, and gives the newest time of change of those files. */
@@ -531,14 +858,26 @@ async function ignoredOf(tree: string, paths: readonly string[], runner: Worktre
   return ignored;
 }
 
+/** The result of the delete of the `node_modules` folders of a tree. */
+export interface NodeModulesResult {
+  readonly refused: string | null;
+  readonly removed: string[];
+  readonly failed: string[];
+}
+
 /**
  * This function deletes each `node_modules` folder of a tree that git ignores. A tool can make these folders again. It
- * gives the deleted folders. It refuses by the rules of safety.
+ * gives the deleted folders. It refuses by the rules of safety, and while a link of another checkout points into the tree.
  */
-export async function removeNodeModules(tree: string, context: SafetyContext): Promise<{ refused: string | null; removed: string[]; failed: string[] }> {
-  const platform = context.platform ?? process.platform;
-  const refused = refusal(tree, context);
+export async function removeNodeModules(tree: string, context: SafetyContext): Promise<NodeModulesResult> {
+  const refused = refusal(tree, context) ?? inboundRefusal(tree, tree, context);
   if (refused !== null) return { refused, removed: [], failed: [] };
+  return deleteNodeModules(tree, context);
+}
+
+/** This function deletes each `node_modules` folder of a tree that git ignores, after the checks of its caller. */
+async function deleteNodeModules(tree: string, context: SafetyContext): Promise<NodeModulesResult> {
+  const platform = context.platform ?? process.platform;
   const folders = findNodeModules(tree, context.runner);
   if (folders.length === 0) return { refused: null, removed: [], failed: [] };
   const ignored = await ignoredOf(tree, folders, context.runner, platform);
@@ -596,11 +935,14 @@ export async function removeWorktree(path: string, options: RemoveOptions): Prom
   if (unpushed === null) return refuse(`git could not count the commits of ${path} that are not on a remote.`);
   if (unpushed > 0) return refuse(`${path} has ${unpushed} ${unpushed === 1 ? "commit that is" : "commits that are"} not on a remote. Push ${unpushed === 1 ? "it" : "them"} first.`);
   steps.push("The tree has no changes, and each commit is on a remote.");
+  const inbound = inboundRefusal(path, path, options);
+  if (inbound !== null) return refuse(inbound);
+  steps.push("No link of another checkout points into the tree.");
   if (options.dryRun === true) {
     steps.push("A dry run: the removal changed nothing.");
     return { path, ok: true, refused: null, steps, nodeModules: [] };
   }
-  const modules = await removeNodeModules(path, options);
+  const modules = await deleteNodeModules(path, options);
   if (modules.removed.length > 0) steps.push(`Deleted ${modules.removed.length} node_modules ${modules.removed.length === 1 ? "folder" : "folders"}.`);
   for (const failure of modules.failed) steps.push(`Could not delete ${failure}`);
   const removed = await runner.git(["-C", options.main, "worktree", "remove", path]);
@@ -717,7 +1059,17 @@ export function freeSpace(roots: readonly string[], runner: WorktreeRunner): Rec
  * with no work does not count. The result gives the count of the trees that the run did not examine.
  */
 export async function cleanWorktrees(scan: WorktreeScan, options: CleanOptions): Promise<CleanResult> {
-  const context: SafetyContext = { roots: scan.roots, mains: scan.mains, runner: options.runner, platform: options.platform };
+  // H223: each checkout is read one time in a run. A tree that the run removes keeps its old links here. They can only
+  // stop a step, not let one go on.
+  const linkCache = new Map<string, readonly ModuleLink[]>();
+  const linksOf = (checkout: string): readonly ModuleLink[] => {
+    const known = linkCache.get(pathKey(checkout, options.platform));
+    if (known !== undefined) return known;
+    const links = moduleLinks(checkout, options.runner);
+    linkCache.set(pathKey(checkout, options.platform), links);
+    return links;
+  };
+  const context: SafetyContext = { roots: scan.roots, mains: scan.mains, runner: options.runner, platform: options.platform, linksOf };
   const limited = !options.dryRun;
   const max = options.max ?? WORKTREE_BATCH_MAX;
   const minFreeMb = options.minFreeMb ?? WORKTREE_MIN_FREE_MB;
@@ -778,7 +1130,7 @@ export async function cleanWorktrees(scan: WorktreeScan, options: CleanOptions):
       const folders = findNodeModules(tree.path, options.runner);
       if (folders.length === 0) continue;
       if (options.dryRun) {
-        const unsafe = refusal(tree.path, context);
+        const unsafe = refusal(tree.path, context) ?? inboundRefusal(tree.path, tree.path, context);
         actions.push({ ...base, action: unsafe === null ? "node_modules" : "skip", ok: true, detail: unsafe ?? `delete ${folders.length} node_modules (dry run). Kept: ${tree.reasons.join(", ")}` });
         continue;
       }
@@ -951,6 +1303,15 @@ export function nodeRunner(options: NodeRunnerOptions = {}): WorktreeRunner {
     readText: (path) => {
       try {
         return readFileSync(path, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    readLink: (path) => {
+      try {
+        // On Windows, the target of a junction can start with the prefix `\\?\` of a long path.
+        const target = readlinkSync(path).replace(/^\\\\\?\\/, "");
+        return isAbsolute(target) ? target : resolve(dirname(path), target);
       } catch {
         return null;
       }
