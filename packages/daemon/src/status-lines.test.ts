@@ -78,3 +78,19 @@ describe("the memory use of a lease in `headroom status` (H62)", () => {
     }
   });
 });
+
+describe("the loan of a lease in `headroom status` (H219)", () => {
+  it("shows the amounts of the loan and the time to its end, and shows nothing for a lease with no loan", () => {
+    const engine = engineOf();
+    try {
+      const job = engine.request({ holder: "fleet", job: "pnpm install", amounts: { memory: 400 }, ttlMs: 60_000, loanMs: 10_000 });
+      expect(job.state).toBe("granted");
+      // The job fits in the free room, so it gets no loan.
+      expect(leaseRow(job, "400 MB", null, null, 1_000_000)).not.toContain("loan");
+      const borrowed = { ...job, loan: { amounts: { memory: 348 }, until: 1_010_000 } };
+      expect(leaseRow(borrowed, "400 MB", null, null, 1_002_000)).toContain("400 MB  on a loan of 348 MB, which ends in 8 s");
+    } finally {
+      engine.close();
+    }
+  });
+});

@@ -751,6 +751,7 @@ On Windows, `headroom run` puts the job into a job object:
 - `--when ac,usage<80` makes the job wait for its conditions, and `--timing` makes it wait for AC power (H31). On a low battery, a heavy job waits. `--battery-ok` starts it.
 - `--mem auto` sizes the lease from the peaks of past runs (H78). It reads the runs of the same job, else of its key, its repository, a fit on the count of packages, or its kind. A job with no run of its kind gets 1 GB. See [The memory of `--mem auto`](#the-memory-of---mem-auto-h78).
 - A stated `--mem` below the floor of its command gets a refusal, and the job does not start (H215). The floor is the peak of the last run of the same command times 1.1. `--below-peak "<reason>"` starts it below the floor. See [The floor of a command](#the-floor-of-a-command-h215).
+- `--loan 60s` lets a short job borrow the unused hold of a long lease for at most 60 seconds (H219). It needs `--mem`, and the job cannot use more memory than its lease. See [The loan of an unused hold](#the-loan-of-an-unused-hold-h219).
 
 A pool with no capacity is a lock of 1. Set a capacity with `headroom pool docker 2`. The processors are different: their count is the capacity of `cpu`, and `headroom pool cpu 8` sets a lower cap.
 
@@ -929,6 +930,31 @@ headroom: --mem auto gives 884 MB: the floor of this command, the peak of its la
 ```
 
 `headroom report leases` replays the floor over its window, with the same rule as the daemon. It gives the leases that the rule refuses, with their peak over their amount. It also gives the leases of `--mem auto` that it raises, and the leases with a reason.
+
+### The loan of an unused hold (H219)
+
+On 2026-11-21 from 18:40 UTC, no lease got its grant for more than 20 minutes. The available memory was 3.0 to 3.6 GB, and the reserve was 2.0 GB. The lease of a long service held 2.1 GB, its peak of 1.7 GB times 1.25, and used 625 MB. Thus the free room was 0, and a fleet install of 300 MB waited for the whole time.
+
+`headroom run --loan <time> --mem <amount> -- <command>` asks for a lease that can borrow. When the job does not fit in the free room, it can borrow the unused hold of the long leases:
+
+- A long lease lends the part of its hold above its use. A lease with less than 30 minutes of measures lends nothing, and a lease on a loan lends nothing.
+- The reserve stays out of each loan. The room for a loan is the free room plus the room that the long leases lend.
+- The loan is the part of the lease above the free room. Two loans cannot borrow the same room.
+- The time limit of a loan is at most 2 minutes. A longer `--loan` gets no loan, so the job waits for free room.
+- The job gets the memory limit of `--limit`, so it cannot use more than its lease. `--loan` does not go with `--keep`.
+- While the lease has its loan, the client renews it every 2 seconds.
+
+The loan ends in one of two ways:
+
+- When the free memory falls under its reserve, the long leases take their room back. The lease of the loan ends at once.
+- At its time limit, the loan returns when the job fits in the free room with no loan. Then the lease stays granted. Else the lease ends.
+
+When the lease ends, the client stops each process of the job, and `headroom run` exits with code 75. When no daemon answers, the job continues until the time limit of its loan. The store keeps the time limit and the loan of each lease (step 10 of the store), so a restart of the daemon keeps each loan with its end.
+
+```text
+headroom: lease 4f7c2a9e for pnpm install, granted on a loan of 400 MB, which ends in 10 s.
+headroom: the loan ended at its time limit, and the job does not fit in the free memory with no loan (H219). The client stops the job (exit 75).
+```
 
 ## The plugin for Claude Code
 

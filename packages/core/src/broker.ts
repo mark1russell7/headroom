@@ -63,7 +63,27 @@ export interface LeaseRequest {
    * memory below the floor gets a refusal. The engine reads it. The broker does not read it.
    */
   readonly belowPeak?: string | undefined;
+  /**
+   * The wall-clock time limit of a job that can borrow, in ms (H219), from `headroom run --loan`. Such a job can start in
+   * the unused hold of a long lease. A limit above `loanMaxMs` gets no loan, and the lease waits as usual.
+   */
+  readonly loanMs?: number | undefined;
 }
+
+/**
+ * The loan of a granted lease (H219). `amounts` is the part of each measured id that the lease borrows from the unused
+ * hold of the long leases. `until` is the end of the loan. At that time, the loan returns, or the lease ends.
+ */
+export interface Loan {
+  readonly amounts: Amounts;
+  readonly until: number;
+}
+
+/** The default of `loanMaxMs` (H219): a job with a longer time limit gets no loan. */
+export const LOAN_MAX_DEFAULT_MS = 120_000;
+
+/** The start of the reason of a lease whose loan ended with no room for its job (H219). */
+export const LOAN_END_START = "the loan ended";
 
 /** The exit of a job, from its holder at the release (H26). */
 export interface JobExit {
@@ -136,6 +156,13 @@ export interface Lease {
   readonly cancelledBy?: string | undefined;
   /** The full path of the folder of the job (H62). A container of a compose project in this folder can count for the lease. */
   readonly folder?: string | undefined;
+  /** The time limit of a job that can borrow, in ms (H219), from its request. A lease with no `--loan` has none. */
+  readonly loanMs?: number | undefined;
+  /**
+   * The loan of a granted lease (H219): the borrowed part of each measured id, and the end of the loan. A lease that fits
+   * with no loan has none. A returned loan goes away, and an ended lease keeps its loan as a record.
+   */
+  readonly loan?: Loan | undefined;
 }
 
 /** The fields of a lease that the engine measures while its job runs (H47, H23, H36), and the record of a condition that stops (H31). */
@@ -238,6 +265,11 @@ export interface BrokerOptions {
    * default gives `null`.
    */
   readonly endOf?: ((lease: Lease) => LeaseEnd | null) | undefined;
+  /**
+   * The longest time limit of a job that can borrow, in ms (H219). A request with a larger `loanMs` gets no loan, and it
+   * waits as usual. The default is 2 minutes.
+   */
+  readonly loanMaxMs?: number | undefined;
 }
 
 const ACTIVE: ReadonlySet<LeaseState> = new Set(["waiting", "granted"]);
@@ -320,6 +352,7 @@ export class Broker {
   readonly #groupConflict: (lease: Lease, granted: readonly Lease[], before: readonly Lease[]) => string | null;
   readonly #condition: (lease: Lease) => string | null;
   readonly #recordedEnd: (lease: Lease) => LeaseEnd | null;
+  readonly #loanMaxMs: number;
   /** The waiting leases that waited for a condition at the last tick (H31). */
   readonly #held = new Set<string>();
   /**
@@ -347,6 +380,7 @@ export class Broker {
     this.#groupConflict = options.groupConflict ?? (() => null);
     this.#condition = options.condition ?? (() => null);
     this.#recordedEnd = options.endOf ?? (() => null);
+    this.#loanMaxMs = options.loanMaxMs ?? LOAN_MAX_DEFAULT_MS;
   }
 
   /**
@@ -375,6 +409,7 @@ export class Broker {
       if (!Number.isFinite(amount) || amount < 0) throw new RangeError(`The amount of ${name} must be a number of 0 or more`);
     }
     if (request.cpuCap !== undefined && !(Number.isFinite(request.cpuCap) && request.cpuCap > 0)) throw new RangeError("The CPU cap must be a number above 0");
+    if (request.loanMs !== undefined && !(Number.isFinite(request.loanMs) && request.loanMs > 0)) throw new RangeError("The time limit of a loan must be a number above 0");
     const conditions = leaseConditions(request.when, request.timing, request.batteryOk, request.duringDrain, request.ignorePresence);
     const now = this.#now();
     const lease: Lease = {
@@ -397,6 +432,7 @@ export class Broker {
       ...(conditions === undefined ? {} : { conditions }),
       ...(request.cpuCap === undefined ? {} : { cpuCap: request.cpuCap }),
       ...(request.folder === undefined ? {} : { folder: request.folder }),
+      ...(request.loanMs === undefined ? {} : { loanMs: request.loanMs }),
     };
     this.#leases.set(lease.id, lease);
     return lease;
@@ -522,14 +558,97 @@ export class Broker {
     for (const id of ids) {
       const room = this.#room(id, capacity, base);
       let left = room.mode === "measured" ? (room.free ?? 0) - room.reserve : room.capacity - room.reserve;
-      for (const lease of granted) {
-        const amount = lease.amounts[id];
-        if (amount === undefined) continue;
-        left -= room.mode === "measured" ? Math.max(0, this.#holdOf(lease, id, now) - (this.#used(lease, id) ?? 0)) : amount;
-      }
+      for (const lease of granted) left -= this.#heldOf(lease, id, room, now);
       free[id] = left;
     }
     return free;
+  }
+
+  /**
+   * This function gives the part of the room of an id that a granted lease takes from the free room. A measured id gives
+   * the part of the hold that the job does not use yet. A counted id gives the amount. A lease with no amount of the id gives 0.
+   */
+  #heldOf(lease: Lease, id: ResourceId, room: Room, now: number): number {
+    const amount = lease.amounts[id];
+    if (amount === undefined) return 0;
+    return room.mode === "measured" ? Math.max(0, this.#holdOf(lease, id, now) - (this.#used(lease, id) ?? 0)) : amount;
+  }
+
+  /**
+   * This function gives the room that the long leases can lend at this time (H219). For each measured id, it is the sum of
+   * the parts of the measured holds that the jobs do not use. Only a lease after a full `longRunMs` of measures lends. A
+   * young lease and a lease on a loan lend nothing. The free room already has the reserve taken off, so the reserve stays out of a loan.
+   */
+  #lendable(capacity: Capacity, now: number): Record<string, number> {
+    const lendable: Record<string, number> = {};
+    for (const lease of this.#leases.values()) {
+      if (lease.state !== "granted" || lease.loan !== undefined) continue;
+      for (const id of Object.keys(lease.amounts)) {
+        if (this.#room(id, capacity).mode !== "measured" || !this.#measuredLong(lease, id, now)) continue;
+        const used = this.#used(lease, id);
+        if (used === null) continue;
+        lendable[id] = (lendable[id] ?? 0) + Math.max(0, this.#holdOf(lease, id, now) - used);
+      }
+    }
+    return lendable;
+  }
+
+  /** This function tells if a lease can borrow (H219): its request has a time limit of at most `loanMaxMs`. */
+  #canBorrow(lease: Lease): boolean {
+    return lease.loanMs !== undefined && lease.loanMs <= this.#loanMaxMs;
+  }
+
+  /**
+   * This function gives the loan of a waiting lease that does not fit in the free room (H219), or `null`. The lease gets a
+   * loan when it can borrow, and when it fits in the free room and the lendable room together. It must also have no
+   * conflict, and it must not delay the first request of a hold. The loan has the part of each id above the free room.
+   */
+  #loanFor(lease: Lease, free: Record<string, number>, lendable: Record<string, number>, admits: () => boolean, now: number): Loan | null {
+    if (!this.#canBorrow(lease) || this.#shortOf(lease, free) === null) return null;
+    const room: Record<string, number> = { ...free };
+    for (const [id, part] of Object.entries(lendable)) room[id] = (room[id] ?? 0) + part;
+    if (this.#shortOf(lease, room) !== null || !admits()) return null;
+    const amounts: Record<string, number> = {};
+    for (const [id, amount] of Object.entries(lease.amounts)) {
+      const part = amount - Math.max(0, free[id] ?? 0);
+      if (part > 0) amounts[id] = part;
+    }
+    return { amounts, until: now + (lease.loanMs ?? 0) };
+  }
+
+  /**
+   * This function ends the loans of this tick (H219), before the waiting leases get their grants. A loan ends early when
+   * the measured free part of a borrowed id falls under its reserve: the long lease takes its memory back. At its time
+   * limit, a loan returns when the lease fits with no loan. The lease then stays granted as a normal lease. Else the lease
+   * ends. Each ended lease gives its room back to the free room of this tick.
+   */
+  #endLoans(capacity: Capacity, free: Record<string, number>, now: number): Lease[] {
+    const changed: Lease[] = [];
+    for (const lease of [...this.#leases.values()]) {
+      if (lease.state !== "granted" || lease.loan === undefined) continue;
+      const ids = Object.keys(lease.loan.amounts);
+      const taken = ids.find((id) => {
+        const room = this.#room(id, capacity);
+        return room.mode === "measured" && (room.free ?? 0) < room.reserve;
+      });
+      let reason: string;
+      if (taken !== undefined) {
+        reason = `${LOAN_END_START} early: the free ${taken} fell under its reserve, so the long leases take their room back (H219)`;
+      } else {
+        if (now < lease.loan.until) continue;
+        const short = ids.find((id) => (free[id] ?? 0) < 0);
+        if (short === undefined) {
+          const { loan: _loan, ...returned } = lease;
+          changed.push(this.#set(returned));
+          continue;
+        }
+        reason = `${LOAN_END_START} at its time limit, and the job does not fit in the free ${short} with no loan (H219)`;
+      }
+      for (const id of Object.keys(lease.amounts)) free[id] = (free[id] ?? 0) + this.#heldOf(lease, id, this.#room(id, capacity), now);
+      this.#held.delete(lease.id);
+      changed.push(this.#set({ ...lease, state: "expired", endedAt: now, reason }));
+    }
+    return changed;
   }
 
   /** This function gives the rooms that each capacity has: the room of the memory, from the memory fields of the capacity. */
@@ -568,6 +687,9 @@ export class Broker {
       .sort((a, b) => this.#rank(b, now) - this.#rank(a, now) || a.requestedAt - b.requestedAt);
     this.#measure(capacity, now);
     const free = this.#free(capacity, waiting.flatMap((lease) => Object.keys(lease.amounts)), now);
+    // H219: the loans end first, so an ended loan gives its room back to the queue of this tick.
+    changed.push(...this.#endLoans(capacity, free, now));
+    const lendable = this.#lendable(capacity, now);
     // The granted leases, with the leases that this tick grants, and the leases that wait before the next lease (H47).
     const granted = [...this.#leases.values()].filter((lease) => lease.state === "granted");
     const before: Lease[] = [];
@@ -595,9 +717,13 @@ export class Broker {
       const index = place;
       place += 1;
       const short = this.#shortOf(lease, free) ?? this.#conflictOf(lease, granted, before) ?? (hold === null ? null : this.#delays(lease, hold, now, free, granted, capacity));
-      if (short === null) {
+      // H219: a job that can borrow, and that does not fit in the free room, can start in the room that the long leases lend.
+      const admits = (): boolean => this.#conflictOf(lease, granted, before) === null && (hold === null || this.#delays(lease, hold, now, free, granted, capacity) === null);
+      const loan = short === null ? null : this.#loanFor(lease, free, lendable, admits, now);
+      if (short === null || loan !== null) {
+        // The amounts of a loan come off the free room too, so a second loan cannot borrow the same room.
         for (const [name, amount] of Object.entries(lease.amounts)) free[name] = (free[name] ?? 0) - amount;
-        const next = this.#set({ ...lease, state: "granted", grantedAt: now, reason: null });
+        const next = this.#set({ ...lease, state: "granted", grantedAt: now, reason: null, ...(loan === null ? {} : { loan }) });
         granted.push(next);
         changed.push(next);
         continue;
@@ -700,10 +826,26 @@ export class Broker {
   #holdOf(lease: Lease, id: ResourceId, now: number): number {
     const amount = lease.amounts[id] ?? 0;
     const record = this.#peaks.get(lease.id)?.get(id);
-    if (record === undefined || now - record.since < this.#longRunMs) return amount;
+    if (record === undefined || !this.#measuredLong(lease, id, now)) return amount;
     const used = this.#used(lease, id);
     if (used === null) return amount;
     return Math.max(record.peak * LONG_HOLD_MARGIN, used);
+  }
+
+  /** This function tells if the broker measured an id of a granted lease for a full `longRunMs` (H187). */
+  #measuredLong(lease: Lease, id: ResourceId, now: number): boolean {
+    const record = this.#peaks.get(lease.id)?.get(id);
+    return record !== undefined && now - record.since >= this.#longRunMs;
+  }
+
+  /**
+   * This function gives the expected run time of the job of a lease in ms, or `null` when no run is known (H178). A job
+   * that can borrow states its time limit (H219), so its run time is at most that limit.
+   */
+  #runOf(lease: Lease): number | null {
+    const run = this.#runMs(lease);
+    if (!this.#canBorrow(lease) || lease.loanMs === undefined) return run;
+    return Math.min(run ?? lease.loanMs, lease.loanMs);
   }
 
   /**
@@ -741,7 +883,7 @@ export class Broker {
    * than the facts tell.
    */
   #endOfRun(lease: Lease, now: number): number {
-    const run = this.#runMs(lease);
+    const run = this.#runOf(lease);
     return run === null || lease.grantedAt === null ? now : Math.max(now, lease.grantedAt + run);
   }
 
@@ -753,7 +895,7 @@ export class Broker {
    * the start is not known, a lease can also go in the cap of the room that the first request waits for (H187).
    */
   #delays(lease: Lease, hold: Hold, now: number, free: Record<string, number>, granted: readonly Lease[], capacity: Capacity): string | null {
-    const run = this.#runMs(lease);
+    const run = this.#runOf(lease);
     const end = run === null ? Number.POSITIVE_INFINITY : now + run;
     if (end <= (hold.startAt ?? now + this.#backfillMs)) return null;
     const extra = hold.extra;

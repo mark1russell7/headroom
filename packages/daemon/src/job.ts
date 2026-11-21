@@ -27,6 +27,8 @@ export interface LimitOptions {
   readonly leaseMb: number | null;
   /** The cores of the lease (H23). With --limit, they are the hard cap of the job. */
   readonly leaseCores?: number | null | undefined;
+  /** True (--loan, H219): the job cannot commit more memory than its lease, as with --limit. The cores get no cap. */
+  readonly loan?: boolean | undefined;
 }
 
 /**
@@ -36,7 +38,8 @@ export interface LimitOptions {
  * processors fairly.
  */
 export function jobLimits(options: LimitOptions, selfMb: number, processors: number): JobLimits {
-  const memoryMb = options.limit && options.leaseMb !== null ? options.leaseMb + selfMb + 64 : undefined;
+  // H219: a job on a loan gets the memory limit too, so it cannot take more than it borrowed.
+  const memoryMb = (options.limit || options.loan === true) && options.leaseMb !== null ? options.leaseMb + selfMb + 64 : undefined;
   const cores = options.limit ? (options.leaseCores ?? null) : null;
   return {
     ...(memoryMb === undefined ? {} : { memoryMb }),

@@ -72,6 +72,15 @@ const LeaseInput = z.object({
     .max(BELOW_PEAK_REASON_MAX)
     .optional()
     .describe("The reason to start below the floor of the command (H215): the peak of its last run times 1.1. Without it, a lease below the floor gets a refusal."),
+  loanMs: z
+    .number()
+    .int()
+    .positive()
+    .max(86_400_000)
+    .optional()
+    .describe(
+      "The time limit of a loan in ms, with --loan (H219). A job that does not fit can borrow the unused hold of a long lease. At the time limit, the loan returns, or the lease ends.",
+    ),
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
@@ -435,6 +444,7 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
         key: input.key,
         folder: input.folder,
         belowPeak: input.belowPeak,
+        loanMs: input.loanMs,
       }),
     )
     .build() as AnyProcedure;

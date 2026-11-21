@@ -31,6 +31,8 @@ export const RUN_OPTIONS = {
   "detached-client": { type: "boolean" },
   adopt: { type: "string" },
   "below-peak": { type: "string" },
+  // H219: the time limit of a loan of the unused hold of a long lease.
+  loan: { type: "string" },
 } as const;
 
 /** The longest wait of `headroom run` for its grant when the run gives no `--wait`. */
