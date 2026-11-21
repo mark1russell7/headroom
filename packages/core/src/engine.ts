@@ -2732,7 +2732,8 @@ export class Engine {
    */
   #notice(changed: readonly Lease[]): void {
     const now = this.#now();
-    const cut = changed.filter((lease) => lease.state === "expired" && lease.pid !== null);
+    // H219: a lease whose loan ended did not stop without a release. The broker ended it, and its client stops the job.
+    const cut = changed.filter((lease) => lease.state === "expired" && lease.pid !== null && lease.loan === undefined);
     if (cut.length === 0) return;
     this.#cut = [...this.#cut.filter((entry) => now - entry.at <= STOP_WINDOW_MS), ...cut.map((lease) => ({ at: now, lease }))];
     if (this.#cut.length < 2) return;

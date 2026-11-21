@@ -134,6 +134,7 @@ import { diskAmounts, finishTemp, jobEnv, jobLimits, prepareTemp, type LimitOpti
 import { JOB_USAGE, jobCommand } from "./job-cli.ts";
 import { parseDisk, parseMemory, parseStartCap, parseTime, startCapText } from "./parse.ts";
 import { RUN_OPTIONS, RUN_WAIT_DEFAULT } from "./run-options.ts";
+import { LOAN_ENDED_CODE, loanLimitNote, loanOption, loanText, stopJobProcesses, watchLoan } from "./loan.ts";
 import { dashboardKey, databasePath, leaseEndsDir, readDiscovery, readPlannedStop, startLogPath } from "./paths.ts";
 import { resumePlanLines, writeResumePlan } from "./resume.ts";
 import { SHELL_WATCH_MS, shellWatch, writeCommandFile } from "./shell-gone.ts";
@@ -162,7 +163,7 @@ const HELP = `headroom: the memory and job broker of this computer
   headroom run [--mem 2g|auto] [--cpu 2|auto] [--disk 5g|D:=5g]... [--slot docker]... [--holder name] [--job name]
                [--priority 0] [--wait 30m] [--limit] [--keep] [--keep-temp] [--force-disk] [--no-eco] [--log file]
                [--spawn-heavy | --no-spawn-heavy] [--when ac,battery>=50,usage<80] [--timing]
-               [--battery-ok] [--during-drain] [--ignore-presence] [--below-peak reason]
+               [--battery-ok] [--during-drain] [--ignore-presence] [--below-peak reason] [--loan 60s]
                [--detach] -- <command> [args...]
                --limit: the job cannot use more memory than --mem, or more cores than --cpu (a hard cap).
                Without --limit, the leased jobs share the processors by equal weights. --keep: no job object.
@@ -171,6 +172,9 @@ const HELP = `headroom: the memory and job broker of this computer
                With no run: ${AUTO_DEFAULT_MB} MB, and the line says "no read". headroom report leases gives the measures.
                The floor of a command is the peak of its last run times 1.1. A lower --mem gets a refusal (exit 75),
                and --mem auto gives at least the floor. --below-peak "<reason>": start below the floor, and keep the reason.
+               --loan 60s: a short job that does not fit can borrow the unused hold of a long lease, for 60s at most.
+               It needs --mem, and the job cannot use more memory than its lease. The longest loan is 2m.
+               At the end of the loan, the loan returns when the job fits. Else the client stops the job (exit 75).
                --cpu auto: the peak cores of the last runs of the job, as --mem auto does for memory.
                The leases do not take the last ${CPU_RESERVE_DEFAULT} cores: headroom config cpu-reserve changes them.
                On battery, the job runs in efficiency mode (EcoQoS). --no-eco: not.
@@ -484,7 +488,13 @@ const LOG_DRAIN_MS = 2000;
  * A hidden command also writes through pipes, and this process copies them to its own output, the log of the detached client.
  * The log handle of the client can append only, and the programs of Git Bash (sh, bash, sed) write nothing to such a handle.
  */
-function runCommand(command: readonly string[], env: Readonly<Record<string, string>> = {}, log: string | null = null, hidden: boolean = false): Promise<CommandEnd> {
+function runCommand(
+  command: readonly string[],
+  env: Readonly<Record<string, string>> = {},
+  log: string | null = null,
+  hidden: boolean = false,
+  stop?: AbortSignal,
+): Promise<CommandEnd> {
   return new Promise((resolve) => {
     const [file, ...args] = command;
     if (!file) return resolve({ code: 2, exit: { code: null, signal: null } });
@@ -496,10 +506,17 @@ function runCommand(command: readonly string[], env: Readonly<Record<string, str
     // On Windows, a program starts directly. A .cmd file, such as npm, starts in cmd with each argument escaped.
     const win = process.platform === "win32" ? windowsCommand(command, { env: options.env }) : null;
     const child = win === null ? spawn(file, args, options) : spawn(win.file, win.args, { ...options, windowsVerbatimArguments: win.verbatim });
+    // H219: the end of a loan stops the command. The job object stops the processes that the command started.
+    const halt = (): void => {
+      child.kill();
+    };
+    if (stop?.aborted === true) halt();
+    else stop?.addEventListener("abort", halt, { once: true });
     let done = false;
     const finish = (end: CommandEnd): void => {
       if (done) return;
       done = true;
+      stop?.removeEventListener("abort", halt);
       if (sink === null || sink.closed) return resolve(end);
       sink.once("close", () => resolve(end));
       sink.end();
@@ -574,6 +591,8 @@ interface EnforcedEnd extends CommandEnd {
  * includes this process, so the count of the job starts after it. The answer of `report` tells if the job runs in efficiency
  * mode (H30), and why. On battery, or for a heavy job while Mark is at the laptop (H33), the processes of the job go into
  * EcoQoS, unless --no-eco. The first report comes after 3 seconds.
+ *
+ * When `stop` aborts, the function stops each process of the job, but not this process (H219). The end of a loan does so.
  */
 async function runEnforced(
   command: readonly string[],
@@ -581,6 +600,7 @@ async function runEnforced(
   env: Readonly<Record<string, string>> = {},
   log: string | null = null,
   report?: (processes: number) => Promise<EcoAnswer | undefined>,
+  stop?: AbortSignal,
 ): Promise<EnforcedEnd> {
   let held: Job | null = null;
   const processors = availableParallelism();
@@ -626,10 +646,16 @@ async function runEnforced(
   // The timers do not keep this process alive.
   timer?.unref();
   first?.unref();
+  // H219: the processes of the job object, except this process. Without a job object, the stop of the command is the stop.
+  const halt = (): void => {
+    stopJobProcesses(job?.pids() ?? [], process.pid, (pid) => process.kill(pid));
+  };
+  stop?.addEventListener("abort", halt, { once: true });
   let end: CommandEnd;
   try {
-    end = await runCommand(command, env, log, enforcement.hidden === true);
+    end = await runCommand(command, env, log, enforcement.hidden === true, stop);
   } finally {
+    stop?.removeEventListener("abort", halt);
     if (timer !== null) clearInterval(timer);
     if (first !== null) clearTimeout(first);
   }
@@ -673,7 +699,10 @@ function leaseLine(lease: Lease): string {
   const until = /^waits until ([^(:]+)/.exec(lease.reason ?? "")?.[1]?.trim();
   const waitsFor = spawnWait ?? /^waits for ([^:]+):/.exec(lease.reason ?? "")?.[1];
   const queued = until !== undefined ? ` until ${until}` : waitsFor === undefined ? "" : ` for ${waitsFor}`;
-  const state = lease.state === "granted" ? "granted" : lease.state === "waiting" ? `queued${queued}` : lease.state;
+  // H219: a lease on a loan names its loan, for example "granted on a loan of 400 MB, which ends in 10 s".
+  const loan = loanText(lease, Date.now());
+  const granted = loan === null ? "granted" : `granted ${loan}`;
+  const state = lease.state === "granted" ? granted : lease.state === "waiting" ? `queued${queued}` : lease.state;
   return `headroom: lease ${lease.id.slice(0, 8)} for ${lease.job}, ${state}.`;
 }
 
@@ -829,6 +858,17 @@ async function run(argv: string[]): Promise<number> {
     return 2;
   }
   const keep = values.keep === true;
+  // H219: the time limit of a loan. A wrong value stops the run here.
+  const loan = loanOption(values.loan, { mem: values.mem, keep });
+  if (loan !== null && typeof loan === "object") {
+    console.error(`headroom: ${loan.error}`);
+    return 2;
+  }
+  const loanMs = loan;
+  if (loanMs !== null && !detachedClient) {
+    const note = loanLimitNote(loanMs);
+    if (note !== null) console.error(note);
+  }
   for (const value of values.disk ?? []) {
     try {
       parseDisk(value);
@@ -923,7 +963,16 @@ async function run(argv: string[]): Promise<number> {
   }
   const limit = values.limit === true;
   const leaseCores = amounts["cpu"] ?? null;
-  const enforcement: Enforcement = { keep, limit, leaseMb: amounts["memory"] ?? null, leaseCores, noEco: values["no-eco"] === true, hidden: detachedClient };
+  const enforcement: Enforcement = {
+    keep,
+    limit,
+    leaseMb: amounts["memory"] ?? null,
+    leaseCores,
+    noEco: values["no-eco"] === true,
+    hidden: detachedClient,
+    // H219: a job on a loan gets the memory limit of --limit.
+    loan: loanMs !== null,
+  };
   const request = {
     holder,
     job,
@@ -941,6 +990,7 @@ async function run(argv: string[]): Promise<number> {
     ...(limit && leaseCores !== null && !keep ? { cpuCap: leaseCores } : {}),
     ...(key === null ? {} : { key }),
     ...(belowPeak === null ? {} : { belowPeak }),
+    ...(loanMs === null ? {} : { loanMs }),
     // H62: a container of a compose project in this folder can count for the lease.
     folder: process.cwd(),
   };
@@ -1036,10 +1086,23 @@ async function run(argv: string[]): Promise<number> {
       (answer) => (typeof answer.eco === "boolean" ? { on: answer.eco, reason: typeof answer.ecoReason === "string" ? answer.ecoReason : null } : undefined),
       () => undefined,
     );
+  // H219: while the lease has its loan, the client renews it every 2 seconds. When the daemon ends the loan, the job stops.
+  const loanStop = new AbortController();
+  let loanEnd: string | null = null;
+  const unwatch = watchLoan(lease, {
+    renew: () => (connect() ?? latest).call<Lease>(["resources", "renew"], { id: lease.id }),
+    onEnd: (reason) => {
+      loanEnd = reason;
+      console.error(`headroom: ${reason}. The client stops the job (exit ${LOAN_ENDED_CODE}).`);
+      loanStop.abort();
+    },
+    onReturn: () => console.error("headroom: the loan of the job returned, because the job fits in the free room. The job continues."),
+  });
   try {
     // H62: a compose file can give its containers the label `headroom.lease` from this variable.
-    result = await runEnforced(positionals, enforcement, { ...(temp?.env ?? {}), HEADROOM_LEASE: lease.id }, sink, report);
+    result = await runEnforced(positionals, enforcement, { ...(temp?.env ?? {}), HEADROOM_LEASE: lease.id }, sink, report, loanStop.signal);
   } finally {
+    unwatch();
     if (temp !== null) tempMb = finishTemp(temp, values["keep-temp"] === true);
   }
   const { code, exit, peakMb, processes, cpuMs } = result;
@@ -1064,7 +1127,8 @@ async function run(argv: string[]): Promise<number> {
   } catch {
     // The daemon ends the lease anyway when this process exits. It reads the end record first.
   }
-  return code;
+  // H219: a job that the end of its loan stopped did not finish, so the run exits as a run that waited too long.
+  return loanEnd === null ? code : LOAN_ENDED_CODE;
 }
 
 async function showAlerts(json: boolean): Promise<number> {

@@ -126,18 +126,41 @@ describe("Store", () => {
     store.close();
   });
 
-  it("adopts a file of a version before the migrations once: user_version 9, and a second open changes nothing", () => {
+  it("keeps the time limit and the loan of a lease (H219), so a restore keeps them, and a returned loan goes away", () => {
+    const store = new Store(":memory:");
+    const broker = new Broker({ now: () => 5000, newId: () => "l1" });
+    const lease = broker.request({ holder: "fleet", job: "pnpm install", amounts: { memory: 400 }, pid: 42, loanMs: 10_000 });
+    store.saveLease(lease);
+    expect(store.lease("l1")).toEqual(lease);
+    expect(store.lease("l1")).toMatchObject({ loanMs: 10_000 });
+    expect(store.lease("l1")?.loan).toBeUndefined();
+    const granted = { ...lease, state: "granted" as const, grantedAt: 5000, loan: { amounts: { memory: 348 }, until: 15_000 } };
+    store.saveLease(granted);
+    expect(store.lease("l1")).toEqual(granted);
+    expect(store.activeLeases()).toEqual([granted]);
+    const restored = new Broker({ now: () => 6000 });
+    restored.restore(store.activeLeases());
+    expect(restored.get("l1")).toMatchObject({ loanMs: 10_000, loan: { amounts: { memory: 348 }, until: 15_000 } });
+    const { loan: _loan, ...returned } = granted;
+    store.saveLease(returned);
+    expect(store.lease("l1")).toEqual(returned);
+    expect(store.lease("l1")?.loan).toBeUndefined();
+    store.close();
+  });
+
+  it("adopts a file of a version before the migrations once: user_version 10, and a second open changes nothing", () => {
     const path = join(mkdtempSync(join(tmpdir(), "headroom-adopt-")), "old.db");
     const old = new DatabaseSync(path);
     old.exec(`CREATE TABLE owners (at INTEGER NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, private_mb INTEGER, working_mb INTEGER, processes INTEGER, PRIMARY KEY (at, owner))`);
     old.close();
     new Store(path).close();
     const read = new DatabaseSync(path);
-    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(read.prepare("PRAGMA user_version").get()).toEqual({ user_version: 10 });
     const owners = read.prepare("PRAGMA table_info(owners)").all().map((row) => String(row["name"]));
     expect(owners).toEqual(expect.arrayContaining(["write_mb", "read_mb"]));
     const leases = read.prepare("PRAGMA table_info(leases)").all().map((row) => String(row["name"]));
-    expect(leases).toEqual(expect.arrayContaining(["peak_mb", "usage", "exit_code", "processes", "conditions", "cpu_cap", "peak_gpu_mb", "cancelled_by", "folder"]));
+    // H219: step 10 adds the time limit of a job that can borrow, and the loan of its lease.
+    expect(leases).toEqual(expect.arrayContaining(["peak_mb", "usage", "exit_code", "processes", "conditions", "cpu_cap", "peak_gpu_mb", "cancelled_by", "folder", "loan_ms", "loan"]));
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'leases_job'").get()).toEqual({ name: "leases_job" });
     // H183: step 3 makes the tables of the shadow log and of the reap log.
     expect(read.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'reap_%' ORDER BY name").all()).toEqual([{ name: "reap_log" }, { name: "reap_shadow" }]);
@@ -158,7 +181,7 @@ describe("Store", () => {
     read.close();
     new Store(path).close();
     const again = new DatabaseSync(path);
-    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 9 });
+    expect(again.prepare("PRAGMA user_version").get()).toEqual({ user_version: 10 });
     again.close();
   });
 

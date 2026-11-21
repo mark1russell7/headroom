@@ -83,9 +83,9 @@ export type {
   WorktreeState,
   WorktreeSummary,
 } from "./worktrees.ts";
-export { Broker, isActive, NO_REJOIN_REASON, processIsAlive, RECORDED_END_NOTE } from "./broker.ts";
+export { Broker, isActive, LOAN_END_START, LOAN_MAX_DEFAULT_MS, NO_REJOIN_REASON, processIsAlive, RECORDED_END_NOTE } from "./broker.ts";
 export { leaseEndPath, readLeaseEnd, removeLeaseEnd, sweepLeaseEnds, writeLeaseEnd, type LeaseEnd } from "./ends.ts";
-export type { BrokerOptions, Capacity, JobExit, Lease, LeaseMeasures, LeaseRequest, LeaseState } from "./broker.ts";
+export type { BrokerOptions, Capacity, JobExit, Lease, LeaseMeasures, LeaseRequest, LeaseState, Loan } from "./broker.ts";
 export {
   averageRate,
   BROWSER_SLOT,

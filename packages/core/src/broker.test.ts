@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ALERT_RULES, type AlertRules } from "./alerts.ts";
-import { Broker, NO_REJOIN_REASON, RECORDED_END_NOTE, type Capacity, type Lease } from "./broker.ts";
+import { Broker, LOAN_END_START, NO_REJOIN_REASON, RECORDED_END_NOTE, type Capacity, type Lease } from "./broker.ts";
 import type { LeaseEnd } from "./ends.ts";
 import { rooms } from "./resources.ts";
 
 function setup(
-  options: { alive?: Set<number>; used?: number; use?: (lease: Lease) => number | null; runMs?: Record<string, number>; longRunMs?: number; ends?: Map<string, LeaseEnd> } = {},
+  options: {
+    alive?: Set<number>;
+    used?: number;
+    use?: (lease: Lease) => number | null;
+    runMs?: Record<string, number>;
+    longRunMs?: number;
+    ends?: Map<string, LeaseEnd>;
+    reserveMb?: number;
+    loanMaxMs?: number;
+  } = {},
 ) {
   let now = 1_000_000;
   let next = 0;
@@ -15,13 +24,14 @@ function setup(
     isAlive: (pid) => options.alive?.has(pid) ?? true,
     used: (lease, id) => (id === "memory" ? (options.use === undefined ? (options.used ?? 0) : options.use(lease)) : null),
     longRunMs: options.longRunMs ?? 1_800_000,
-    reserveMb: 1000,
+    reserveMb: options.reserveMb ?? 1000,
     agingMs: 60_000,
     headWaitMs: 600_000,
     runMs: (lease) => options.runMs?.[lease.job] ?? null,
     backfillMs: 600_000,
     defaultTtlMs: 300_000,
     endOf: (lease) => options.ends?.get(lease.id) ?? null,
+    ...(options.loanMaxMs === undefined ? {} : { loanMaxMs: options.loanMaxMs }),
   });
   return { broker, advance: (ms: number) => (now += ms) };
 }
@@ -563,5 +573,171 @@ describe("Broker cancel and the leases of a restart", () => {
     alive.delete(11);
     broker.tick(cap(1000));
     expect(broker.get("back")).toMatchObject({ state: "expired", reason: "the process exited" });
+  });
+});
+
+describe("the loan of the unused hold of a long lease (H219)", () => {
+  const MIN = 60_000;
+  /** The capacity of the laptop of 2026-11-21: 28262 MB of memory, with the available memory of the sample. */
+  const at = (availableMb: number): Capacity => ({ totalMb: 28_262, availableMb, pools: {} });
+  /** The time of the first tick of the fixture after its 31 minutes of measures. */
+  const T = 1_000_000 + 31 * MIN;
+
+  /**
+   * The fixture of 2026-11-21 19:00Z. The lease of the long service ran for more than 30 minutes, with a measured peak of 1700
+   * MB. It uses 625 MB now, so it holds 1700 x 1.25 = 2125 MB, and 1500 MB of its hold stays unused. The reserve is 2048 MB.
+   */
+  function service(options: { longRunMs?: number; young?: boolean } = {}) {
+    const use = new Map<string, number>([["long service", 1700]]);
+    const longRunMs = options.longRunMs ?? 30 * MIN;
+    const { broker, advance } = setup({ use: (lease) => use.get(lease.job) ?? 0, reserveMb: 2048, longRunMs });
+    const serve = broker.request({ holder: "service", job: "long service", amounts: { memory: 2048 }, pid: 5 });
+    broker.tick(at(8000));
+    // The measures of a lease start at the first tick after its grant.
+    broker.tick(at(8000));
+    use.set("long service", 625);
+    advance(options.young === true ? longRunMs - MIN : longRunMs + MIN);
+    broker.tick(at(8000));
+    expect(broker.get(serve.id)?.state).toBe("granted");
+    return { broker, advance, use, serve };
+  }
+
+  const install = { holder: "fleet", job: "pnpm install", amounts: { memory: 400 }, pid: 9 };
+
+  it("grants a 400 MB install with --loan 10s at its first tick, with 3000 and with 3600 MB available, and the same install with no loan waits", () => {
+    for (const [availableMb, borrowed] of [
+      [3000, 400],
+      [3600, 348],
+    ] as const) {
+      const { broker, advance } = service();
+      // The free room: the available memory, less the reserve of 2048, less the unused 1500 of the hold of the long service.
+      expect(broker.free(at(availableMb))["memory"]).toBe(availableMb - 2048 - 1500);
+      const plain = broker.request(install);
+      const loan = broker.request({ ...install, job: "pnpm install --loan", loanMs: 10_000 });
+      advance(2000);
+      broker.tick(at(availableMb));
+      expect(broker.get(plain.id)).toMatchObject({ state: "waiting", reason: `waits for memory: needs 400, ${Math.max(0, availableMb - 3548)} free` });
+      expect(broker.get(loan.id)).toMatchObject({ state: "granted", grantedAt: T + 2000, reason: null, loanMs: 10_000 });
+      // The loan is the part above the free room: all 400 MB with 3000 available, and 400 - 52 with 3600 available.
+      expect(broker.get(loan.id)?.loan).toEqual({ amounts: { memory: borrowed }, until: T + 12_000 });
+    }
+  });
+
+  it("lends the same room only once: two loans of 400 MB fit, and a third waits", () => {
+    const { broker, advance } = service();
+    // 3000 - 2048 - 1500 = -548 free, and 1500 to lend: 952 for the loans.
+    const first = broker.request({ ...install, loanMs: 10_000 });
+    broker.tick(at(3000));
+    advance(2000);
+    const second = broker.request({ ...install, job: "pnpm install 2", loanMs: 10_000 });
+    broker.tick(at(3000));
+    advance(2000);
+    const third = broker.request({ ...install, job: "pnpm install 3", loanMs: 10_000 });
+    broker.tick(at(3000));
+    expect([first, second].map((each) => broker.get(each.id)?.state)).toEqual(["granted", "granted"]);
+    expect(broker.get(third.id)).toMatchObject({ state: "waiting", reason: "waits for memory: needs 400, 0 free" });
+    expect(broker.get(third.id)?.loan).toBeUndefined();
+    // Two loans in one tick take the same room only once too.
+    const again = service();
+    const both = [1, 2, 3].map((n) => again.broker.request({ ...install, job: `pnpm install ${n}`, loanMs: 10_000 }));
+    again.broker.tick(at(3000));
+    expect(both.map((each) => again.broker.get(each.id)?.state)).toEqual(["granted", "granted", "waiting"]);
+  });
+
+  it("gets no loan from a young lease, from a lease on a loan, or with a time limit above loanMaxMs", () => {
+    const young = service({ young: true });
+    const fromYoung = young.broker.request({ ...install, loanMs: 10_000 });
+    young.broker.tick(at(3600));
+    expect(young.broker.get(fromYoung.id)?.state).toBe("waiting");
+
+    const slow = service();
+    const tooLong = slow.broker.request({ ...install, loanMs: 600_000 });
+    slow.broker.tick(at(3600));
+    expect(slow.broker.get(tooLong.id)).toMatchObject({ state: "waiting", reason: "waits for memory: needs 400, 52 free" });
+
+    // A long run of 5 seconds, so a lease on a loan gets its measured hold during its loan of 60 seconds.
+    const { broker, advance, use } = service({ longRunMs: 5000 });
+    const borrower = broker.request({ ...install, loanMs: 60_000 });
+    broker.tick(at(3000));
+    expect(broker.get(borrower.id)?.loan?.amounts).toEqual({ memory: 400 });
+    use.set("pnpm install", 300);
+    broker.tick(at(3000));
+    use.set("pnpm install", 100);
+    advance(6000);
+    broker.tick(at(3000));
+    // The borrower holds 300 x 1.25 = 375 and uses 100. Its unused 275 is not lent: 952 - 275 = 677 for a loan, less than 800.
+    const big = broker.request({ ...install, job: "pnpm install big", amounts: { memory: 800 }, loanMs: 10_000 });
+    broker.tick(at(3000));
+    expect(broker.get(big.id)?.state).toBe("waiting");
+    expect(broker.get(borrower.id)?.state).toBe("granted");
+  });
+
+  it("never lends the reserve: with 2300 MB available and a reserve of 2048, a loan of 400 MB waits", () => {
+    const { broker } = service();
+    // -1248 free and 1500 to lend: 252 for a loan.
+    const loan = broker.request({ ...install, loanMs: 10_000 });
+    broker.tick(at(2300));
+    expect(broker.get(loan.id)).toMatchObject({ state: "waiting", reason: "waits for memory: needs 400, 0 free" });
+  });
+
+  it("ends a loan early when the service grows and the available memory falls under the reserve", () => {
+    const { broker, advance, use } = service();
+    const loan = broker.request({ ...install, loanMs: 10_000 });
+    broker.tick(at(3000));
+    expect(broker.get(loan.id)?.state).toBe("granted");
+    advance(2000);
+    use.set("long service", 2125);
+    broker.tick(at(1900));
+    expect(broker.get(loan.id)).toMatchObject({
+      state: "expired",
+      endedAt: T + 2000,
+      reason: `${LOAN_END_START} early: the free memory fell under its reserve, so the long leases take their room back (H219)`,
+    });
+    // The ended lease keeps its loan as a record.
+    expect(broker.get(loan.id)?.loan?.amounts).toEqual({ memory: 400 });
+  });
+
+  it("ends the lease at the time limit of its loan when the job does not fit with no loan", () => {
+    const { broker, advance } = service();
+    const loan = broker.request({ ...install, loanMs: 10_000 });
+    broker.tick(at(3000));
+    advance(9999);
+    broker.tick(at(3000));
+    expect(broker.get(loan.id)?.state).toBe("granted");
+    advance(1);
+    const waits = broker.request({ holder: "lag", job: "test", amounts: { memory: 300 } });
+    broker.tick(at(3000));
+    expect(broker.get(loan.id)).toMatchObject({
+      state: "expired",
+      endedAt: T + 10_000,
+      reason: `${LOAN_END_START} at its time limit, and the job does not fit in the free memory with no loan (H219)`,
+    });
+    // The ended loan gives its room back in the same tick: -948 + 400 = -548 free, so the waiting job still waits.
+    expect(broker.get(waits.id)).toMatchObject({ state: "waiting", reason: "waits for memory: needs 300, 0 free" });
+  });
+
+  it("returns the loan at its time limit when the job fits with no loan, and the lease stays granted", () => {
+    const { broker, advance, serve } = service();
+    const loan = broker.request({ ...install, loanMs: 10_000 });
+    broker.tick(at(3000));
+    advance(5000);
+    broker.release(serve.id);
+    broker.tick(at(3000));
+    // Before its time limit, the lease keeps its loan.
+    expect(broker.get(loan.id)?.loan).toEqual({ amounts: { memory: 400 }, until: T + 10_000 });
+    advance(5000);
+    const changed = broker.tick(at(3000));
+    expect(changed.map((each) => each.id)).toContain(loan.id);
+    expect(broker.get(loan.id)).toMatchObject({ state: "granted", loanMs: 10_000 });
+    expect(broker.get(loan.id)?.loan).toBeUndefined();
+    advance(60_000);
+    broker.tick(at(3000));
+    expect(broker.get(loan.id)?.state).toBe("granted");
+  });
+
+  it("refuses a time limit of a loan that is not a number above 0", () => {
+    const { broker } = setup();
+    expect(() => broker.request({ ...install, loanMs: 0 })).toThrow(RangeError);
+    expect(() => broker.request({ ...install, loanMs: Number.NaN })).toThrow(RangeError);
   });
 });

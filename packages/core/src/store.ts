@@ -10,7 +10,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { addMissingColumns, migrate, openDatabase, syncedTransaction, transaction, type Migration } from "@mark1russell7/sqlite";
 import { alertRulesOf, type AlertRules } from "./alerts.ts";
-import { isActive, type Lease, type LeaseState } from "./broker.ts";
+import { isActive, type Lease, type LeaseState, type Loan } from "./broker.ts";
 import type { CounterRow, ProcessReads } from "./counters.ts";
 import type { JobUsage, Measurement } from "./resources.ts";
 import type { MemoryPeak, PeakKind, PeakPoint, PeakSummary } from "./memory-peaks.ts";
@@ -163,6 +163,10 @@ const MIGRATIONS: readonly Migration[] = [
   (db) => {
     addMissingColumns(db, "lease_keys", { floor_mb: "REAL", below_peak: "TEXT" });
     db.exec("CREATE INDEX IF NOT EXISTS lease_keys_command ON lease_keys (command)");
+  },
+  // H219: the time limit of a job that can borrow, and the loan of its lease. A restart keeps each loan with its end.
+  (db) => {
+    addMissingColumns(db, "leases", { loan_ms: "INTEGER", loan: "TEXT" });
   },
 ];
 
@@ -641,13 +645,15 @@ export class Store {
     this.#db
       .prepare(
         `INSERT INTO leases (id, holder, job, amounts, priority, pid, ttl_ms, state, requested_at, granted_at, ended_at, heartbeat_at, reason, peak_mb, usage,
-           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores, peak_gpu_mb, cancelled_by, folder)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           exit_code, signal, log, processes, peak_starts_per_min, spawn, conditions, conditions_met_at, unmet, cpu_cap, peak_cores, peak_gpu_mb, cancelled_by, folder,
+           loan_ms, loan)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (id) DO UPDATE SET pid = excluded.pid, state = excluded.state, granted_at = excluded.granted_at,
            ended_at = excluded.ended_at, heartbeat_at = excluded.heartbeat_at, reason = excluded.reason, peak_mb = excluded.peak_mb,
            usage = excluded.usage, exit_code = excluded.exit_code, signal = excluded.signal, log = excluded.log, processes = excluded.processes,
            peak_starts_per_min = excluded.peak_starts_per_min, spawn = excluded.spawn, conditions_met_at = excluded.conditions_met_at,
-           unmet = excluded.unmet, peak_cores = excluded.peak_cores, peak_gpu_mb = excluded.peak_gpu_mb, cancelled_by = excluded.cancelled_by`,
+           unmet = excluded.unmet, peak_cores = excluded.peak_cores, peak_gpu_mb = excluded.peak_gpu_mb, cancelled_by = excluded.cancelled_by,
+           loan = excluded.loan`,
       )
       .run(
         lease.id, lease.holder, lease.job, JSON.stringify(lease.amounts), lease.priority, lease.pid, lease.ttlMs,
@@ -658,6 +664,7 @@ export class Store {
         lease.conditions === undefined ? null : JSON.stringify(lease.conditions), lease.conditionsMetAt ?? null,
         lease.unmet === undefined ? null : JSON.stringify(lease.unmet), lease.cpuCap ?? null, lease.peakCores ?? null, lease.peakGpuMb ?? null,
         lease.cancelledBy ?? null, lease.folder ?? null,
+        lease.loanMs ?? null, lease.loan === undefined ? null : JSON.stringify(lease.loan),
       );
   }
 
@@ -1481,5 +1488,7 @@ function toLease(row: Record<string, unknown>): Lease {
     ...(row["peak_gpu_mb"] === null || row["peak_gpu_mb"] === undefined ? {} : { peakGpuMb: Number(row["peak_gpu_mb"]) }),
     ...(row["cancelled_by"] === null || row["cancelled_by"] === undefined ? {} : { cancelledBy: String(row["cancelled_by"]) }),
     ...(row["folder"] === null || row["folder"] === undefined ? {} : { folder: String(row["folder"]) }),
+    ...(row["loan_ms"] === null || row["loan_ms"] === undefined ? {} : { loanMs: Number(row["loan_ms"]) }),
+    ...(row["loan"] === null || row["loan"] === undefined ? {} : { loan: JSON.parse(String(row["loan"])) as Loan }),
   };
 }

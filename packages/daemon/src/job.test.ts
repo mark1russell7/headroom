@@ -22,6 +22,12 @@ describe("jobLimits (H23)", () => {
     expect(jobLimits({ limit: true, leaseMb: 1024 }, 40, 16)).toEqual({ memoryMb: 1128, cpuWeight: 5 });
     expect(jobLimits({ limit: false, leaseMb: 1024, leaseCores: 4 }, 40, 16)).toEqual({ cpuWeight: 5 });
   });
+
+  it("gives the memory limit of the lease with --loan, and no cap of the cores (H219)", () => {
+    expect(jobLimits({ limit: false, loan: true, leaseMb: 400, leaseCores: 2 }, 40, 16)).toEqual({ memoryMb: 504, cpuWeight: 5 });
+    expect(jobLimits({ limit: true, loan: true, leaseMb: 400, leaseCores: 2 }, 40, 16)).toEqual({ memoryMb: 504, cpuRate: 1250 });
+    expect(jobLimits({ limit: false, loan: true, leaseMb: null }, 40, 16)).toEqual({ cpuWeight: 5 });
+  });
 });
 
 describe("jobEnv", () => {
