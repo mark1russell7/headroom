@@ -23,6 +23,7 @@ import { DAEMON_TITLE, restartFromDaemon, serviceCommand } from "./service.ts";
 import { readSummary } from "./disk-report.ts";
 import { announceDaemon, databasePath, diskReportPath, headroomHome, leaseEndsDir, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
 import { HOOK_MEASURE_BUDGET_MS, longPathRefusal, NativeImages, nativeLongPath, refusalRow } from "./native-paths.ts";
+import { LinkGate } from "./link-gate.ts";
 import { diskProcedures, gatewayProcedures, nativeProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { keepStartsBeforeStop } from "./starts-before-stop.ts";
@@ -170,6 +171,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
   const deferred = new DeferredStarts({ leases: engine, launch: launchClient(service.node, service.cli, CLIENT_TITLE) });
   // H203: one cache of the native images of the folders, for the hook and for `headroom run`.
   const nativeImages = new NativeImages();
+  // The gate of links between checkouts (H223) keeps its cache of links for the life of the daemon.
+  const linkGate = new LinkGate();
   // H203: each refusal is a row of the store with its session, so the score of the gate tells a refusal from no command.
   const refusalLog = { record: (entry: NativeRefusalInput) => engine.recordNativeRefusal(entry), counts: (from: number, to: number) => engine.nativeRefusalCounts(from, to) };
   const registry = daemonRegistry([
@@ -210,6 +213,11 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
             // The store is not writable. The refusal goes on, and the line of the log still counts it.
           }
           log(`The hook refused a command of ${session} for a long native path (H203): ${refusal.slice(0, 400)}`);
+          return refusal;
+        },
+        links: async (command, cwd) => {
+          const refusal = await linkGate.refusal(command, cwd);
+          if (refusal !== null) log(`The hook refused a command for a link between checkouts (H223): ${refusal.slice(0, 400)}`);
           return refusal;
         },
       }),

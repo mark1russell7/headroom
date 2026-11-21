@@ -126,24 +126,38 @@ function runsNode(words: readonly string[]): boolean {
   return false;
 }
 
+/** One part of a command line that starts a program, with the current folder of the part. */
+export interface CommandPart {
+  /** The words of the part, after the assignments and the prefixes (`env`, `time` and similar). */
+  readonly words: readonly string[];
+  /** The name of the program: the first word with no folder and no extension, in lowercase. */
+  readonly program: string;
+  /** The current folder of the part, or `null` when it is not known. */
+  readonly here: string | null;
+  /** This function gives the absolute path of a word of the part, or `null` for a relative word with no current folder. */
+  readonly place: (path: string) => string | null;
+}
+
 /**
- * This function gives the folders where a command line runs node. Each part that runs node gives its current folder,
- * after each `cd` or `Set-Location` before it. An option for a folder (for example `-C`) gives its folder. A path with
- * `node_modules` gives the folder above it, and an absolute script gives its folder. The function also reads the script
- * of a shell (`bash -c`) and the command of `headroom run` after `--`. `cwd` is the folder of the line. A relative
- * folder with no `cwd` does not count.
+ * This function gives the function that makes a word of a command an absolute path, from the folder `folder`. A word
+ * that starts with `~` gets the home folder. A relative word with no folder gives `null`.
  */
-export function foldersOfCommand(command: string, cwd: string | null, home: string = homedir()): string[] {
-  const folders = new Set<string>();
-  let here = cwd;
-  const place = (path: string): string | null => {
+export function placeFrom(folder: string | null, home: string = homedir()): (path: string) => string | null {
+  return (path) => {
     const expanded = expandHome(path, home);
     if (isAbsolute(expanded)) return resolve(expanded);
-    return here === null ? null : resolve(here, expanded);
+    return folder === null ? null : resolve(folder, expanded);
   };
-  const add = (path: string | null): void => {
-    if (path !== null) folders.add(path);
-  };
+}
+
+/**
+ * This function gives the parts of a command line that start a program, each with its current folder. The function follows
+ * each `cd` or `Set-Location`, and it reads the script of a shell (`bash -c`) and the command of `headroom run` after `--`.
+ * These parts give no part of their own. `cwd` is the folder of the line.
+ */
+export function commandParts(command: string, cwd: string | null, home: string = homedir()): CommandPart[] {
+  const parts: CommandPart[] = [];
+  let here = cwd;
   const visit = (line: string, depth: number): void => {
     for (const all of commandWords(line)) {
       let start = 0;
@@ -154,7 +168,7 @@ export function foldersOfCommand(command: string, cwd: string | null, home: stri
       if (FOLDER_CHANGERS.has(program)) {
         const target = words.slice(1).find((word) => !word.startsWith("-") && !/^\/d$/i.test(word));
         if (target === undefined) here = home;
-        else if (target !== "-") here = place(target);
+        else if (target !== "-") here = placeFrom(here, home)(target);
         continue;
       }
       const option = SHELLS.get(program);
@@ -169,27 +183,45 @@ export function foldersOfCommand(command: string, cwd: string | null, home: stri
         if (dash >= 0 && depth < 3) visit(joinWords(words.slice(dash + 1)), depth + 1);
         continue;
       }
-      if (!runsNode(words)) continue;
-      let folder = here;
-      for (let at = 1; at < words.length; at++) {
-        const word = words[at] ?? "";
-        const joined = /^--(?:dir|prefix|cwd|root)=(.+)$/.exec(word)?.[1];
-        const value = FOLDER_OPTIONS.has(word) ? words[++at] : joined;
-        if (value !== undefined) {
-          folder = place(value);
-          continue;
-        }
-        const cut = word.replaceAll("\\", "/").search(/(?:^|\/)node_modules(?:\/|$)/);
-        if (cut >= 0) add(place(word.slice(0, cut) || "."));
-        else if (SCRIPT_FILE.test(word) && isAbsolute(expandHome(word, home))) add(dirname(place(word) ?? word));
-      }
-      const first = words[0] ?? "";
-      const cut = first.replaceAll("\\", "/").search(/(?:^|\/)node_modules(?:\/|$)/);
-      if (cut > 0) add(place(first.slice(0, cut)));
-      add(folder);
+      parts.push({ words, program, here, place: placeFrom(here, home) });
     }
   };
   visit(command, 0);
+  return parts;
+}
+
+/**
+ * This function gives the folders where a command line runs node. Each part that runs node gives its current folder,
+ * after each `cd` or `Set-Location` before it. An option for a folder (for example `-C`) gives its folder. A path with
+ * `node_modules` gives the folder above it, and an absolute script gives its folder. The function also reads the script
+ * of a shell (`bash -c`) and the command of `headroom run` after `--`. `cwd` is the folder of the line. A relative
+ * folder with no `cwd` does not count.
+ */
+export function foldersOfCommand(command: string, cwd: string | null, home: string = homedir()): string[] {
+  const folders = new Set<string>();
+  const add = (path: string | null): void => {
+    if (path !== null) folders.add(path);
+  };
+  for (const { words, here, place } of commandParts(command, cwd, home)) {
+    if (!runsNode(words)) continue;
+    let folder = here;
+    for (let at = 1; at < words.length; at++) {
+      const word = words[at] ?? "";
+      const joined = /^--(?:dir|prefix|cwd|root)=(.+)$/.exec(word)?.[1];
+      const value = FOLDER_OPTIONS.has(word) ? words[++at] : joined;
+      if (value !== undefined) {
+        folder = place(value);
+        continue;
+      }
+      const cut = word.replaceAll("\\", "/").search(/(?:^|\/)node_modules(?:\/|$)/);
+      if (cut >= 0) add(place(word.slice(0, cut) || "."));
+      else if (SCRIPT_FILE.test(word) && isAbsolute(expandHome(word, home))) add(dirname(place(word) ?? word));
+    }
+    const first = words[0] ?? "";
+    const cut = first.replaceAll("\\", "/").search(/(?:^|\/)node_modules(?:\/|$)/);
+    if (cut > 0) add(place(first.slice(0, cut)));
+    add(folder);
+  }
   return [...folders];
 }
 

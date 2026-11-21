@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -8,13 +8,21 @@ import {
   cleanDue,
   cleanWorktrees,
   findNodeModules,
+  installLinkRefusal,
   keepAlert,
+  LinkCache,
+  linksInto,
+  moduleFolders,
+  moduleLinks,
   nodeRunner,
   parsePorcelain,
   pathKey,
   trimEndSlashes,
   refusal,
+  removeNodeModules,
   removeWorktree,
+  repoCheckouts,
+  samePath,
   scanWorktrees,
   summarize,
   worktreeRulesSource,
@@ -34,6 +42,8 @@ interface Node {
   kind: EntryKind;
   mtimeMs: number;
   text?: string;
+  /** The target of a link. A link with no target cannot be read. */
+  target?: string;
 }
 
 interface Tree {
@@ -67,6 +77,13 @@ class Fake implements WorktreeRunner {
     return this;
   }
 
+  /** This function adds a link with its target, as a junction or a symbolic link. `null` makes a link that cannot be read. */
+  link(path: string, target: string | null): this {
+    this.add(path, "link");
+    if (target !== null) (this.nodes.get(key(path)) as Node).target = target;
+    return this;
+  }
+
   /** This function adds a main checkout with its linked trees. Each linked tree gets a `.git` file and a git folder. */
   repo(name: string, trees: Tree[] = []): this {
     const main = `${ROOT}/${name}`;
@@ -75,6 +92,7 @@ class Fake implements WorktreeRunner {
     for (const tree of trees) {
       const id = tree.path.split("/").pop() as string;
       this.add(`${main}/.git/worktrees/${id}/HEAD`).add(`${main}/.git/worktrees/${id}/index`);
+      this.add(`${main}/.git/worktrees/${id}/gitdir`, "file", OLD, `${tree.path}/.git\n`).add(`${main}/.git/worktrees/${id}/commondir`, "file", OLD, "../..\n");
       if (tree.prunable !== true) this.add(`${tree.path}/.git`, "file", OLD, `gitdir: ${main}/.git/worktrees/${id}\n`).add(`${tree.path}/src/a.ts`);
     }
     return this;
@@ -99,6 +117,11 @@ class Fake implements WorktreeRunner {
 
   readText(path: string): string | null {
     return this.nodes.get(key(path))?.text ?? null;
+  }
+
+  readLink(path: string): string | null {
+    const node = this.nodes.get(key(path));
+    return node?.kind === "link" ? (node.target ?? null) : null;
   }
 
   remove(path: string): void {
@@ -396,6 +419,209 @@ describe("removeWorktree", () => {
     const result = await removeWorktree(tree, { roots: [ROOT], mains: [`${ROOT}/app`], runner: fake, main: `${ROOT}/app`, platform: "linux", dryRun: true });
     expect(result.ok).toBe(true);
     expect(changed(fake)).toBe(false);
+  });
+});
+
+describe("links into a tree (H223)", () => {
+  const main = `${ROOT}/app`;
+  const tree = `${ROOT}/app-wt/t`;
+  const other = `${ROOT}/app-wt/o`;
+  const make = (): Fake => new Fake().repo("app", [{ path: tree, branch: "t" }, { path: other, branch: "o" }]);
+  const context = (fake: Fake) => ({ roots: [ROOT], mains: [main], runner: fake, main, platform: "linux" as const });
+  const slashes = (text: string | null | undefined): string => (text ?? "").replace(/\\/g, "/");
+  const vitest = `${tree}/node_modules/.pnpm/vitest@4/node_modules/vitest`;
+
+  it("finds the checkouts of a repository from the files of git, from the main checkout and from inside a tree", () => {
+    const fake = make();
+    for (const from of [main, tree, `${tree}/src`]) expect(repoCheckouts(from, fake)?.checkouts.map(key)).toEqual([main, tree, other]);
+    const found = repoCheckouts(`${tree}/src`, fake);
+    expect([key(found?.top ?? ""), key(found?.main ?? "")]).toEqual([tree, main]);
+    expect(repoCheckouts("/r/elsewhere/x", fake)).toBeNull();
+  });
+
+  it("holds the removal while a link of the main checkout points into the tree, names the link, and changes nothing", async () => {
+    const fake = make();
+    fake.link(`${main}/node_modules/vitest`, vitest);
+    fake.link(`${main}/node_modules/@scope/core`, `${tree}/packages/core`);
+    fake.add(`${vitest}/index.js`);
+    const result = await removeWorktree(tree, context(fake));
+    expect(result.ok).toBe(false);
+    expect(slashes(result.refused)).toContain(`The link ${main}/node_modules/vitest in the checkout ${main} points to ${vitest}. A delete of ${tree} breaks it.`);
+    expect(result.refused).toMatch(/1 other link also points/);
+    expect(result.refused).toMatch(/Run the install of/);
+    expect(fake.order).toEqual([]);
+    expect(fake.removed).toEqual([]);
+    expect(fake.exists(`${vitest}/index.js`)).toBe(true);
+  });
+
+  it("holds a dry run and the delete of the node_modules of the tree the same way", async () => {
+    const fake = make();
+    fake.link(`${main}/node_modules/vitest`, vitest);
+    fake.add(`${vitest}/index.js`);
+    expect((await removeWorktree(tree, { ...context(fake), dryRun: true })).refused).toMatch(/points to/);
+    const modules = await removeNodeModules(tree, context(fake));
+    expect(modules.refused).toMatch(/points to/);
+    expect(modules.removed).toEqual([]);
+    expect(fake.exists(`${vitest}/index.js`)).toBe(true);
+  });
+
+  it("lets the removal go on when the links of the other checkouts point into their own folders or elsewhere", async () => {
+    const fake = make();
+    fake.link(`${main}/node_modules/vitest`, `${main}/node_modules/.pnpm/vitest@4/node_modules/vitest`);
+    fake.link(`${tree}/node_modules/vitest`, vitest);
+    fake.link(`${other}/node_modules`, `${main}/node_modules`);
+    const result = await removeWorktree(tree, context(fake));
+    expect(result.ok).toBe(true);
+    expect(result.steps.join(" ")).toMatch(/No link of another checkout points into the tree/);
+    expect(fake.exists(tree)).toBe(false);
+  });
+
+  it("holds on a link that it cannot read, and on a node_modules of another checkout that is a link into the tree", async () => {
+    const unreadable = make();
+    unreadable.link(`${main}/node_modules/odd`, null);
+    expect((await removeWorktree(tree, context(unreadable))).refused).toMatch(/cannot read the link/);
+    const junction = make();
+    junction.link(`${other}/node_modules`, `${tree}/node_modules`);
+    const refused = (await removeWorktree(tree, context(junction))).refused;
+    expect(slashes(refused)).toContain(`The link ${other}/node_modules in the checkout ${other} points to ${tree}/node_modules.`);
+    expect(refused).toMatch(/Remove only the link/);
+    expect(junction.order).toEqual([]);
+  });
+
+  it("skips the tree in the cleanup while a link points into it, and removes the other tree", async () => {
+    const fake = make();
+    fake.link(`${main}/node_modules/vitest`, vitest);
+    const scan = await scanWorktrees(options(fake));
+    const result = await cleanWorktrees(scan, { runner: fake, dryRun: false, platform: "linux", pauseMs: 0 });
+    const held = result.actions.find((action) => key(action.path) === tree);
+    expect(held).toMatchObject({ action: "skip" });
+    expect(held?.detail).toMatch(/points to/);
+    expect(fake.exists(tree)).toBe(true);
+    expect(fake.exists(other)).toBe(false);
+  });
+
+  it("skips the delete of the node_modules of a keep tree while a link points into it, also in a dry run", async () => {
+    for (const dryRun of [true, false]) {
+      const fake = make();
+      fake.dirty.add(tree);
+      fake.add(`${vitest}/index.js`);
+      fake.link(`${main}/node_modules/vitest`, vitest);
+      const scan = await scanWorktrees(options(fake));
+      const result = await cleanWorktrees(scan, { runner: fake, dryRun, platform: "linux", pauseMs: 0 });
+      const held = result.actions.find((action) => key(action.path) === tree);
+      expect(held).toMatchObject({ action: "skip" });
+      expect(held?.detail).toMatch(/points to/);
+      expect(fake.exists(`${vitest}/index.js`)).toBe(true);
+    }
+  });
+
+  it("does not count the links inside the deleted folder or the links of its own checkout", () => {
+    const links = [
+      { checkout: tree, link: `${tree}/packages/a/node_modules/b`, target: `${tree}/node_modules/.pnpm/b` },
+      { checkout: main, link: `${main}/node_modules/b`, target: `${tree}/node_modules/.pnpm/b` },
+      { checkout: main, link: `${main}/node_modules/c`, target: `${main}/node_modules/.pnpm/c` },
+    ];
+    expect(linksInto(`${tree}/node_modules`, links, tree, "linux").map((link) => link.link)).toEqual([`${main}/node_modules/b`]);
+    expect(linksInto(`${ROOT}/app-wt`, links, null, "linux").map((link) => link.link)).toEqual([`${main}/node_modules/b`]);
+  });
+
+  it("finds node_modules two folders deep and in the packages of the workspace, and skips a nested checkout", () => {
+    const fake = new Fake().repo("app");
+    fake.add(`${main}/pnpm-workspace.yaml`, "file", OLD, "packages:\n  - \"packages/*\"\n  - 'apps/*/libs/*'\n  - '!**/test/**'\nonlyBuiltDependencies:\n  - esbuild\n");
+    fake.add(`${main}/node_modules/.pnpm/a/index.js`);
+    fake.add(`${main}/packages/one/node_modules/b/index.js`);
+    fake.add(`${main}/apps/web/libs/ui/node_modules/c/index.js`);
+    fake.link(`${main}/packages/two/node_modules`, `${ROOT}/elsewhere/node_modules`);
+    fake.add(`${main}/nested/.git`, "file", OLD, "gitdir: x\n").add(`${main}/nested/node_modules/d.js`);
+    fake.add(`${main}/a/b/c/node_modules/e.js`);
+    expect(moduleFolders(main, fake).map((folder) => `${key(folder.path)} ${folder.kind}`).sort()).toEqual(
+      [`${main}/apps/web/libs/ui/node_modules dir`, `${main}/node_modules dir`, `${main}/packages/one/node_modules dir`, `${main}/packages/two/node_modules link`].sort(),
+    );
+  });
+
+  it("reads the links at the top of node_modules and in its scopes, and not in .pnpm or .bin", () => {
+    const fake = new Fake().repo("app");
+    fake.link(`${main}/node_modules/a`, "/t/a");
+    fake.link(`${main}/node_modules/@s/b`, "/t/b");
+    fake.link(`${main}/node_modules/.pnpm/x/node_modules/y`, "/t/y");
+    fake.link(`${main}/node_modules/.bin/z`, "/t/z");
+    fake.add(`${main}/node_modules/plain/index.js`);
+    expect(moduleLinks(main, fake).map((link) => `${key(link.link)} ${link.target}`).sort()).toEqual([`${main}/node_modules/@s/b /t/b`, `${main}/node_modules/a /t/a`]);
+  });
+
+  it("refuses an install whose node_modules, or its .pnpm store, is a link into another checkout, and names the link", () => {
+    const shared = make();
+    shared.link(`${tree}/node_modules`, `${main}/node_modules`);
+    const refused = slashes(installLinkRefusal(tree, shared, "linux"));
+    expect(refused).toContain(`The folder ${tree}/node_modules is a link to ${main}/node_modules, in the checkout ${main}.`);
+    expect(refused).toContain(`A delete of ${tree} breaks them.`);
+    expect(refused).toMatch(/Remove only the link/);
+    expect(slashes(installLinkRefusal(`${tree}/packages/a`, shared, "linux"))).toContain(`${tree}/node_modules is a link`);
+    const store = make();
+    store.add(`${tree}/node_modules/.modules.yaml`).link(`${tree}/node_modules/.pnpm`, `${main}/node_modules/.pnpm`);
+    expect(slashes(installLinkRefusal(tree, store, "linux"))).toContain(`The folder ${tree}/node_modules/.pnpm is a link to`);
+    const workspace = make();
+    workspace.add(`${tree}/pnpm-workspace.yaml`, "file", OLD, "packages:\n  - packages/*\n").link(`${tree}/packages/a/node_modules`, `${main}/packages/a/node_modules`);
+    expect(slashes(installLinkRefusal(tree, workspace, "linux"))).toContain(`${tree}/packages/a/node_modules is a link`);
+    const unreadable = make();
+    unreadable.link(`${tree}/node_modules`, null);
+    expect(installLinkRefusal(tree, unreadable, "linux")).toMatch(/cannot read the link/);
+  });
+
+  it("lets an install go on when its node_modules are folders, or links into its own checkout or outside each checkout", () => {
+    const fake = make();
+    fake.add(`${main}/node_modules/.pnpm/a/index.js`);
+    fake.link(`${tree}/node_modules`, `${tree}/.cache/node_modules`);
+    fake.link(`${other}/node_modules`, "/r/cache/node_modules");
+    expect(installLinkRefusal(main, fake, "linux")).toBeNull();
+    expect(installLinkRefusal(tree, fake, "linux")).toBeNull();
+    expect(installLinkRefusal(other, fake, "linux")).toBeNull();
+    expect(installLinkRefusal("/r/elsewhere", fake, "linux")).toBeNull();
+  });
+
+  it("keeps the links of a checkout until a node_modules or scope folder changes, or the entry gets old", () => {
+    const fake = make();
+    fake.link(`${main}/node_modules/a`, "/t/a").link(`${main}/node_modules/@s/b`, "/t/b");
+    let reads = 0;
+    const read = fake.readLink.bind(fake);
+    fake.readLink = (path: string): string | null => {
+      reads += 1;
+      return read(path);
+    };
+    let now = NOW;
+    const cache = new LinkCache(fake, () => now, 1_000);
+    expect(cache.cached(main)).toBeNull();
+    expect(cache.links(main)).toHaveLength(2);
+    expect(cache.links(main)).toHaveLength(2);
+    expect(reads).toBe(2);
+    (fake.nodes.get(key(`${main}/node_modules/@s`)) as { mtimeMs: number }).mtimeMs = FRESH;
+    cache.links(main);
+    expect(reads).toBe(4);
+    (fake.nodes.get(key(`${main}/node_modules`)) as { mtimeMs: number }).mtimeMs = FRESH + 1;
+    cache.links(main);
+    expect(reads).toBe(6);
+    now += 1_001;
+    expect(cache.cached(main)).toBeNull();
+    cache.links(main);
+    expect(reads).toBe(8);
+  });
+
+  it("reads the target of a real junction or symbolic link, also when the target is gone", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "headroom-link-")));
+    try {
+      const target = join(base, "store", "pkg");
+      mkdirSync(target, { recursive: true });
+      const link = join(base, "pkg");
+      symlinkSync(target, link, "junction");
+      const runner = nodeRunner();
+      expect(runner.entries(base)?.find((entry) => entry.name === "pkg")?.kind).toBe("link");
+      expect(samePath(runner.readLink(link) ?? "", target)).toBe(true);
+      rmSync(target, { recursive: true });
+      expect(samePath(runner.readLink(link) ?? "", target)).toBe(true);
+      expect(runner.readLink(base)).toBeNull();
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 
