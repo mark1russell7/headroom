@@ -275,6 +275,9 @@ export interface BrokerOptions {
 /** The id of the request of a dry tick (H220). No real lease has this id, because the broker makes UUIDs. */
 export const DRY_TICK_ID = "dry-tick";
 
+/** The holder and the job of a dry tick that names none (H220). No run of this job is known, so it has no expected run time. */
+export const FITS_DEFAULT = "headroom fits";
+
 /** The answer of a dry tick (H220): what the next tick does with a request at this time. */
 export interface Fits {
   /** True when the next tick grants the request. */

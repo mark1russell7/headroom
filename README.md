@@ -824,9 +824,12 @@ headroom cancel --job "pnpm test" --all        # each waiting match
 A gate can ask if a lease starts at the next tick, before it starts a job, with `headroom fits` (H220):
 
 ```sh
-headroom fits --mem 750m --cpu 1 --job "fleet install"   # exit 0: it starts at the next tick
-headroom fits --mem 4g --priority 31 --json              # { fits, loan, reason, state }
+headroom fits --mem 750m --cpu 1 --job "site install"    # exit 0: it starts at the next tick
+headroom fits --mem 4g --priority 31 --json              # { fits, loan, reason, state, amounts }
+headroom fits --mem auto --cpu 1 --priority 31 --job site-install -- node install.ts
 ```
+
+- `--mem auto` and `--cpu auto` take the amounts that `headroom run` takes for the job, from the peaks of its last runs. `--loan` gives the time limit of a loan (H219). The command after `--` gives the key of the job (H78), as for a run. So a gate asks what the run of the job asks.
 
 - The answer is a dry tick. The broker copies its leases, adds the request to the copy and ticks the copy with the capacity of this time. Then it reads the state of the request and drops the copy. No lease changes, and no id is taken.
 - Thus the answer counts each rule of a real tick. These are the free room, the rank in the queue, the conflicts of slots and spawns, the loans of H219 and the hold of H178.

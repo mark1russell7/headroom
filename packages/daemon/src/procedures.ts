@@ -2,7 +2,7 @@
  * The procedures of headroom: `resources.*`, `config.*`, `mcp.*`, `service.*` and `disk.*`. Each procedure uses one engine.
  */
 
-import { BELOW_PEAK_REASON_MAX, DEFAULT_ALERT_RULES, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type Fits, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
+import { BELOW_PEAK_REASON_MAX, DEFAULT_ALERT_RULES, FITS_DEFAULT, JOB_KINDS, type AlertRules, type Alerts, type CancelResult, type Config, type ConfigChange, type DrainStatus, type Engine, type Fits, type History, type JobState, type JobUsage, type Lease, type NativeRefusalCount, type NativeRefusalInput, type PeaksAnswer, type Peer, type PoolTags, type ReapCandidate, type ReapEntry, type ReapResult, type ServiceHealth, type ShadowView, type Status, type Suggestion, type TcpPorts } from "@headroom/core";
 import type { DeferredStarts } from "./deferred.ts";
 import type { ReportSummary } from "./disk-report.ts";
 import { SERVER_NAME, type McpGateway, type McpServerState } from "./gateway.ts";
@@ -84,15 +84,9 @@ const LeaseInput = z.object({
 });
 type LeaseInput = z.infer<typeof LeaseInput>;
 
-/** The holder of a dry tick that names no holder (H220). */
-export const FITS_HOLDER = "headroom fits";
-
-/** The job of a dry tick that names no job (H220). No run of it is known, so it has no expected run time. */
-export const FITS_JOB = "headroom fits";
-
 const FitsInput = LeaseInput.pick({ amounts: true, priority: true, spawnHeavy: true, when: true, timing: true, batteryOk: true, duringDrain: true, ignorePresence: true, loanMs: true }).extend({
-  holder: LeaseInput.shape.holder.optional().describe(`The holder of the lease to test (default: ${FITS_HOLDER})`),
-  job: LeaseInput.shape.job.optional().describe(`The job of the lease to test. Its past runs give its expected run time (default: ${FITS_JOB}, with no runs).`),
+  holder: LeaseInput.shape.holder.optional().describe(`The holder of the lease to test (default: ${FITS_DEFAULT})`),
+  job: LeaseInput.shape.job.optional().describe(`The job of the lease to test. Its past runs give its expected run time (default: ${FITS_DEFAULT}, with no runs).`),
 });
 type FitsInput = z.infer<typeof FitsInput>;
 
@@ -474,8 +468,8 @@ export function resourceProcedures(engine: Engine, pendingRestart: () => Pending
     })
     .handler(async (input: FitsInput): Promise<Fits> =>
       engine.fits({
-        holder: input.holder ?? FITS_HOLDER,
-        job: input.job ?? FITS_JOB,
+        holder: input.holder ?? FITS_DEFAULT,
+        job: input.job ?? FITS_DEFAULT,
         amounts: input.amounts,
         priority: input.priority,
         spawnHeavy: input.spawnHeavy,

@@ -748,15 +748,15 @@ describe("the loan of the unused hold of a long lease (H219)", () => {
 
     // Each case builds the same state on two brokers: one answers `fits`, the other makes the request and ticks.
     const cases: Case[] = [
-      { name: "free room", build: () => {}, ask: { holder: "fleet", job: "install", amounts: { memory: 750 } }, capacity: cap(4800), state: "granted" },
-      { name: "no room", build: () => {}, ask: { holder: "fleet", job: "install", amounts: { memory: 4000 } }, capacity: cap(4800), state: "waiting" },
+      { name: "free room", build: () => {}, ask: { holder: "site", job: "install", amounts: { memory: 750 } }, capacity: cap(4800), state: "granted" },
+      { name: "no room", build: () => {}, ask: { holder: "site", job: "install", amounts: { memory: 4000 } }, capacity: cap(4800), state: "waiting" },
       {
         name: "a waiting lease of a higher rank",
         build: ({ broker, advance }) => {
           broker.request({ holder: "a", job: "high", amounts: { memory: 3000 }, priority: 1, pid: 7 });
           advance(1000);
         },
-        ask: { holder: "fleet", job: "install", amounts: { memory: 3000 } },
+        ask: { holder: "site", job: "install", amounts: { memory: 3000 } },
         capacity: cap(4500),
         state: "waiting",
       },
@@ -787,7 +787,7 @@ describe("the loan of the unused hold of a long lease (H219)", () => {
         capacity: cap(4800),
         state: "granted",
       },
-      { name: "more than the computer has", build: () => {}, ask: { holder: "fleet", job: "huge", amounts: { memory: 64_000 } }, capacity: cap(4800), state: "cancelled" },
+      { name: "more than the computer has", build: () => {}, ask: { holder: "site", job: "huge", amounts: { memory: 64_000 } }, capacity: cap(4800), state: "cancelled" },
     ];
 
     for (const c of cases) {
