@@ -136,5 +136,38 @@ export const RUN_CASES: readonly string[] = [
   "headroom run --mem 2g -- pnpm test --detach",
 ];
 
+/**
+ * The commands that name a file of a test runner (H221): the rating gives light for each. On 2026-11-21, the hook refused
+ * the first three until they went under a lease, and the lease of the commit waited 1 h for 1600 MB. The golden verdicts
+ * of the old process hook do not have these lists, because that hook rated each of them as heavy.
+ */
+export const RUNNER_FILE_CASES: readonly string[] = [
+  "git show origin/main:packages/x/vitest.config.ts",
+  "gh api repos/o/r/contents/packages/x/vitest.config.ts?ref=main",
+  "git commit -F msg -- packages/ui/vitest.slow.config.ts",
+  "git diff origin/main -- packages/core/vitest.config.ts jest.config.js",
+  "git add packages/site/vitest.setup.ts pytest.ini",
+  "git show HEAD:node_modules/vitest/package.json",
+  "node scripts/check.ts --config=vitest.config.ts",
+  "vitest --version",
+  "npx jest --version",
+];
+
+/** The commands that start a test runner by a path, a version or a launcher (H221): each stays heavy. */
+export const RUNNER_CASES: readonly string[] = [
+  "node_modules/.bin/vitest run",
+  "./node_modules/.bin/jest --ci",
+  "C:\\repo\\node_modules\\.bin\\vitest.cmd run",
+  "node node_modules/vitest/vitest.mjs run",
+  "npx vitest@3.2.4 run",
+  "pnpm exec vitest run --config vitest.slow.config.ts",
+  "pnpm vitest related src/a.ts",
+  "timeout 200 vitest run",
+  "cross-env CI=1 jest",
+  "python -m pytest tests",
+  "$(npm bin)/vitest run",
+  "sh -c 'cd app && vitest run'",
+];
+
 /** Each command of the golden verdicts, in a fixed order with no duplicate. */
 export const VERDICT_COMMANDS: readonly string[] = [...new Set([...RUN_CASES, ...FALSE_CASES, ...HEAVY_CASES, ...LEASE_CASES.map(([input]) => input)])];

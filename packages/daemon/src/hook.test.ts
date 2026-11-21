@@ -8,8 +8,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dashboardFace } from "./dashboard.ts";
 import { DEFAULT_PORT, withFaces } from "./daemon.ts";
 import { HOOK_CLIENT, HOOK_HEADER, HOOK_PATH, hookAnswer, hookFace, hookVerdict } from "./hook-face.ts";
-import { FALSE_CASES, HEAVY_CASES, LEASE_CASES, VERDICT_COMMANDS } from "./fixtures/hook-commands.ts";
-import { CALL_TIMEOUT_DEFAULT_MS, CALL_TIMEOUT_MAX_MS, decide, hookOutput, isHeavy, leased, runParts, toolCallOf, type HookOutput, type Status } from "./hook-rating.ts";
+import { FALSE_CASES, HEAVY_CASES, LEASE_CASES, RUNNER_CASES, RUNNER_FILE_CASES, VERDICT_COMMANDS } from "./fixtures/hook-commands.ts";
+import {
+  CALL_TIMEOUT_DEFAULT_MS,
+  CALL_TIMEOUT_MAX_MS,
+  decide,
+  hookOutput,
+  isHeavy,
+  leased,
+  runnerOf,
+  runParts,
+  toolCallOf,
+  type HookOutput,
+  type Status,
+} from "./hook-rating.ts";
 
 const event = (command: unknown): unknown => ({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } });
 
@@ -20,6 +32,30 @@ describe("the rating of a command line (H55)", () => {
 
   it.each(HEAVY_CASES)("rates %j as heavy", (command) => {
     expect(isHeavy(command)).toBe(true);
+  });
+});
+
+describe("the test runners as words (H221)", () => {
+  it.each(RUNNER_FILE_CASES)("does not rate %j as heavy, because a file of a runner is not the runner", (command) => {
+    expect(isHeavy(command)).toBe(false);
+  });
+
+  it.each(RUNNER_CASES)("rates %j as heavy: a runner by a path, a version or a launcher", (command) => {
+    expect(isHeavy(command)).toBe(true);
+  });
+
+  it("gives the runner of the last segment of a word, without a version and the extension of a program", () => {
+    expect(runnerOf("vitest")).toBe("vitest");
+    expect(runnerOf("node_modules/.bin/vitest.cmd")).toBe("vitest");
+    expect(runnerOf("C:\\repo\\node_modules\\.bin\\JEST.CMD")).toBe("jest");
+    expect(runnerOf("vitest@3.2.4")).toBe("vitest");
+    expect(runnerOf("'pytest'")).toBe("pytest");
+    expect(runnerOf("$(vitest")).toBe("vitest");
+    expect(runnerOf("--runner=jest")).toBe("jest");
+    expect(runnerOf("vitest.config.ts")).toBeNull();
+    expect(runnerOf("origin/main:packages/x/vitest.config.ts")).toBeNull();
+    expect(runnerOf("@vitest/coverage-v8")).toBeNull();
+    expect(runnerOf("")).toBeNull();
   });
 });
 
@@ -193,6 +229,19 @@ describe("the face of the hook on the daemon (H194)", () => {
   it("lets a light command go on with an empty object", async () => {
     status = () => ({ free: { memory: 100 }, leases: [{ state: "waiting", reason: "waits for memory: needs 1, 0 free" }] });
     expect(await send(JSON.stringify(event("git status")))).toEqual({ code: 200, body: "{}" });
+  });
+
+  // The three commands of 2026-11-21 (H221), with the state of that hour: 445 MB free and a lease that waits.
+  it.each(RUNNER_FILE_CASES.slice(0, 3))("lets %j go on when the memory is tight, because a file of a runner is not the runner", async (command) => {
+    status = () => ({ free: { memory: 445 }, leases: [{ state: "waiting", reason: "waits for memory: needs 1600, 445 free" }] });
+    expect(await send(JSON.stringify(event(command)))).toEqual({ code: 200, body: "{}" });
+  });
+
+  it("refuses a runner by its path when the memory is tight (H221)", async () => {
+    status = () => ({ free: { memory: 445 }, leases: [] });
+    const output = JSON.parse((await send(JSON.stringify(event("node_modules/.bin/vitest run")))).body) as { hookSpecificOutput: Record<string, string> };
+    expect(output.hookSpecificOutput).toMatchObject({ permissionDecision: "deny" });
+    expect(output.hookSpecificOutput["permissionDecisionReason"]).toContain("Send it again as: headroom run --mem auto -- node_modules/.bin/vitest run");
   });
 
   it("lets a heavy command go on when the status fails, as the old hook did with no daemon", async () => {

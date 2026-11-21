@@ -35,13 +35,12 @@ export interface Status {
 
 /**
  * The commands that need a lease: the test runners, the builds, the browsers, and the container builds and starts. A
- * container start needs room first (H62): on 2026-11-05, a job started a container that held 3.0 GB.
+ * container start needs room first (H62): on 2026-11-05, a job started a container that held 3.0 GB. The runners that
+ * start under their own name are in `RUNNERS`, because the rating reads them as words, not as text (H221).
  */
 export const HEAVY: RegExp[] = [
   /\b(?:pnpm|npm|yarn|bun)\s+(?:-[\w-]+\s+)*(?:run\s+)?(?:test|tests|build|e2e|typecheck|check|coverage)\b/,
   /\b(?:pnpm|npm|yarn)\s+(?:-r|--recursive|-ws|--workspaces)\b/,
-  /\bvitest\b(?!\s+--version)/,
-  /\bjest\b/,
   /\bplaywright\s+test\b/,
   /\btsc\s+(?:-b|--build)\b/,
   /\bturbo\s+run\b/,
@@ -52,8 +51,37 @@ export const HEAVY: RegExp[] = [
   /\b(?:docker|podman)-compose(?:\s+--?\w[\w-]*(?:[=\s]+(?!-)\S+)?)*\s+(?:up|build|start|run|restart)(?![\w.-])/,
   /\bcargo\s+(?:build|test)\b/,
   /\bgo\s+test\b/,
-  /\bpytest\b/,
 ];
+
+/**
+ * The test runners that start under their own name (H221). A word names a runner when its last segment is the runner.
+ * Thus `node_modules/.bin/vitest`, `vitest.cmd`, `npx vitest@3.2.4` and `python -m pytest` are heavy. A file of the
+ * runner is not the runner: `git show rev:packages/x/vitest.config.ts` is light. On 2026-11-21, the text match of
+ * `vitest` made three such commands heavy.
+ */
+export const RUNNERS: ReadonlySet<string> = new Set(["vitest", "jest", "pytest"]);
+
+/** The ends of a word that are not a part of its name: quotes, brackets, a backquote and the `$(` of a substitution. */
+const WORD_ENDS = /^["'`$(]+|["'`)]+$/g;
+
+/**
+ * This function gives the runner that a word names, or `null`. It takes the last segment of the word after a folder, a
+ * revision (`rev:path`) or an option value (`--runner=jest`). Then it removes a version (`@3.2.4`) and the extension of
+ * a program or a script (`.cmd`, `.mjs`).
+ */
+export function runnerOf(word: string): string | null {
+  const name = (word.replace(WORD_ENDS, "").split(/[\\/:=]/).pop() ?? "")
+    .replace(/@[^@]*$/, "")
+    .replace(/\.(?:exe|cmd|bat|ps1|js|mjs|cjs)$/i, "")
+    .toLowerCase();
+  return RUNNERS.has(name) ? name : null;
+}
+
+/** This function tells if a text starts a test runner. A runner with `--version` as its next word is light. */
+function startsRunner(text: string): boolean {
+  const words = text.split(/\s+/);
+  return words.some((word, at) => runnerOf(word) !== null && words[at + 1] !== "--version");
+}
 
 /** A command line with `headroom run` in its text. The rating of a heavy command leaves such a line to the guard of runs. */
 const HEADROOM_RUN = /\bheadroom(?:\.cmd)?\s+run\b/;
@@ -415,7 +443,7 @@ function isHeavyPart(part: Part): boolean {
   const words = wordsOf(part);
   if (readsText(words)) return false;
   const text = runsArgument(words) ? part.raw : part.text;
-  return HEAVY.some((pattern) => pattern.test(text));
+  return HEAVY.some((pattern) => pattern.test(text)) || startsRunner(text);
 }
 
 /**
