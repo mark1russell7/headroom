@@ -180,7 +180,7 @@ importers:
         version: 0.5.18
       '@mark1russell7/conventions':
         specifier: ^0.50.7
-        version: 0.50.7
+        version: 0.50.12
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
@@ -209,8 +209,8 @@ importers:
         specifier: ^0.2.9
         version: 0.2.19
       '@mark1russell7/sqlite':
-        specifier: ^0.6.0
-        version: 0.6.0
+        specifier: ^0.7.0
+        version: 0.7.0
       '@mark1russell7/text':
         specifier: ^0.0.17
         version: 0.0.17
@@ -240,8 +240,8 @@ importers:
         specifier: workspace:*
         version: link:../core
       '@mark1russell7/files':
-        specifier: ^0.0.4
-        version: 0.0.4
+        specifier: ^0.0.5
+        version: 0.0.5
       '@mark1russell7/rigor-generators':
         specifier: ^0.2.0
         version: 0.2.0
@@ -294,7 +294,7 @@ importers:
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@mark1russell7/site-pages':
         specifier: ^0.8.0
-        version: 0.8.2
+        version: 0.8.3
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.6
@@ -645,8 +645,8 @@ packages:
     resolution: {integrity: sha512-KKAYIACji5XtOpbE3fIX4D3aVd0oddyM9dU+Pk+lXpgYOh6VTVoa/0yzwDTipZ42RKp+6BG+LSkLjCe/FjCHFA==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/conventions@0.50.7':
-    resolution: {integrity: sha512-1tx4G5JETCH+sccyKiNXi9rVviMEnFJS3RNpPnwI5/3Cp2DFKkyGZCKJpEh+uXJ5BSli5NrgWAV0lWTOnKWHSQ==}
+  '@mark1russell7/conventions@0.50.12':
+    resolution: {integrity: sha512-dpwW6MiAhfIo83z2HHidTEzaSQ5dRK2VOO2LySgYZ7cD5XyGdcsGlfgX1muf+w5egi+KzPzIOtseNetmoAKy6A==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -660,8 +660,8 @@ packages:
     resolution: {integrity: sha512-3oKnBCxZi5ChjRmxP3lMFsWTRZuhHvt8I7ZHIr2UmgPQR5VrY/qJDKF6k9m8IqFq4958m0Z1+8BDa0SqXe/Ymw==}
     engines: {node: '>=22'}
 
-  '@mark1russell7/files@0.0.4':
-    resolution: {integrity: sha512-Pb978ZnvlAxzcdWtRtqTGb7mZFCvlNrdKnpZqhxQ7gafzeNGf1JqYFuB4RWiLbJzRuFUWjEoAVG5f2TndCIlSg==}
+  '@mark1russell7/files@0.0.5':
+    resolution: {integrity: sha512-2p3FGGlLJiHdPE3JFl41CjrS7nkewLbb0QKKhWLHEpjWHP1KT60IKSb7hP8kcF++Yof0XW6wwctQDnQ3p8jZeg==}
     engines: {node: '>=22'}
 
   '@mark1russell7/optional@1.5.0':
@@ -736,13 +736,13 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/site-pages@0.8.2':
-    resolution: {integrity: sha512-WMErq1NBREuaBOn28Vg+7LMJSTou8+O27qNRoaRt11h+r3j9muf4jFmuwGazDOSS+Cf32gxDT1/IpXbAz2h/Vg==}
+  '@mark1russell7/site-pages@0.8.3':
+    resolution: {integrity: sha512-ZYjdSgnBbBZBLtZ6J7Qs5WZYFNMswKT/SdGi8wHX6v69WvmOxr0F9fn1HuDNFrSoxFbE2h/jibfjjgJ84iQ9Rg==}
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/sqlite@0.6.0':
-    resolution: {integrity: sha512-4QytFosiFp6rvX6H2sUlIwicf/fYDLo9wonEDIFheC0qnDKB8L3QYGrspQJ519b9U0CVo/ZtZkmPMl1vKQt/hQ==}
+  '@mark1russell7/sqlite@0.7.0':
+    resolution: {integrity: sha512-9uYBKNfHpDWrPX0C88vcP3CDS3FmEH9ntfLRvIGayTLMYV99LHGw254iO3gRQxd83jq1ml7ER+l0tKW/CGKKTA==}
     engines: {node: '>=22.13'}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
@@ -1981,7 +1981,7 @@ snapshots:
 
   '@mark1russell7/api-report@0.5.18':
     dependencies:
-      '@mark1russell7/conventions': 0.50.7
+      '@mark1russell7/conventions': 0.50.12
 
   '@mark1russell7/coeval@0.29.0(zod@4.6.7)':
     dependencies:
@@ -2006,7 +2006,7 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@mark1russell7/conventions@0.50.7':
+  '@mark1russell7/conventions@0.50.12':
     dependencies:
       '@mark1russell7/text': 0.0.17
       yaml: 2.9.1
@@ -2015,7 +2015,7 @@ snapshots:
 
   '@mark1russell7/files@0.0.2': {}
 
-  '@mark1russell7/files@0.0.4': {}
+  '@mark1russell7/files@0.0.5': {}
 
   '@mark1russell7/optional@1.5.0': {}
 
@@ -2058,11 +2058,11 @@ snapshots:
       ws: 8.23.0
       zod: 4.6.7
 
-  '@mark1russell7/site-pages@0.8.2':
+  '@mark1russell7/site-pages@0.8.3':
     dependencies:
       '@mark1russell7/rigor-statistics': 0.2.19
 
-  '@mark1russell7/sqlite@0.6.0': {}
+  '@mark1russell7/sqlite@0.7.0': {}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:
