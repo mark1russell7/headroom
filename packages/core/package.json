@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@mark1russell7/rigor-statistics": "^0.2.9",
-    "@mark1russell7/sqlite": "^0.6.0",
+    "@mark1russell7/sqlite": "^0.7.0",
     "@mark1russell7/text": "^0.0.17",
     "koffi": "^3.3.3"
   }
