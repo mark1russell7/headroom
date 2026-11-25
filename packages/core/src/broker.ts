@@ -235,9 +235,9 @@ export interface BrokerOptions {
    */
   readonly runMs?: ((lease: Lease) => number | null) | undefined;
   /**
-   * This function gives the expected time in ms that the job of a granted lease has left at the age `elapsedMs`, after it
-   * ran past its expected run time (H225). It gives `null` when the job ran longer than each known run: then the lease has
-   * no expected end, and its room does not give a start to the first request. The engine takes it from the runs that were
+   * This function gives the expected time in ms that the job of a granted lease has left at the age `elapsedMs` (H225).
+   * The broker uses it after the job ran past its expected run time. It gives `null` when the job ran longer than each
+   * known run. Then the lease has no expected end, and its room does not give a start to the first request. The engine takes it from the runs that were
    * longer than the age. The default is 0: an overdue lease can end at any time, as before H225.
    */
   readonly runLeftMs?: ((lease: Lease, elapsedMs: number) => number | null) | undefined;
@@ -933,7 +933,7 @@ export class Broker {
    * This function gives the expected end of the job of a granted lease. A lease with no known run time can end at any
    * time. Thus its expected end is the time of the tick. So the expected start of the first request does not come later
    * than the facts tell. A lease that ran past its expected run time ends after the time that it has left (H225). A job
-   * that ran longer than each known run, such as a server, has no expected end (`Infinity`). A lease that can borrow
+   * that ran longer than each known run, for example a server, has no expected end (`Infinity`). A lease that can borrow
    * ends at its time limit (H219), so it can end at any time after it.
    */
   #endOfRun(lease: Lease, now: number): number {
