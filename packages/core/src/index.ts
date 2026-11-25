@@ -199,11 +199,12 @@ export {
   PEAK_RULE,
   PEAK_RUNS,
   predictMemory,
+  predictRunLeftMs,
   predictRunMs,
   RUN_SOURCES,
   RUNGS,
 } from "./predict.ts";
-export type { AmountRule, JobKey, JobKind, MemoryPrediction, PackagesFit, PeakReads, Rung, RunEstimate, RunReads, RunSource, SizedPeak } from "./predict.ts";
+export type { AmountRule, JobKey, JobKind, MemoryPrediction, PackagesFit, PeakReads, Rung, RunEstimate, RunLeftEstimate, RunReads, RunSource, SizedPeak } from "./predict.ts";
 export { keyedLeases, NO_FLOOR } from "./store.ts";
 export type { KeyedLease, KeyScope, LeaseFloor, LeaseKeyRow } from "./store.ts";
 export { BELOW_PEAK_REASON_MAX, belowPeakReason, decideFloor, floorRefusalText, PEAK_FLOOR_CODE, PEAK_FLOOR_FACTOR, peakFloor, PeakFloorError, signatureOf, signatureText } from "./peak-floor.ts";

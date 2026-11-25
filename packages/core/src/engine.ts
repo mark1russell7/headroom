@@ -113,7 +113,7 @@ import { redactCommand, redactKey } from "./redact.ts";
 import { MB, type Sampler } from "./sampler.ts";
 import { checkHealth, type ServiceHealth } from "./services.ts";
 import { learnSpawn, leaseRate, percentile90, promote, settle, spawnConflict, startsSumConflict, windowRate, type SpawnClass } from "./spawn.ts";
-import { PEAK_RUNS, predictMemory, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate } from "./predict.ts";
+import { PEAK_RUNS, predictMemory, predictRunLeftMs, predictRunMs, type JobKey, type MemoryPrediction, type PeakReads, type Rung, type RunEstimate, type RunLeftEstimate, type RunReads } from "./predict.ts";
 import { AUTO_DRAIN_MAX_MB, AUTO_DRAIN_MIN_MB, AWAY_AFTER_MIN_MS, isAutoDrainLevel, PRESENCE_TIME_MAX_MS, type Config, type MemoryRow, type NativeRefusalCount, type NativeRefusalEntry, type NativeRefusalInput, type OwnerRow, type PoolTagSnapshot, type Sleep, type Store, type StoreSyncs, type LeaseFloor } from "./store.ts";
 import { checkJobTemp, sweepJobTemp } from "./temp.ts";
 import { readLeaseEnd, sweepLeaseEnds } from "./ends.ts";
@@ -766,6 +766,8 @@ export class Engine {
       conflict: spawnConflict,
       // H178: the expected run time of a job, for the reservation of a first request after its long wait.
       runMs: (lease) => this.#runMs(lease),
+      // H225: the time that an overdue job has left, from the runs that were longer. A server has no expected end.
+      runLeftMs: (lease, elapsedMs) => this.#runLeftMs(lease, elapsedMs),
       // H47: beside a browser test, the sum of the start rates of the other leases stays at or below the limit.
       // H197: the starts of the computer, the unseen part of the new leases and this lease stay at or under the start cap.
       groupConflict: (lease, granted, before) =>
@@ -1169,15 +1171,28 @@ export class Engine {
    * Most jobs have a new name. Thus the key and then the base rate of its class give the run time of a new job.
    */
   runEstimate(job: string, holder: string, amounts: Lease["amounts"], key: JobKey | null = null): RunEstimate {
+    return predictRunMs(this.#runReads(job, holder, amounts, key));
+  }
+
+  /**
+   * This function gives the expected time that a job has left at the age `elapsedMs`, after it ran past its expected run
+   * time (H225). It uses the sources of `runEstimate`, and only the runs that were longer than the age.
+   */
+  runLeftEstimate(job: string, holder: string, amounts: Lease["amounts"], elapsedMs: number, key: JobKey | null = null): RunLeftEstimate {
+    return predictRunLeftMs(this.#runReads(job, holder, amounts, key), elapsedMs);
+  }
+
+  /** This function gives the reads of the run-time ladder of a job (H178, H184, H78). */
+  #runReads(job: string, holder: string, amounts: Lease["amounts"], key: JobKey | null): RunReads {
     const repo = key?.repo ?? null;
-    return predictRunMs({
+    return {
       own: () => this.#store.runTimesOf(job, holder, PEAK_RUNS, repo),
       job: () => this.#store.runTimesOf(job, undefined, PEAK_RUNS, repo),
       key: () => (key === null || key.repo === null ? [] : this.#store.keyedRunTimes(key, "key")),
       repo: () => (key === null || key.repo === null ? [] : this.#store.keyedRunTimes(key, "repo")),
       size: () => this.#store.runTimesOfSize(amounts["memory"] ?? 0),
       all: () => this.#store.runTimesOfSize(),
-    });
+    };
   }
 
   /** This function gives the expected run time of the job of a lease in ms, from `runEstimate`. The engine keeps each value for one minute. */
@@ -1188,6 +1203,22 @@ export class Engine {
     const kept = this.#runTimes.get(key);
     if (kept !== undefined && now - kept.at < RUN_TIME_KEEP_MS) return kept.ms;
     const ms = this.runEstimate(lease.job, lease.holder, lease.amounts, jobKey).ms;
+    if (this.#runTimes.size >= 500) for (const [k, v] of this.#runTimes) if (now - v.at >= RUN_TIME_KEEP_MS) this.#runTimes.delete(k);
+    this.#runTimes.set(key, { at: now, ms });
+    return ms;
+  }
+
+  /**
+   * This function gives the time in ms that the overdue job of a lease has left, from `runLeftEstimate` (H225). The engine
+   * keeps each value for one minute of the age of the lease, in the store of `#runMs`.
+   */
+  #runLeftMs(lease: Lease, elapsedMs: number): number | null {
+    const jobKey = this.#keyOf(lease.id);
+    const key = JSON.stringify(["left", lease.id, Math.floor(elapsedMs / RUN_TIME_KEEP_MS)]);
+    const now = this.#now();
+    const kept = this.#runTimes.get(key);
+    if (kept !== undefined && now - kept.at < RUN_TIME_KEEP_MS) return kept.ms;
+    const ms = this.runLeftEstimate(lease.job, lease.holder, lease.amounts, elapsedMs, jobKey).ms;
     if (this.#runTimes.size >= 500) for (const [k, v] of this.#runTimes) if (now - v.at >= RUN_TIME_KEEP_MS) this.#runTimes.delete(k);
     this.#runTimes.set(key, { at: now, ms });
     return ms;

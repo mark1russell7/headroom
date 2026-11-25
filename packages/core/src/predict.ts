@@ -236,6 +236,34 @@ export function predictRunMs(reads: RunReads): RunEstimate {
   return { ms: null, from: null, runs: 0 };
 }
 
+/** The expected time that a job has left after it ran past its expected run time (H225). */
+export interface RunLeftEstimate {
+  /**
+   * The 90th percentile of the time that each longer run had left at the same age, in ms. It is `null` when the job ran
+   * longer than each run of its source, or when no source has a run.
+   */
+  readonly ms: number | null;
+  /** The source of the runs, or `null` with no run. */
+  readonly from: RunSource | null;
+  /** The count of the runs of the source that ran longer than the job. */
+  readonly longer: number;
+}
+
+/**
+ * This function gives the expected time that a job has left at the age `elapsedMs` (H225). It uses the runs of the first
+ * source with a run, as `predictRunMs` does. Only the runs that are longer than the age tell about the rest of the run.
+ * A job that ran longer than each run of its source has no expected end: a server or a stuck job can run for days.
+ */
+export function predictRunLeftMs(reads: RunReads, elapsedMs: number): RunLeftEstimate {
+  for (const from of RUN_SOURCES) {
+    const runs = reads[from]();
+    if (runs.length === 0) continue;
+    const left = runs.filter((run) => run > elapsedMs).map((run) => run - elapsedMs);
+    return { ms: left.length === 0 ? null : quantile(left, 0.9, "higher"), from, longer: left.length };
+  }
+  return { ms: null, from: null, longer: 0 };
+}
+
 /** This function tells if a value is a kind of a job. */
 export function isJobKind(value: unknown): value is JobKind {
   return typeof value === "string" && (JOB_KINDS as readonly string[]).includes(value);

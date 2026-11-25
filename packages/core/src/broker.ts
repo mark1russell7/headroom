@@ -235,6 +235,13 @@ export interface BrokerOptions {
    */
   readonly runMs?: ((lease: Lease) => number | null) | undefined;
   /**
+   * This function gives the expected time in ms that the job of a granted lease has left at the age `elapsedMs` (H225).
+   * The broker uses it after the job ran past its expected run time. It gives `null` when the job ran longer than each
+   * known run. Then the lease has no expected end, and its room does not give a start to the first request. The engine takes it from the runs that were
+   * longer than the age. The default is 0: an overdue lease can end at any time, as before H225.
+   */
+  readonly runLeftMs?: ((lease: Lease, elapsedMs: number) => number | null) | undefined;
+  /**
    * When no end of a granted lease lets the first request start, its start is not known: the room is held outside the
    * leases (H178). Then a later request goes first only when its expected run time is at most this time. The default
    * is 10 minutes.
@@ -364,6 +371,7 @@ export class Broker {
   readonly #agingMs: number;
   readonly #headWaitMs: number;
   readonly #runMs: (lease: Lease) => number | null;
+  readonly #runLeftMs: (lease: Lease, elapsedMs: number) => number | null;
   readonly #backfillMs: number;
   readonly #defaultTtlMs: number;
   readonly #conflict: (lease: Lease, other: Lease) => string | null;
@@ -395,6 +403,7 @@ export class Broker {
     this.#agingMs = options.agingMs ?? 60_000;
     this.#headWaitMs = options.headWaitMs ?? HEAD_WAIT_DEFAULT_MS;
     this.#runMs = options.runMs ?? (() => null);
+    this.#runLeftMs = options.runLeftMs ?? (() => 0);
     this.#backfillMs = options.backfillMs ?? 600_000;
     this.#defaultTtlMs = options.defaultTtlMs ?? 300_000;
     this.#conflict = options.conflict ?? (() => null);
@@ -820,13 +829,15 @@ export class Broker {
    * This function gives the reservation of a first request that waited past `headWaitMs` (H178). The granted leases end
    * in the order of their expected end, and each end gives its room back. The start of the request is the first end after
    * which it fits and has no conflict. The extra room is the room at that start that the request does not need. When no
-   * end lets the request start, the room is held outside the leases, and the start is not known.
+   * end lets the request start, the room is held outside the leases, and the start is not known. A lease with no expected
+   * end (H225) gives no start: its room comes back at a time that no run tells.
    */
   #holdFor(head: Lease, capacity: Capacity, free: Record<string, number>, granted: readonly Lease[], now: number): Hold {
     const room = { ...free };
     const left = [...granted];
     const ends = granted.map((lease) => ({ lease, at: this.#endOfRun(lease, now) })).sort((a, b) => a.at - b.at);
     for (const { lease, at } of ends) {
+      if (at === Number.POSITIVE_INFINITY) break;
       for (const id of Object.keys(lease.amounts)) room[id] = (room[id] ?? 0) + this.#backOf(lease, id, capacity, now);
       left.splice(left.indexOf(lease), 1);
       if (this.#shortOf(head, room) === null && this.#conflictOf(head, left, []) === null) {
@@ -921,11 +932,17 @@ export class Broker {
   /**
    * This function gives the expected end of the job of a granted lease. A lease with no known run time can end at any
    * time. Thus its expected end is the time of the tick. So the expected start of the first request does not come later
-   * than the facts tell.
+   * than the facts tell. A lease that ran past its expected run time ends after the time that it has left (H225). A job
+   * that ran longer than each known run, for example a server, has no expected end (`Infinity`). A lease that can borrow
+   * ends at its time limit (H219), so it can end at any time after it.
    */
   #endOfRun(lease: Lease, now: number): number {
     const run = this.#runOf(lease);
-    return run === null || lease.grantedAt === null ? now : Math.max(now, lease.grantedAt + run);
+    if (run === null || lease.grantedAt === null) return now;
+    const end = lease.grantedAt + run;
+    if (end >= now || (this.#canBorrow(lease) && lease.loanMs !== undefined)) return Math.max(now, end);
+    const left = this.#runLeftMs(lease, now - lease.grantedAt);
+    return left === null ? Number.POSITIVE_INFINITY : now + Math.max(0, left);
   }
 
   /**
