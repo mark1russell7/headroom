@@ -10,6 +10,7 @@ function setup(
     used?: number;
     use?: (lease: Lease) => number | null;
     runMs?: Record<string, number>;
+    runLeft?: (lease: Lease, elapsedMs: number) => number | null;
     longRunMs?: number;
     ends?: Map<string, LeaseEnd>;
     reserveMb?: number;
@@ -29,6 +30,7 @@ function setup(
     headWaitMs: 600_000,
     runMs: (lease) => options.runMs?.[lease.job] ?? null,
     backfillMs: 600_000,
+    ...(options.runLeft === undefined ? {} : { runLeftMs: options.runLeft }),
     defaultTtlMs: 300_000,
     endOf: (lease) => options.ends?.get(lease.id) ?? null,
     ...(options.loanMaxMs === undefined ? {} : { loanMaxMs: options.loanMaxMs }),
@@ -178,6 +180,71 @@ describe("Broker", () => {
       broker.tick(cap(8000));
       expect(broker.get(gate.id)?.state).toBe("waiting");
       expect(broker.get(short.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 1 min would delay that request" });
+    });
+  });
+
+  describe("the predicted start of the first request (H225)", () => {
+    const MIN = 60_000;
+
+    /**
+     * The queue of 2026-11-25 14:57Z: a server held 1024 MB for 46 hours, with an expected run of 0 min from the runs of
+     * its repo. A first request of 3008 MB waited 69 minutes, and small jobs of 1 to 3 min waited behind it.
+     */
+    function queueOf(runLeft?: (lease: Lease, elapsedMs: number) => number | null) {
+      const { broker, advance } = setup({
+        runMs: { "assistant serve": 0, "al-check": 2 * MIN },
+        use: (lease) => (lease.job === "assistant serve" ? 1024 : 0),
+        ...(runLeft === undefined ? {} : { runLeft }),
+      });
+      const server = broker.request({ holder: "assistant", job: "assistant serve", amounts: { memory: 1024 }, pid: 5 });
+      broker.tick(cap(8000));
+      advance(46 * 60 * MIN);
+      const head = broker.request({ holder: "planner", job: "print", amounts: { memory: 3008 }, pid: 8 });
+      broker.tick(cap(3100));
+      advance(700_000);
+      const small = broker.request({ holder: "alerts", job: "al-check", amounts: { memory: 1088 } });
+      broker.tick(cap(3100));
+      return { broker, server, head, small };
+    }
+
+    it("lets the small jobs of 2026-11-25 go first: the server ran longer than each known run, so it has no expected end", () => {
+      const { broker, server, head, small } = queueOf(() => null);
+      expect(broker.get(server.id)?.state).toBe("granted");
+      expect(broker.get(head.id)?.state).toBe("waiting");
+      expect(broker.get(small.id)?.state).toBe("granted");
+    });
+
+    it("keeps the jam of 2026-11-25 without the time left of an overdue job, as before H225", () => {
+      const { broker, head, small } = queueOf();
+      expect(broker.get(head.id)?.state).toBe("waiting");
+      expect(broker.get(small.id)).toMatchObject({ state: "waiting", reason: "waits for the first request (print): its run of 2 min would delay that request" });
+    });
+
+    it("takes the end of an overdue job from the time that the longer runs had left", () => {
+      const run = (left: number) => {
+        const { broker, advance } = setup({ runMs: { build: 5 * MIN, short: 1 * MIN }, runLeft: () => left });
+        broker.request({ holder: "graph", job: "build", amounts: { memory: 5000 }, pid: 7 });
+        broker.tick(cap(8000));
+        const gate = broker.request({ holder: "assistant", job: "gate", amounts: { memory: 6000 }, pid: 8 });
+        broker.tick(cap(8000));
+        advance(700_000);
+        const short = broker.request({ holder: "lag", job: "short", amounts: { memory: 1500 } });
+        broker.tick(cap(8000));
+        expect(broker.get(gate.id)?.state).toBe("waiting");
+        return broker.get(short.id);
+      };
+      // The build is 6.7 min past its expected run of 5 min. With 30 s left, the first request starts before `short` ends.
+      expect(run(30_000)).toMatchObject({ state: "waiting", reason: "waits for the first request (gate): its run of 1 min would delay that request" });
+      // With 5 min left, `short` ends 4 min before the expected start of the first request.
+      expect(run(5 * MIN)?.state).toBe("granted");
+    });
+
+    it("starts the first request at the end of the server, after the small job that went first", () => {
+      const { broker, server, head, small } = queueOf(() => null);
+      broker.release(server.id);
+      broker.release(small.id);
+      broker.tick(cap(4100));
+      expect(broker.get(head.id)?.state).toBe("granted");
     });
   });
 

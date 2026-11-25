@@ -1,6 +1,6 @@
 import { random } from "@mark1russell7/rigor-generators";
 import { describe, expect, it } from "vitest";
-import { amountOf, FIT_MIN_RUNS, fitPackages, LEGACY_RULE, PEAK_RULE, predictMemory, predictRunMs, type JobKey, type PeakReads, type SizedPeak } from "./predict.ts";
+import { amountOf, FIT_MIN_RUNS, fitPackages, LEGACY_RULE, PEAK_RULE, predictMemory, predictRunLeftMs, predictRunMs, type JobKey, type PeakReads, type RunReads, type RunSource, type SizedPeak } from "./predict.ts";
 
 const KEY: JobKey = { kind: "install", repo: "shop", lock: "0123456789abcdef", filter: ".", warm: false, packages: 900, command: "pnpm install" };
 
@@ -122,5 +122,30 @@ describe("predictRunMs (H78)", () => {
     expect(predictRunMs({ ...empty, key: () => [10, 20], size: () => [99] })).toEqual({ ms: 20, from: "key", runs: 2 });
     expect(predictRunMs({ ...empty, repo: () => [30], size: () => [99] })).toEqual({ ms: 30, from: "repo", runs: 1 });
     expect(predictRunMs({ ...empty, job: () => [5], key: () => [10] })).toEqual({ ms: 5, from: "job", runs: 1 });
+  });
+});
+
+describe("predictRunLeftMs (H225)", () => {
+  const reads = (runs: Partial<Record<RunSource, number[]>>): RunReads => ({
+    own: () => runs.own ?? [],
+    job: () => runs.job ?? [],
+    key: () => runs.key ?? [],
+    repo: () => runs.repo ?? [],
+    size: () => runs.size ?? [],
+    all: () => runs.all ?? [],
+  });
+
+  it("gives the 90th percentile of the time that the longer runs had left at the same age", () => {
+    // At the age of 50, the runs of 60, 80 and 150 had 10, 30 and 100 left.
+    expect(predictRunLeftMs(reads({ job: [10, 20, 60, 80, 150] }), 50)).toEqual({ ms: 100, from: "job", longer: 3 });
+  });
+
+  it("gives no expected end when the job ran longer than each run of its first source", () => {
+    // A server of 46 hours, and the runs of its repo are seconds long. A later source does not give an end.
+    expect(predictRunLeftMs(reads({ repo: [2_000, 5_000], all: [1e12] }), 46 * 3_600_000)).toEqual({ ms: null, from: "repo", longer: 0 });
+  });
+
+  it("gives no expected end with no run", () => {
+    expect(predictRunLeftMs(reads({}), 1_000)).toEqual({ ms: null, from: null, longer: 0 });
   });
 });
