@@ -72,7 +72,7 @@ const times = { creation: [0n], exit: [0n], kernel: [0n], user: [0n] };
 /** The handle of each live process of the trace, for its exit code, with its creation time when the log reads it. */
 const held = new Map<number, { readonly handle: number; created: bigint | null }>();
 /** The handle of each new process of the current packet set, opened before the reads of the facts (H213). `0` is a process that was gone. */
-const opened = new Map<number, number>();
+const earlyHandles = new Map<number, number>();
 /** The command line of each recent parent, with its creation time: a new process with the pid of the parent is not the parent. */
 const parents = new Map<number, { readonly created: bigint; readonly command: string | null }>();
 /** The time of the last exit of each pid of the trace, for `reuseMs`. */
@@ -112,8 +112,8 @@ function started(key: number, pid: number, at: number, log: boolean): { readonly
   const exited = exitedAt.get(pid);
   exitedAt.delete(pid);
   const reuse = (createdAt: number): number | null => (exited !== undefined && createdAt - exited < START_LOG_REUSE_MS ? createdAt - exited : null);
-  const early = opened.get(pid);
-  opened.delete(pid);
+  const early = earlyHandles.get(pid);
+  earlyHandles.delete(pid);
   const handle = early ?? openQuery(pid);
   if (handle === 0) {
     const row = log ? { at, key, pid, ppid: null, created: null, image: null, command: null, parentCommand: null, reuseMs: reuse(at) } : null;
@@ -212,7 +212,7 @@ function run(): void {
     for (let index = 0; ok && index < (removed[0] ?? 0); index++) {
       const pid = Number(view.getBigUint64(index * ENTRY_SIZE + 8, true));
       const message = view.getUint32(index * ENTRY_SIZE + 24, true);
-      if (message === MESSAGE_NEW_PROCESS && Number(view.getBigUint64(index * ENTRY_SIZE, true)) !== data.stopKey && !opened.has(pid)) opened.set(pid, openQuery(pid));
+      if (message === MESSAGE_NEW_PROCESS && Number(view.getBigUint64(index * ENTRY_SIZE, true)) !== data.stopKey && !earlyHandles.has(pid)) earlyHandles.set(pid, openQuery(pid));
     }
     for (let index = 0; ok && index < (removed[0] ?? 0); index++) {
       const key = Number(view.getBigUint64(index * ENTRY_SIZE, true));
@@ -257,8 +257,8 @@ function run(): void {
   }
   for (const holder of held.values()) closeProcess(holder.handle);
   held.clear();
-  for (const handle of opened.values()) if (handle !== 0) closeProcess(handle);
-  opened.clear();
+  for (const handle of earlyHandles.values()) if (handle !== 0) closeProcess(handle);
+  earlyHandles.clear();
   log.writer?.close();
 }
 
