@@ -13,6 +13,9 @@
  * It sends an empty batch when its loop starts. The trace is ready at that message. The modules of the thread load in
  * approximately 170 ms, and a short process that ends in that time has no name.
  *
+ * The reader names a process only while the process is there. So for each packet set of the port, it first opens all the
+ * new processes, and then reads the facts of each (H213). A slow read of one command line does not lose the next process.
+ *
  * It imports no module of the engine: only types, the process reads of Windows and the start log.
  */
 
@@ -68,6 +71,8 @@ const removed = [0];
 const times = { creation: [0n], exit: [0n], kernel: [0n], user: [0n] };
 /** The handle of each live process of the trace, for its exit code, with its creation time when the log reads it. */
 const held = new Map<number, { readonly handle: number; created: bigint | null }>();
+/** The handle of each new process of the current packet set, opened before the reads of the facts (H213). `0` is a process that was gone. */
+const opened = new Map<number, number>();
 /** The command line of each recent parent, with its creation time: a new process with the pid of the parent is not the parent. */
 const parents = new Map<number, { readonly created: bigint; readonly command: string | null }>();
 /** The time of the last exit of each pid of the trace, for `reuseMs`. */
@@ -107,7 +112,9 @@ function started(key: number, pid: number, at: number, log: boolean): { readonly
   const exited = exitedAt.get(pid);
   exitedAt.delete(pid);
   const reuse = (createdAt: number): number | null => (exited !== undefined && createdAt - exited < START_LOG_REUSE_MS ? createdAt - exited : null);
-  const handle = openQuery(pid);
+  const early = opened.get(pid);
+  opened.delete(pid);
+  const handle = early ?? openQuery(pid);
   if (handle === 0) {
     const row = log ? { at, key, pid, ppid: null, created: null, image: null, command: null, parentCommand: null, reuseMs: reuse(at) } : null;
     return { event: { type: "start", key, pid, ppid: null, name: null, at }, row };
@@ -201,6 +208,12 @@ function run(): void {
     const ok = dequeue(data.port, entries, ENTRIES, removed, wait, 0) !== 0;
     const at = Date.now();
     let stop = !ok && lastError() !== WAIT_TIMEOUT;
+    // The first pass opens each new process of the packet set, before a process ends (H213). The second pass reads the facts.
+    for (let index = 0; ok && index < (removed[0] ?? 0); index++) {
+      const pid = Number(view.getBigUint64(index * ENTRY_SIZE + 8, true));
+      const message = view.getUint32(index * ENTRY_SIZE + 24, true);
+      if (message === MESSAGE_NEW_PROCESS && Number(view.getBigUint64(index * ENTRY_SIZE, true)) !== data.stopKey && !opened.has(pid)) opened.set(pid, openQuery(pid));
+    }
     for (let index = 0; ok && index < (removed[0] ?? 0); index++) {
       const key = Number(view.getBigUint64(index * ENTRY_SIZE, true));
       const pid = Number(view.getBigUint64(index * ENTRY_SIZE + 8, true));
@@ -244,6 +257,8 @@ function run(): void {
   }
   for (const holder of held.values()) closeProcess(holder.handle);
   held.clear();
+  for (const handle of opened.values()) if (handle !== 0) closeProcess(handle);
+  opened.clear();
   log.writer?.close();
 }
 

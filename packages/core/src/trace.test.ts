@@ -492,11 +492,22 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
     const folder = mkdtempSync(join(tmpdir(), "headroom-trace-log-"));
     const logPath = join(folder, "starts.db");
     const trace = await readyTrace({ logPath });
+    // Each cmd.exe waits for a line on its input, so it lives until the trace named it (H213). The reader names a process
+    // only while the process is there. On Windows CI, 5 short starts of cmd.exe gave only 2 or 4 names with a slow reader
+    // (runs 44441142407, 45303727777 and 45821920372).
     const script = `process.stdin.once("data", () => {
-      const { spawnSync } = require("node:child_process");
-      for (let i = 0; i < 5; i++) spawnSync("cmd.exe", ["/c", "exit 3"]);
-      process.stdout.write("done");
-      process.stdin.once("data", () => process.exit(0));
+      const { spawn } = require("node:child_process");
+      const holdStarts = [];
+      for (let i = 0; i < 5; i++) holdStarts.push(spawn("cmd.exe", ["/c", "set /p line=& exit 3"], { stdio: ["pipe", "ignore", "ignore"] }));
+      process.stdout.write("started");
+      process.stdin.once("data", () => {
+        let left = holdStarts.length;
+        for (const each of holdStarts) {
+          each.once("exit", () => { left -= 1; if (left === 0) process.stdout.write("done"); });
+          each.stdin.end("x\\n");
+        }
+        process.stdin.once("data", () => process.exit(0));
+      });
     });`;
     const child = spawn(process.execPath, ["-e", script], { stdio: ["pipe", "pipe", "inherit"] });
     try {
@@ -506,9 +517,9 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
       expect(trace.jobs()).toBe(1);
       child.stdin?.write("go\n");
       await new Promise((resolve) => child.stdout?.once("data", resolve));
-      // The reader sends a batch at least each second. The loop waits for the 5 starts of cmd.exe and for their exits. An
-      // exit of another process of the job, for example of a conhost.exe, does not count (H207: a loop that stopped at 5
-      // exits of any process saw 4 starts of cmd.exe on Windows CI).
+      // The reader sends a batch at least each second. The first loop waits for the 5 starts of cmd.exe, and the second
+      // loop, after the release of the 5 processes, for their exits. An exit of another process of the job, for example of
+      // a conhost.exe, does not count (H207: a loop that stopped at 5 exits of any process saw 4 starts of cmd.exe on Windows CI).
       const events: TraceEvent[] = [];
       const cmdStarts = (): Extract<TraceEvent, { type: "start" }>[] =>
         events.filter((each): each is Extract<TraceEvent, { type: "start" }> => each.type === "start" && each.name?.toLowerCase() === "cmd.exe");
@@ -516,7 +527,14 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
         const pids = new Set(cmdStarts().map((each) => each.pid));
         return events.filter((each) => each.type === "exit" && pids.has(each.pid)).length;
       };
-      for (let tries = 0; tries < 100 && (cmdStarts().length < 5 || cmdExits() < 5); tries++) {
+      for (let tries = 0; tries < 100 && cmdStarts().length < 5; tries++) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        events.push(...trace.drain());
+      }
+      expect(cmdStarts()).toHaveLength(5);
+      child.stdin?.write("release\n");
+      await new Promise((resolve) => child.stdout?.once("data", resolve));
+      for (let tries = 0; tries < 100 && cmdExits() < 5; tries++) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         events.push(...trace.drain());
       }
@@ -537,7 +555,7 @@ describe.skipIf(process.platform !== "win32")("the start trace of Windows (H188)
           expect(logged).toMatchObject({ ppid: child.pid, exit: { exitCode: 3 } });
           expect(logged?.image?.toLowerCase()).toMatch(/\\cmd\.exe$/);
           expect(logged?.command).toContain("exit 3");
-          expect(logged?.parentCommand).toContain("spawnSync");
+          expect(logged?.parentCommand).toContain("holdStarts");
           expect(logged?.createdAt).not.toBeNull();
         }
       } finally {
