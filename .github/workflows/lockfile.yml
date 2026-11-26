@@ -1,0 +1,23 @@
+# Makes pnpm-lock.yaml again on a runner, for the branch that the run starts on. Use it when the local computer
+# has no memory for an install (reusable-lockfile.yml of the template tells the steps):
+#
+#   gh workflow run lockfile.yml -R <owner/repo> --ref <branch>
+#
+# A dispatch on the default branch fails.
+name: Lockfile
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+# One run for each branch: a new start cancels the older one
+concurrency:
+  group: lockfile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lockfile:
+    uses: mark1russell7/template/.github/workflows/reusable-lockfile.yml@8599488c67a942c9c7c5cc25189c7a71bc23ad04 # main
+    permissions:
+      contents: read
