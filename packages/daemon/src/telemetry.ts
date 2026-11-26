@@ -48,7 +48,7 @@ export function startTelemetry(options: TelemetryOptions): NodeContext {
   });
 }
 
-/** This function gives the words of the trace ids of the active span for the end of a line, or "" when no span is active. */
+/** This function gives the trace ids of the active span as words for the end of a line. With no active span, it gives "". */
 export function traceWords(): string {
   const ids = trace.getActiveSpan()?.spanContext();
   return ids !== undefined && isSpanContextValid(ids) ? ` trace_id=${ids.traceId} span_id=${ids.spanId}` : "";
