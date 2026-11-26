@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
 import { uptime as systemUptime } from "node:os";
 import { createSampler, DockerReader, Engine, ServiceMonitor, Store, waitsForRoom, WORKTREE_IDLE_MS, type NativeRefusalInput } from "@headroom/core";
-import { defineModule, hostPolicy, manifestProcedure, ProcedureRegistry, REGISTRY_READ_EFFECTS, registerModules, withEffects, type AnyProcedure } from "@procedures/client";
+import { defineModule, hostPolicy, manifestProcedure, ProcedureRegistry, REGISTRY_READ_EFFECTS, registerModules, tracingInterceptor, withEffects, type AnyProcedure, type HostPolicy } from "@procedures/client";
 import { peerHostOptions, type HostFaceFactory, type ProcedureHostOptions } from "@procedures/peer";
 import { runProcedureHost } from "@procedures/server";
 import { answers } from "./client.ts";
@@ -24,6 +24,7 @@ import { readSummary } from "./disk-report.ts";
 import { announceDaemon, databasePath, diskReportPath, headroomHome, leaseEndsDir, readDiscovery, readPlannedStop, removeDiscovery, startLogPath } from "./paths.ts";
 import { HOOK_MEASURE_BUDGET_MS, longPathRefusal, NativeImages, nativeLongPath, refusalRow } from "./native-paths.ts";
 import { LinkGate } from "./link-gate.ts";
+import { daemonVersion, startTelemetry, withTraceIds } from "./telemetry.ts";
 import { diskProcedures, gatewayProcedures, nativeProcedures, resourceProcedures, serviceProcedures } from "./procedures.ts";
 import { IdleRestart } from "./restart.ts";
 import { keepStartsBeforeStop } from "./starts-before-stop.ts";
@@ -58,6 +59,15 @@ export function daemonRegistry(procedures: readonly AnyProcedure[]): ProcedureRe
   return registry;
 }
 
+/**
+ * This function gives the policy of the host of the daemon: the token, and a span for each procedure call. The span continues
+ * the trace of the `traceparent` of the caller, and the handler runs in it. With no context of OpenTelemetry, the interceptor
+ * makes no span of the API.
+ */
+export function daemonPolicy(token: string): HostPolicy {
+  return hostPolicy({ token, interceptors: [tracingInterceptor({ onSpan: () => undefined })] });
+}
+
 /** This function adds faces to the options of the host, and puts each of them on each listener of the host (H194). */
 export function withFaces(base: ProcedureHostOptions, faces: Readonly<Record<string, HostFaceFactory>>): ProcedureHostOptions {
   const names = Object.keys(faces);
@@ -83,7 +93,8 @@ export interface ServeOptions {
 /** This function runs the daemon until a signal stops it. It gives the exit code. */
 export async function serve(options: ServeOptions = {}): Promise<number> {
   const startedAt = Date.now();
-  const log = options.log ?? ((line: string) => console.log(line));
+  // Each line in a span (a procedure call or a call of the hook) has the trace ids of the span.
+  const log = withTraceIds(options.log ?? ((line: string) => console.log(line)));
   mkdirSync(headroomHome(), { recursive: true });
   const running = readDiscovery();
   if (running && running.pid !== process.pid && (await answers(running))) {
@@ -185,7 +196,7 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
 
   const token = randomBytes(32).toString("hex");
   const base = peerHostOptions(
-    { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: hostPolicy({ token }) },
+    { id: `headroom-${process.pid}`, transports: [{ type: "http", port, host, basePath: "/api" }], registry, policy: daemonPolicy(token) },
     "headroom",
   );
   // The MCP gateway, the dashboard and the hook (H194) are faces on the same listener as the procedures: /mcp/<name>, / and
@@ -223,6 +234,8 @@ export async function serve(options: ServeOptions = {}): Promise<number> {
       }),
     }),
     log,
+    // The context of the traces, with the resource of the daemon. No span leaves the process. The last stop phase stops it.
+    telemetry: () => startTelemetry({ version: daemonVersion() }),
   });
   if (started.life.state !== "running") {
     log("headroom did not start:");

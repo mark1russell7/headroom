@@ -22,6 +22,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { hostNameOf, isLoopbackHost } from "@procedures/client";
 import type { HostFaceFactory } from "@procedures/peer";
 import { denied, hookOutput, type Status } from "./hook-rating.ts";
+import { inRequestSpan } from "./telemetry.ts";
 
 /** The path of the route of the hook. */
 export const HOOK_PATH = "/hooks/pre-tool-use";
@@ -142,7 +143,8 @@ export function hookFace(options: HookFaceOptions): HostFaceFactory {
             answer(res, 413, JSON.stringify({ error: "headroom: the event of the hook is too large." }), "application/json");
             return;
           }
-          const { code, json } = await hookVerdict(body, options);
+          // The verdict is a span in the trace of the caller, thus each line of the log of a refusal has its trace id.
+          const { code, json } = await inRequestSpan(`POST ${HOOK_PATH}`, req.headers, () => hookVerdict(body, options));
           answer(res, code, json, "application/json");
         },
         () => {
