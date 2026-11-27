@@ -177,10 +177,10 @@ importers:
     devDependencies:
       '@mark1russell7/api-report':
         specifier: ^0.5.0
-        version: 0.5.22
+        version: 0.5.24
       '@mark1russell7/conventions':
-        specifier: ^0.54.0
-        version: 0.54.0
+        specifier: ^0.55.2
+        version: 0.55.2
       '@mark1russell7/cue':
         specifier: github:mark1russell7/cue#d4fc4d708b2cfeae91e194b18466455ccad875b7
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
@@ -189,7 +189,7 @@ importers:
         version: https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7
       '@mark1russell7/template-cli':
         specifier: ^0.1.0
-        version: 0.1.9
+        version: 0.1.12
       '@vitest/coverage-v8':
         specifier: ^5.0.3
         version: 5.1.1(vitest@5.1.1)
@@ -210,7 +210,7 @@ importers:
         version: 0.2.19
       '@mark1russell7/sqlite':
         specifier: ^0.7.0
-        version: 0.7.0
+        version: 0.7.1
       '@mark1russell7/text':
         specifier: ^0.0.20
         version: 0.0.20
@@ -315,7 +315,7 @@ importers:
         version: https://codeload.github.com/mark1russell7/cue/tar.gz/d4fc4d708b2cfeae91e194b18466455ccad875b7
       '@mark1russell7/site-pages':
         specifier: ^0.8.0
-        version: 0.8.7
+        version: 0.8.8
       '@types/node':
         specifier: ^26.6.4
         version: 26.6.6
@@ -764,10 +764,14 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/api-report@0.5.22':
-    resolution: {integrity: sha512-tqkh8twM0NH+sE4bmYQuzryFokw/7qpzWHbvVjT2cQEipB8E5RjKrIW2cldodY996XZd2CE2Vjd8OMJOz6lYfA==}
+  '@mark1russell7/api-report@0.5.24':
+    resolution: {integrity: sha512-8mMv2Nyhmlux0gWVXZgUD3nzO+XUiZ2ZxXB8hDIzB3py46VWZrTQra8J0GuJf8U+nSzZtoImLwzbVI2kyOB9VQ==}
     engines: {node: '>=22'}
     hasBin: true
+
+  '@mark1russell7/code-shape@0.0.1':
+    resolution: {integrity: sha512-qunnV1QThYsI0rXeOFRgaXpZFFw+ZLLnIG0jYioql5WiYrqCPe+eROgLn4l/cRegXU3Y1t4OEnUfW6izovteFA==}
+    engines: {node: '>=22.13'}
 
   '@mark1russell7/coeval@0.29.0':
     resolution: {integrity: sha512-Z+CEqmOKxyGrGwdKTuBQmzb0fHTcPY3gUA9RS2H6GF/mKFPEuIUIkrN65P7NgSMpb2J0owoduFWINh04RxFRkg==}
@@ -780,8 +784,8 @@ packages:
     resolution: {integrity: sha512-KKAYIACji5XtOpbE3fIX4D3aVd0oddyM9dU+Pk+lXpgYOh6VTVoa/0yzwDTipZ42RKp+6BG+LSkLjCe/FjCHFA==}
     engines: {node: '>=22.12'}
 
-  '@mark1russell7/conventions@0.54.0':
-    resolution: {integrity: sha512-pqdCwKE5ejF5Bf0pYvpbykFpzW8zgBh3MCRmpiOzuXgIYCnoEPAHmPFB316BohXS9HMV6o5OJsjfXJPq+gR+Vw==}
+  '@mark1russell7/conventions@0.55.2':
+    resolution: {integrity: sha512-LUOWcKY2a/7Vs/oHtQQjF/aTcmg8iyb1F8E9omW5tH7SoB0J4W60gyktkj5MWw8kkFZhz6ReykPhCgtVrTynHQ==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -919,13 +923,13 @@ packages:
       zod:
         optional: true
 
-  '@mark1russell7/site-pages@0.8.7':
-    resolution: {integrity: sha512-0U814F6nv69ueZ82B+PKkHH/Y8qapXNTFo2KMchvfqBcEkYh+2eQYAGdPzJANR+xni9HJZVpeC2nu+/lCeaEDQ==}
+  '@mark1russell7/site-pages@0.8.8':
+    resolution: {integrity: sha512-08GVIxJmzOmcPoq6dw9q1xR3tB3VRh0fzyJGyFGeMJqQlyWQLQOp2GWmoskCSEekXsrTkxrGTWuZGQ1JgQg02Q==}
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/sqlite@0.7.0':
-    resolution: {integrity: sha512-9uYBKNfHpDWrPX0C88vcP3CDS3FmEH9ntfLRvIGayTLMYV99LHGw254iO3gRQxd83jq1ml7ER+l0tKW/CGKKTA==}
+  '@mark1russell7/sqlite@0.7.1':
+    resolution: {integrity: sha512-A2x/fWB8G4KPCK5pNUUaNc7s61xFA/WvZkkJJK8uggmW5wqD6uxnLujt97Y7gBjM4JXkxoHb3AR4eJAJOkIdZg==}
     engines: {node: '>=22.13'}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
@@ -934,8 +938,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@mark1russell7/template-cli@0.1.9':
-    resolution: {integrity: sha512-7ebtLlCmT6KYhbpoI2SZHXCQC6/7Rc660SvKwQvfslseSQrXMRlmBj+1/F5KOCep6aB+LtvGWg+HmTKi6uZjyQ==}
+  '@mark1russell7/template-cli@0.1.12':
+    resolution: {integrity: sha512-4156Bu2fW/1/Q8Oe4HmHxwOkiqn20MZmCeYHorWiNGbenNvZkB84JP5OK9ghm4koMyiPgKP0gBQUfj/8k/G0Tg==}
     engines: {node: '>=22.12'}
     hasBin: true
 
@@ -2613,9 +2617,11 @@ snapshots:
     optionalDependencies:
       zod: 4.6.7
 
-  '@mark1russell7/api-report@0.5.22':
+  '@mark1russell7/api-report@0.5.24':
     dependencies:
-      '@mark1russell7/conventions': 0.54.0
+      '@mark1russell7/conventions': 0.55.2
+
+  '@mark1russell7/code-shape@0.0.1': {}
 
   '@mark1russell7/coeval@0.29.0(zod@4.6.7)':
     dependencies:
@@ -2640,8 +2646,9 @@ snapshots:
     transitivePeerDependencies:
       - zod
 
-  '@mark1russell7/conventions@0.54.0':
+  '@mark1russell7/conventions@0.55.2':
     dependencies:
+      '@mark1russell7/code-shape': 0.0.1
       '@mark1russell7/text': 0.0.20
       yaml: 2.9.1
 
@@ -2729,17 +2736,17 @@ snapshots:
       ws: 8.23.0
       zod: 4.6.7
 
-  '@mark1russell7/site-pages@0.8.7':
+  '@mark1russell7/site-pages@0.8.8':
     dependencies:
       '@mark1russell7/rigor-statistics': 0.2.19
 
-  '@mark1russell7/sqlite@0.7.0': {}
+  '@mark1russell7/sqlite@0.7.1': {}
 
   '@mark1russell7/ste-lint@https://codeload.github.com/mark1russell7/ste-lint/tar.gz/f597d6c1e09bcfcb487bb575825d6d5f29e9e0c7':
     dependencies:
       typescript: 6.0.3
 
-  '@mark1russell7/template-cli@0.1.9':
+  '@mark1russell7/template-cli@0.1.12':
     dependencies:
       '@clack/prompts': 1.9.0
 
