@@ -26,12 +26,12 @@ defaults:
 
 jobs:
   ci:
-    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@a6fe0b4de26f6f9fcc3bc7765dd2bcf141f6da3d # main
+    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@5d70553c6998c5f6f0fed13dc4528f6a207f2f4a # main
 
   # The tests of the Windows code: job objects, the relay of a detached client, and a restart of the daemon with jobs that
   # run (H202). The job ci runs on Linux only, and there these tests skip. The script test:windows names the files.
   windows:
-    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@a6fe0b4de26f6f9fcc3bc7765dd2bcf141f6da3d # main
+    uses: mark1russell7/template/.github/workflows/reusable-ci.yml@5d70553c6998c5f6f0fed13dc4528f6a207f2f4a # main
     with:
       os: '["windows-latest"]'
       scripts: test:windows
@@ -45,7 +45,7 @@ jobs:
   # The site of .github/site.json: the build, the site check and the probe, with no deploy (CI.md of the
   # template, "The site config"). The Pages workflow deploys the same site from main.
   site:
-    uses: mark1russell7/template/.github/workflows/reusable-pages-check.yml@a6fe0b4de26f6f9fcc3bc7765dd2bcf141f6da3d # main
+    uses: mark1russell7/template/.github/workflows/reusable-pages-check.yml@5d70553c6998c5f6f0fed13dc4528f6a207f2f4a # main
     permissions:
       contents: read
 
